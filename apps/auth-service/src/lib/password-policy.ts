@@ -217,6 +217,10 @@ export type PasswordPolicyFailure =
  */
 export function checkPasswordPolicy(
   password: string,
+  // Unused only because the identifier rule below is commented out. The
+  // parameter and its name stay so every caller keeps compiling and so
+  // re-enabling the rule is a one-line revert rather than a signature change.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   identifier?: string | null
 ): PasswordPolicyFailure | null {
   if (password.length < PASSWORD_MIN_LENGTH) return "AUTH_PASSWORD_TOO_SHORT";
@@ -224,8 +228,24 @@ export function checkPasswordPolicy(
     return "AUTH_PASSWORD_TOO_LONG";
   }
   if (isCommonPassword(password)) return "AUTH_PASSWORD_TOO_COMMON";
-  if (containsIdentifier(password, identifier)) {
-    return "AUTH_PASSWORD_CONTAINS_IDENTIFIER";
-  }
+  // DISABLED BY PRODUCT DECISION (2026-09-07): a password may now restate the
+  // account name or email local part, so `Saul_Goodman` / `Saul_Goodman@1234`
+  // is accepted.
+  //
+  // What this gives up: the account name is PUBLIC — it is how other users find
+  // you — so a password derived from it is guessable by anyone who can see the
+  // profile, and it is the first thing a targeted guessing run tries. Length,
+  // the common-password blocklist and the bcrypt work factor are now the only
+  // things standing behind such an account.
+  //
+  // Commented rather than deleted so re-enabling is a one-line revert.
+  // `containsIdentifier` below is deliberately kept (still exported and still
+  // covered by tests) so the rule does not have to be rewritten from scratch,
+  // and `AUTH_PASSWORD_CONTAINS_IDENTIFIER` stays in the failure union and the
+  // message catalogue for the same reason.
+  //
+  // if (containsIdentifier(password, identifier)) {
+  //   return "AUTH_PASSWORD_CONTAINS_IDENTIFIER";
+  // }
   return null;
 }

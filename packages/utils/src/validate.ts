@@ -1,4 +1,4 @@
-import { t } from "@aimess/constants";
+import { renderMessageKey, t } from "@aimess/constants";
 import type { Request, RequestHandler, Response } from "express";
 
 import { zodErrorMessage, zodFieldErrors } from "./format-zod-error.js";
@@ -29,16 +29,46 @@ interface ZodLikeSchema {
  * coerced result so schema defaults never reached the controller. This is that
  * logic, once.
  */
+type ZodIssues = ReadonlyArray<{
+  path: ReadonlyArray<PropertyKey>;
+  message: string;
+}>;
+
+/**
+ * Translate any issue message that is actually a MESSAGE KEY.
+ *
+ * The contract below is that a Zod issue message is already the user-facing
+ * sentence, and almost every schema honours it ("Password must be at least 8
+ * characters"). The password policy cannot: `checkPasswordPolicy` returns a
+ * key — AUTH_PASSWORD_TOO_SHORT, AUTH_PASSWORD_CONTAINS_IDENTIFIER — because
+ * the same failure is also thrown from services that DO translate it. Without
+ * this step that key reached the client verbatim, and a user setting a password
+ * was shown `AUTH_PASSWORD_CONTAINS_IDENTIFIER` instead of the en/vi/th
+ * sentence that has existed in the catalogue all along.
+ *
+ * `renderMessageKey` answers null for anything that is not a known key, so a
+ * hand-written sentence passes through untouched — which matters because this
+ * runs for every validated request in every service, not just the auth ones.
+ */
+function localizeIssues(issues: ZodIssues, req: Request): ZodIssues {
+  return issues.map((issue) => {
+    const localized = renderMessageKey(issue.message, req.locale);
+    return localized === null ? issue : { ...issue, message: localized };
+  });
+}
+
 function respondInvalid(
   req: Request,
   res: Response,
   error: {
-    issues: ReadonlyArray<{
-      path: ReadonlyArray<PropertyKey>;
-      message: string;
-    }>;
+    issues: ZodIssues;
   }
 ): void {
+  // Localized once, then shared by both formatters, so the joined `message` and
+  // the per-field `details` can never disagree about the wording.
+  const issues = localizeIssues(error.issues, req);
+  const localized = { issues };
+
   sendApiError(req, res, {
     statusCode: 400,
     code: "VALIDATION_FAILED",
@@ -46,9 +76,9 @@ function respondInvalid(
     // per-field in the schemas ("Password must be at least 8 characters") and
     // are far more useful than a generic "Validation failed".
     fallbackMessage:
-      zodErrorMessage(error) || t("VALIDATION_FAILED", req.locale),
+      zodErrorMessage(localized) || t("VALIDATION_FAILED", req.locale),
     // Lets a form mark the offending input instead of showing one joined line.
-    details: zodFieldErrors(error),
+    details: zodFieldErrors(localized),
   });
 }
 

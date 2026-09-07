@@ -79,11 +79,19 @@ describe("checkPasswordPolicy", () => {
     expect(isCommonPassword("l3tm3in")).toBe(true);
   });
 
-  it("rejects a password built from the account name", () => {
-    // The account name is public — it is how other users find you.
-    expect(checkPasswordPolicy("johndoe-is-here", "johndoe")).toBe(
-      "AUTH_PASSWORD_CONTAINS_IDENTIFIER"
-    );
+  /**
+   * The identifier rule is DISABLED by product decision (see
+   * `checkPasswordPolicy`), so the policy now ACCEPTS a password built from the
+   * account name. This asserts that deliberately, rather than being deleted:
+   * if the enforcement is ever re-enabled, this test fails and says so, instead
+   * of the change landing silently.
+   *
+   * `containsIdentifier` itself is untouched and still detects the case — it is
+   * simply no longer consulted.
+   */
+  it("accepts a password built from the account name (rule disabled)", () => {
+    expect(checkPasswordPolicy("johndoe-is-here", "johndoe")).toBeNull();
+    // The detector still works, so re-enabling is a one-line change.
     expect(containsIdentifier("MyJohnDoePass1", "johndoe")).toBe(true);
   });
 
@@ -129,13 +137,20 @@ describe("registerSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects a password containing the account being registered", () => {
+  /**
+   * `registerSchema` re-checks the policy at the OBJECT level because the
+   * account name is only known there. With the identifier rule disabled that
+   * re-check no longer rejects anything on its own — asserted here so the
+   * object-level hook itself is still proven to run and to pass a password that
+   * satisfies every remaining rule.
+   */
+  it("accepts a password containing the account being registered (rule disabled)", () => {
     const result = registerSchema.safeParse({
       account: "johndoe",
       password: "johndoe-secret-1",
     });
 
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 });
 
@@ -175,8 +190,18 @@ describe("loginSchema", () => {
 });
 
 describe("POST /api/auth/register (end to end)", () => {
-  it("answers 400 with the specific policy failure, not a generic error", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+  /**
+   * The response has to name WHICH rule failed — a generic "validation failed"
+   * leaves the user guessing what to change.
+   *
+   * It asserts the rule's own SENTENCE rather than its message key. The key
+   * used to reach the client verbatim, so a user was shown
+   * `AUTH_PASSWORD_TOO_COMMON`; the shared validation responder now renders any
+   * key-shaped Zod message through the message catalogue. The distinguishing
+   * property this test exists for is unchanged — each rule still produces its
+   * own identifiable text — only the form it takes is now user-readable.
+   */
+  it("answers 400 naming the specific policy failure, in readable copy", async () => {
     const app = (await import("../../src/app.js")).default;
 
     const res = await request(app)
@@ -184,7 +209,51 @@ describe("POST /api/auth/register (end to end)", () => {
       .send({ account: "policyprobe", password: "password1234" });
 
     expect(res.status).toBe(400);
-    // The client has to be able to tell the user WHICH rule failed.
-    expect(JSON.stringify(res.body)).toContain("AUTH_PASSWORD_TOO_COMMON");
+    expect(res.body.error.details.password).toEqual([
+      "This password is too common. Please choose a different one.",
+    ]);
+    // The raw key must never reach a client again.
+    expect(JSON.stringify(res.body)).not.toContain("AUTH_PASSWORD_");
+  });
+
+  /**
+   * The reported case: `Saul_Goodman` + `Saul_Goodman@1234`.
+   *
+   * The identifier rule is disabled by product decision, so this password must
+   * no longer be refused by the POLICY. It is asserted at the HTTP boundary
+   * because that is where the original report came from — the request gets past
+   * password validation and fails, if at all, for an unrelated reason
+   * (the signup proof-of-work gate), never with a password complaint.
+   */
+  it("no longer refuses a password that restates the account name", async () => {
+    const app = (await import("../../src/app.js")).default;
+
+    const res = await request(app)
+      .post("/api/auth/register")
+      .send({ account: "Saul_Goodman", password: "Saul_Goodman@1234" });
+
+    expect(JSON.stringify(res.body)).not.toContain(
+      "Password must not contain your account name"
+    );
+    expect(res.body?.error?.details?.password).toBeUndefined();
+  });
+
+  /**
+   * The guard on the fix itself. `localizeIssues` runs for every validated
+   * request in every service, so a hand-written Zod sentence — which is what
+   * almost every schema carries — must pass through untouched rather than being
+   * mistaken for a key and swallowed.
+   */
+  it("leaves a hand-written validation sentence exactly as authored", async () => {
+    const app = (await import("../../src/app.js")).default;
+
+    const res = await request(app)
+      .post("/api/auth/register")
+      .send({ account: "ab", password: "Strong!Password9274" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.account).toEqual([
+      "Account name must be at least 3 characters",
+    ]);
   });
 });
