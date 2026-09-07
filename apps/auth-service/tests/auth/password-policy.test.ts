@@ -24,6 +24,7 @@ import {
   containsIdentifier,
   isCommonPassword,
   PASSWORD_MAX_BYTES,
+  PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
 } from "../../src/lib/password-policy.js";
 import { registerSchema } from "../../src/api/validators/auth.validator.js";
@@ -38,8 +39,27 @@ describe("checkPasswordPolicy", () => {
   });
 
   it("rejects anything under the minimum length", () => {
-    expect(checkPasswordPolicy("Sh0rt-Pass")).toBe("AUTH_PASSWORD_TOO_SHORT");
-    expect("Sh0rt-Pass".length).toBeLessThan(PASSWORD_MIN_LENGTH);
+    expect(checkPasswordPolicy("Sh0rt-P")).toBe("AUTH_PASSWORD_TOO_SHORT");
+    expect("Sh0rt-P".length).toBeLessThan(PASSWORD_MIN_LENGTH);
+  });
+
+  it("accepts exactly the minimum length", () => {
+    const atMinimum = "Ab3!def-";
+    expect(atMinimum.length).toBe(PASSWORD_MIN_LENGTH);
+    expect(checkPasswordPolicy(atMinimum)).toBeNull();
+  });
+
+  it("rejects anything over the maximum character length", () => {
+    // The character cap bites before bcrypt's byte cap for ASCII.
+    const overMax = `Ab3!${"x".repeat(PASSWORD_MAX_LENGTH)}`;
+    expect(Buffer.byteLength(overMax)).toBeLessThan(PASSWORD_MAX_BYTES);
+    expect(checkPasswordPolicy(overMax)).toBe("AUTH_PASSWORD_TOO_LONG");
+  });
+
+  it("accepts exactly the maximum character length", () => {
+    const atMax = `Ab3!${"x".repeat(PASSWORD_MAX_LENGTH - 4)}`;
+    expect(atMax.length).toBe(PASSWORD_MAX_LENGTH);
+    expect(checkPasswordPolicy(atMax)).toBeNull();
   });
 
   it("rejects a password bcrypt would silently truncate", () => {
@@ -48,14 +68,16 @@ describe("checkPasswordPolicy", () => {
     // user was told nothing.
     const tooLong = "a1B2-".repeat(20);
     expect(Buffer.byteLength(tooLong)).toBeGreaterThan(PASSWORD_MAX_BYTES);
+    expect(tooLong.length).toBeGreaterThan(PASSWORD_MAX_LENGTH);
     expect(checkPasswordPolicy(tooLong)).toBe("AUTH_PASSWORD_TOO_LONG");
   });
 
   it("counts BYTES, not characters, for the bcrypt ceiling", () => {
     // Multi-byte characters hit bcrypt's limit far sooner than their length
-    // suggests — 30 emoji is already over 72 bytes.
-    const emoji = "🔐".repeat(30);
-    expect(emoji.length).toBeLessThan(PASSWORD_MAX_BYTES);
+    // suggests: 20 emoji is 40 UTF-16 units — inside the character cap — but
+    // 80 bytes, so only the byte rule can catch it.
+    const emoji = "🔐".repeat(20);
+    expect(emoji.length).toBeLessThanOrEqual(PASSWORD_MAX_LENGTH);
     expect(checkPasswordPolicy(emoji)).toBe("AUTH_PASSWORD_TOO_LONG");
   });
 

@@ -4104,7 +4104,7 @@ export const openApiSchemas = {
         pattern: "^[a-z0-9_]+$",
         example: "johndoe",
       },
-      password: { type: "string", minLength: 12, maxLength: 72 },
+      password: { type: "string", minLength: 8, maxLength: 50 },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
       proof: { $ref: "#/components/schemas/SignupProof" },
       device: { $ref: "#/components/schemas/DeviceInfo" },
@@ -4274,7 +4274,7 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       resetToken: { type: "string", minLength: 32 },
-      password: { type: "string", minLength: 8, maxLength: 128 },
+      password: { type: "string", minLength: 8, maxLength: 50 },
     },
     required: ["resetToken", "password"],
   },
@@ -4391,7 +4391,7 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       currentPassword: { type: "string", minLength: 8 },
-      newPassword: { type: "string", minLength: 8 },
+      newPassword: { type: "string", minLength: 8, maxLength: 50 },
     },
     required: ["currentPassword", "newPassword"],
   },

@@ -49,9 +49,9 @@ export type ValidateAccountInput = z.infer<typeof validateAccountSchema>;
 /**
  * The CREATION policy for a password: register, reset and change all use it.
  *
- * Login deliberately does NOT (see `loginPasswordSchema` below), so every
- * account created under the older 8-character rule keeps signing in and is only
- * asked for something stronger when it next sets a password.
+ * Login deliberately does NOT (see `loginPasswordSchema` below), so an account
+ * whose password predates the current rule keeps signing in and is only asked
+ * to satisfy the rule when it next SETS a password.
  *
  * The rules live in `lib/password-policy.ts`; this schema is the boundary that
  * applies them and maps each failure to its own message key, so the client can
