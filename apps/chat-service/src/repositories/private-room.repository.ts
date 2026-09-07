@@ -11,7 +11,10 @@ import {
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
-import { UNREAD_COUNTABLE_RAW_MATCH } from "../lib/unread-count.js";
+import {
+  UNREAD_COUNTABLE_RAW_MATCH,
+  type UnreadStats,
+} from "../lib/unread-count.js";
 import {
   autoDeletePolicyUpdatePipeline,
   type AutoDeleteMode,
@@ -265,13 +268,15 @@ export class PrivateRoomRepository {
   }
 
   /**
-   * Total unread private messages across every room the user's in — for the
-   * Chats nav badge. Same unbounded shape as countConversations (a badge
-   * total must cover every room, not one inbox page) plus the exact
-   * `unreadByUser[userId] ?? 0` read PrivateRoomService.toPrivateItem already
-   * uses per-row, just summed here instead of listed.
+   * Unread stats across every room the user's in — both the message total and
+   * the number of rooms carrying at least one unread. The nav badge counts
+   * CONVERSATIONS (one unread room contributes 1, not its message count); the
+   * message total stays on the payload for clients that still show it. Same
+   * unbounded shape as countConversations (a badge total must cover every
+   * room, not one inbox page) plus the exact `unreadByUser[userId] ?? 0` read
+   * PrivateRoomService.toPrivateItem already uses per-row.
    */
-  async sumUnreadForUser(userId: string): Promise<number> {
+  async countUnreadForUser(userId: string): Promise<UnreadStats> {
     const rows = await this.prisma.privateRoom.findMany({
       where: { participants: { has: userId }, lastMessageAt: { not: null } },
       select: {
@@ -282,13 +287,21 @@ export class PrivateRoomRepository {
     });
     return rows
       .filter((r) => isVisibleAfterDeleteForMe(r, userId))
-      .reduce((sum, r) => {
-        const unreadByUser = (r.unreadCountByUser ?? {}) as Record<
-          string,
-          number
-        >;
-        return sum + (unreadByUser[userId] ?? 0);
-      }, 0);
+      .reduce<UnreadStats>(
+        (acc, r) => {
+          const unreadByUser = (r.unreadCountByUser ?? {}) as Record<
+            string,
+            number
+          >;
+          const unread = unreadByUser[userId] ?? 0;
+          if (unread <= 0) return acc;
+          return {
+            messages: acc.messages + unread,
+            conversations: acc.conversations + 1,
+          };
+        },
+        { messages: 0, conversations: 0 }
+      );
   }
 
   /**

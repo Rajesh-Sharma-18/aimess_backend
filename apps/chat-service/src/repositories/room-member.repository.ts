@@ -163,6 +163,29 @@ export class RoomMemberRepository {
     });
   }
 
+  /** userIds of every non-left member of a room — the mirror the reconciler diffs against community-service. */
+  async findLiveMemberUserIds(roomId: string): Promise<string[]> {
+    const rows = await this.prisma.roomMember.findMany({
+      where: { roomId, status: { in: ["active", "banned"] } },
+      select: { userId: true },
+    });
+    return rows.map((r) => r.userId);
+  }
+
+  /** Mark specific members of a room as left (their community membership is gone). */
+  async markLeftForUsers(roomId: string, userIds: string[]): Promise<number> {
+    if (!userIds.length) return 0;
+    const result = await this.prisma.roomMember.updateMany({
+      where: {
+        roomId,
+        userId: { in: userIds },
+        status: { in: ["active", "banned"] },
+      },
+      data: { status: "left", leftAt: new Date() },
+    });
+    return result.count;
+  }
+
   async isBanned(roomId: string, userId: string): Promise<boolean> {
     const member = await this.prisma.roomMember.findFirst({
       where: { roomId, userId, status: "banned" },
