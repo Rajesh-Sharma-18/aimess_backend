@@ -19,6 +19,7 @@ import {
   moderationActionRepository,
   reportDetailRepository,
   userCommunitiesRepository,
+  userDevicesRepository,
   userDirectoryRepository,
 } from "../repositories/index.js";
 import { authClient } from "../grpc/auth.client.js";
@@ -43,12 +44,14 @@ import type {
 } from "../api/validators/index.js";
 import type {
   BulkResult,
+  ListUserDevicesQuery,
   ListUsersQuery,
   ModerationHistoryItem,
   PaginationMeta,
   ReportRow,
   StatusChange,
   UserDetail,
+  UserDeviceRow,
   UserListItem,
   UserStatus,
   UserStatusResult,
@@ -330,6 +333,26 @@ export const userManagementService = {
       })
     );
     return { data, pagination: result.pagination };
+  },
+
+  /**
+   * "Linked Devices" block on the User Management detail screen: every device
+   * that has authenticated as this user, newest activity first.
+   *
+   * Read-through to auth-service, which owns the rows and scopes them by
+   * `userId` in its own query — so two accounts that share a browser (same
+   * client deviceId) each see only their own record.
+   *
+   * Returns diagnostics only. No push token, refresh token, session secret or
+   * password material is on the wire, and none should ever be added: this
+   * screen exists to explain a login, not to expose the credentials behind it.
+   */
+  async listUserDevices(
+    userId: string,
+    query: ListUserDevicesQuery
+  ): Promise<{ data: UserDeviceRow[]; pagination: PaginationMeta }> {
+    const result = await userDevicesRepository.listUserDevices(userId, query);
+    return { data: result.data, pagination: result.pagination };
   },
 
   /**

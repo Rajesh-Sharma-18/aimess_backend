@@ -16,6 +16,22 @@ interface RawSearchDoc {
   score?: number;
 }
 
+// ponytail: newest 80 rooms per user feed the cross-room search `$in`. The number is
+// set by Mongo's explode-for-sort ceiling, NOT by `$in` size: the planner refuses to
+// explode a scan into more than `internalQueryMaxScansToExplode` (default 200) index
+// intervals, and from page 2 on the keyset adds a two-branch `$or`, so the budget is
+// rooms x 2 <= 200. Over it, explosion is refused and the sort goes BLOCKING with no
+// early termination — and `aggregate` runs allowDiskUse:false, so a large enough sort
+// input fails with QueryExceededMemoryLimitNoDiskUseAllowed instead of returning.
+// Ceiling: a heavier account searches only its 80 most recently active rooms. Upgrade
+// path is paging the scope (cursor over rooms) or a server-side view spanning the
+// three collections — raising this number is what breaks the explode.
+export const SEARCH_SCOPE_ROOM_LIMIT = 80;
+
+// Both halves are validated here, not just the epoch: the id half is fed straight
+// into `_id: { $lt: { $oid } }` inside aggregateRaw, so a non-ObjectId (an inbox
+// cursor "<ms>_prv_abc", which matches the same shape) throws in the BSON layer as
+// an unhandled 500. An empty ms half is rejected too — Number("") is 0, not NaN.
 export function parseSearchCursor(raw?: string | null): SearchKeyset | null {
   if (raw == null) return null;
   const value = String(raw).trim();
@@ -23,9 +39,35 @@ export function parseSearchCursor(raw?: string | null): SearchKeyset | null {
   const sep = value.indexOf("_");
   const msPart = sep === -1 ? value : value.slice(0, sep);
   const idPart = sep === -1 ? "" : value.slice(sep + 1);
+  if (!/^\d+$/.test(msPart)) return null;
+  if (idPart && !/^[a-f0-9]{24}$/i.test(idPart)) return null;
   const createdAt = Number(msPart);
-  if (!Number.isFinite(createdAt) || createdAt < 0) return null;
+  // Past the Date range keysetFilter's toISOString() would throw on (also catches
+  // the Infinity a 400-digit cursor parses to).
+  if (createdAt > 8.64e15) return null;
   return { createdAt, id: idPart };
+}
+
+// Picks the continuation for a page merged from several collections, each of which
+// stopped at its own floor. The NEWEST floor is the only safe one: a leg that
+// stopped shallower still has unscanned rows above every deeper floor.
+export function newestSearchCursor(
+  cursors: Array<string | null | undefined>
+): string | null {
+  let best: string | null = null;
+  let bestKey: SearchKeyset | null = null;
+  for (const raw of cursors) {
+    const key = parseSearchCursor(raw);
+    if (!key) continue;
+    const newer =
+      !bestKey ||
+      key.createdAt > bestKey.createdAt ||
+      (key.createdAt === bestKey.createdAt && key.id > bestKey.id);
+    if (!newer) continue;
+    best = raw ?? null;
+    bestKey = key;
+  }
+  return best;
 }
 
 export function buildSearchCursor(createdAt: Date, id: string): string {
@@ -81,13 +123,22 @@ export function escapeRegex(value: string): string {
  * every room), so `$text` matched whole tokens only: "test" missed "Testing"
  * and no prefix query ever matched while the user was still typing.
  *
- * The usual objection to regex here — "no index can serve it" — does not hold
- * for these queries. Every one of them pins `roomId` to a single room, and the
- * `[roomId, createdAt desc]` compound index serves both that equality and the
- * sort. Mongo therefore walks one room's messages in output order and stops at
- * `limit + 1` matches, so a common term early-exits almost immediately; only a
- * zero-match query walks the whole room. The caller debounces, and `$limit`
- * caps the work either way.
+ * No index serves the `$regex` itself — it is always a post-fetch filter. What
+ * an index buys is OUTPUT ORDER, so the scan can stop at `limit + 1` matches.
+ * Two callers, two very different bills:
+ *
+ * - PER-ROOM (in-chat search): `roomId` is pinned to one room, and
+ *   `[roomId, isDeleted, createdAt desc, _id desc]` serves both that equality
+ *   and the sort. A common term early-exits almost immediately; the worst case
+ *   is a zero-match term, which walks that one room.
+ * - CROSS-ROOM (whole-account search): `roomId` is `{ $in: [...] }` over up to
+ *   SEARCH_SCOPE_ROOM_LIMIT rooms (message-search.repository.ts). A term with
+ *   matches still early-exits, but a zero-match term reads EVERY live
+ *   non-system message in ALL of those rooms, across all three collections, on
+ *   every debounced keystroke. That is the real ceiling, and the reason the room
+ *   scope is capped — see SEARCH_SCOPE_ROOM_LIMIT.
+ *
+ * The caller debounces, and `$limit` caps the rows returned either way.
  *
  * Relevance scoring goes away with `$text` ($meta: "textScore" needs it). It
  * was never load-bearing: results have always been ordered by `createdAt`, and

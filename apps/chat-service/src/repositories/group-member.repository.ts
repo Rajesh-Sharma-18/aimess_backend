@@ -1,6 +1,7 @@
 ﻿import type { PrismaClient, GroupMember } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 import { isObjectId } from "../lib/object-id.js";
+import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
 
 export class GroupMemberRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -148,6 +149,37 @@ export class GroupMemberRepository {
         clearedAt: true,
         clearChatAt: true,
       },
+    });
+  }
+
+  /**
+   * ACTIVE memberships plus the three dates {@link getGroupVisibilityCutoff}
+   * needs — the scope a cross-room message-body search runs over. ACTIVE only,
+   * so it matches exactly what the per-room search allows
+   * (`assertGroupMember` → `findActiveByRoomAndUser`): a LEFT or KICKED member
+   * can still read that group's history in the list, but its messages must not
+   * surface in global search.
+   */
+  async findSearchScope(userId: string): Promise<
+    Array<{
+      roomId: string;
+      clearedAt: Date | null;
+      clearChatAt: Date | null;
+      joinedAt: Date | null;
+    }>
+  > {
+    return this.prisma.groupMember.findMany({
+      where: { userId, status: "ACTIVE" },
+      select: {
+        roomId: true,
+        clearedAt: true,
+        clearChatAt: true,
+        joinedAt: true,
+      },
+      // Capped and recency-ordered — [userId, status, updatedAt desc] serves both
+      // the equality and the sort, so this early-terminates at the take.
+      orderBy: { updatedAt: "desc" },
+      take: SEARCH_SCOPE_ROOM_LIMIT,
     });
   }
 

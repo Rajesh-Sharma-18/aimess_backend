@@ -73,6 +73,7 @@ model AuthUser {
   sessions             Session[]
   otpCodes             OtpCode[]
   passwordResetTokens  PasswordResetToken[]
+  devices              UserDevice[]
 
   @@index([status, deletedAt])
   @@index([scheduledDeletionAt]) // for grace-period cleanup job
@@ -173,6 +174,89 @@ model Session {
   @@index([userId, revokedAt])
   @@index([lastActiveAt])
   @@map("sessions")
+}
+
+// -----------------------------------------------------------------------------
+// UserDevice — one row per (user, client-supplied deviceId).
+//
+// Distinct from `Session` on purpose. A Session is one LOGIN: it is created per
+// sign-in, revoked on logout, and a device that signs in twice without signing
+// out legitimately owns two of them. A UserDevice is the physical/browser
+// INSTALL behind those logins, so it is upserted — never duplicated — on every
+// authentication that carries a `device` payload, and it is what the "Linked
+// devices" and Super Admin device screens list.
+//
+// Scoped by `userId` as well as `deviceId`: a shared browser or a resold phone
+// reports the same deviceId for two different accounts, and one account must
+// never be able to read the other's device metadata. Enforced by the composite
+// unique below, not by service code alone.
+//
+// Every metadata column is nullable: the payload itself is optional (older
+// clients send none) and web cannot legitimately supply the Android-only
+// fields. `isEmulator` / `isRooted` / `installerPackage` are CLIENT CLAIMS —
+// all three are trivially spoofable, so they are stored as fraud signals to
+// look at, never as an authorization input.
+// -----------------------------------------------------------------------------
+model UserDevice {
+  id       String   @id @default(uuid()) @db.Uuid
+  userId   String   @db.Uuid
+  user     AuthUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Client-generated stable per-install id. The SAME value the client sends to
+  // `POST /api/v1/devices` for push, so a device has one identity across
+  // sessions, push tokens and this table.
+  deviceId String
+
+  // Identity
+  platform   DeviceType // ANDROID | IOS | WEB (DESKTOP never arrives from a client)
+  deviceType DeviceFormFactor? // PHONE | TABLET | DESKTOP — form factor, NOT the platform
+  deviceName String?
+
+  // Hardware / OS
+  manufacturer String?
+  brand        String?
+  model        String?
+  osVersion    String?
+  sdkInt       Int? // Android Build.VERSION.SDK_INT; null everywhere else
+
+  // Application
+  appVersion       String?
+  appBuild         Int?
+  buildType        String? // "debug" | "release"
+  installerPackage String? // null when sideloaded, and always on web
+
+  // Locale
+  locale           String?
+  language         String?
+  country          String? // derived from the LOCALE, never from SIM/GPS/IP
+  timezone         String?
+  utcOffsetMinutes Int?
+
+  // Display
+  screenWidthPx    Int?
+  screenHeightPx   Int?
+  screenDensityDpi Int? // Android-style DPI; web sends round(devicePixelRatio * 160)
+
+  // Network
+  networkType NetworkType?
+  carrier     String?
+
+  // Fraud signals — client-asserted, spoofable, never used to block on their own.
+  isEmulator Boolean?
+  isRooted   Boolean?
+
+  // Server-derived, never accepted from the client (see the mobile contract).
+  ipAddress   String?
+  countryCode String? // GeoIP / edge header
+  userAgent   String?
+
+  lastSeenAt  DateTime @default(now()) @db.Timestamptz(3)
+  lastLoginAt DateTime @default(now()) @db.Timestamptz(3)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([userId, deviceId])
+  @@index([userId, lastSeenAt])
+  @@map("user_devices")
 }
 
 // -----------------------------------------------------------------------------
@@ -280,6 +364,28 @@ enum DeviceType {
   ANDROID
   WEB
   DESKTOP
+}
+
+// Form factor reported by the client. Orthogonal to `DeviceType`, which is the
+// PLATFORM: an Android phone is (platform ANDROID, deviceType PHONE) and a
+// desktop browser is (platform WEB, deviceType DESKTOP).
+//
+// DESKTOP exists here for the web client only. Android/iOS send PHONE or
+// TABLET exclusively, so adding it does not change anything they can send.
+enum DeviceFormFactor {
+  PHONE
+  TABLET
+  DESKTOP
+}
+
+enum NetworkType {
+  WIFI
+  CELLULAR
+  ETHERNET
+  VPN
+  OTHER
+  NONE
+  UNKNOWN
 }
 
 enum SessionRevokeReason {

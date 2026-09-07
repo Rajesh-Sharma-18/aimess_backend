@@ -3,7 +3,7 @@
  * re-publish a `user.profile_updated` event so auth-service's mirrored
  * `AuthUser.isProfileCompleted` flag catches up with the current rule
  * (complete ⟺ username + firstName + lastName all present — see
- * src/lib/profile-completion.util.ts).
+ * packages/utils/src/profile-completion.ts).
  *
  * Why this is needed: auth-service does not own the name fields; it only mirrors
  * the boolean via the event, and the flag is otherwise refreshed only when a
@@ -26,10 +26,10 @@ import {
   UserEvents,
   type UserProfileUpdatedPayload,
 } from "@aimess/shared-types";
+import { isProfileComplete } from "@aimess/utils";
 
 import { env } from "../src/config/env.js";
 import { prisma } from "../src/config/prisma.js";
-import { isProfileComplete } from "../src/lib/profile-completion.util.js";
 import { buildDisplayName } from "../src/lib/profile-fields.util.js";
 
 // Queue topology MUST match the live publisher/consumer exactly — queue args are

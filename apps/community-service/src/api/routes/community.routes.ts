@@ -223,8 +223,9 @@ communityRoutes.get(
 );
 
 // Unified list: mode inferred from params. q/categoryId/filter → search across
-// public + my private communities (offset pagination); anything else, including
-// no params at all, → my joined communities (cursor pagination). All optional.
+// public + my private communities (offset `page`, or an `id desc` keyset when
+// `cursor` is a community id); anything else, including no params at all, → my
+// joined communities (lastActivityAt cursor pagination). All optional.
 communityRoutes.get(
   "/mine",
   validateQuery(myCommunitiesQuerySchema),

@@ -10,6 +10,10 @@ import { adminUsersRepository } from "../repositories/admin-users.repository.js"
 import type { AuthUser } from "../generated/prisma/client.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import { sessionRepository } from "../repositories/session.repository.js";
+import {
+  userDeviceRepository,
+  type UserDeviceRow,
+} from "../repositories/user-device.repository.js";
 import { accountService } from "../services/account.service.js";
 import { accountBanService } from "../services/account-ban.service.js";
 import { accountRestoreService } from "../services/account-restore.service.js";
@@ -33,6 +37,70 @@ function toAdminUserRecord(row: AuthUser): Record<string, string> {
     suspendedReason: row.suspendedReason ?? "",
     deletedAt: row.deletedAt?.toISOString() ?? "",
     lastLoginAt: row.lastLoginAt?.toISOString() ?? "",
+  };
+}
+
+/**
+ * Wire form of one device row.
+ *
+ * proto3 has no null, so every absent value collapses to "" / 0 / false. For
+ * the strings that is unambiguous, but 0 and false are REAL values for
+ * `sdkInt`, `appBuild`, the screen fields, `utcOffsetMinutes` (UTC itself is
+ * 0) and both fraud flags — so `presentFields` names the ones that were
+ * actually stored and the admin panel renders everything else as unknown
+ * rather than inventing a zero.
+ */
+function toAdminUserDeviceRecord(
+  row: UserDeviceRow,
+  activeSessionCount: number
+): Record<string, unknown> {
+  const nullable = {
+    sdkInt: row.sdkInt,
+    appBuild: row.appBuild,
+    utcOffsetMinutes: row.utcOffsetMinutes,
+    screenWidthPx: row.screenWidthPx,
+    screenHeightPx: row.screenHeightPx,
+    screenDensityDpi: row.screenDensityDpi,
+    isEmulator: row.isEmulator,
+    isRooted: row.isRooted,
+  };
+
+  return {
+    deviceId: row.deviceId,
+    platform: row.platform,
+    deviceType: row.deviceType ?? "",
+    deviceName: row.deviceName ?? "",
+    manufacturer: row.manufacturer ?? "",
+    brand: row.brand ?? "",
+    model: row.model ?? "",
+    osVersion: row.osVersion ?? "",
+    sdkInt: row.sdkInt ?? 0,
+    appVersion: row.appVersion ?? "",
+    appBuild: row.appBuild ?? 0,
+    buildType: row.buildType ?? "",
+    installerPackage: row.installerPackage ?? "",
+    locale: row.locale ?? "",
+    language: row.language ?? "",
+    country: row.country ?? "",
+    timezone: row.timezone ?? "",
+    utcOffsetMinutes: row.utcOffsetMinutes ?? 0,
+    screenWidthPx: row.screenWidthPx ?? 0,
+    screenHeightPx: row.screenHeightPx ?? 0,
+    screenDensityDpi: row.screenDensityDpi ?? 0,
+    networkType: row.networkType ?? "",
+    carrier: row.carrier ?? "",
+    isEmulator: row.isEmulator ?? false,
+    isRooted: row.isRooted ?? false,
+    ipAddress: row.ipAddress ?? "",
+    countryCode: row.countryCode ?? "",
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    lastSeenAt: row.lastSeenAt.toISOString(),
+    lastLoginAt: row.lastLoginAt.toISOString(),
+    activeSessionCount,
+    presentFields: Object.entries(nullable)
+      .filter(([, value]) => value !== null && value !== undefined)
+      .map(([key]) => key),
   };
 }
 
@@ -201,6 +269,51 @@ const authImpl: grpc.UntypedServiceImplementation = {
         callback(null, { userIds, total });
       } catch (err) {
         logger.error(`gRPC adminListUserIdsByDeviceType error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
+  // Admin Panel user detail: every device linked to ONE user.
+  //
+  // `userId` is passed straight into a `where` clause (never a post-filter), so
+  // the pagination window can only ever contain that user's own rows.
+  adminListUserDevices: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          userId?: string;
+          limit?: number;
+          offset?: number;
+        };
+        const userId = req.userId ?? "";
+        if (!userId) {
+          callback({ code: grpc.status.INVALID_ARGUMENT, message: "USER_ID_REQUIRED" });
+          return;
+        }
+
+        // Clamped here as well as at the HTTP boundary: this RPC is reachable
+        // by any service on the mesh, and an unbounded `take` is a trivial way
+        // to pull a whole table.
+        const take = Math.min(Math.max(req.limit || 20, 1), 100);
+        const skip = Math.max(req.offset ?? 0, 0);
+
+        const [{ rows, total }, activeByDeviceId] = await Promise.all([
+          userDeviceRepository.listByUserId({ userId, skip, take }),
+          userDeviceRepository.countActiveSessionsByDeviceId(userId),
+        ]);
+
+        callback(null, {
+          devices: rows.map((row) =>
+            toAdminUserDeviceRecord(row, activeByDeviceId.get(row.deviceId) ?? 0)
+          ),
+          total,
+        });
+      } catch (err) {
+        logger.error(`gRPC adminListUserDevices error: ${String(err)}`);
         callback({ code: grpc.status.INTERNAL, message: String(err) });
       }
     })();

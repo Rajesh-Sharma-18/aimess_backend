@@ -11,7 +11,11 @@ import {
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
-import { UNREAD_COUNTABLE_RAW_MATCH } from "../lib/unread-count.js";
+import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
+import {
+  UNREAD_COUNTABLE_RAW_MATCH,
+  type UnreadStats,
+} from "../lib/unread-count.js";
 import {
   autoDeletePolicyUpdatePipeline,
   type AutoDeleteMode,
@@ -199,6 +203,37 @@ export class PrivateRoomRepository {
     });
   }
 
+  /**
+   * Every private room the caller participates in, with the two per-user
+   * cutoffs a message-body search has to honour (`deletedFor` / `clearFor`) and
+   * the participant list the peer name is resolved from. Projected, so a heavy
+   * account still costs one query.
+   */
+  async findSearchScope(userId: string): Promise<
+    Array<{
+      roomId: string;
+      participants: string[];
+      deletedFor: unknown;
+      clearFor: unknown;
+    }>
+  > {
+    return this.prisma.privateRoom.findMany({
+      where: { participants: { has: userId } },
+      select: {
+        roomId: true,
+        participants: true,
+        deletedFor: true,
+        clearFor: true,
+      },
+      // Capped and recency-ordered: the whole list becomes one `$in` per keystroke.
+      // Served by [participants, lastMessageAt desc] — the standalone
+      // [lastMessageAt desc] does NOT serve this, it would walk the whole
+      // collection newest-first until N of the caller's rooms surface.
+      orderBy: { lastMessageAt: "desc" },
+      take: SEARCH_SCOPE_ROOM_LIMIT,
+    });
+  }
+
   async create(data: {
     roomId: string;
     participants: string[];
@@ -265,13 +300,15 @@ export class PrivateRoomRepository {
   }
 
   /**
-   * Total unread private messages across every room the user's in — for the
-   * Chats nav badge. Same unbounded shape as countConversations (a badge
-   * total must cover every room, not one inbox page) plus the exact
-   * `unreadByUser[userId] ?? 0` read PrivateRoomService.toPrivateItem already
-   * uses per-row, just summed here instead of listed.
+   * Unread stats across every room the user's in — both the message total and
+   * the number of rooms carrying at least one unread. The nav badge counts
+   * CONVERSATIONS (one unread room contributes 1, not its message count); the
+   * message total stays on the payload for clients that still show it. Same
+   * unbounded shape as countConversations (a badge total must cover every
+   * room, not one inbox page) plus the exact `unreadByUser[userId] ?? 0` read
+   * PrivateRoomService.toPrivateItem already uses per-row.
    */
-  async sumUnreadForUser(userId: string): Promise<number> {
+  async countUnreadForUser(userId: string): Promise<UnreadStats> {
     const rows = await this.prisma.privateRoom.findMany({
       where: { participants: { has: userId }, lastMessageAt: { not: null } },
       select: {
@@ -282,13 +319,21 @@ export class PrivateRoomRepository {
     });
     return rows
       .filter((r) => isVisibleAfterDeleteForMe(r, userId))
-      .reduce((sum, r) => {
-        const unreadByUser = (r.unreadCountByUser ?? {}) as Record<
-          string,
-          number
-        >;
-        return sum + (unreadByUser[userId] ?? 0);
-      }, 0);
+      .reduce<UnreadStats>(
+        (acc, r) => {
+          const unreadByUser = (r.unreadCountByUser ?? {}) as Record<
+            string,
+            number
+          >;
+          const unread = unreadByUser[userId] ?? 0;
+          if (unread <= 0) return acc;
+          return {
+            messages: acc.messages + unread,
+            conversations: acc.conversations + 1,
+          };
+        },
+        { messages: 0, conversations: 0 }
+      );
   }
 
   /**

@@ -13,3 +13,4 @@ export * from "./resolve-locale";
 export * from "./search-tokenize";
 export * from "./secret-env";
 export * from "./validate";
+export * from "./profile-completion";

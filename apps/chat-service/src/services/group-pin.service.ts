@@ -301,6 +301,34 @@ export class GroupPinService {
     return { roomId: activePin.roomId, pinnedCount: updated?.pinnedCount ?? 0 };
   }
 
+  /**
+   * Delete-for-me: hide this pin's "<actor> pinned a message" system line for
+   * ONE member. Per-user twin of `GroupSystemMessageService.retractSystemMessage`
+   * (which removes the line for everybody on unpin / delete-for-everyone) — the
+   * pin row is untouched, so every other member keeps both. Returns the hidden
+   * line's identity for the caller's tombstone, or null when there is nothing
+   * to hide.
+   */
+  async hidePinSystemMessageForUser(
+    messageId: string,
+    userId: string
+  ): Promise<{
+    messageId: string;
+    roomId: string;
+    sequenceNumber: number;
+  } | null> {
+    const pin = await this.pinRepo.findActivePinByMessageId(messageId);
+    if (!pin?.pinSystemMessageId) return null;
+    const line = await this.messageRepo.findById(pin.pinSystemMessageId);
+    if (!line || line.isDeleted || isHiddenForUser(line, userId)) return null;
+    await this.messageRepo.deleteForMe(line.id, userId);
+    return {
+      messageId: line.id,
+      roomId: line.roomId,
+      sequenceNumber: line.sequenceNumber,
+    };
+  }
+
   /** roomId of this message's ACTIVE pin, or null — the delete-for-me hook's
    *  cheap "is this the pinned one?" probe. */
   async findActivePinRoomId(messageId: string): Promise<string | null> {

@@ -69,6 +69,10 @@ model UserProfile {
 
   @@index([username])
   @@index([firstName, lastName])
+  // Sort order of every people-search page — the keyset cursor compares on this
+  // exact pair. ([firstName, lastName]) cannot serve it: lastName is the wrong
+  // second column, so Postgres sorts the whole match set per page instead.
+  @@index([firstName, userId])
   @@index([status, deletedAt])
   @@index([normalizedUsername])
   @@index([normalizedFirstName])
@@ -133,7 +137,7 @@ model PrivacySettings {
   whoCanSendFriendRequests PrivacyScope     @default(EVERYONE)
   whoCanSeeOnlineStatus    PrivacyScope     @default(FRIENDS)
   whoCanViewProfile        PrivacyScope     @default(EVERYONE)
-  whoCanCallMe             CallPrivacyScope @default(EVERYONE)
+  whoCanCallMe             CallPrivacyScope @default(FRIENDS)
 
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
@@ -322,8 +326,10 @@ enum PrivacyScope {
 }
 
 enum CallPrivacyScope {
-  // Anyone may ring this user, friend or not — the ONLY scope that lets a
-  // non-friend start a call. chat-service's friendship gate is skipped for it.
+  // RETIRED — no longer settable (rejected by the settings validator, hidden in the
+  // clients) and migrated to FRIENDS. Kept only so historical rows stay readable.
+  // It was the ONLY scope that let a non-friend start a call: chat-service's
+  // friendship gate is skipped for it.
   EVERYONE
   FRIENDS
   SELECTED_FRIENDS

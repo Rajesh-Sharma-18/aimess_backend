@@ -567,6 +567,11 @@ export const ADMIN_MESSAGES = {
     en: "User reports fetched",
     th: "ดึงข้อมูลรายงานของผู้ใช้แล้ว",
   },
+  ADMIN_USER_DEVICES_FETCHED: {
+    vi: "Đã tải thiết bị của người dùng",
+    en: "User devices fetched",
+    th: "ดึงข้อมูลอุปกรณ์ของผู้ใช้แล้ว",
+  },
   ADMIN_USER_COMMUNITIES_FETCHED: {
     vi: "Đã tải cộng đồng của người dùng",
     en: "User communities fetched",

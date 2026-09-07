@@ -256,6 +256,12 @@ export const deviceLinkService = {
       ipAddress: record.device.ipAddress,
       userAgent: record.device.userAgent,
       countryCode: record.device.countryCode,
+      // QR device-link carries no `device` payload: the browser being linked
+      // never posted one (it is not the caller of this request), and the
+      // scanning phone's payload describes the WRONG device. No payload means
+      // no device row for this session — which is correct, not a gap: the
+      // browser records itself the next time it authenticates directly.
+      device: null,
     };
 
     // The scanning user is linking a NEW device to their OWN account, so the

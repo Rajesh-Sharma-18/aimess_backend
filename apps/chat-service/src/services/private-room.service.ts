@@ -62,6 +62,7 @@ import type { PresenceService, PresenceView } from "./presence.service.js";
 import type { PrivatePinService } from "./private-pin.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 import type { ChatFriendshipInfo } from "../grpc/user-snapshot.client.js";
+import type { UnreadStats } from "../lib/unread-count.js";
 
 /**
  * Get-or-create the pair's private room and announce it, WITHOUT the friendship
@@ -1316,8 +1317,8 @@ export class PrivateRoomService {
     return this.privateRoomRepo.countConversations(userId);
   }
 
-  async sumUnreadForUser(userId: string): Promise<number> {
-    return this.privateRoomRepo.sumUnreadForUser(userId);
+  async countUnreadForUser(userId: string): Promise<UnreadStats> {
+    return this.privateRoomRepo.countUnreadForUser(userId);
   }
 
   async deleteForMe(roomId: string, userId: string): Promise<void> {

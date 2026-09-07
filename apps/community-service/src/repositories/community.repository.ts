@@ -1934,8 +1934,10 @@ export const communityRepository = {
    *     (`excludeCommunityIds`).
    *   - /communities/mine search mode: PUBLIC communities PLUS any community in
    *     `includeMemberCommunityIds` (the caller's ACTIVE PRIVATE memberships).
-   * Newest-first (ObjectId is time-ordered) with offset/page pagination on `id`.
-   * Returns the page rows plus the total matching count.
+   * Newest-first (ObjectId is time-ordered), paged EITHER by offset/page on
+   * `id` (no `cursor`) or by an `id < cursor` keyset (`cursor` = a community
+   * id). Returns the page rows plus the total matching count — `total` is -1
+   * in keyset mode, where no count query is run.
    *
    * `q` is tokenized on whitespace and each token is normalized — lowercased,
    * formatting characters (spaces/underscores/hyphens/dots/punctuation)
@@ -1956,6 +1958,7 @@ export const communityRepository = {
     excludeCommunityIds?: string[];
     page: number;
     limit: number;
+    cursor?: string;
   }) {
     const and: Prisma.CommunityWhereInput[] = [];
 
@@ -1993,6 +1996,11 @@ export const communityRepository = {
       ],
     });
 
+    // Keyset mode: `id desc` is already the sort, so the default `_id` index serves the boundary — no skip (O(skip) at depth) and no count (an unbounded full-predicate scan on every keystroke).
+    if (params.cursor) {
+      and.push({ id: { lt: params.cursor } });
+    }
+
     const where: Prisma.CommunityWhereInput = {
       deletedAt: { isSet: false },
       AND: and,
@@ -2002,7 +2010,7 @@ export const communityRepository = {
       prisma.community.findMany({
         where,
         orderBy: { id: "desc" },
-        skip: (params.page - 1) * params.limit,
+        ...(params.cursor ? {} : { skip: (params.page - 1) * params.limit }),
         take: params.limit,
         select: {
           id: true,
@@ -2030,7 +2038,10 @@ export const communityRepository = {
           category: { select: { id: true, name: true } },
         },
       }),
-      prisma.community.count({ where }),
+      // total is -1 in keyset mode = not counted; the caller pages on the row count it asked for, never on totalPage.
+      params.cursor
+        ? Promise.resolve(-1)
+        : prisma.community.count({ where }),
     ]);
 
     return { rows, total };

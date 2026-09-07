@@ -9,6 +9,7 @@
 # ...but the filled-in copies next to them never get committed.
 deploy/*/.env.dev01
 deploy/*/.env.dev02
+deploy/*/.md
 
 # DEPLOYMENT — rendered from config.yaml.template; contains the Redis password.
 deploy/livekit/config.yaml
@@ -39,15 +40,15 @@ Thumbs.db
 /graphify-out
 /testing-suite
 
+# No Markdown is committed to this repo — docs live outside version control.
+# The deploy/*.md runbooks previously negated here are now ignored too; a server
+# clone gets them out of band.
 *.md
-# The deployment runbook is operational, not documentation: deploy/README.md is
-# the procedure the server-side scripts reference by name, so a fresh clone on
-# a server must contain it.
-!deploy/README.md
-!deploy/ARCHITECTURE.md
-!deploy/OPERATIONS.md
-!deploy/DOMAINS-AND-STATUS.md
-!deploy/scripts/*.md
+**/*.md
+*.MD
+**/*.MD
+*.markdown
+**/*.markdown
 tree-data.json
 community_*.json
 demo-frontend/
