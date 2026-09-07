@@ -487,7 +487,13 @@ export class CommunityMessageService {
         sequenceNumber,
         revision,
         ...(part.attachments.length ? { attachments: part.attachments } : {}),
-        ...(i === 0 && quoteData ? { quoteData } : {}),
+        // On EVERY album sibling, not just the first. `parentMessageId` is already
+        // stamped on all of them — they are all replies to the same message — but the
+        // rendered quote comes from this snapshot, and clients build a media collage
+        // from its LAST row (the newest). Stamping only row 0 rendered a multi-photo
+        // reply with no quote at all, and left the siblings unreachable to the
+        // quote-refresh sweeps that keep `quoteData` in step with edits and deletes.
+        ...(quoteData ? { quoteData } : {}),
         ...(params.forwardData
           ? { isForwarded: true, forwardData: params.forwardData }
           : {}),
