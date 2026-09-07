@@ -87,6 +87,13 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
   const communityClient = {
     checkMute: jest.fn().mockResolvedValue({ isMuted: false }),
     checkBan: jest.fn().mockResolvedValue({ isBanned: false }),
+    // Read by getComments — same underlying RPC as checkBan, with membership
+    // and community visibility read off the reply too.
+    checkCommunityAccess: jest.fn().mockResolvedValue({
+      isMember: true,
+      isBanned: false,
+      isPublicCommunity: true,
+    }),
     validateMembership: jest.fn().mockResolvedValue({
       isMember: true,
       isCommunityClosed: false,
@@ -203,7 +210,14 @@ describe("LivestreamCommentService.addComment — membership re-check", () => {
   });
 });
 
-describe("LivestreamCommentService.getComments — ban re-check", () => {
+describe("LivestreamCommentService.getComments — ban + membership re-check", () => {
+  const ok = (over: Record<string, unknown> = {}) => ({
+    isMember: true,
+    isBanned: false,
+    isPublicCommunity: true,
+    ...over,
+  });
+
   it("rejects a locally-banned viewer", async () => {
     const { service } = makeDeps({
       banRepo: { isBanned: jest.fn().mockResolvedValue(true) },
@@ -217,7 +231,7 @@ describe("LivestreamCommentService.getComments — ban re-check", () => {
   it("rejects a community-banned viewer (local ban absent)", async () => {
     const { service } = makeDeps({
       communityClient: {
-        checkBan: jest.fn().mockResolvedValue({ isBanned: true }),
+        checkCommunityAccess: jest.fn().mockResolvedValue(ok({ isBanned: true })),
       },
     });
 
@@ -226,7 +240,50 @@ describe("LivestreamCommentService.getComments — ban re-check", () => {
     ).rejects.toThrow();
   });
 
-  it("allows a non-banned viewer", async () => {
+  it("rejects a non-member of a PRIVATE community", async () => {
+    // The hole this closes: chat history was gated on bans alone, so anyone
+    // holding a streamId could page out a private community's whole
+    // conversation — author usernames and avatars included — without joining
+    // the stream or being a member of the community.
+    const { service } = makeDeps({
+      communityClient: {
+        checkCommunityAccess: jest
+          .fn()
+          .mockResolvedValue(ok({ isMember: false, isPublicCommunity: false })),
+      },
+    });
+
+    await expect(
+      service.getComments("stream-1", { limit: 30 }, "outsider")
+    ).rejects.toThrow();
+  });
+
+  it("still allows a non-member of a PUBLIC community", async () => {
+    // Non-members watching and reading a public community's stream is the
+    // deliberate product behaviour; the gate above must not have broken it.
+    const { service } = makeDeps({
+      communityClient: {
+        checkCommunityAccess: jest
+          .fn()
+          .mockResolvedValue(ok({ isMember: false, isPublicCommunity: true })),
+      },
+    });
+
+    await expect(
+      service.getComments("stream-1", { limit: 30 }, "lurker")
+    ).resolves.toEqual({ items: [], nextCursor: null, hasMore: false });
+  });
+
+  it("allows the stream owner without a community round trip", async () => {
+    const { service, communityClient } = makeDeps();
+
+    await expect(
+      service.getComments("stream-1", { limit: 30 }, "creator-1")
+    ).resolves.toEqual({ items: [], nextCursor: null, hasMore: false });
+    expect(communityClient.checkCommunityAccess).not.toHaveBeenCalled();
+  });
+
+  it("allows a non-banned member", async () => {
     const { service } = makeDeps();
 
     await expect(
@@ -234,11 +291,28 @@ describe("LivestreamCommentService.getComments — ban re-check", () => {
     ).resolves.toEqual({ items: [], nextCursor: null, hasMore: false });
   });
 
-  it("skips the ban check entirely when no userId is given (gRPC path parity)", async () => {
+  it("fails OPEN when community-service is unreachable", async () => {
+    // Deliberate, and pinned here so a later refactor cannot quietly flip it:
+    // a community-service outage must not black out chat history for everyone.
+    // The local per-stream ban above stays the always-available hard gate.
+    const { service } = makeDeps({
+      communityClient: {
+        checkCommunityAccess: jest
+          .fn()
+          .mockRejectedValue(new Error("circuit open")),
+      },
+    });
+
+    await expect(
+      service.getComments("stream-1", { limit: 30 }, "viewer-1")
+    ).resolves.toEqual({ items: [], nextCursor: null, hasMore: false });
+  });
+
+  it("skips every check when no userId is given (gRPC path parity)", async () => {
     const { service, banRepo, communityClient } = makeDeps({
       banRepo: { isBanned: jest.fn().mockResolvedValue(true) },
       communityClient: {
-        checkBan: jest.fn().mockResolvedValue({ isBanned: true }),
+        checkCommunityAccess: jest.fn().mockResolvedValue(ok({ isBanned: true })),
       },
     });
 
@@ -246,6 +320,6 @@ describe("LivestreamCommentService.getComments — ban re-check", () => {
       service.getComments("stream-1", { limit: 30 })
     ).resolves.toEqual({ items: [], nextCursor: null, hasMore: false });
     expect(banRepo.isBanned).not.toHaveBeenCalled();
-    expect(communityClient.checkBan).not.toHaveBeenCalled();
+    expect(communityClient.checkCommunityAccess).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Suite: LivestreamService viewer-tracking integration
  *
  * Covers the service-layer wiring added for the "actual viewers" feature:
@@ -10,7 +10,7 @@
  *    instead of the stale on_play/on_stop DB counter (the reported bug).
  *  - adminListViewerSessions surfaces the persisted session history.
  *
- * All dependencies are hand-rolled fakes injected via the constructor — no
+ * All dependencies are hand-rolled fakes injected via the constructor â€” no
  * jest.mock() module interception needed.
  */
 import { LivestreamService } from "../../src/services/livestream.service.js";
@@ -23,6 +23,10 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
   const streamRepo = {
     findById: jest.fn(),
     findBySrsName: jest.fn(),
+    // Plural — the reconciler's batch resolve. Missing from this fake before,
+    // so every reconcileWithSrs pass threw TypeError into its own catch and
+    // returned: the drift-repair leg was silently untested.
+    findBySrsNames: jest.fn().mockResolvedValue([]),
     updateById: jest.fn(),
     findStaleLiveStreams: jest.fn().mockResolvedValue([]),
     findStaleReconnectingStreams: jest.fn().mockResolvedValue([]),
@@ -45,7 +49,7 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     hasFrames: jest.fn().mockResolvedValue(true),
     // `null` = "an SRS instance was unreachable, skip this reconcile pass".
     // Inert default so sweepStaleStreams' reconcile leg is a no-op for every
-    // test that isn't specifically exercising DB↔SRS drift repair.
+    // test that isn't specifically exercising DBâ†”SRS drift repair.
     listPublishers: jest.fn().mockResolvedValue(null),
     kickClientById: jest.fn().mockResolvedValue(true),
     ...(overrides.srsService as object),
@@ -55,7 +59,7 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     ...(overrides.communityClient as object),
   };
   // Presence is a HASH of userId -> open-socket refcount (HLEN = unique
-  // viewers), not the old SET of userIds — see stream.ns.ts's sessionKey.
+  // viewers), not the old SET of userIds â€” see stream.ns.ts's sessionKey.
   const redis = {
     // GET backs the fail-CLOSED system-ban gate on the go-live paths; without
     // it every publish/markLive here would be denied.
@@ -113,12 +117,17 @@ function makeStream(overrides: Record<string, unknown> = {}) {
     sourceType: "PHONE_CAMERA",
     sourceUrl: null,
     streamKey: "key-1",
+    // The PUBLIC name SRS knows this stream by, and what `listPublishers()`
+    // reports back. Distinct from `streamKey` (the publish secret) since the
+    // ingest/playback split — the fixture had none, so every SRS-facing test
+    // here was exercising only the pre-split shape where the two were equal.
+    playbackId: "public-1",
     status: "LIVE",
     hlsUrl: null,
     flvUrl: null,
     dashUrl: null,
     commentStatus: true,
-    viewerCount: 999, // deliberately stale — proves the Redis overlay wins
+    viewerCount: 999, // deliberately stale â€” proves the Redis overlay wins
     peakViewers: 0,
     totalViews: 0,
     totalComments: 0,
@@ -154,7 +163,7 @@ describe("LivestreamService.recordViewerJoin / recordViewerLeave", () => {
     );
   });
 
-  it("swallows repo failures — never throws into the caller (gateway fire-and-forget)", async () => {
+  it("swallows repo failures â€” never throws into the caller (gateway fire-and-forget)", async () => {
     const { service, viewerSessionRepo } = makeDeps({
       viewerSessionRepo: {
         recordJoin: jest.fn().mockRejectedValue(new Error("db down")),
@@ -172,7 +181,7 @@ describe("LivestreamService.recordViewerJoin / recordViewerLeave", () => {
   });
 });
 
-describe("LivestreamService — viewer sessions close out on every ENDED transition", () => {
+describe("LivestreamService â€” viewer sessions close out on every ENDED transition", () => {
   it("stopStream (owner) closes open viewer sessions", async () => {
     const stream = makeStream();
     const { service, viewerSessionRepo } = makeDeps({
@@ -264,6 +273,13 @@ describe("LivestreamService — viewer sessions close out on every ENDED transit
           endedAt: new Date(),
         }),
       },
+      srsService: {
+        // `[]` — a COMPLETE answer that happens to be empty, i.e. "SRS is
+        // reachable and holds no publishers". The default mock is `null`
+        // ("an instance was unreachable"), which now makes the heartbeat
+        // sweeper stand down rather than end streams it cannot vouch for.
+        listPublishers: jest.fn().mockResolvedValue([]),
+      },
     });
 
     await service.sweepStaleStreams();
@@ -274,10 +290,93 @@ describe("LivestreamService — viewer sessions close out on every ENDED transit
       expect.any(Date)
     );
   });
+
+  it("sweepStaleStreams does NOT end a stale stream when SRS is unreachable", async () => {
+    // The interlock. `lastHeartbeatAt` is refreshed from the SRS publisher
+    // scan, so an unreachable SRS produces the same evidence as a room full of
+    // dead broadcasts — no recent stamps. Acting on it would turn one SRS
+    // outage into every live stream on the platform being killed a timeout
+    // later, which is strictly worse than the leak it is meant to fix.
+    const stream = makeStream();
+    const { service, streamRepo, viewerSessionRepo } = makeDeps({
+      streamRepo: {
+        findStaleLiveStreams: jest.fn().mockResolvedValue([stream]),
+      },
+      srsService: {
+        listPublishers: jest.fn().mockResolvedValue(null), // instance unreachable
+      },
+    });
+
+    await service.sweepStaleStreams();
+    await flushMicrotasks();
+
+    expect(streamRepo.findStaleLiveStreams).not.toHaveBeenCalled();
+    expect(viewerSessionRepo.closeAllOpenForStream).not.toHaveBeenCalled();
+  });
 });
 
-describe("LivestreamService — host viewer session on go-live", () => {
-  it("handlePublish opens a viewer session for the host on a fresh PENDING→LIVE transition", async () => {
+describe("LivestreamService â€” liveness clock seeded at go-live", () => {
+  // Why this matters: findStaleLiveStreams can only match a row whose
+  // `lastHeartbeatAt` is PRESENT. Prisma omits an unset optional field and
+  // `{field: null}` does not match an absent one, so a stream that went LIVE
+  // without this stamp was permanently unsweepable — a host who force-quit
+  // stayed LIVE forever and locked themselves out of going live anywhere.
+  it.each([
+    ["handlePublish", "PENDING"],
+    ["handlePublish", "RECONNECTING"],
+  ])("%s stamps lastHeartbeatAt on a %s â†’ LIVE transition", async (_fn, from) => {
+    const stream = makeStream({
+      status: from,
+      livedAt: from === "RECONNECTING" ? new Date() : null,
+      disconnectedAt: from === "RECONNECTING" ? new Date() : null,
+    });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findBySrsName: jest.fn().mockResolvedValue(stream),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({ ...stream, status: "LIVE", livedAt: new Date() }),
+      },
+    });
+
+    await service.handlePublish("key-1", undefined, { secret: "key-1" });
+    await flushMicrotasks();
+
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({
+        status: "LIVE",
+        lastHeartbeatAt: expect.any(Date),
+      })
+    );
+  });
+
+  it("markLive stamps lastHeartbeatAt on a PENDING â†’ LIVE transition", async () => {
+    const stream = makeStream({ status: "PENDING", livedAt: null });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findById: jest.fn().mockResolvedValue(stream),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({ ...stream, status: "LIVE", livedAt: new Date() }),
+      },
+    });
+
+    await service.markLive("stream-1", "creator-1");
+    await flushMicrotasks();
+
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({
+        status: "LIVE",
+        lastHeartbeatAt: expect.any(Date),
+      })
+    );
+  });
+});
+
+describe("LivestreamService â€” host viewer session on go-live", () => {
+  it("handlePublish opens a viewer session for the host on a fresh PENDINGâ†’LIVE transition", async () => {
     const stream = makeStream({ status: "PENDING", livedAt: null });
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
@@ -290,7 +389,7 @@ describe("LivestreamService — host viewer session on go-live", () => {
       },
     });
 
-    const allowed = await service.handlePublish("key-1");
+    const allowed = await service.handlePublish("key-1", undefined, { secret: "key-1" });
     await flushMicrotasks();
 
     expect(allowed).toBe(true);
@@ -300,7 +399,7 @@ describe("LivestreamService — host viewer session on go-live", () => {
     );
   });
 
-  it("markLive opens a viewer session for the host on a fresh PENDING→LIVE transition", async () => {
+  it("markLive opens a viewer session for the host on a fresh PENDINGâ†’LIVE transition", async () => {
     const stream = makeStream({ status: "PENDING", livedAt: null });
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
@@ -322,7 +421,7 @@ describe("LivestreamService — host viewer session on go-live", () => {
     );
   });
 
-  it("handlePublish on RESUME (RECONNECTING→LIVE) does NOT re-record the host — the original open session is preserved", async () => {
+  it("handlePublish on RESUME (RECONNECTINGâ†’LIVE) does NOT re-record the host â€” the original open session is preserved", async () => {
     const originalLivedAt = new Date(Date.now() - 120_000);
     const stream = makeStream({
       status: "RECONNECTING",
@@ -340,14 +439,14 @@ describe("LivestreamService — host viewer session on go-live", () => {
       },
     });
 
-    await service.handlePublish("key-1");
+    await service.handlePublish("key-1", undefined, { secret: "key-1" });
     await flushMicrotasks();
 
     expect(viewerSessionRepo.recordJoin).not.toHaveBeenCalled();
   });
 
   it("host viewer session is closed alongside every viewer when the stream ENDS", async () => {
-    // The stream ends via any ENDED path — closeAllOpenForStream sweeps every
+    // The stream ends via any ENDED path â€” closeAllOpenForStream sweeps every
     // open row, including the host row opened at go-live.
     const stream = makeStream();
     const { service, viewerSessionRepo } = makeDeps({
@@ -386,12 +485,12 @@ describe("LivestreamService — host viewer session on go-live", () => {
       },
     });
 
-    await expect(service.handlePublish("key-1")).resolves.toBe(true);
+    await expect(service.handlePublish("key-1", undefined, { secret: "key-1" })).resolves.toBe(true);
   });
 });
 
-describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () => {
-  it("handleUnpublish on a LIVE stream enters RECONNECTING instead of ending it — no viewer sessions closed, no stream.ended emitted", async () => {
+describe("LivestreamService â€” publisher reconnect-grace (RECONNECTING)", () => {
+  it("handleUnpublish on a LIVE stream enters RECONNECTING instead of ending it â€” no viewer sessions closed, no stream.ended emitted", async () => {
     const stream = makeStream({ status: "LIVE" });
     const { service, streamRepo, viewerSessionRepo, eventPublisher } = makeDeps(
       {
@@ -420,7 +519,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     );
   });
 
-  it("handleUnpublish IGNORES a stale hook from a superseded publisher — the stream stays LIVE", async () => {
+  it("handleUnpublish IGNORES a stale hook from a superseded publisher â€” the stream stays LIVE", async () => {
     // WHIP reconnect = DELETE(old client-a) + POST(new client-b). SRS fires both
     // hooks async, so client-a's on_unpublish can land after client-b's
     // on_publish already put the stream back on air. Acting on it would pin a
@@ -477,7 +576,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
       },
     });
 
-    await expect(service.handlePublish("key-1", "client-b")).resolves.toBe(
+    await expect(service.handlePublish("key-1", "client-b", { secret: "key-1" })).resolves.toBe(
       true
     );
 
@@ -502,10 +601,16 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
         }),
       },
       srsService: {
+        // SRS reports the PUBLISHED name (playbackId), not the streamKey —
+        // this is what a real listPublishers() reply looks like post-split.
         listPublishers: jest
           .fn()
           .mockResolvedValue([
-            { apiBase: "http://srs", streamKey: "key-1", clientId: "client-b" },
+            {
+              apiBase: "http://srs",
+              streamKey: "public-1",
+              clientId: "client-b",
+            },
           ]),
       },
     });
@@ -520,6 +625,41 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     expect(eventPublisher).not.toHaveBeenCalledWith(
       "stream.ended",
       expect.anything()
+    );
+  });
+
+  it("the grace sweeper does NOT resume when SRS reports a different stream's name", async () => {
+    // Guards the fix from over-reaching: matching must be on the published
+    // name, not "SRS has some publisher". A publisher for another stream must
+    // not keep this one alive.
+    const stream = makeStream({
+      status: "RECONNECTING",
+      disconnectedAt: new Date(Date.now() - 120_000),
+    });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findStaleReconnectingStreams: jest.fn().mockResolvedValue([stream]),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({ ...stream, status: "ENDED", endedAt: new Date() }),
+      },
+      srsService: {
+        listPublishers: jest.fn().mockResolvedValue([
+          {
+            apiBase: "http://srs",
+            streamKey: "someone-elses-name",
+            clientId: "client-z",
+          },
+        ]),
+      },
+    });
+
+    await service.sweepStaleStreams();
+    await flushMicrotasks();
+
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({ status: "ENDED" })
     );
   });
 
@@ -553,7 +693,127 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     );
   });
 
-  it("handleUnpublish is idempotent while already RECONNECTING — does not reset disconnectedAt or re-run any side effects", async () => {
+  it("reconcileWithSrs resolves a publisher by the PUBLISHED name, not the streamKey", async () => {
+    // The bug this pins: `listPublishers()` reports SRS's `client.name`, which
+    // since the ingest/playback split is the playbackId. The reconciler keyed
+    // its lookup map by `streamKey`, so every post-split publisher fell through
+    // to the "unknown name" branch and NOTHING SRS-driven worked for new
+    // streams — dropped-webhook recovery, orphan re-kick, reconnect resume.
+    //
+    // A PENDING stream that SRS is already carrying must be recovered to LIVE.
+    const stream = makeStream({ status: "PENDING", livedAt: null });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findBySrsNames: jest.fn().mockResolvedValue([stream]),
+        findBySrsName: jest.fn().mockResolvedValue(stream),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({ ...stream, status: "LIVE", livedAt: new Date() }),
+      },
+      srsService: {
+        listPublishers: jest.fn().mockResolvedValue([
+          {
+            apiBase: "http://srs",
+            streamKey: "public-1", // the playbackId, as SRS reports it
+            clientId: "client-a",
+          },
+        ]),
+      },
+    });
+
+    await service.sweepStaleStreams();
+    await flushMicrotasks();
+
+    expect(streamRepo.findBySrsNames).toHaveBeenCalledWith(["public-1"]);
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({ status: "LIVE" })
+    );
+  });
+
+  it("reconcileWithSrs refreshes the liveness clock for a LIVE stream SRS is carrying", async () => {
+    // The signal that keeps a browser/Android broadcast alive. Neither client
+    // calls POST /heartbeat — their `stream:heartbeat` is a socket event that
+    // only touches Redis TTLs — so without this refresh the stamp seeded at
+    // go-live ages out and the sweeper ends a healthy stream at the timeout.
+    const stream = makeStream({ status: "LIVE" });
+    const { service, streamRepo, srsService } = makeDeps({
+      streamRepo: {
+        findBySrsNames: jest.fn().mockResolvedValue([stream]),
+      },
+      srsService: {
+        listPublishers: jest.fn().mockResolvedValue([
+          {
+            apiBase: "http://srs",
+            streamKey: "public-1",
+            clientId: "client-a",
+          },
+        ]),
+      },
+    });
+
+    await service.sweepStaleStreams();
+    await flushMicrotasks();
+
+    expect(streamRepo.updateById).toHaveBeenCalledWith("stream-1", {
+      lastHeartbeatAt: expect.any(Date),
+    });
+    // A LIVE stream SRS is carrying must never be kicked.
+    expect(srsService.kickClientById).not.toHaveBeenCalled();
+  });
+
+  it("reconcileWithSrs re-kicks a publisher whose stream is already ENDED", async () => {
+    // The other direction of drift: a kick that silently failed leaves SRS
+    // carrying a publisher for a terminal row. Also resolved by published name.
+    const stream = makeStream({ status: "ENDED", endedAt: new Date() });
+    const { service, srsService } = makeDeps({
+      streamRepo: {
+        findBySrsNames: jest.fn().mockResolvedValue([stream]),
+      },
+      srsService: {
+        listPublishers: jest.fn().mockResolvedValue([
+          {
+            apiBase: "http://srs",
+            streamKey: "public-1",
+            clientId: "client-a",
+          },
+        ]),
+      },
+    });
+
+    await service.sweepStaleStreams();
+    await flushMicrotasks();
+
+    expect(srsService.kickClientById).toHaveBeenCalledWith(
+      "http://srs",
+      "client-a"
+    );
+  });
+
+  it("reconcileWithSrs leaves a genuinely unknown publisher alone", async () => {
+    // No DB row for that name: log and move on, never kick — a create/publish
+    // race must not have its publisher killed mid-handshake.
+    const { service, srsService, streamRepo } = makeDeps({
+      streamRepo: { findBySrsNames: jest.fn().mockResolvedValue([]) },
+      srsService: {
+        listPublishers: jest.fn().mockResolvedValue([
+          {
+            apiBase: "http://srs",
+            streamKey: "not-in-the-db",
+            clientId: "client-x",
+          },
+        ]),
+      },
+    });
+
+    await service.sweepStaleStreams();
+    await flushMicrotasks();
+
+    expect(srsService.kickClientById).not.toHaveBeenCalled();
+    expect(streamRepo.updateById).not.toHaveBeenCalled();
+  });
+
+  it("handleUnpublish is idempotent while already RECONNECTING â€” does not reset disconnectedAt or re-run any side effects", async () => {
     const stream = makeStream({
       status: "RECONNECTING",
       disconnectedAt: new Date(Date.now() - 5_000),
@@ -587,7 +847,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
       },
     });
 
-    const allowed = await service.handlePublish("key-1");
+    const allowed = await service.handlePublish("key-1", undefined, { secret: "key-1" });
     await flushMicrotasks();
 
     expect(allowed).toBe(true);
@@ -595,7 +855,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
       "stream-1",
       expect.objectContaining({ status: "LIVE", disconnectedAt: null })
     );
-    // Resume must not stamp a new livedAt — the update payload should omit it.
+    // Resume must not stamp a new livedAt â€” the update payload should omit it.
     expect(streamRepo.updateById).not.toHaveBeenCalledWith(
       "stream-1",
       expect.objectContaining({ livedAt: expect.anything() })
@@ -606,7 +866,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     );
   });
 
-  it("sweepStaleReconnectingStreams finalizes a stream whose grace window expired — ends it and closes viewer sessions", async () => {
+  it("sweepStaleReconnectingStreams finalizes a stream whose grace window expired â€” ends it and closes viewer sessions", async () => {
     const stream = makeStream({
       status: "RECONNECTING",
       disconnectedAt: new Date(Date.now() - 120_000),
@@ -636,7 +896,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
   });
 });
 
-describe("LivestreamService.forceEndStreamsByCreator — account/membership-loss bulk force-end", () => {
+describe("LivestreamService.forceEndStreamsByCreator â€” account/membership-loss bulk force-end", () => {
   it("ends every active stream returned for the creator and closes their viewer sessions", async () => {
     const streamA = makeStream({ id: "stream-a", status: "LIVE" });
     const streamB = makeStream({ id: "stream-b", status: "RECONNECTING" });
@@ -727,7 +987,7 @@ describe("LivestreamService.forceEndStreamsByCreator — account/membership-loss
     expect(result).toEqual({ endedCount: 1 });
   });
 
-  it("never throws — swallows a repo query failure and returns endedCount: 0", async () => {
+  it("never throws â€” swallows a repo query failure and returns endedCount: 0", async () => {
     const { service } = makeDeps({
       streamRepo: {
         findActiveByCreator: jest.fn().mockRejectedValue(new Error("db down")),
@@ -740,7 +1000,7 @@ describe("LivestreamService.forceEndStreamsByCreator — account/membership-loss
   });
 });
 
-describe("LivestreamService — admin viewerCount overlay (fixes the stale-count bug)", () => {
+describe("LivestreamService â€” admin viewerCount overlay (fixes the stale-count bug)", () => {
   it("adminGetStream overlays the LIVE Redis count over the stale stored column", async () => {
     const stream = makeStream({ status: "LIVE", viewerCount: 999 });
     const { service, redis } = makeDeps({
@@ -754,7 +1014,7 @@ describe("LivestreamService — admin viewerCount overlay (fixes the stale-count
     expect(redis.hlen).toHaveBeenCalled();
   });
 
-  it("adminListStreams ALSO overlays the LIVE Redis count (previously missing — the reported bug)", async () => {
+  it("adminListStreams ALSO overlays the LIVE Redis count (previously missing â€” the reported bug)", async () => {
     const stream = makeStream({ status: "LIVE", viewerCount: 999 });
     const { service } = makeDeps({
       streamRepo: {
@@ -795,7 +1055,7 @@ describe("LivestreamService — admin viewerCount overlay (fixes the stale-count
   });
 
   it("adminGetStream.uniqueViewerCount is the distinct-viewer count, NOT the raw totalViews join-attempt counter (the reported mismatch)", async () => {
-    // totalViews=5 (checkAccess ran 5 times — reconnects/retries), but only 2
+    // totalViews=5 (checkAccess ran 5 times â€” reconnects/retries), but only 2
     // distinct users ever actually joined per LivestreamViewerSession.
     const stream = makeStream({ status: "ENDED", totalViews: 5 });
     const { service } = makeDeps({
