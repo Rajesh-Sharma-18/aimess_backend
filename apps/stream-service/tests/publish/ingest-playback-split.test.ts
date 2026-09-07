@@ -23,7 +23,6 @@ import {
   extractPublishSecret,
   generatePlaybackId,
   generateStreamKey,
-  isLegacyStream,
   publishSecretMatches,
   resolveSrsName,
 } from "../../src/lib/stream-identity.js";
@@ -43,17 +42,16 @@ describe("stream identity", () => {
     const stream = { streamKey: "secret-key", playbackId: "public-id" };
 
     expect(resolveSrsName(stream)).toBe("public-id");
-    expect(isLegacyStream(stream)).toBe(false);
   });
 
-  it("treats a row with no playbackId as legacy, named by its key", () => {
-    // A stream that was live across the deploy. SRS knows it by its key, so
-    // that is what must resolve — otherwise its hooks stop matching and the
-    // broadcast breaks mid-air.
+  it("names a row with no playbackId by its key", () => {
+    // A row created before the split. SRS knows it by its key, so that is what
+    // must resolve — otherwise its playback URLs and admin history stop
+    // pointing anywhere. (The publish-secret exemption these rows once carried
+    // is gone; see the handlePublish suite below.)
     const legacy = { streamKey: "old-key", playbackId: null };
 
     expect(resolveSrsName(legacy)).toBe("old-key");
-    expect(isLegacyStream(legacy)).toBe(true);
   });
 
   it.each([
@@ -168,16 +166,32 @@ describe("handlePublish — the publish credential", () => {
     ).resolves.toBe(false);
   });
 
-  it("still allows a legacy stream that has no separate public name", async () => {
-    // Published under its own key, so demanding a secret would kill a
-    // broadcast that is on air right now — and the key is already public for
-    // it regardless. Grandfathered until it ends.
-    const { service } = makeService(
+  it("DENIES a row with no playbackId that presents no secret", async () => {
+    // Such a row used to be exempt from the secret check entirely — the
+    // exemption was keyed on the row's SHAPE, not on a date, so it never
+    // expired and would have covered any future row that reached the DB
+    // without a playbackId (a restore, a new code path, a hand-inserted probe).
+    // The secret is now required unconditionally — a pre-split row gets no free
+    // pass, it just has to present its key like everything else (see the next
+    // test).
+    const { service, streamRepo } = makeService(
       liveReadyStream({ streamKey: "old-key", playbackId: null })
     );
 
     await expect(
       service.handlePublish("old-key", "client-1", { secret: "" })
+    ).resolves.toBe(false);
+    expect(streamRepo.updateById).not.toHaveBeenCalled();
+  });
+
+  it("allows a row with no playbackId that presents its key as the secret", async () => {
+    // The owner still holds the credential; only the free pass is gone.
+    const { service } = makeService(
+      liveReadyStream({ streamKey: "old-key", playbackId: null })
+    );
+
+    await expect(
+      service.handlePublish("old-key", "client-1", { secret: "old-key" })
     ).resolves.toBe(true);
   });
 

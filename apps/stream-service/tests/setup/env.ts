@@ -21,6 +21,12 @@ process.env.SRS_HOOK_SECRET = "test-srs-hook-secret-do-not-use-in-prod";
 // dev), silently changing which membership-gate branches tests exercise.
 process.env.STREAM_REQUIRE_MEMBERSHIP = "true";
 process.env.MINIO_ENDPOINT = "http://localhost:9000";
+// The endpoint presigned URLs are actually built from, and the one MinIO var
+// that was missed here — so a developer whose .env points MinIO at a LAN
+// address (the documented setup for testing across devices) got that host back
+// in every presigned avatar URL, and the broadcast-shape assertion failed on
+// their machine and nowhere else.
+process.env.MINIO_PUBLIC_ENDPOINT = "http://localhost:9000";
 process.env.MINIO_ACCESS_KEY = "test-minio-access-key";
 process.env.MINIO_SECRET_KEY = "test-minio-secret-key";
 process.env.MINIO_BUCKET_AVATARS = "aimess-avatars";

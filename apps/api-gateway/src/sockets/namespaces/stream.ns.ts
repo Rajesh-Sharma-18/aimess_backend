@@ -922,6 +922,16 @@ export function registerStreamNamespace(
           return;
         }
         const { streamId, before, after, limit } = r.data;
+        // Same room gate as stream:comment / stream:react / stream:comment:delete.
+        // Without it this handler read any stream's chat for any caller who knew
+        // a streamId — no join, no access check, no trace in the viewer list.
+        // stream-service enforces the authoritative gate on every GetComments
+        // call; this only stops the pointless round trip (and the enumeration
+        // it enabled) for a socket that never entered the room.
+        if (!socket.rooms.has(roomKey(streamId))) {
+          ackError(callback, "FORBIDDEN", locale);
+          return;
+        }
         void (async () => {
           try {
             const res = await streamClient.getComments({

@@ -290,11 +290,19 @@ export class LivestreamRepository {
    * Deliberately scoped to `status: "LIVE"` only — a RECONNECTING stream is
    * governed by the separate, shorter reconnect-grace window (see
    * {@link findStaleReconnectingStreams}), not this heartbeat timeout.
+   *
+   * `sourceTypes` narrows the sweep to those ingest modes. The caller uses it
+   * to keep sweeping the sources SRS has no opinion about while SRS itself is
+   * unreachable — see `sweepStaleLiveStreams`.
    */
-  async findStaleLiveStreams(cutoff: Date): Promise<Livestream[]> {
+  async findStaleLiveStreams(
+    cutoff: Date,
+    sourceTypes?: readonly string[]
+  ): Promise<Livestream[]> {
     return this.prisma.livestream.findMany({
       where: {
         status: "LIVE",
+        ...(sourceTypes ? { sourceType: { in: [...sourceTypes] } } : {}),
         OR: [
           // Guard only. A bare `lt` also matches an EXPLICIT null, which would
           // end a stream on the first tick after go-live rather than after the
