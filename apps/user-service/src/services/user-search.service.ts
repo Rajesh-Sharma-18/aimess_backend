@@ -112,7 +112,15 @@ export type SearchGroupItem = {
   /** Also the group's stable id (chat-service GroupRoom.roomId). */
   roomId: string;
   name: string;
+  /** Raw stored object key, unchanged — kept for existing clients. */
   avatar: string;
+  /**
+   * Presigned view URL for {@link SearchGroupItem.avatar}, or null when the
+   * group has no logo. Group logos live under `group-avatars/` in the SAME
+   * bucket as user avatars, so the row used to hand clients a bare object key
+   * that no browser could load; `avatar` still carries that key.
+   */
+  avatarUrl: string | null;
   description: string;
   memberCount: number;
   /**
@@ -217,12 +225,21 @@ async function toUserItem(
   };
 }
 
-function toGroupItem(g: GroupSummary): SearchGroupItem {
+async function toGroupItem(g: GroupSummary): Promise<SearchGroupItem> {
+  // `MEDIA_PREFIXES.avatars`, not `userAvatars`: the narrow sibling rejects
+  // `group-avatars/` keys by design, which is exactly what a group logo is.
+  const media = await toMediaObject({
+    bucket: env.MINIO_BUCKET_AVATARS,
+    stored: g.avatar || null,
+    prefixes: MEDIA_PREFIXES.avatars,
+    strategy: mediaUrlStrategy,
+  });
   return {
     type: "GROUP",
     roomId: g.roomId,
     name: g.name,
     avatar: g.avatar,
+    avatarUrl: media.downloadUrl ?? null,
     description: g.description,
     memberCount: g.memberCount,
     isActiveMember: g.isActiveMember,
@@ -353,7 +370,7 @@ export const userSearchService = {
       } else {
         const group = recentGroupById.get(row.targetId);
         if (!group) continue; // group deleted/disbanded since last view
-        recent.push(toGroupItem(group));
+        recent.push(await toGroupItem(group));
       }
     }
 
@@ -459,7 +476,7 @@ export const userSearchService = {
       );
       for (const g of chatGroupSummaries) {
         if (chat.length >= CHAT_LIMIT) break;
-        chat.push(toGroupItem(g));
+        chat.push(await toGroupItem(g));
         chatGroupIds.push(g.roomId);
       }
     }
@@ -513,7 +530,7 @@ export const userSearchService = {
     const other: SearchResultItem[] = await Promise.all(otherPage.map(toItem));
     for (const g of otherGroupSummaries) {
       if (other.length >= otherTake) break;
-      other.push(toGroupItem(g));
+      other.push(await toGroupItem(g));
     }
 
     const hasMore = otherUserProfiles.length > otherTake;

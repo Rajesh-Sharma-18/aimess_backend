@@ -5920,7 +5920,15 @@ export const openApiSchemas = {
         description: "The group's stable id (also its chat roomId).",
       },
       name: { type: "string" },
-      avatar: { type: "string" },
+      avatar: {
+        type: "string",
+        description: "Raw stored object key (`group-avatars/...`). Not loadable directly — render `avatarUrl`.",
+      },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description: "Presigned view URL for `avatar`, or null when the group has no logo.",
+      },
       description: { type: "string" },
       memberCount: { type: "integer" },
       isActiveMember: {
@@ -5933,6 +5941,7 @@ export const openApiSchemas = {
       "roomId",
       "name",
       "avatar",
+      "avatarUrl",
       "description",
       "memberCount",
       "isActiveMember",
