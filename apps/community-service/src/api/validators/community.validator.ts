@@ -134,10 +134,12 @@ const discoverSearchSchema = z
  *     Timestamps are epoch milliseconds and mutually exclusive. Pagination takes
  *     precedence over `q`/`categoryId` if both are sent.
  *
- *   search mode (q, categoryId, or a non-"all" filter, and no pagination) —
- *     PUBLIC communities plus any PRIVATE community the caller is already an
- *     ACTIVE member of, filtered by `q` / `categoryId`, using **offset (page)
- *     pagination**. "live"/"upcoming" are reserved for livestream filtering
+ *   search mode (q, categoryId, or a non-"all" filter, and no before_ts/after_ts)
+ *     — PUBLIC communities plus any PRIVATE community the caller is already an
+ *     ACTIVE member of, filtered by `q` / `categoryId`. Pages EITHER by offset
+ *     (`page`) or, preferred, by the `id`-descending keyset `cursor` (a bare
+ *     community id, from `pagination.nextCursor`) — the keyset path runs no
+ *     count query. "live"/"upcoming" are reserved for livestream filtering
  *     (no-op until stream-service exists).
  *
  * Both modes share `limit`.
@@ -157,14 +159,17 @@ export const myCommunitiesQuerySchema = z
     // same-millisecond communities are returned exactly once across pages.
     //
     // Precedence: `cursor` wins over before_ts/after_ts when both are sent.
+    //
+    // In SEARCH mode the same param carries the other codec — a bare community
+    // id (`id desc` keyset). Shape is enforced per-mode by the refine below.
     cursor: z
       .string()
       .regex(
-        /^\d+(_[a-fA-F0-9]{24})?$/,
-        "cursor must be epoch-ms or the compound cursor '<ms>_<communityId>'"
+        /^(\d+(_[a-fA-F0-9]{24})?|[a-fA-F0-9]{24})$/,
+        "cursor must be epoch-ms, the compound cursor '<ms>_<communityId>', or a community id"
       )
       .optional(),
-    // search-mode filters + offset pagination
+    // search-mode filters + offset/keyset pagination
     q: discoverSearchSchema.optional(),
     categoryId: categoryIdSchema.optional(),
     filter: z.enum(["all", "live", "upcoming"]).default("all"),
@@ -175,7 +180,28 @@ export const myCommunitiesQuerySchema = z
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {
     message: "Only one pagination parameter is allowed at a time",
     path: ["before_ts"],
-  });
+  })
+  // A cursor in the other mode's codec is a 400, never a silent page 1: the two
+  // modes sort on different keys, so a "<ms>" cursor is meaningless to the
+  // search keyset and a community id is meaningless to the activity keyset.
+  // Mirrors the controller's mode gate exactly (before_ts/after_ts → joined).
+  .refine(
+    (q) => {
+      if (q.cursor == null) return true;
+      const isSearch =
+        (q.q != null || q.categoryId != null || q.filter !== "all") &&
+        q.before_ts == null &&
+        q.after_ts == null;
+      return isSearch
+        ? OBJECT_ID_REGEX.test(q.cursor)
+        : /^\d+(_[a-fA-F0-9]{24})?$/.test(q.cursor);
+    },
+    {
+      message:
+        "cursor must be a community id in search mode, or epoch-ms / '<ms>_<communityId>' in joined mode",
+      path: ["cursor"],
+    }
+  );
 
 export type MyCommunitiesQuery = z.infer<typeof myCommunitiesQuerySchema>;
 

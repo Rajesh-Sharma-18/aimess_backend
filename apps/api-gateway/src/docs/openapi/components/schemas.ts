@@ -12506,10 +12506,33 @@ export const openApiSchemas = {
       chatUnread: {
         type: "integer",
         minimum: 0,
-        description: "privateUnread + groupUnread (inbox badge).",
+        description: "privateUnread + groupUnread (unread MESSAGE total).",
+      },
+      privateUnreadConversations: { type: "integer", minimum: 0 },
+      groupUnreadConversations: { type: "integer", minimum: 0 },
+      communityUnreadConversations: {
+        type: "integer",
+        minimum: 0,
+        description:
+          "Communities holding >=1 unread message (Community nav badge).",
+      },
+      chatUnreadConversations: {
+        type: "integer",
+        minimum: 0,
+        description:
+          "private + group conversations holding >=1 unread message — the Chats nav badge. A room with 500 unread contributes 1.",
       },
     },
-    required: ["privateUnread", "groupUnread", "communityUnread", "chatUnread"],
+    required: [
+      "privateUnread",
+      "groupUnread",
+      "communityUnread",
+      "chatUnread",
+      "privateUnreadConversations",
+      "groupUnreadConversations",
+      "communityUnreadConversations",
+      "chatUnreadConversations",
+    ],
   },
   ChatBanMemberRequest: {
     type: "object",

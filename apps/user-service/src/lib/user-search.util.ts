@@ -32,6 +32,30 @@ export function buildNormalizedFullName(
  * fully appear in either `firstName` or `lastName` alone, only in their
  * concatenation.
  */
+
+// Keyset position over people search's ORDER BY firstName ASC, userId ASC.
+export type PeopleSearchCursor = { firstName: string; userId: string };
+
+// Opaque on the wire — base64url("<firstName>\u0000<userId>"). NUL can never
+// appear inside a firstName, so it is a split-safe separator.
+export function encodePeopleCursor(row: PeopleSearchCursor): string {
+  return Buffer.from(`${row.firstName}\u0000${row.userId}`, "utf8").toString(
+    "base64url"
+  );
+}
+
+// Unparseable input decodes to undefined, i.e. "no cursor" — a garbled cursor
+// restarts at the head rather than 400ing a caller mid-walk.
+export function decodePeopleCursor(
+  raw: string | undefined
+): PeopleSearchCursor | undefined {
+  if (!raw) return undefined;
+  const [firstName, userId] = Buffer.from(raw, "base64url")
+    .toString("utf8")
+    .split("\u0000");
+  return userId ? { firstName: firstName ?? "", userId } : undefined;
+}
+
 export function buildUserSearchFilter(
   q: string
 ): Prisma.UserProfileWhereInput[] {

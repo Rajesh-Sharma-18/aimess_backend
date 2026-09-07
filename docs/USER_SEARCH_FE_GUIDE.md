@@ -3,6 +3,14 @@
 Base path: `/api/v1/users/search` (proxied through api-gateway → user-service).
 All endpoints require `Authorization: Bearer <accessToken>`.
 
+> **This endpoint is no longer the way to search for people.** Global search is
+> now one unified API — `GET /api/v1/search?q=&filter=people&cursor=&limit=` —
+> which calls this one for you and pages it properly. See
+> [GLOBAL_SEARCH_MOBILE_GUIDE.md](./GLOBAL_SEARCH_MOBILE_GUIDE.md).
+> What is still yours to call directly is the **recent-searches** subsystem in
+> §1 and §3-5 below, plus the no-`q` form of §2 that backs the "Recent" list on
+> an empty search box.
+
 ---
 
 ## 1. `POST /api/v1/users/search/recent`
@@ -53,8 +61,9 @@ may not exist yet at record time, or membership can change later).
 | Param   | Type    | Default | Notes                                                                                                                                 |
 | ------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `q`     | string  | —       | Optional. Matched against username, firstName, lastName, and full name (Users), and name (Groups). Applied to **all three** sections. |
-| `page`  | integer | `1`     | Paginates the `other` section only.                                                                                                   |
-| `limit` | integer | `10`    | Max 10. Caps the `chat` and `other` sections.                                                                                         |
+| `page`  | integer | `1`     | Offset paging for the `other` section only. Prefer `cursor`.                                                                          |
+| `cursor`| string  | —       | Opaque keyset cursor over `other`, echoed back as `nextCursor`. On a cursor page `chat` is **omitted** — it is a bounded head, served on page 1 only. |
+| `limit` | integer | `10`    | Max **50**. Caps the `chat` and `other` sections. (Was capped at 10, which made `limit=20` a 400 rather than a clamp.)                 |
 
 If `q` is omitted, the endpoint returns: `recent` (latest viewed), `chat`
 (most recently active), `other` (a suggested set) — i.e. a sensible
@@ -68,14 +77,16 @@ If `q` is omitted, the endpoint returns: `recent` (latest viewed), `chat`
   "message": "Users retrieved successfully.",
   "data": {
     "recent": [
-      /* up to 4 items */
+      /* up to 10 items, newest first */
     ],
     "chat": [
       /* up to `limit` items, default 10 */
     ],
     "other": [
-      /* up to `limit` items, default 10, paginated via `page` */
-    ]
+      /* up to `limit` items, default 10, paged via `cursor` (or legacy `page`) */
+    ],
+    "hasMore": false,
+    "nextCursor": null
   }
 }
 ```
@@ -186,5 +197,5 @@ render friendship state (badge, "Add friend" button, pending request), read
 
 | Status | When                                           |
 | ------ | ---------------------------------------------- |
-| `400`  | Invalid `q`/`page`/`limit` (e.g. `limit` > 10) |
+| `400`  | Invalid `q`/`page`/`limit` (e.g. `limit` > 50) |
 | `401`  | Missing/expired/invalid access token           |

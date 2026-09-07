@@ -9,8 +9,9 @@ export class UnreadSummaryController {
   constructor(private readonly service: UnreadSummaryService) {}
 
   /**
-   * GET /api/chat/unread-summary — combined unread totals for the main nav
-   * badges: { privateUnread, groupUnread, communityUnread, chatUnread }.
+   * GET /api/chat/unread-summary — unread MESSAGE totals plus the unread
+   * CONVERSATION counts the nav badges render (chatUnreadConversations,
+   * communityUnreadConversations).
    */
   getUnreadSummary = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;

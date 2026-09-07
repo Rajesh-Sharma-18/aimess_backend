@@ -34,11 +34,17 @@ const MAX_PAGES = 1000; // safety backstop against a pathological cursor loop
  * a truncated or failed scan would otherwise deactivate live rooms it simply
  * had not reached yet — so it is gated on the scan completing.
  *
- * Scope is the ROOM gap (the user-facing "roomless community" problem). For
- * communities whose room already exists, steady-state member drift is left to
- * the live `community.member.synced` events (syncing every member on every boot
- * would be costly at scale); members are synced here only for rooms this run
- * actually provisions, so a freshly-created room is never empty.
+ * Scope is the ROOM gap (the user-facing "roomless community" problem), plus
+ * one member-level repair in the same direction: a chat RoomMember row whose
+ * community membership no longer exists at all. Nothing evicts those — the
+ * live `community.member.synced` event only fires for memberships community-
+ * service still has — so the row stays `active` forever and its unread keeps
+ * feeding the Community nav badge while `/communities/mine` (correctly) never
+ * lists the community: a badge the user has no row to open and clear. The
+ * member list is already in the scan response, so the diff costs one
+ * projection read per existing room and writes only when a row is genuinely
+ * stale. Members are still fully SYNCED only for rooms this run provisions
+ * (re-syncing every member on every boot would be costly at scale).
  *
  * Fully best-effort: never throws, never blocks startup. Logged counts make the
  * coverage explicit (no silent truncation).
@@ -68,6 +74,7 @@ export async function reconcileCommunityRooms(): Promise<void> {
     let deactivated = 0;
     let orphaned = 0;
     let membersSynced = 0;
+    let memberDrift = 0;
     // Every community id the scan actually saw. Only meaningful as "the complete
     // set" when the loop below finishes because the server said there was no
     // more — see `scanComplete`.
@@ -115,11 +122,23 @@ export async function reconcileCommunityRooms(): Promise<void> {
             await memberRepo.upsert(c.id, m.userId, data);
             membersSynced++;
           }
-        } else if (communityType) {
-          // Room already exists — backfill / refresh its persisted visibility so
-          // existing PUBLIC communities (created before this field) become
-          // browsable by non-members. Authoritative source: the community row.
-          await roomRepo.setCommunityType(c.id, communityType);
+        } else {
+          if (communityType) {
+            // Room already exists — backfill / refresh its persisted visibility so
+            // existing PUBLIC communities (created before this field) become
+            // browsable by non-members. Authoritative source: the community row.
+            await roomRepo.setCommunityType(c.id, communityType);
+          }
+          // Evict mirror rows whose community membership is gone entirely.
+          // Only rows ABSENT from the community list are touched — a member
+          // community-service still knows about keeps whatever status the live
+          // sync gave it, so LEFT/PENDING mapping stays that path's business.
+          const known = new Set(c.members.map((m) => m.userId));
+          const mirrored = await memberRepo.findLiveMemberUserIds(c.id);
+          const stale = mirrored.filter((userId) => !known.has(userId));
+          if (stale.length) {
+            memberDrift += await memberRepo.markLeftForUsers(c.id, stale);
+          }
         }
       }
 
@@ -163,7 +182,7 @@ export async function reconcileCommunityRooms(): Promise<void> {
     }
 
     logger.info(
-      `Community room reconciler: scanned=${scanned} provisioned=${provisioned} deactivated=${deactivated} orphaned=${orphaned} membersSynced=${membersSynced} scanComplete=${scanComplete}`
+      `Community room reconciler: scanned=${scanned} provisioned=${provisioned} deactivated=${deactivated} orphaned=${orphaned} membersSynced=${membersSynced} memberDrift=${memberDrift} scanComplete=${scanComplete}`
     );
   } catch (err) {
     // Best-effort: a missing/slow community-service must not break chat-service boot.

@@ -10,6 +10,7 @@ import { chatExtrasPaths } from "../../paths/chat-extras.paths.js";
 import { chatChangesPaths } from "../../paths/chat-changes.paths.js";
 import { devicesPaths } from "../../paths/devices.paths.js";
 import { mediaPaths } from "../../paths/media.paths.js";
+import { searchPaths } from "../../paths/search.paths.js";
 import { streamPaths } from "../../paths/stream.paths.js";
 
 /**
@@ -31,6 +32,7 @@ export const v1Paths = {
   ...chatChangesPaths,
   ...devicesPaths,
   ...mediaPaths,
+  ...searchPaths,
   ...streamPaths,
   ...adminPaths,
 };
@@ -71,6 +73,11 @@ export const v1Tags = [
     name: "Media",
     description:
       "Centralized presigned URL generation for all media uploads and downloads",
+  },
+  {
+    name: "Search",
+    description:
+      "Unified cursor-paginated search across messages, communities and people (gateway fan-out)",
   },
   {
     name: "Streams",

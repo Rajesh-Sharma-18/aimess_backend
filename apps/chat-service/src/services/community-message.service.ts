@@ -118,7 +118,11 @@ import {
   resolveQuoteThumbnail,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
-import { shouldCountInUnread } from "../lib/unread-count.js";
+import {
+  shouldCountInUnread,
+  EMPTY_UNREAD_STATS,
+  type UnreadStats,
+} from "../lib/unread-count.js";
 
 /**
  * Client-facing community message row: the raw Prisma entity with its
@@ -976,16 +980,17 @@ export class CommunityMessageService {
    * per-room exception, batched concurrently).
    */
   /**
-   * Total unread community messages across every community the user's an
-   * ACTIVE member of — for the Community nav badge. Reuses the same
+   * Unread stats across every community the user's an ACTIVE member of — the
+   * message total plus how many communities carry at least one unread (the
+   * nav badge counts communities, not messages). Reuses the same
    * countUnreadBulk primitive getChatSummaries already uses per-community,
-   * just summed instead of returned per-room; no banned-cutoff clamping
+   * aggregated instead of returned per-room; no banned-cutoff clamping
    * since a banned member doesn't contribute to the badge (see
    * RoomMemberRepository.findActiveByUser).
    */
-  async sumUnreadForUser(userId: string): Promise<number> {
+  async countUnreadForUser(userId: string): Promise<UnreadStats> {
     const members = await this.memberRepo.findActiveByUser(userId);
-    if (!members.length) return 0;
+    if (!members.length) return { ...EMPTY_UNREAD_STATS };
     const unreadMap = await this.messageRepo.countUnreadBulk({
       userId,
       thresholds: members.map((m) => ({
@@ -994,7 +999,16 @@ export class CommunityMessageService {
         beforeDate: null,
       })),
     });
-    return Object.values(unreadMap).reduce((sum, u) => sum + u.count, 0);
+    return Object.values(unreadMap).reduce<UnreadStats>(
+      (acc, u) =>
+        u.count > 0
+          ? {
+              messages: acc.messages + u.count,
+              conversations: acc.conversations + 1,
+            }
+          : acc,
+      { ...EMPTY_UNREAD_STATS }
+    );
   }
 
   async getChatSummaries(params: {

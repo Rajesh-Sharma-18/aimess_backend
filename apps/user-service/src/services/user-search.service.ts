@@ -24,9 +24,15 @@ import {
 } from "../grpc/messaging.client.js";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
+import {
+  decodePeopleCursor,
+  encodePeopleCursor,
+} from "../lib/user-search.util.js";
 import type { UnifiedSearchQuery } from "../api/validators/user-search.validator.js";
 
-const RECENT_LIMIT = 4;
+// The store already keeps (and the repository already fetches) the newest 20 per
+// user, so this is purely how many of them the Recent Search list renders.
+const RECENT_LIMIT = 10;
 const CHAT_LIMIT = 10;
 // const OTHER_LIMIT = 10;
 /** Cap on how many of the viewer's private-room peers we pull per request. */
@@ -354,12 +360,25 @@ export const userSearchService = {
     return { recent };
   },
 
-  /** `q` has a value → Chat + Other only. Never returns Recent. */
+  /**
+   * `q` has a value → Chat + Other only. Never returns Recent.
+   *
+   * `chat` is a BOUNDED HEAD: it exists only on the first page (no cursor).
+   * `hasMore`/`nextCursor` describe the PEOPLE keyset in `other` — the group
+   * half of that bucket is a bounded head too, and is likewise dropped on
+   * continuation pages so a walk never re-sends rows the caller already has.
+   */
   async searchByQuery(
     viewerId: string,
     query: UnifiedSearchQuery
-  ): Promise<{ chat: SearchResultItem[]; other: SearchResultItem[] }> {
+  ): Promise<{
+    chat?: SearchResultItem[];
+    other: SearchResultItem[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
     const q = query.q?.trim() || undefined;
+    const cursor = decodePeopleCursor(query.cursor);
     const skip = (query.page - 1) * query.limit;
     const otherTake = query.limit;
 
@@ -397,49 +416,53 @@ export const userSearchService = {
     // Reused for the `whoCanSendFriendRequests` gate on every row below.
     const fofIds = new Set(viewerGraph.friendOfFriendIds);
 
+    const toItem = (p: BasicProfile) =>
+      toUserItem(
+        p,
+        peerRoomByUserId.get(p.userId) ?? null,
+        relationshipOf(p.userId),
+        fofIds,
+        blockedByMe,
+        hiddenIds
+      );
+
     // ---------------------------------------------------------------------
     // Chat — max 10: accepted friends (isFriend === true), regardless of
     // whether a private room exists yet, + groups the viewer actively
-    // belongs to.
+    // belongs to. Skipped entirely on a cursor page — it is a bounded head,
+    // not a paged list, so re-fetching it would only duplicate rows.
     // ---------------------------------------------------------------------
-    const [chatUserProfiles, chatGroupSummaries] = await Promise.all([
-      friendIds.length
-        ? userProfileRepository.findUsersInList(friendIds, q, 0, CHAT_LIMIT)
-        : Promise.resolve([]),
-      messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
-    ]);
-
-    // Friends with an existing room sort by recency first; roomless friends
-    // fall to the end in query order.
-    chatUserProfiles.sort(
-      (a, b) =>
-        (roomOrderIndex.get(a.userId) ?? Infinity) -
-        (roomOrderIndex.get(b.userId) ?? Infinity)
-    );
-
     const chat: SearchResultItem[] = [];
-    for (const p of chatUserProfiles) {
-      if (chat.length >= CHAT_LIMIT) break;
-      chat.push(
-        await toUserItem(
-          p,
-          peerRoomByUserId.get(p.userId) ?? null,
-          relationshipOf(p.userId),
-          fofIds,
-          blockedByMe,
-          hiddenIds
-        )
+    const chatGroupIds: string[] = [];
+    if (!cursor) {
+      const [chatUserProfiles, chatGroupSummaries] = await Promise.all([
+        friendIds.length
+          ? userProfileRepository.findUsersInList(friendIds, q, 0, CHAT_LIMIT)
+          : Promise.resolve([]),
+        messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
+      ]);
+
+      // Friends with an existing room sort by recency first; roomless friends
+      // fall to the end in query order.
+      chatUserProfiles.sort(
+        (a, b) =>
+          (roomOrderIndex.get(a.userId) ?? Infinity) -
+          (roomOrderIndex.get(b.userId) ?? Infinity)
       );
+
+      // Rows are independent, so the per-row avatar headObject + presigns run
+      // together rather than one round-trip after another.
+      chat.push(
+        ...(await Promise.all(
+          chatUserProfiles.slice(0, CHAT_LIMIT).map(toItem)
+        ))
+      );
+      for (const g of chatGroupSummaries) {
+        if (chat.length >= CHAT_LIMIT) break;
+        chat.push(toGroupItem(g));
+        chatGroupIds.push(g.roomId);
+      }
     }
-    for (const g of chatGroupSummaries) {
-      if (chat.length >= CHAT_LIMIT) break;
-      chat.push(toGroupItem(g));
-    }
-    const chatGroupIdSet = new Set(
-      chat
-        .filter((i): i is SearchGroupItem => i.type === "GROUP")
-        .map((i) => i.roomId)
-    );
 
     // ---------------------------------------------------------------------
     // Other — max `limit` (default 10, paginated): non-friends (isFriend
@@ -459,43 +482,49 @@ export const userSearchService = {
       ...hiddenWithoutRoom,
       ...friendIds, // only accepted friends are excluded from "other"
     ];
-    const excludeGroupIds = [...chatGroupIdSet];
-
     const [otherUserProfiles, otherGroupSummaries] = await Promise.all([
+      // One row past the page: its presence is `hasMore`, and it is sliced off
+      // before mapping so it never reaches the client.
       userProfileRepository.findUsersNotInList(
         excludeUserIds,
         q,
         skip,
-        otherTake,
-        viewerGraph
+        otherTake + 1,
+        viewerGraph,
+        cursor,
+        // Same carve-out `hiddenWithoutRoom` makes for blocks, applied to
+        // `whoCanFindMe`: a peer the viewer already has a private conversation
+        // with is in their inbox anyway, so hiding the row here only made the
+        // two doors disagree about the same pair. It widens the ROW alone —
+        // presence and the friend-request action keep their own scopes.
+        [...peerRoomByUserId.keys()]
       ),
-      messagingGrpcClient.listOtherGroups(
-        viewerId,
-        q,
-        excludeGroupIds,
-        otherTake
-      ),
+      cursor
+        ? Promise.resolve([])
+        : messagingGrpcClient.listOtherGroups(
+            viewerId,
+            q,
+            chatGroupIds,
+            otherTake
+          ),
     ]);
 
-    const other: SearchResultItem[] = [];
-    for (const p of otherUserProfiles) {
-      if (other.length >= otherTake) break;
-      other.push(
-        await toUserItem(
-          p,
-          peerRoomByUserId.get(p.userId) ?? null,
-          relationshipOf(p.userId),
-          fofIds,
-          blockedByMe,
-          hiddenIds
-        )
-      );
-    }
+    const otherPage = otherUserProfiles.slice(0, otherTake);
+    const other: SearchResultItem[] = await Promise.all(otherPage.map(toItem));
     for (const g of otherGroupSummaries) {
       if (other.length >= otherTake) break;
       other.push(toGroupItem(g));
     }
 
-    return { chat, other };
+    const hasMore = otherUserProfiles.length > otherTake;
+    const last = otherPage.at(-1);
+    return {
+      // Omitted, not emptied, on a cursor page — an empty array would read as
+      // "the viewer has no matching friends", which is a different claim.
+      ...(cursor ? {} : { chat }),
+      other,
+      hasMore,
+      nextCursor: hasMore && last ? encodePeopleCursor(last) : null,
+    };
   },
 };
