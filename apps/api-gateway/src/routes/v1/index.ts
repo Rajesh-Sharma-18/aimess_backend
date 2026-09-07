@@ -19,6 +19,7 @@ import { createLegacyUploadsRouter } from "./legacy-uploads.routes.js";
 import { createNotificationsAliasRouter } from "./notifications.routes.js";
 import { createLinkedDevicesAliasRouter } from "./linked-devices.routes.js";
 import { invitesRouter } from "./invites.routes.js";
+import { searchRouter } from "./search.routes.js";
 import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
 
 export function createV1Router(_messagingClient: MessagingClient): IRouter {
@@ -131,9 +132,17 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
     "/users/discovery",
     "/communities/search",
     "/chat/search",
+    // The unified fan-out below — one caller request becomes three downstream
+    // ones, so it is throttled at least as hard as the endpoints it calls.
+    "/search",
   ]) {
     v1Router.use(searchPath, searchRateLimiter);
   }
+
+  // Global search: ONE request per term, every category in the response. Fans
+  // out to user / community / chat services, so it is mounted here rather than
+  // behind any single service proxy.
+  v1Router.use("/search", searchRouter);
   for (const readPath of ["/users/friends", "/chat/conversations"]) {
     v1Router.use(readPath, readRateLimiter);
   }

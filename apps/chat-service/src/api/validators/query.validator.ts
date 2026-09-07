@@ -83,8 +83,23 @@ export const syncQuerySchema = z.object({
 export const messageSearchQuerySchema = z.object({
   q: z.string().max(100).optional(),
   page: z.coerce.number().int().min(1).max(1000).optional(),
+  // Loose on purpose: the three PER-ROOM searches shipped accepting any short
+  // string here, and tightening it 400s cursors already in the wild. A
+  // malformed one is safe — parseSearchCursor rejects a non-ObjectId id half
+  // and returns null, so the search silently restarts from the newest page
+  // instead of reaching the BSON layer.
   cursor: z.string().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+/**
+ * Whole-account search (`GET /chat/messages/search`) — same params, strict
+ * cursor. The endpoint is new, so nothing is echoing a legacy token at it and a
+ * 400 tells the caller its cursor is wrong instead of quietly restarting the
+ * result list from the top.
+ */
+export const globalMessageSearchQuerySchema = messageSearchQuerySchema.extend({
+  cursor: compoundTsCursor.max(100).optional(),
 });
 
 /** Query schema for the shared media/docs listing endpoints.

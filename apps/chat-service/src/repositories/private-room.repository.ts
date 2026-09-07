@@ -11,6 +11,7 @@ import {
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
+import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
 import {
   UNREAD_COUNTABLE_RAW_MATCH,
   type UnreadStats,
@@ -199,6 +200,37 @@ export class PrivateRoomRepository {
       where: { participants: { has: userId } },
       select: { roomId: true, lastMessageId: true, participants: true },
       take: 500,
+    });
+  }
+
+  /**
+   * Every private room the caller participates in, with the two per-user
+   * cutoffs a message-body search has to honour (`deletedFor` / `clearFor`) and
+   * the participant list the peer name is resolved from. Projected, so a heavy
+   * account still costs one query.
+   */
+  async findSearchScope(userId: string): Promise<
+    Array<{
+      roomId: string;
+      participants: string[];
+      deletedFor: unknown;
+      clearFor: unknown;
+    }>
+  > {
+    return this.prisma.privateRoom.findMany({
+      where: { participants: { has: userId } },
+      select: {
+        roomId: true,
+        participants: true,
+        deletedFor: true,
+        clearFor: true,
+      },
+      // Capped and recency-ordered: the whole list becomes one `$in` per keystroke.
+      // Served by [participants, lastMessageAt desc] — the standalone
+      // [lastMessageAt desc] does NOT serve this, it would walk the whole
+      // collection newest-first until N of the caller's rooms surface.
+      orderBy: { lastMessageAt: "desc" },
+      take: SEARCH_SCOPE_ROOM_LIMIT,
     });
   }
 

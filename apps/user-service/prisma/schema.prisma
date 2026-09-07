@@ -69,6 +69,10 @@ model UserProfile {
 
   @@index([username])
   @@index([firstName, lastName])
+  // Sort order of every people-search page — the keyset cursor compares on this
+  // exact pair. ([firstName, lastName]) cannot serve it: lastName is the wrong
+  // second column, so Postgres sorts the whole match set per page instead.
+  @@index([firstName, userId])
   @@index([status, deletedAt])
   @@index([normalizedUsername])
   @@index([normalizedFirstName])
