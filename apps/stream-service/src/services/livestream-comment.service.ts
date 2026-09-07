@@ -254,22 +254,26 @@ export class LivestreamCommentService {
     // Enforce ban (local + community-wide) + commentStatus + moderator mute
     // (defend at write path, not just join gate).
     const stream = await this.streamRepo.findById(params.livestreamId);
-    if (
-      stream &&
-      (await this.banRepo.isBanned(params.livestreamId, params.userId))
-    ) {
+    // A missing stream is a hard stop, not a skipped check.
+    //
+    // Every gate below used to read `if (stream && …)`, so a `livestreamId`
+    // matching no row short-circuited ALL of them — ban, community ban,
+    // commentStatus, mute and membership — and the comment was still written,
+    // under an id nothing will ever read back or clean up. (`incrementTotalComments`
+    // then threw on the unknown id into its own swallowing catch, so it was
+    // silent too.)
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+
+    if (await this.banRepo.isBanned(params.livestreamId, params.userId)) {
       throw new ForbiddenError("COMMENTS_BANNED");
     }
-    if (
-      stream &&
-      (await this.isCommunityBanned(stream.communityId, params.userId))
-    ) {
+    if (await this.isCommunityBanned(stream.communityId, params.userId)) {
       throw new ForbiddenError("COMMENTS_BANNED");
     }
-    if (stream && !stream.commentStatus) {
+    if (!stream.commentStatus) {
       throw new ForbiddenError("COMMENTS_DISABLED");
     }
-    if (stream && (await this.isMuted(stream.communityId, params.userId))) {
+    if (await this.isMuted(stream.communityId, params.userId)) {
       throw new ForbiddenError("COMMENTS_MUTED");
     }
     // Membership gate — mirrors LivestreamService.checkAccess's canComment logic
@@ -279,11 +283,7 @@ export class LivestreamCommentService {
     // could post a comment without ever joining — the socket layer's join-time
     // cache is a pre-check optimization, not a substitute for this server-side
     // enforcement (a never-joined caller isn't gated by it either).
-    if (
-      stream &&
-      env.STREAM_REQUIRE_MEMBERSHIP &&
-      stream.creatorId !== params.userId
-    ) {
+    if (env.STREAM_REQUIRE_MEMBERSHIP && stream.creatorId !== params.userId) {
       const { isMember, isCommunityClosed } = await this.checkMembership(
         stream.communityId,
         params.userId
@@ -376,10 +376,24 @@ export class LivestreamCommentService {
 
   async deleteComment(
     commentId: string,
-    requesterId: string
+    requesterId: string,
+    /**
+     * The stream the caller claims this comment is in. Optional for wire
+     * compatibility during rollout; when supplied it must match.
+     */
+    livestreamId?: string
   ): Promise<{ commentId: string; livestreamId: string }> {
     const comment = await this.commentRepo.findById(commentId);
     if (!comment) throw new NotFoundError("COMMENT_NOT_FOUND");
+    // Same guard reportComment applies, and for the same reason: without it the
+    // caller's streamId was never checked, so probing arbitrary comment ids
+    // from inside a stream you CAN see told you whether a comment existed and
+    // — via the success ack's livestreamId — which stream it lived in, across
+    // communities you cannot see. Deliberately COMMENT_NOT_FOUND rather than a
+    // mismatch-specific key, so the reply leaks nothing either.
+    if (livestreamId && comment.livestreamId !== livestreamId) {
+      throw new NotFoundError("COMMENT_NOT_FOUND");
+    }
 
     const stream = await this.streamRepo.findById(comment.livestreamId);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");

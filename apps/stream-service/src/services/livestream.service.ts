@@ -28,6 +28,7 @@ import type {
   AdminStreamFilter,
   LivestreamRepository,
 } from "../repositories/livestream.repository.js";
+import { LIVE_STATUSES } from "../repositories/livestream.repository.js";
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
 import type { LivestreamViewerSessionRepository } from "../repositories/livestream-viewer-session.repository.js";
 import { buildHlsQualityUrls, buildFlvQualityUrls } from "./srs.service.js";
@@ -648,6 +649,24 @@ export class LivestreamService {
       return false;
     }
 
+    // The community-wide cap, enforced HERE rather than only at create.
+    //
+    // `createStream` checks it, but a fresh row is PENDING and PENDING never
+    // occupies a slot by design — so N different creators could each hold a
+    // PENDING row and all publish, putting the community over the cap while
+    // `publishCommunityStreamStarted` capped the *reported* count and hid it.
+    // PENDING → LIVE is the transition that actually takes the slot.
+    //
+    // `stream.id` is excluded because a RECONNECTING row already counts itself:
+    // without that, resuming a stream in a community at cap would be denied by
+    // its own presence in the count.
+    //
+    // ponytail: count-then-write, like the guard above it. Losing the race needs
+    // two publishes inside one DB round trip at exactly the cap; a Redis
+    // INCR-with-ceiling keyed on the community and released in finalizeAsEnded
+    // is the upgrade if that ever bites.
+    if (!(await this.isUnderCommunityCap(stream))) return false;
+
     const playback = this.srsService.buildPlaybackUrls(resolveSrsName(stream));
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "LIVE",
@@ -982,6 +1001,12 @@ export class LivestreamService {
       throw new ConflictError("STREAM_ALREADY_ACTIVE");
     }
 
+    // Community-wide cap — see the matching guard in handlePublish for why this
+    // has to run at the LIVE transition and not only at create.
+    if (!(await this.isUnderCommunityCap(stream))) {
+      throw new ConflictError("STREAM_COMMUNITY_CONCURRENCY_LIMIT");
+    }
+
     const playback = this.srsService.buildPlaybackUrls(resolveSrsName(stream));
     const updated = await this.streamRepo.updateById(id, {
       status: "LIVE",
@@ -1311,7 +1336,8 @@ export class LivestreamService {
    */
   async listStreamsInternal(params: {
     communityId?: string;
-    status?: string;
+    /** One status, or a set of them — see `listByCommunity`. */
+    status?: string | readonly string[];
     limit: number;
     cursor?: string;
     /** When set, drop rows this user is per-stream banned from. */
@@ -2143,6 +2169,27 @@ export class LivestreamService {
    * a later socket-based host join reuses this same open row and
    * `closeAllOpenForStream` closes it alongside every viewer on ENDED.
    */
+  /**
+   * True when `stream` may occupy a live slot in its community.
+   *
+   * Shared by the two paths that flip a stream to LIVE. Excludes the stream's
+   * own row, so a RECONNECTING stream resuming does not count itself out. Logs
+   * on refusal: `handlePublish` answers SRS with a bare deny and `markLive`
+   * throws a 409, and neither carries a reason the broadcaster can see, so this
+   * line is the only diagnostic when someone asks why a publish was dropped.
+   */
+  private async isUnderCommunityCap(stream: Livestream): Promise<boolean> {
+    const active = await this.streamRepo.countActiveByCommunity(
+      stream.communityId,
+      stream.id
+    );
+    if (active < env.STREAM_MAX_CONCURRENT_PER_COMMUNITY) return true;
+    logger.warn(
+      `go-live denied for stream id=${stream.id}: community=${stream.communityId} already has ${String(active)} live stream(s), cap=${String(env.STREAM_MAX_CONCURRENT_PER_COMMUNITY)}`
+    );
+    return false;
+  }
+
   private async recordHostViewerJoin(
     streamId: string,
     creatorId: string
@@ -2723,17 +2770,43 @@ export class LivestreamService {
     mutedUntil: number
   ): Promise<void> {
     if (!communityId || !userId) return;
+    await this.relayToPresentStreams(communityId, userId, (streamId) => ({
+      event: isMuted ? "stream:member_muted" : "stream:member_unmuted",
+      data: { streamId, userId, mutedUntil },
+    }));
+  }
 
+  /**
+   * Publish an event to every stream in `communityId` that `userId` is actually
+   * present in (as a viewer, or as its creator). Shared by the mute and ban
+   * relays, whose bodies were otherwise identical — and which both used to ask
+   * for `status: "LIVE"` alone.
+   *
+   * That exact-match filter is the bug this closes: a stream whose publisher is
+   * mid-blip sits in RECONNECTING, so it was excluded, and a member banned or
+   * muted during a reconnect was never kicked and never told. Every other
+   * consumer in the service counts RECONNECTING as still-going; this asks for
+   * the same `LIVE_STATUSES` set rather than one status, so it cannot drift
+   * again.
+   *
+   * Best-effort throughout — a relay failure must never fail the
+   * community-service caller that triggered the moderation action.
+   */
+  private async relayToPresentStreams(
+    communityId: string,
+    userId: string,
+    build: (streamId: string) => { event: string; data: unknown }
+  ): Promise<void> {
     let liveStreams: StreamView[];
     try {
       ({ items: liveStreams } = await this.listStreamsInternal({
         communityId,
-        status: "LIVE",
+        status: LIVE_STATUSES,
         limit: 50,
       }));
     } catch (error) {
       logger.warn(
-        `broadcastMuteStatusForCommunity: listStreams failed for community=${communityId}: ${String(error)}`
+        `relayToPresentStreams: listStreams failed for community=${communityId}: ${String(error)}`
       );
       return;
     }
@@ -2753,14 +2826,11 @@ export class LivestreamService {
       try {
         await this.redis.publish(
           `stream:${stream.id}`,
-          JSON.stringify({
-            event: isMuted ? "stream:member_muted" : "stream:member_unmuted",
-            data: { streamId: stream.id, userId, mutedUntil },
-          })
+          JSON.stringify(build(stream.id))
         );
       } catch (error) {
         logger.warn(
-          `mute status broadcast failed for stream=${stream.id}: ${String(error)}`
+          `relayToPresentStreams: publish failed for stream=${stream.id}: ${String(error)}`
         );
       }
     }
@@ -2845,47 +2915,10 @@ export class LivestreamService {
     isBanned: boolean
   ): Promise<void> {
     if (!communityId || !userId || !isBanned) return;
-
-    let liveStreams: StreamView[];
-    try {
-      ({ items: liveStreams } = await this.listStreamsInternal({
-        communityId,
-        status: "LIVE",
-        limit: 50,
-      }));
-    } catch (error) {
-      logger.warn(
-        `broadcastBanStatusForCommunity: listStreams failed for community=${communityId}: ${String(error)}`
-      );
-      return;
-    }
-
-    for (const stream of liveStreams) {
-      let isPresent = stream.creatorId === userId;
-      if (!isPresent) {
-        try {
-          isPresent =
-            (await this.redis.hexists(sessionKey(stream.id), userId)) === 1;
-        } catch {
-          isPresent = false;
-        }
-      }
-      if (!isPresent) continue;
-
-      try {
-        await this.redis.publish(
-          `stream:${stream.id}`,
-          JSON.stringify({
-            event: "stream:banned",
-            data: { streamId: stream.id, userId },
-          })
-        );
-      } catch (error) {
-        logger.warn(
-          `ban status broadcast failed for stream=${stream.id}: ${String(error)}`
-        );
-      }
-    }
+    await this.relayToPresentStreams(communityId, userId, (streamId) => ({
+      event: "stream:banned",
+      data: { streamId, userId },
+    }));
   }
 
   /**

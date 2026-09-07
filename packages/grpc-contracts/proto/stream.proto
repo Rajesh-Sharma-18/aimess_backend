@@ -202,6 +202,15 @@ message AdminForceEndResponse {
 message DeleteCommentRequest {
   string comment_id   = 1;
   string requester_id = 2;
+  // The stream the caller believes this comment belongs to. Optional on the
+  // wire ("" = not supplied, check skipped) so a gateway and a stream-service
+  // at different versions do not break each other during a rollout.
+  //
+  // Without it the caller's streamId was dropped entirely: the socket handler's
+  // room check became decorative, and the success ack echoed back which stream
+  // an arbitrary commentId belonged to — an existence oracle across communities
+  // the caller cannot see. Mirrors the guard ReportComment already applies.
+  string livestream_id = 3;
 }
 message DeleteCommentResponse {
   bool   success       = 1;

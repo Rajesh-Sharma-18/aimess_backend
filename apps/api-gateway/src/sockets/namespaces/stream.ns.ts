@@ -901,6 +901,11 @@ export function registerStreamNamespace(
             const code = (err as { code?: number }).code;
             if (code === grpcStatus.PERMISSION_DENIED) {
               ackError(callback, "FORBIDDEN", locale);
+            } else if (code === grpcStatus.NOT_FOUND) {
+              // The stream no longer exists (deleted or swept between join and
+              // send). Permanent, so it must not read as the retryable
+              // SERVICE_ERROR the else-branch returns.
+              ackError(callback, "NOT_FOUND", locale);
             } else {
               logger.warn(`/stream stream:comment gRPC error: ${String(err)}`);
               ackError(callback, "SERVICE_ERROR", locale);
@@ -1030,6 +1035,10 @@ export function registerStreamNamespace(
             const result = await streamClient.deleteComment({
               commentId,
               requesterId: userId,
+              // Send the streamId the room check above was performed against.
+              // It used to be dropped here, which made that check decorative
+              // and let the ack reveal which stream any commentId belonged to.
+              livestreamId: streamId,
             });
             ackOk(callback, "SOCKET_STREAM_COMMENT_DELETED", locale, {
               commentId: result.commentId,

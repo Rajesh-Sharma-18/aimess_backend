@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Suite: LivestreamService viewer-tracking integration
  *
  * Covers the service-layer wiring added for the "actual viewers" feature:
@@ -31,6 +31,12 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     findStaleLiveStreams: jest.fn().mockResolvedValue([]),
     findStaleReconnectingStreams: jest.fn().mockResolvedValue([]),
     countActiveByCommunityAndCreator: jest.fn().mockResolvedValue(0),
+    // The community-wide go-live cap. A repo method absent from this fake
+    // throws TypeError into a swallowing catch, so the leg silently no-ops
+    // while the suite still passes — which is how `findStalePendingStreams`
+    // (added below for the same reason) went unnoticed.
+    countActiveByCommunity: jest.fn().mockResolvedValue(0),
+    findStalePendingStreams: jest.fn().mockResolvedValue([]),
     countLiveByCommunity: jest.fn().mockResolvedValue(0),
     adminList: jest.fn().mockResolvedValue([]),
     adminCount: jest.fn().mockResolvedValue(0),
@@ -333,6 +339,124 @@ describe("LivestreamService â€” viewer sessions close out on every ENDED tr
 });
 
 describe("LivestreamService â€” liveness clock seeded at go-live", () => {
+  // env default cap is 5 (STREAM_MAX_CONCURRENT_PER_COMMUNITY). The cap was
+  // only ever checked in createStream, where the new row is PENDING — and
+  // PENDING never occupies a slot by design. So N different creators could each
+  // hold a PENDING row and all publish, putting the community over its cap,
+  // while publishCommunityStreamStarted capped the *reported* count and hid it.
+  // PENDING → LIVE is the transition that actually takes the slot.
+  it("DENIES handlePublish when the community is already at cap", async () => {
+    const stream = makeStream({ status: "PENDING", livedAt: null });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findBySrsName: jest.fn().mockResolvedValue(stream),
+        countActiveByCommunity: jest.fn().mockResolvedValue(5),
+      },
+    });
+
+    await expect(
+      service.handlePublish("key-1", undefined, { secret: "key-1" })
+    ).resolves.toBe(false);
+    expect(streamRepo.updateById).not.toHaveBeenCalled();
+  });
+
+  it("markLive throws STREAM_COMMUNITY_CONCURRENCY_LIMIT at cap", async () => {
+    const stream = makeStream({ status: "PENDING", livedAt: null });
+    const { service } = makeDeps({
+      streamRepo: {
+        findById: jest.fn().mockResolvedValue(stream),
+        countActiveByCommunity: jest.fn().mockResolvedValue(5),
+      },
+    });
+
+    await expect(service.markLive("stream-1", "creator-1")).rejects.toThrow(
+      /STREAM_COMMUNITY_CONCURRENCY_LIMIT/
+    );
+  });
+
+  it("allows the transition below cap", async () => {
+    const stream = makeStream({ status: "PENDING", livedAt: null });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findBySrsName: jest.fn().mockResolvedValue(stream),
+        countActiveByCommunity: jest.fn().mockResolvedValue(4),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({ ...stream, status: "LIVE", livedAt: new Date() }),
+      },
+    });
+
+    await expect(
+      service.handlePublish("key-1", undefined, { secret: "key-1" })
+    ).resolves.toBe(true);
+    expect(streamRepo.updateById).toHaveBeenCalled();
+  });
+
+  it("excludes the transitioning stream from its own count", async () => {
+    // The trap: countActiveByCommunity counts LIVE *and* RECONNECTING, so a
+    // stream resuming from a blip is already counted by its own row. Without
+    // the exclusion, a community at cap would deny every reconnect — killing
+    // healthy broadcasts, which is worse than the bug being fixed.
+    const stream = makeStream({ status: "PENDING", livedAt: null });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findBySrsName: jest.fn().mockResolvedValue(stream),
+        countActiveByCommunity: jest.fn().mockResolvedValue(0),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({ ...stream, status: "LIVE", livedAt: new Date() }),
+      },
+    });
+
+    await service.handlePublish("key-1", undefined, { secret: "key-1" });
+
+    expect(streamRepo.countActiveByCommunity).toHaveBeenCalledWith(
+      "comm-1",
+      "stream-1"
+    );
+  });
+
+  it("lets a RECONNECTING stream resume in a community at cap", async () => {
+    // Same trap end to end: the resuming row is one of the five, so excluding
+    // it leaves four — under the cap.
+    const stream = makeStream({
+      status: "RECONNECTING",
+      disconnectedAt: new Date(),
+    });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findBySrsName: jest.fn().mockResolvedValue(stream),
+        countActiveByCommunity: jest.fn().mockResolvedValue(4),
+        updateById: jest.fn().mockResolvedValue({ ...stream, status: "LIVE" }),
+      },
+    });
+
+    await expect(
+      service.handlePublish("key-1", "client-a", { secret: "key-1" })
+    ).resolves.toBe(true);
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({ status: "LIVE" })
+    );
+  });
+
+  it("never re-checks the cap for an already-LIVE stream", async () => {
+    // A duplicate on_publish short-circuits before either guard, so a stream
+    // already on air can never be denied by the cap.
+    const stream = makeStream({ status: "LIVE" });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findBySrsName: jest.fn().mockResolvedValue(stream),
+        countActiveByCommunity: jest.fn().mockResolvedValue(99),
+      },
+    });
+
+    await expect(
+      service.handlePublish("key-1", undefined, { secret: "key-1" })
+    ).resolves.toBe(true);
+    expect(streamRepo.countActiveByCommunity).not.toHaveBeenCalled();
+  });
+
   // Why this matters: findStaleLiveStreams can only match a row whose
   // `lastHeartbeatAt` is PRESENT. Prisma omits an unset optional field and
   // `{field: null}` does not match an absent one, so a stream that went LIVE

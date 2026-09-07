@@ -11,6 +11,7 @@ import {
   mediaRateLimiter,
   readRateLimiter,
   searchRateLimiter,
+  streamRateLimiter,
 } from "../../middleware/rate-limit.js";
 import { getServicesForVersion } from "../../versioning/registry.js";
 import { env } from "../../config/env.js";
@@ -142,6 +143,15 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   // object-store write, so it is sized like the device-token limiter rather
   // than like a read. It previously had none at all.
   v1Router.use("/media", mediaRateLimiter);
+
+  // Livestream REST had no limiter of its own — only the global backstop. Must
+  // be registered BEFORE the generic service-proxy loop below: the proxy
+  // terminates the response and never calls next(), so anything mounted after
+  // it never runs. Gated the same way the proxy itself is (see registry.ts), so
+  // the two cannot disagree about whether the segment exists.
+  if (env.STREAM_SERVICE_URL) {
+    v1Router.use("/streams", streamRateLimiter);
+  }
 
   // Forgot-password has its own, tighter bucket (10 per 15 min) rather than
   // sharing the 20-per-15-min credential bucket: users legitimately retry
