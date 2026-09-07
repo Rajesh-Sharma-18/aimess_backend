@@ -55,6 +55,13 @@ export const COMMON_MESSAGES = {
     en: "The pagination cursor is not valid. Please start the search again.",
     th: "เคอร์เซอร์การแบ่งหน้าไม่ถูกต้อง กรุณาเริ่มค้นหาใหม่",
   },
+  // HTTP 400 — a search backend refused the request this route built (a contract
+  // mismatch, not an outage). Non-retryable on purpose: replaying cannot help.
+  SEARCH_REQUEST_REJECTED: {
+    vi: "Không thể thực hiện tìm kiếm này. Vui lòng thử từ khóa khác.",
+    en: "This search could not be run. Please try a different term.",
+    th: "ไม่สามารถดำเนินการค้นหานี้ได้ กรุณาลองคำค้นอื่น",
+  },
   // HTTP 503 — every search backend failed for this request.
   SEARCH_UNAVAILABLE: {
     vi: "Không thể tìm kiếm lúc này. Vui lòng thử lại sau giây lát.",

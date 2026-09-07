@@ -159,11 +159,14 @@ async function fetchJson(url: string, req: Request): Promise<Fetched> {
       code?: unknown;
     } | null;
     if (!res.ok) {
-      return {
-        ok: false,
-        status: res.status,
-        code: typeof body?.code === "string" ? body.code : null,
-      };
+      const code = typeof body?.code === "string" ? body.code : null;
+      // Logged, not swallowed: a non-ok leg becomes an empty category or a 503,
+      // and without this line there is nothing anywhere saying which downstream
+      // refused or why — the failure is indistinguishable from "no matches".
+      logger.warn(
+        `[search] downstream ${res.status}${code ? ` ${code}` : ""} for ${url}`
+      );
+      return { ok: false, status: res.status, code };
     }
     return { ok: true, data: body?.data ?? null };
   } catch (err) {
@@ -329,6 +332,21 @@ searchRouter.get(
       // an empty category — emptying it silently is how a scroll dies mid-list.
       if (result.status === 400 && sentCursor.has(leg)) {
         throw new BadRequestError("INVALID_CURSOR");
+      }
+      // Any other 4xx means the leg REFUSED the request this route built — a
+      // contract mismatch, not an outage. It used to fall through to the 503
+      // below, which is declared retryable, so the client replayed a request
+      // that could never succeed: one bad `limit` became a burst. Surfaced with
+      // the leg's own code so the cause is in the response, not just the log.
+      if (result.status !== null && result.status >= 400 && result.status < 500) {
+        logger.error(
+          `[search] leg "${leg}" rejected the request: ${result.status}${result.code ? ` ${result.code}` : ""}`
+        );
+        throw new BadRequestError(
+          result.code && CODE_LIKE.test(result.code)
+            ? result.code
+            : "SEARCH_REQUEST_REJECTED"
+        );
       }
     }
 

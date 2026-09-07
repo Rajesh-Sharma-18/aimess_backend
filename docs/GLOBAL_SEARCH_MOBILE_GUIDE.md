@@ -622,12 +622,20 @@ Every error uses the platform envelope:
 | 400 | `INVALID_CURSOR` | The cursor could not be read, or was not one this endpoint issued | **Drop the cursor and re-fetch page 1.** Do not surface an error |
 | 401 | `UNAUTHORIZED` | Token rejected | Normal refresh-then-retry; on refresh failure, sign out |
 | 403 | `ACCOUNT_BANNED` | The account is banned | Run the ban teardown — see `BAN_MOBILE_INTEGRATION_GUIDE.md`. **Do not** treat this as a generic sign-out |
+| 400 | any other code, or `SEARCH_REQUEST_REJECTED` | A search backend refused the request — a contract mismatch, not an outage | **Not** retryable. Replaying cannot help; report it |
 | 429 | — | Rate limited (60/min/session for search, 100/min global) | Back off. Check `Retry-After` |
 | 503 | `SEARCH_UNAVAILABLE` | Every search backend failed, or none could be reached at all | Retryable. Inline retry, keep existing rows |
 
 A 200 always means at least one backend was actually queried — the endpoint
 never answers 200 without calling one. So **an empty `data` array is a genuine
 "no matches"**, never "nothing ran".
+
+**Do not stack retries.** `error.retryable` tells you whether replaying can
+help; only 5xx, 408 and 429 are ever true. If your HTTP client already retries
+transient failures, do **not** also retry at the data/query layer — the two
+multiply, and one 503 becomes a dozen identical requests against a rate limiter
+that is already unhappy. Search is debounced and the user can re-run it by
+typing; one attempt per settled term is the right budget.
 
 **403 is not 401.** A banned user hitting search gets a real 403 with
 `ACCOUNT_BANNED`; routing it into your generic 401 sign-out will wipe the ban
