@@ -13,18 +13,33 @@ import {
 
 import { env } from "../../config/env.js";
 
-// GET /api/v1/search?q=&filter=all|message|community|people&cursor=&limit=
+// GET /api/v1/search?q=&filter=all|message|community|people|group&cursor=&limit=
 // `filter` selects which downstream legs run, so a single-category tab costs one
 // downstream call; `all` fans out to three in parallel with the caller's own
 // bearer token, so every downstream permission gate still applies. Rows are
 // passed through verbatim — this route adds a fan-out and a cursor, not a new
 // row contract. Each leg owns its opaque cursor codec; `all` wraps all three.
+//
+// `people` and `group` are two FILTERS over ONE leg: user-service's response
+// already carries both kinds in its `chat`/`other` arrays, discriminated by
+// `type`, so partitioning them here costs nothing. They are not two legs, and
+// asking for groups must never become a second downstream call.
 
 const SCAN_TIMEOUT_MS = 5000;
 
 type Leg = "message" | "community" | "people";
 
 const ALL_LEGS: Leg[] = ["message", "community", "people"];
+
+type Filter = Leg | "group";
+
+// Which leg serves a single-category tab, and which row type it keeps.
+const FILTER_LEG: Record<Filter, Leg> = {
+  message: "message",
+  community: "community",
+  people: "people",
+  group: "people",
+};
 
 // Composite-cursor key per leg. Absent = not started, null = exhausted, string = resume.
 const LEG_KEY: Record<Leg, "m" | "c" | "p"> = {
@@ -42,7 +57,9 @@ const CODE_LIKE = /^[A-Z][A-Z0-9_]*$/;
 
 const searchQuerySchema = z.object({
   q: z.string().trim().min(1).max(100),
-  filter: z.enum(["all", "message", "community", "people"]).default("all"),
+  filter: z
+    .enum(["all", "message", "community", "people", "group"])
+    .default("all"),
   // Opaque: EITHER one leg's own cursor (single-filter, forwarded untouched) or
   // the composite `all` token below. 2048 caps the composite, which carries three.
   cursor: z.string().trim().min(1).max(2048).optional(),
@@ -61,7 +78,21 @@ type SearchItem =
       id: string;
       bucket: "chat" | "other";
       person: Record<string, unknown>;
+    }
+  | {
+      type: "group";
+      id: string;
+      bucket: "chat" | "other";
+      group: Record<string, unknown>;
     };
+
+// The row type each single-category filter keeps out of its leg's page.
+const FILTER_ITEM_TYPE: Record<Filter, SearchItem["type"]> = {
+  message: "message",
+  community: "community",
+  people: "person",
+  group: "group",
+};
 
 interface LegPage {
   rows: SearchItem[];
@@ -78,8 +109,7 @@ const encodeAllCursor = (legs: {
   m: string | null | undefined;
   c: string | null | undefined;
   p: string | null | undefined;
-}): string =>
-  Buffer.from(JSON.stringify(legs), "utf8").toString("base64url");
+}): string => Buffer.from(JSON.stringify(legs), "utf8").toString("base64url");
 
 // A cursor this route cannot read is a 400, never a silent page 1 — the silent
 // restart is what makes infinite scroll re-serve the first page forever.
@@ -228,6 +258,13 @@ function communityPage(fetched: Fetched | undefined): LegPage {
 // user-service leg: { chat?, other, hasMore, nextCursor }. `chat` is a bounded
 // head with no cursor of its own, served on the first page only, so it rides on
 // top of the quota rather than being sliced — no later page can return it again.
+//
+// Both arrays mix USER and GROUP rows, discriminated by the row's own `type`.
+// They are split here into two ROW types rather than all being stamped
+// `type: "person"` — a group stamped as a person is a row no client can render
+// as either: the people list drops it for not being a user, and the group list
+// never sees it. `id` is likewise read from the field that row kind actually
+// has, not from a userId-or-roomId fallback that hides which one answered.
 function peoplePage(fetched: Fetched | undefined): LegPage {
   if (!fetched?.ok) return EMPTY_PAGE;
   const body = fetched.data as {
@@ -235,19 +272,23 @@ function peoplePage(fetched: Fetched | undefined): LegPage {
     other?: unknown;
     nextCursor?: unknown;
   } | null;
-  const toPerson =
+  const toItem =
     (bucket: "chat" | "other") =>
-    (row: Record<string, unknown>): SearchItem => ({
-      type: "person",
-      id: str(row.userId) || str(row.roomId),
-      bucket,
-      person: row,
-    });
+    (row: Record<string, unknown>): SearchItem =>
+      row.type === "GROUP"
+        ? { type: "group", id: str(row.roomId), bucket, group: row }
+        : { type: "person", id: str(row.userId), bucket, person: row };
 
+  // People before groups, so the two categories arrive contiguous rather than
+  // interleaved by whichever bucket they happened to sit in upstream.
+  const rows = [
+    ...asRows(body?.chat).map(toItem("chat")),
+    ...asRows(body?.other).map(toItem("other")),
+  ];
   return {
     rows: [
-      ...asRows(body?.chat).map(toPerson("chat")),
-      ...asRows(body?.other).map(toPerson("other")),
+      ...rows.filter((row) => row.type === "person"),
+      ...rows.filter((row) => row.type === "group"),
     ],
     cursor: cursorOf(body?.nextCursor),
   };
@@ -262,7 +303,8 @@ searchRouter.get(
     if (!req.headers.authorization) throw new UnauthorizedError("UNAUTHORIZED");
 
     const { q, filter, cursor, limit } = req.query as unknown as SearchQuery;
-    const legs: Leg[] = filter === "all" ? ALL_LEGS : [filter];
+    const legs: Leg[] =
+      filter === "all" ? ALL_LEGS : [FILTER_LEG[filter as Filter]];
 
     // No category may consume the page: each leg's downstream `limit` IS its
     // quota, so one busy category cannot starve the other two.
@@ -280,7 +322,7 @@ searchRouter.get(
         ? {}
         : filter === "all"
           ? decodeAllCursor(cursor)
-          : ({ [filter]: cursor } as LegCursors);
+          : ({ [FILTER_LEG[filter as Filter]]: cursor } as LegCursors);
 
     const targets: { leg: Leg; url: string }[] = [];
     // What each leg was actually SENT — the community sentinel means a leg can
@@ -338,7 +380,11 @@ searchRouter.get(
       // below, which is declared retryable, so the client replayed a request
       // that could never succeed: one bad `limit` became a burst. Surfaced with
       // the leg's own code so the cause is in the response, not just the log.
-      if (result.status !== null && result.status >= 400 && result.status < 500) {
+      if (
+        result.status !== null &&
+        result.status >= 400 &&
+        result.status < 500
+      ) {
         logger.error(
           `[search] leg "${leg}" rejected the request: ${result.status}${result.code ? ` ${result.code}` : ""}`
         );
@@ -385,8 +431,13 @@ searchRouter.get(
         (value) => typeof value === "string"
       );
       nextCursor = more ? encodeAllCursor(composite) : null;
+    } else if (filter === "group") {
+      // One page, always. The people leg's cursor walks PEOPLE — groups are a
+      // bounded head that user-service drops on every continuation page — so a
+      // paged group tab would fetch people forever and render nothing.
+      nextCursor = null;
     } else {
-      nextCursor = pages[filter].cursor ?? null;
+      nextCursor = pages[FILTER_LEG[filter as Filter]].cursor ?? null;
     }
     const hasMore = nextCursor !== null;
 
@@ -394,11 +445,18 @@ searchRouter.get(
     // score anywhere on this platform (the message search is $regex, and the
     // projected searchScore it replaced is always 0), so any re-ordering here
     // would be an invented ranking rather than a better one.
-    const data: SearchItem[] = [
+    const rows: SearchItem[] = [
       ...pages.message.rows,
       ...pages.community.rows,
       ...pages.people.rows,
     ];
+    // `people` and `group` share the people leg, so a single-category tab has to
+    // drop the other kind here — without this, the People tab returns groups and
+    // the Group tab returns people.
+    const data: SearchItem[] =
+      filter === "all"
+        ? rows
+        : rows.filter((row) => row.type === FILTER_ITEM_TYPE[filter as Filter]);
 
     return res.status(HTTP_STATUS.OK).json(
       new ApiResponse(
