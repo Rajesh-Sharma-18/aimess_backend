@@ -5,6 +5,7 @@ import { NotFoundError } from "@aimess/errors";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import type {
+  GroupSearchQuery,
   RecordRecentUserSearchBody,
   RemoveRecentUserSearchParams,
   RemoveRecentUserSearchQuery,
@@ -68,3 +69,18 @@ export const searchUsersUnified = asyncHandler(
       .json(new ApiResponse(result, t("USERS_FETCHED", req.locale)));
   }
 );
+
+/**
+ * GET /api/v1/users/search/groups?q=&limit=&cursor=
+ *
+ * Groups the caller ACTIVELY belongs to. A separate endpoint rather than a flag
+ * on the unified search because the two page differently: people walk a keyset,
+ * groups walk an offset over the caller's own membership rows.
+ */
+export const searchGroups = asyncHandler(async (req: Request, res: Response) => {
+  const query = req.query as unknown as GroupSearchQuery;
+  const result = await userSearchService.searchGroups(req.auth.userId, query);
+  return res
+    .status(HTTP_STATUS.OK)
+    .json(new ApiResponse(result, t("USERS_FETCHED", req.locale)));
+});

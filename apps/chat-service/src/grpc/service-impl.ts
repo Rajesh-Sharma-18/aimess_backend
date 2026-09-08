@@ -2784,12 +2784,16 @@ export function createMessagingImpl(
             mode?: string;
             roomIds?: string[];
             limit?: number;
+            skip?: number;
           };
           const viewerId = req.viewerId ?? "";
           const q = req.q || undefined;
           const mode = String(req.mode ?? "ACTIVE").toUpperCase();
           const roomIds = (req.roomIds ?? []).filter(Boolean);
           const limit = Math.min(Math.max(req.limit || 10, 1), 100);
+          // Paged listings only. BY_IDS resolves an explicit set, so an offset
+          // into it would silently drop ids the caller asked for.
+          const skip = Math.max(req.skip || 0, 0);
 
           // Same membership source the unified inbox lists a group from
           // (ACTIVE + LEFT + KICKED, BANNED excluded) — one query, no per-group
@@ -2830,7 +2834,8 @@ export function createMessagingImpl(
             rows = await deps.groupRoomRepo.searchInRoomIds(
               candidateIds,
               q,
-              limit
+              limit,
+              skip
             );
           } else if (mode === "BY_IDS") {
             rows = await deps.groupRoomRepo.findManyByRoomIds(roomIds);
@@ -2838,7 +2843,8 @@ export function createMessagingImpl(
             rows = await deps.groupRoomRepo.searchInRoomIds(
               activeRoomIds,
               q,
-              limit
+              limit,
+              skip
             );
           }
 
@@ -4998,3 +5004,4 @@ export function createNotificationImpl(
     },
   };
 }
+

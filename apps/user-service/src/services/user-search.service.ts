@@ -28,7 +28,10 @@ import {
   decodePeopleCursor,
   encodePeopleCursor,
 } from "../lib/user-search.util.js";
-import type { UnifiedSearchQuery } from "../api/validators/user-search.validator.js";
+import type {
+  GroupSearchQuery,
+  UnifiedSearchQuery,
+} from "../api/validators/user-search.validator.js";
 
 // The store already keeps (and the repository already fetches) the newest 20 per
 // user, so this is purely how many of them the Recent Search list renders.
@@ -375,6 +378,43 @@ export const userSearchService = {
     }
 
     return { recent };
+  },
+
+  /**
+   * Groups the caller is an ACTIVE member of, matching `q`.
+   *
+   * Active membership is decided by chat-service, which derives the candidate
+   * room set from the caller's own ACTIVE membership rows — a group the caller
+   * left, was removed from, or was banned from is never in the set, so it
+   * cannot be filtered back in by a client. One indexed query per page, no
+   * per-group lookup.
+   */
+  async searchGroups(
+    viewerId: string,
+    query: GroupSearchQuery
+  ): Promise<{
+    groups: SearchGroupItem[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const skip = query.cursor ?? 0;
+    // One row past the page: its presence IS `hasMore`, and it is sliced off
+    // before mapping so it never reaches the client.
+    const rows = await messagingGrpcClient.listActiveGroups(
+      viewerId,
+      query.q?.trim() || undefined,
+      query.limit + 1,
+      skip
+    );
+    const page = rows.slice(0, query.limit);
+    const hasMore = rows.length > query.limit;
+    return {
+      // Rows are independent, so the per-row avatar presigns run together
+      // rather than one round-trip after another.
+      groups: await Promise.all(page.map(toGroupItem)),
+      hasMore,
+      nextCursor: hasMore ? String(skip + page.length) : null,
+    };
   },
 
   /**

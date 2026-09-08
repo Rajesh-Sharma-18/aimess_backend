@@ -45,7 +45,7 @@ const sessions = sessionRepository as unknown as Record<string, jest.Mock>;
 const publishRevoked = publishSessionRevokedEvent as unknown as jest.Mock;
 const publishAllRevoked = publishAllSessionsRevokedSafe as unknown as jest.Mock;
 
-const CURRENT = "CurrentPass123";
+const CURRENT = "CurrentPass123!";
 let currentHash: string;
 
 beforeAll(async () => {
@@ -76,7 +76,7 @@ describe("POST /api/auth/change-password", () => {
     const res = await request(app)
       .post("/api/auth/change-password")
       .set(bearer(makeAccessToken()))
-      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456" });
+      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456!" });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -98,7 +98,7 @@ describe("POST /api/auth/change-password", () => {
     const res = await request(app)
       .post("/api/auth/change-password")
       .set(bearer(makeAccessToken()))
-      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456" });
+      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456!" });
 
     expect(res.status).toBe(200);
     expect(publishRevoked.mock.calls.map((call) => call[2])).toEqual([
@@ -119,7 +119,7 @@ describe("POST /api/auth/change-password", () => {
     const res = await request(app)
       .post("/api/auth/change-password")
       .set(bearer(makeAccessToken()))
-      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456" });
+      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456!" });
 
     expect(res.status).toBe(200);
     expect(publishAllRevoked).toHaveBeenCalledTimes(1);
@@ -140,7 +140,7 @@ describe("POST /api/auth/change-password", () => {
       .set(bearer(makeAccessToken()))
       .send({
         currentPassword: "WrongCurrent99",
-        newPassword: "BrandNewPass456",
+        newPassword: "BrandNewPass456!",
       });
 
     expect(repo.revokeSessionsAfterPasswordChange).not.toHaveBeenCalled();
@@ -154,7 +154,7 @@ describe("POST /api/auth/change-password", () => {
       .set(bearer(makeAccessToken()))
       .send({
         currentPassword: "WrongCurrent99",
-        newPassword: "BrandNewPass456",
+        newPassword: "BrandNewPass456!",
       });
 
     expect(res.status).toBe(400);
@@ -181,7 +181,7 @@ describe("POST /api/auth/change-password", () => {
     const res = await request(app)
       .post("/api/auth/change-password")
       .set(bearer(makeAccessToken()))
-      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456" });
+      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456!" });
 
     expect(res.status).toBe(400);
   });
@@ -194,7 +194,7 @@ describe("POST /api/auth/change-password", () => {
     const res = await request(app)
       .post("/api/auth/change-password")
       .set(bearer(makeAccessToken()))
-      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456" });
+      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456!" });
 
     expect(res.status).toBe(401);
   });
@@ -202,7 +202,7 @@ describe("POST /api/auth/change-password", () => {
   it("returns 401 without a token", async () => {
     const res = await request(app)
       .post("/api/auth/change-password")
-      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456" });
+      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456!" });
 
     expect(res.status).toBe(401);
     expect(repo.findByIdForAccountOps).not.toHaveBeenCalled();
@@ -214,7 +214,7 @@ describe("POST /api/auth/change-password", () => {
       { currentPassword: CURRENT, newPassword: "short" },
     ],
     ["missing newPassword", { currentPassword: CURRENT }],
-    ["missing currentPassword", { newPassword: "BrandNewPass456" }],
+    ["missing currentPassword", { newPassword: "BrandNewPass456!" }],
     [
       "new password too long (>128)",
       { currentPassword: CURRENT, newPassword: "a".repeat(129) },

@@ -127,11 +127,15 @@ export class AvatarService {
     }
 
     try {
-      const head = await headObject(storageClient, AVATAR_BUCKET, objectKey);
-      if (!head.exists) {
-        return null;
-      }
-
+      // No existence probe. `headObject` was a MinIO round trip PER ROW, and
+      // every caller here is a list — friends, discovery, recent searches,
+      // search results — so a 20-row page paid 20 sequential-ish round trips
+      // before it could answer. Under the gateway's 5s search timeout that is
+      // what turned a wider `limit` into a 503 rather than a slower page.
+      // Presigning is local HMAC and costs nothing; a key with no object behind
+      // it yields a URL that 404s, which is exactly what an expired presign
+      // already does and what every client already handles. chat-service's
+      // `resolveMediaUrlMap` has always worked this way.
       const expiresIn = env.MINIO_AVATAR_VIEW_EXPIRES_IN;
       const url = await createPresignedViewUrl({
         client: presignClient,

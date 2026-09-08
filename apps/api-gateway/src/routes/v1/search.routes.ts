@@ -22,15 +22,16 @@ import { env } from "../../config/env.js";
 
 const SCAN_TIMEOUT_MS = 5000;
 
-type Leg = "message" | "community" | "people";
+type Leg = "message" | "community" | "people" | "group";
 
-const ALL_LEGS: Leg[] = ["message", "community", "people"];
+const ALL_LEGS: Leg[] = ["message", "community", "people", "group"];
 
 // Composite-cursor key per leg. Absent = not started, null = exhausted, string = resume.
-const LEG_KEY: Record<Leg, "m" | "c" | "p"> = {
+const LEG_KEY: Record<Leg, "m" | "c" | "p" | "g"> = {
   message: "m",
   community: "c",
   people: "p",
+  group: "g",
 };
 
 // Max ObjectId — puts community-service on its `id desc` keyset from row one.
@@ -42,7 +43,9 @@ const CODE_LIKE = /^[A-Z][A-Z0-9_]*$/;
 
 const searchQuerySchema = z.object({
   q: z.string().trim().min(1).max(100),
-  filter: z.enum(["all", "message", "community", "people"]).default("all"),
+  filter: z
+    .enum(["all", "message", "community", "people", "group"])
+    .default("all"),
   // Opaque: EITHER one leg's own cursor (single-filter, forwarded untouched) or
   // the composite `all` token below. 2048 caps the composite, which carries three.
   cursor: z.string().trim().min(1).max(2048).optional(),
@@ -61,7 +64,8 @@ type SearchItem =
       id: string;
       bucket: "chat" | "other";
       person: Record<string, unknown>;
-    };
+    }
+  | { type: "group"; id: string; group: Record<string, unknown> };
 
 interface LegPage {
   rows: SearchItem[];
@@ -78,6 +82,7 @@ const encodeAllCursor = (legs: {
   m: string | null | undefined;
   c: string | null | undefined;
   p: string | null | undefined;
+  g: string | null | undefined;
 }): string =>
   Buffer.from(JSON.stringify(legs), "utf8").toString("base64url");
 
@@ -135,6 +140,10 @@ function legUrl(
       return env.USER_SERVICE_URL
         ? `${trimBase(env.USER_SERVICE_URL)}/api/v1/users/search?q=${encoded}&limit=${limit}${page}`
         : null;
+    case "group":
+      return env.USER_SERVICE_URL
+        ? `${trimBase(env.USER_SERVICE_URL)}/api/v1/users/search/groups?q=${encoded}&limit=${limit}${page}`
+        : null;
   }
 }
 
@@ -159,11 +168,14 @@ async function fetchJson(url: string, req: Request): Promise<Fetched> {
       code?: unknown;
     } | null;
     if (!res.ok) {
-      return {
-        ok: false,
-        status: res.status,
-        code: typeof body?.code === "string" ? body.code : null,
-      };
+      const code = typeof body?.code === "string" ? body.code : null;
+      // Logged, not swallowed: a non-ok leg becomes an empty category or a 503,
+      // and without this line there is nothing anywhere saying which downstream
+      // refused or why — the failure is indistinguishable from "no matches".
+      logger.warn(
+        `[search] downstream ${res.status}${code ? ` ${code}` : ""} for ${url}`
+      );
+      return { ok: false, status: res.status, code };
     }
     return { ok: true, data: body?.data ?? null };
   } catch (err) {
@@ -240,12 +252,37 @@ function peoplePage(fetched: Fetched | undefined): LegPage {
       bucket,
       person: row,
     });
+  // People means people. `/users/search` mixes groups into both buckets for the
+  // mobile clients that have always read it that way, so its contract is left
+  // alone and the split happens HERE — groups reach this endpoint through the
+  // `group` leg, which is ACTIVE-membership only. Without this a "people" page
+  // would keep serving groups, including ones the caller has left.
+  const isGroup = (row: Record<string, unknown>) => str(row.type) === "GROUP";
 
   return {
     rows: [
-      ...asRows(body?.chat).map(toPerson("chat")),
-      ...asRows(body?.other).map(toPerson("other")),
+      ...asRows(body?.chat).filter((row) => !isGroup(row)).map(toPerson("chat")),
+      ...asRows(body?.other).filter((row) => !isGroup(row)).map(toPerson("other")),
     ],
+    cursor: cursorOf(body?.nextCursor),
+  };
+}
+
+// user-service group leg: { groups, hasMore, nextCursor }. ACTIVE membership is
+// decided there (chat-service derives the room set from the caller's own ACTIVE
+// membership rows), so nothing here has to re-check it.
+function groupPage(fetched: Fetched | undefined): LegPage {
+  if (!fetched?.ok) return EMPTY_PAGE;
+  const body = fetched.data as {
+    groups?: unknown;
+    nextCursor?: unknown;
+  } | null;
+  return {
+    rows: asRows(body?.groups).map((row) => ({
+      type: "group",
+      id: str(row.roomId),
+      group: row,
+    })),
     cursor: cursorOf(body?.nextCursor),
   };
 }
@@ -267,10 +304,20 @@ searchRouter.get(
       filter === "all"
         ? {
             message: Math.max(Math.ceil(limit / 2), 1),
-            community: Math.max(Math.ceil(limit / 4), 1),
-            people: Math.max(Math.floor(limit / 4), 1),
+            // Three categories now share the other half. The floor is 4, not
+            // the 3 a preview shows: a client renders three rows and offers
+            // "Show more" only when a fourth came back, so a quota equal to the
+            // preview size would make every category look complete.
+            community: Math.max(Math.ceil(limit / 4), 4),
+            people: Math.max(Math.ceil(limit / 4), 4),
+            group: Math.max(Math.ceil(limit / 4), 4),
           }
-        : { message: limit, community: limit, people: limit };
+        : {
+            message: limit,
+            community: limit,
+            people: limit,
+            group: limit,
+          };
 
     const incoming: LegCursors =
       cursor == null
@@ -330,6 +377,21 @@ searchRouter.get(
       if (result.status === 400 && sentCursor.has(leg)) {
         throw new BadRequestError("INVALID_CURSOR");
       }
+      // Any other 4xx means the leg REFUSED the request this route built — a
+      // contract mismatch, not an outage. It used to fall through to the 503
+      // below, which is declared retryable, so the client replayed a request
+      // that could never succeed: one bad `limit` became a burst. Surfaced with
+      // the leg's own code so the cause is in the response, not just the log.
+      if (result.status !== null && result.status >= 400 && result.status < 500) {
+        logger.error(
+          `[search] leg "${leg}" rejected the request: ${result.status}${result.code ? ` ${result.code}` : ""}`
+        );
+        throw new BadRequestError(
+          result.code && CODE_LIKE.test(result.code)
+            ? result.code
+            : "SEARCH_REQUEST_REJECTED"
+        );
+      }
     }
 
     const answered = [...fetched.values()];
@@ -341,6 +403,7 @@ searchRouter.get(
       message: messagePage(fetched.get("message")),
       community: communityPage(fetched.get("community")),
       people: peoplePage(fetched.get("people")),
+      group: groupPage(fetched.get("group")),
     };
     const outCursor = (leg: Leg): string | null | undefined => {
       if (incoming[leg] === null) return null;
@@ -359,11 +422,12 @@ searchRouter.get(
         m: outCursor("message"),
         c: outCursor("community"),
         p: outCursor("people"),
+        g: outCursor("group"),
       };
       // Only a leg that still holds a cursor extends paging — a failed leg keeps
       // its own, so a blip retries that page instead of truncating the category.
       // A leg that goes on failing alone is the 503 above, not an endless scroll.
-      const more = [composite.m, composite.c, composite.p].some(
+      const more = [composite.m, composite.c, composite.p, composite.g].some(
         (value) => typeof value === "string"
       );
       nextCursor = more ? encodeAllCursor(composite) : null;
@@ -380,6 +444,7 @@ searchRouter.get(
       ...pages.message.rows,
       ...pages.community.rows,
       ...pages.people.rows,
+      ...pages.group.rows,
     ];
 
     return res.status(HTTP_STATUS.OK).json(

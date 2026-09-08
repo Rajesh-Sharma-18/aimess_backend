@@ -57,8 +57,8 @@ jest.mock("ioredis", () => {
 const { RedisRateLimitStore } =
   require("../../src/middleware/redis-rate-limit-store.js") as typeof import("../../src/middleware/redis-rate-limit-store.js");
 
-function makeStore(windowMs = 60_000) {
-  const store = new RedisRateLimitStore();
+function makeStore(windowMs = 60_000, rule = "test.rule") {
+  const store = new RedisRateLimitStore(rule);
   store.init({ windowMs } as never);
   return store;
 }
@@ -96,6 +96,20 @@ describe("RedisRateLimitStore", () => {
     await replicaA.increment("ip:9.9.9.9");
 
     expect((await replicaB.increment("ip:9.9.9.9")).totalHits).toBe(3);
+  });
+
+  it("keeps separate limiters in separate buckets", async () => {
+    // The whole point of the rule prefix. Without it every limiter shared one
+    // counter per IP, so 20 requests of any anonymous kind exhausted
+    // `auth.sensitive` and POST /auth/challenge answered 429 to a browser that
+    // had only loaded the login page.
+    const sensitive = makeStore(60_000, "auth.sensitive");
+    const otp = makeStore(60_000, "auth.otp");
+
+    await sensitive.increment("ip:3.3.3.3");
+    await sensitive.increment("ip:3.3.3.3");
+
+    expect((await otp.increment("ip:3.3.3.3")).totalHits).toBe(1);
   });
 
   it("reports a reset time inside the window", async () => {

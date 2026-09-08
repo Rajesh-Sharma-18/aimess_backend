@@ -190,6 +190,31 @@ export const AUTH_MESSAGES = {
     en: "Password is too long (maximum 50 characters).",
     th: "รหัสผ่านยาวเกินไป (สูงสุด 50 ตัวอักษร)",
   },
+  AUTH_PASSWORD_CONTAINS_SPACE: {
+    vi: "Mật khẩu không được chứa khoảng trắng",
+    en: "Password must not contain spaces.",
+    th: "รหัสผ่านต้องไม่มีช่องว่าง",
+  },
+  AUTH_PASSWORD_NEEDS_UPPERCASE: {
+    vi: "Mật khẩu phải có ít nhất một chữ cái in hoa",
+    en: "Password must contain at least one uppercase letter.",
+    th: "รหัสผ่านต้องมีอักษรพิมพ์ใหญ่อย่างน้อยหนึ่งตัว",
+  },
+  AUTH_PASSWORD_NEEDS_LOWERCASE: {
+    vi: "Mật khẩu phải có ít nhất một chữ cái thường",
+    en: "Password must contain at least one lowercase letter.",
+    th: "รหัสผ่านต้องมีอักษรพิมพ์เล็กอย่างน้อยหนึ่งตัว",
+  },
+  AUTH_PASSWORD_NEEDS_NUMBER: {
+    vi: "Mật khẩu phải có ít nhất một chữ số",
+    en: "Password must contain at least one number.",
+    th: "รหัสผ่านต้องมีตัวเลขอย่างน้อยหนึ่งตัว",
+  },
+  AUTH_PASSWORD_NEEDS_SYMBOL: {
+    vi: "Mật khẩu phải có ít nhất một ký tự đặc biệt",
+    en: "Password must contain at least one special character.",
+    th: "รหัสผ่านต้องมีอักขระพิเศษอย่างน้อยหนึ่งตัว",
+  },
   AUTH_PASSWORD_TOO_COMMON: {
     vi: "Mật khẩu này quá phổ biến. Vui lòng chọn mật khẩu khác",
     en: "This password is too common. Please choose a different one.",

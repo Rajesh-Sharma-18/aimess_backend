@@ -75,6 +75,7 @@ const searchUserGroupsBreaker = makeBreaker(
     mode: "ACTIVE" | "OTHER" | "BY_IDS";
     roomIds?: string[];
     limit: number;
+    skip?: number;
   }) =>
     call<typeof args, { groups?: GroupSummary[] }>("searchUserGroups", {
       viewerId: args.viewerId,
@@ -82,6 +83,10 @@ const searchUserGroupsBreaker = makeBreaker(
       mode: args.mode,
       roomIds: args.roomIds ?? [],
       limit: args.limit,
+      // Explicit, like every other field: this literal is the wire message, so
+      // anything not named here is simply never sent — which is how a paged
+      // caller silently got page one back forever.
+      skip: args.skip ?? 0,
     }).then((r) =>
       (r.groups ?? []).map((g) => ({
         ...g,
@@ -143,11 +148,16 @@ export const messagingGrpcClient = {
     }
   },
 
-  /** Groups the viewer actively belongs to, optionally filtered by name. */
+  /**
+   * Groups the viewer actively belongs to, optionally filtered by name.
+   * `skip` pages that list; chat-service applies it to the same ordering, so a
+   * walk neither repeats nor drops a row.
+   */
   async listActiveGroups(
     viewerId: string,
     q: string | undefined,
-    limit: number
+    limit: number,
+    skip = 0
   ): Promise<GroupSummary[]> {
     try {
       return await searchUserGroupsBreaker.fire({
@@ -155,6 +165,7 @@ export const messagingGrpcClient = {
         q,
         mode: "ACTIVE",
         limit,
+        skip,
       });
     } catch (err) {
       logger.warn(`messaging.searchUserGroups(ACTIVE) failed: ${String(err)}`);
@@ -249,3 +260,4 @@ export const messagingGrpcClient = {
     }
   },
 };
+

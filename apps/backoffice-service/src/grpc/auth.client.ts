@@ -52,6 +52,9 @@ export interface AdminListUsersRequest {
   offset?: number;
   userIds?: string[];
   excludeUserIds?: string[];
+  /** Ids matching the same `search` term in user-service profiles (display
+   * names auth-service does not store). OR-ed with `search`, not AND-ed. */
+  searchUserIds?: string[];
 }
 export interface ActiveUserCounts {
   dailyActive: number;

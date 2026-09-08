@@ -424,6 +424,52 @@ describe("GET /api/v1/search", () => {
     expect(res.body.code).toBe("INVALID_CURSOR");
   });
 
+  // The people tab 503ed in dev and nothing said why: user-service refused the
+  // request and the 4xx fell through to the all-legs-failed branch, which is
+  // declared retryable, so the client replayed a request that could never work.
+  it("surfaces a leg's 4xx as a non-retryable 400 carrying its code", async () => {
+    global.fetch = routeFetch({
+      users: failure(400, "VALIDATION_FAILED"),
+    }) as unknown as typeof fetch;
+
+    const res = await request(app)
+      .get(`${BASE}?q=john&filter=people&limit=20`)
+      .set("authorization", AUTH);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("VALIDATION_FAILED");
+    expect(res.body.error.retryable).toBe(false);
+  });
+
+  it("falls back to a generic code when the leg's 4xx carries none", async () => {
+    global.fetch = routeFetch({
+      users: failure(404),
+    }) as unknown as typeof fetch;
+
+    const res = await request(app)
+      .get(`${BASE}?q=john&filter=people`)
+      .set("authorization", AUTH);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("SEARCH_REQUEST_REJECTED");
+  });
+
+  // A 5xx is a real outage, so it keeps emptying its category rather than
+  // failing the whole request — only the 4xx path above is deterministic.
+  it("still empties a category on a leg 5xx rather than rejecting", async () => {
+    global.fetch = routeFetch({
+      users: failure(500),
+      communities: json(communityEnvelope([{ id: "c1" }], null)),
+      messages: json({ data: [], hasMore: false, nextCursor: null }),
+    }) as unknown as typeof fetch;
+
+    const res = await request(app)
+      .get(`${BASE}?q=john`)
+      .set("authorization", AUTH);
+
+    expect(res.status).toBe(200);
+  });
+
   it("503s when every leg fails", async () => {
     global.fetch = routeFetch({
       users: failure(500),

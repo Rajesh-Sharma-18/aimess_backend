@@ -7,11 +7,12 @@
  * immediately, that made credential stuffing cheap: unaided password choices
  * concentrate on a very short list, and an attacker only has to try that list.
  *
- * The approach is NIST SP 800-63B — length plus a blocklist — rather than
- * composition rules, which push people toward `Password1!`: a string that
- * satisfies "upper, lower, digit, symbol" and sits on every cracking list.
- * Several fixtures in this suite used exactly that shape and had to change,
- * which is the rule doing its job.
+ * As of 2026-09-08 the rules ARE the composition set by product decision:
+ * 8-50 characters, one uppercase, one lowercase, one digit, one symbol, no
+ * whitespace. The trade that buys is named in `lib/password-policy.ts` — it
+ * blesses `Password1!`, which sits on every cracking list, and the blocklist
+ * that would have caught it is disabled. Fixtures here therefore satisfy
+ * composition even where the point of the test is a different rule entirely.
  *
  * Login is deliberately NOT subject to this, so accounts created under the old
  * rule keep signing in; that is asserted here too, because it is the property
@@ -62,6 +63,14 @@ describe("checkPasswordPolicy", () => {
     expect(checkPasswordPolicy(atMax)).toBeNull();
   });
 
+  it("rejects one character over the maximum", () => {
+    // The reported boundary: 50 passes, 51 does not.
+    const overByOne = `Ab3!${"x".repeat(PASSWORD_MAX_LENGTH - 3)}`;
+    expect(overByOne.length).toBe(PASSWORD_MAX_LENGTH + 1);
+    expect(Buffer.byteLength(overByOne)).toBeLessThan(PASSWORD_MAX_BYTES);
+    expect(checkPasswordPolicy(overByOne)).toBe("AUTH_PASSWORD_TOO_LONG");
+  });
+
   it("rejects a password bcrypt would silently truncate", () => {
     // bcrypt stops at 72 bytes. Accepting more meant the tail of a carefully
     // chosen 100-character password was never part of the stored hash, and the
@@ -81,24 +90,90 @@ describe("checkPasswordPolicy", () => {
     expect(checkPasswordPolicy(emoji)).toBe("AUTH_PASSWORD_TOO_LONG");
   });
 
+  /**
+   * The composition set, one rule at a time.
+   *
+   * Each fixture violates EXACTLY ONE rule and satisfies every other, so a
+   * failure names the rule that broke rather than whichever check happens to
+   * run first. The reported examples are used verbatim where they exist.
+   */
   it.each([
-    "password1234",
-    "Password1234",
-    "P@ssw0rd1234",
-    "123456789012",
-    "qwertyuiop12",
-    "iloveyou1234",
-    "aaaaaaaaaaaa",
-  ])("rejects the common choice %s", (value) => {
-    expect(checkPasswordPolicy(value)).toBe("AUTH_PASSWORD_TOO_COMMON");
+    ["test@1234", "AUTH_PASSWORD_NEEDS_UPPERCASE"],
+    ["TEST@1234", "AUTH_PASSWORD_NEEDS_LOWERCASE"],
+    ["Test@abcdef", "AUTH_PASSWORD_NEEDS_NUMBER"],
+    ["Test123456", "AUTH_PASSWORD_NEEDS_SYMBOL"],
+    ["Test @1234", "AUTH_PASSWORD_CONTAINS_SPACE"],
+  ])("rejects %s with %s", (value, failure) => {
+    expect(checkPasswordPolicy(value)).toBe(failure);
   });
 
-  it("sees through the usual decorations", () => {
-    // The whole point of normalising: `P@ssw0rd` is not a different password
-    // from `password` to anyone running a cracking list.
+  it.each(["Test@123", "Test@1234", "Test1234@"])(
+    "accepts %s, which satisfies every rule",
+    (value) => {
+      expect(checkPasswordPolicy(value)).toBeNull();
+    }
+  );
+
+  /**
+   * Whitespace is rejected wherever it sits, and by more than the space bar.
+   *
+   * A tab or newline pasted in from another field is invisible to the person
+   * typing it and just as likely to make the password unreproducible, so the
+   * rule is `\s`, not a literal " ".
+   */
+  it.each([" Test@1234", "Test@1234 ", "Test\t@1234", "Test\n@1234"])(
+    "rejects whitespace anywhere: %j",
+    (value) => {
+      expect(checkPasswordPolicy(value)).toBe("AUTH_PASSWORD_CONTAINS_SPACE");
+    }
+  );
+
+  it("does not let whitespace stand in for the symbol", () => {
+    // " " is not alphanumeric, so a naive `[^A-Za-z0-9]` symbol test would
+    // have called `Test 1234` compliant on that rule. Ordering the whitespace
+    // check first is what prevents it, and the symbol pattern excludes `\s`
+    // as a second line of defence.
+    expect(checkPasswordPolicy("Test 1234")).toBe(
+      "AUTH_PASSWORD_CONTAINS_SPACE"
+    );
+    expect(checkPasswordPolicy("Test1234")).toBe("AUTH_PASSWORD_NEEDS_SYMBOL");
+  });
+
+  /**
+   * The blocklist rule is DISABLED by product decision (see
+   * `checkPasswordPolicy`), so the policy now ACCEPTS every one of these.
+   * Asserted deliberately rather than deleted: if the enforcement is ever
+   * re-enabled, this test fails and says so, instead of the change landing
+   * silently.
+   */
+  it.each([
+    "Password1234!",
+    "P@ssw0rd1234!",
+    "Qwertyuiop12!",
+    "Iloveyou1234!",
+    // The reported case.
+    "Test@1234",
+  ])("no longer rejects the common choice %s", (value) => {
+    // Each of these is on the blocklist AND satisfies composition, so the only
+    // rule that could refuse it is the disabled one.
+    expect(isCommonPassword(value) || value === "Test@1234").toBe(true);
+    expect(checkPasswordPolicy(value)).toBeNull();
+  });
+
+  it("still SEES through the usual decorations, it just no longer acts on it", () => {
+    // `isCommonPassword` is kept intact so re-enabling the rule is a one-line
+    // revert. The whole point of normalising: `P@ssw0rd` is not a different
+    // password from `password` to anyone running a cracking list.
     expect(isCommonPassword("P@ssw0rd!")).toBe(true);
     expect(isCommonPassword("PASSWORD123")).toBe(true);
     expect(isCommonPassword("l3tm3in")).toBe(true);
+    // A single repeated character and a straight run off the number row are
+    // still detected. Neither can satisfy composition, so they are asserted
+    // through the detector rather than through the policy.
+    expect(isCommonPassword("aaaaaaaaaaaa")).toBe(true);
+    expect(isCommonPassword("123456789012")).toBe(true);
+    // ...and the policy lets the blocklist hits it CAN reach through anyway.
+    expect(checkPasswordPolicy("P@ssw0rd!")).toBeNull();
   });
 
   /**
@@ -112,7 +187,7 @@ describe("checkPasswordPolicy", () => {
    * simply no longer consulted.
    */
   it("accepts a password built from the account name (rule disabled)", () => {
-    expect(checkPasswordPolicy("johndoe-is-here", "johndoe")).toBeNull();
+    expect(checkPasswordPolicy("Johndoe-is-here1", "johndoe")).toBeNull();
     // The detector still works, so re-enabling is a one-line change.
     expect(containsIdentifier("MyJohnDoePass1", "johndoe")).toBe(true);
   });
@@ -150,10 +225,17 @@ describe("registerSchema", () => {
     ).toBe(true);
   });
 
-  it("rejects the classic composition-rule password", () => {
+  /**
+   * That the schema applies `checkPasswordPolicy` at all.
+   *
+   * It probes the LENGTH rule. It used to probe the blocklist with
+   * `Password123` — the classic composition-rule password — but that rule is
+   * disabled as of 2026-09-08, so the schema now accepts it.
+   */
+  it("rejects a password the creation policy refuses", () => {
     const result = registerSchema.safeParse({
       account: "johndoe",
-      password: "Password123",
+      password: "Sh0rt-P",
     });
 
     expect(result.success).toBe(false);
@@ -169,7 +251,7 @@ describe("registerSchema", () => {
   it("accepts a password containing the account being registered (rule disabled)", () => {
     const result = registerSchema.safeParse({
       account: "johndoe",
-      password: "johndoe-secret-1",
+      password: "Johndoe-secret-1",
     });
 
     expect(result.success).toBe(true);
@@ -192,7 +274,7 @@ describe("changePasswordSchema", () => {
   it("applies the creation policy to the NEW password", () => {
     const result = changePasswordSchema.safeParse({
       currentPassword: "old8char",
-      newPassword: "password1234",
+      newPassword: "Sh0rt-P",
     });
 
     expect(result.success).toBe(false);
@@ -222,17 +304,20 @@ describe("POST /api/auth/register (end to end)", () => {
    * key-shaped Zod message through the message catalogue. The distinguishing
    * property this test exists for is unchanged — each rule still produces its
    * own identifiable text — only the form it takes is now user-readable.
+   *
+   * It probes the LENGTH rule. It used to probe the blocklist, which is
+   * disabled as of 2026-09-08 and now answers nothing at all.
    */
   it("answers 400 naming the specific policy failure, in readable copy", async () => {
     const app = (await import("../../src/app.js")).default;
 
     const res = await request(app)
       .post("/api/auth/register")
-      .send({ account: "policyprobe", password: "password1234" });
+      .send({ account: "policyprobe", password: "Sh0rt-P" });
 
     expect(res.status).toBe(400);
     expect(res.body.error.details.password).toEqual([
-      "This password is too common. Please choose a different one.",
+      "Password must be at least 8 characters.",
     ]);
     // The raw key must never reach a client again.
     expect(JSON.stringify(res.body)).not.toContain("AUTH_PASSWORD_");

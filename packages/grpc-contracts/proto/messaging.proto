@@ -173,6 +173,10 @@ message SearchUserGroupsRequest {
   // own active-membership rooms.
   repeated string room_ids  = 4;
   int32           limit     = 5;
+  // ACTIVE/OTHER: rows to skip before `limit`, so a caller can page a viewer's
+  // group list. Absent/0 is the first page, which is what every existing caller
+  // sends — proto3 default, so no caller had to change.
+  int32           skip      = 6;
 }
 message GroupSummaryDto {
   string room_id          = 1;

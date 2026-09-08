@@ -45,6 +45,7 @@ function baseParams(
     offset: 0,
     userIds: [] as string[],
     excludeUserIds: [] as string[],
+    searchUserIds: [] as string[],
     ...overrides,
   };
 }
@@ -126,6 +127,32 @@ describe("adminUsersRepository.adminListUsers — status filter + malformed-id g
 
     const where = mockFindMany.mock.calls[0][0].where;
     expect(where).toEqual({});
+  });
+
+  it("searchUserIds is OR-ed into the search fragment, not AND-ed (display-name search)", async () => {
+    await adminUsersRepository.adminListUsers(
+      baseParams({ search: "john", searchUserIds: [REAL_UUID_1, SEED_ID] })
+    );
+
+    const where = mockFindMany.mock.calls[0][0].where;
+    expect(where.AND).toEqual([
+      {
+        OR: [
+          { email: { contains: "john", mode: "insensitive" } },
+          { account: { contains: "john", mode: "insensitive" } },
+          { id: { in: [REAL_UUID_1] } },
+        ],
+      },
+    ]);
+  });
+
+  it("searchUserIds alone (term matches no email/account) still filters", async () => {
+    await adminUsersRepository.adminListUsers(
+      baseParams({ search: "", searchUserIds: [REAL_UUID_1] })
+    );
+
+    const where = mockFindMany.mock.calls[0][0].where;
+    expect(where.AND).toEqual([{ OR: [{ id: { in: [REAL_UUID_1] } }] }]);
   });
 
   it("search + status combine as separate AND fragments", async () => {

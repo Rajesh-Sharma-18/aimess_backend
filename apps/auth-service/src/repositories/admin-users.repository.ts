@@ -28,6 +28,12 @@ export interface AdminListUsersParams {
   offset: number;
   userIds: string[];
   excludeUserIds: string[];
+  /**
+   * Ids that already matched the same `search` term upstream, in a store this
+   * service cannot see (user-service profiles: username / first / last name).
+   * OR-ed into the search fragment — NOT AND-ed like `userIds`, which narrows.
+   */
+  searchUserIds: string[];
 }
 
 /**
@@ -111,15 +117,23 @@ export const adminUsersRepository = {
   ): Promise<{ users: AuthUser[]; total: number }> {
     const and: Prisma.AuthUserWhereInput[] = [];
 
-    // search: case-insensitive contains over email + account.
+    // search: case-insensitive contains over email + account, OR-ed with any
+    // ids the caller already resolved from the same term elsewhere (display
+    // names live in user-service, not here — see AdminListUsersParams).
     const search = params.search.trim();
-    if (search) {
-      and.push({
-        OR: [
+    const searchUserIds = params.searchUserIds.filter(isUuid);
+    if (search || searchUserIds.length > 0) {
+      const or: Prisma.AuthUserWhereInput[] = [];
+      if (search) {
+        or.push(
           { email: { contains: search, mode: "insensitive" } },
-          { account: { contains: search, mode: "insensitive" } },
-        ],
-      });
+          { account: { contains: search, mode: "insensitive" } }
+        );
+      }
+      if (searchUserIds.length > 0) {
+        or.push({ id: { in: searchUserIds } });
+      }
+      and.push({ OR: or });
     }
 
     // status: OR the per-status fragments for the recognised values.
