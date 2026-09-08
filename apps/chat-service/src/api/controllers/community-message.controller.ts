@@ -1035,19 +1035,27 @@ export class CommunityMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { data: [], hasMore: false, nextCursor: null },
+            { data: [], hasMore: false, nextCursor: null, totalCount: 0 },
             t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
           )
         );
       return;
     }
-    const result = await this.service.searchMessages({
-      roomId,
-      userId,
-      query,
-      limit,
-      cursor,
-    });
+    // The counter reads "n of TOTAL", so the total is the whole room's match count,
+    // not this page's. Counted on the FIRST page only — a cursor page is a
+    // continuation of a result set whose total the client already holds.
+    const [result, totalCount] = await Promise.all([
+      this.service.searchMessages({
+        roomId,
+        userId,
+        query,
+        limit,
+        cursor,
+      }),
+      cursor
+        ? Promise.resolve(null)
+        : this.service.countSearchResults(roomId, query, userId),
+    ]);
     const data = result.messages.map((m) => ({
       ...m,
       searchScore: result.scores.get((m as { id: string }).id) ?? 0,
@@ -1055,14 +1063,17 @@ export class CommunityMessageController {
     const msg = data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
-    res
-      .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(
-          { data, hasMore: result.hasMore, nextCursor: result.nextCursor },
-          msg
-        )
-      );
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          data,
+          hasMore: result.hasMore,
+          nextCursor: result.nextCursor,
+          ...(totalCount !== null ? { totalCount } : {}),
+        },
+        msg
+      )
+    );
   });
 
   pinMessage = asyncHandler(async (req: Request, res: Response) => {

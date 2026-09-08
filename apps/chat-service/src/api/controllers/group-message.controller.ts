@@ -796,19 +796,27 @@ export class GroupMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { data: [], hasMore: false, nextCursor: null },
+            { data: [], hasMore: false, nextCursor: null, totalCount: 0 },
             t("CHAT_NO_MESSAGES_FOUND", req.locale)
           )
         );
       return;
     }
-    const result = await this.messageService.searchMessages({
-      roomId,
-      userId,
-      query,
-      limit,
-      cursor,
-    });
+    // The counter reads "n of TOTAL", so the total is the whole room's match count,
+    // not this page's. Counted on the FIRST page only — a cursor page is a
+    // continuation of a result set whose total the client already holds.
+    const [result, totalCount] = await Promise.all([
+      this.messageService.searchMessages({
+        roomId,
+        userId,
+        query,
+        limit,
+        cursor,
+      }),
+      cursor
+        ? Promise.resolve(null)
+        : this.messageService.countSearchResults(roomId, query, userId),
+    ]);
     const wire = await this.messageService.enrichForWire(
       result.messages,
       userId
@@ -820,14 +828,17 @@ export class GroupMessageController {
     const msg = data.length
       ? t("CHAT_MESSAGES_SEARCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
-    res
-      .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(
-          { data, hasMore: result.hasMore, nextCursor: result.nextCursor },
-          msg
-        )
-      );
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          data,
+          hasMore: result.hasMore,
+          nextCursor: result.nextCursor,
+          ...(totalCount !== null ? { totalCount } : {}),
+        },
+        msg
+      )
+    );
   });
 
   forwardMessage = asyncHandler(async (req: Request, res: Response) => {
