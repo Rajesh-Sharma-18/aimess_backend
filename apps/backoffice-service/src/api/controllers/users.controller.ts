@@ -23,6 +23,7 @@ import type {
   SuspendUserInput,
   UnbanUserInput,
   UserReportsQueryInput,
+  UserDevicesQueryInput,
 } from "../validators/index.js";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
@@ -109,6 +110,38 @@ export const listUserReports: RequestHandler = (req, res, next) => {
             result.data,
             result.pagination,
             t("ADMIN_USER_REPORTS_FETCHED", req.locale)
+          )
+        );
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * GET /v1/users/:userId/devices — "Linked Devices" on the user detail screen.
+ *
+ * Gated on USERS_VIEW like the rest of the detail bundle, and scoped to the
+ * `:userId` in the path: the repository passes it straight into auth-service's
+ * own where clause, so there is no filter here that a crafted query could slip
+ * past.
+ */
+export const listUserDevices: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const userId = req.params.userId as string;
+      const { page, limit } = req.query as unknown as UserDevicesQueryInput;
+      const result = await userManagementService.listUserDevices(userId, {
+        page,
+        limit,
+      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_USER_DEVICES_FETCHED", req.locale)
           )
         );
     } catch (error) {

@@ -8,7 +8,7 @@ import {
 import { validateBody } from "../middleware/validate-body.js";
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
 import {
-  qrGenerationRateLimiter,
+  qrResultPollRateLimiter,
   qrScanRateLimiter,
 } from "../../middleware/rate-limiters.js";
 import {
@@ -35,7 +35,10 @@ deviceLinkRoutes.post(
  */
 deviceLinkRoutes.post(
   "/devices/link/result",
-  qrGenerationRateLimiter,
+  // A poll-sized limiter. This was mounted on `qrGenerationRateLimiter`
+  // (5/minute, named for GENERATING a QR) even though the browser polls it
+  // every 2s, so the QR started answering 429 about ten seconds in.
+  qrResultPollRateLimiter,
   validateBody(deviceLinkResultSchema),
   getDeviceLinkResult
 );

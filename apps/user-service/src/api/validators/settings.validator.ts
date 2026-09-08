@@ -14,8 +14,9 @@ const viewProfileScopeSchema = z.enum([
   "FRIENDS",
   "NO_ONE",
 ]);
+// EVERYONE is deliberately absent: it is retired as a selectable call scope, so a
+// client sending it is rejected rather than silently reopening calls to non-friends.
 const callPrivacyScopeSchema = z.enum([
-  "EVERYONE",
   "FRIENDS",
   "SELECTED_FRIENDS",
   "NO_ONE",

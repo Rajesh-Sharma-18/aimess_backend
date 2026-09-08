@@ -166,7 +166,9 @@ function createLimiter({ rule, windowMs, max, scope, skip }: LimiterSpec) {
     // is what the test harness and a single-process local run want. Production
     // cannot select it — see the boot assertion in config/env.ts.
     store:
-      env.RATE_LIMIT_STORE === "redis" ? new RedisRateLimitStore() : undefined,
+      env.RATE_LIMIT_STORE === "redis"
+        ? new RedisRateLimitStore(rule)
+        : undefined,
     standardHeaders: "draft-7",
     legacyHeaders: false,
     skip,
@@ -212,6 +214,31 @@ function skipRateLimit(req: Request): boolean {
     // its on_publish denied.
     path.startsWith("/internal/srs")
   );
+}
+
+/**
+ * Keep the broadcaster's own keep-alive traffic out of the `/streams` bucket.
+ *
+ * Neither endpoint is itself a flood risk — the heartbeat is ~2 req/min. The
+ * risk is the bucket being SESSION-scoped and shared with everything else the
+ * same client sends to `/streams`: comment paging, viewer polling, moderation.
+ * A viewer-heavy session could exhaust it and starve the host's heartbeat, and
+ * a dropped heartbeat is not a retried read — `STREAM_HEARTBEAT_TIMEOUT_MS`
+ * elapses and the sweeper ENDS THE BROADCAST. That is a worse outcome than the
+ * abuse the limiter exists to bound, so these two sit outside it entirely and
+ * fall back to the global backstop, which is where they already were.
+ *
+ * `req.path` here is MOUNT-RELATIVE: under `v1Router.use("/streams", …)` a
+ * heartbeat arrives as `/<streamId>/heartbeat`, not the full request path. The
+ * `startsWith` style used by `skipRateLimit` below would therefore match
+ * nothing at all — silently doing the opposite of what it claims.
+ *
+ * `endsWith`, never `includes`: a substring test is a bypass any caller can
+ * construct, which is the same trap called out in `skipRateLimit`.
+ */
+function skipStreamRateLimit(req: Request): boolean {
+  const path = req.path ?? "";
+  return path.endsWith("/heartbeat") || path.endsWith("/quality");
 }
 
 /**
@@ -361,4 +388,22 @@ export const searchRateLimiter = createLimiter({
   windowMs: 60 * 1000,
   max: env.SEARCH_RATE_LIMIT_MAX,
   scope: "session",
+});
+
+/**
+ * Livestream REST surface (`/api/v1/streams/*`), which had no limiter at all —
+ * only the global backstop, shared with every other call the same user makes.
+ * Unmetered until now: `GET /streams/:id/comments` (up to 100 rows plus a
+ * user-service enrichment round trip per page), `GET /streams/:id/viewers` (a
+ * whole-hash read plus a bulk snapshot), and every moderation endpoint (a gRPC
+ * round trip to community-service each).
+ *
+ * The publisher's own keep-alive traffic is EXEMPT — see `skipStreamRateLimit`.
+ */
+export const streamRateLimiter = createLimiter({
+  rule: "stream",
+  windowMs: 60 * 1000,
+  max: env.STREAM_RATE_LIMIT_MAX,
+  scope: "session",
+  skip: skipStreamRateLimit,
 });

@@ -176,6 +176,16 @@ describe("PATCH /api/v1/users/settings/me", () => {
     );
   });
 
+  it("returns 400 when whoCanCallMe is the retired EVERYONE scope", async () => {
+    const res = await request(app)
+      .patch("/api/v1/users/settings/me")
+      .set(auth())
+      .send({ privacy: { whoCanCallMe: "EVERYONE" } });
+
+    expect(res.status).toBe(400);
+    expect(repo.updateSettings).not.toHaveBeenCalled();
+  });
+
   it("returns 400 when the call allow-list includes the caller's own id", async () => {
     const res = await request(app)
       .patch("/api/v1/users/settings/me")

@@ -17,7 +17,10 @@ import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import { publishConvEffectiveLastLoss } from "../../events/publish-effective-last-loss.js";
 import { recalcConvAfterSystemLineRetraction } from "../../events/recalc-conv-after-retraction.js";
-import { unpinAfterDelete } from "../../lib/pin-after-delete.js";
+import {
+  unpinAfterDelete,
+  type UnpinAfterDeleteResult,
+} from "../../lib/pin-after-delete.js";
 import {
   autoDeleteWireFields,
   buildChatMessageEvent,
@@ -377,12 +380,15 @@ export class PrivateMessageController {
     // The recalculation below must therefore run AFTER it — a recalc racing the
     // retraction re-points the snapshot at a line that is about to be
     // tombstoned, and the list then previews a deleted message forever.
-    let pinCleanup: Promise<void> = Promise.resolve();
+    let pinCleanup: Promise<UnpinAfterDeleteResult> = Promise.resolve({
+      hiddenSystemLineSeq: 0,
+    });
     if (result.roomId) {
       pinCleanup = unpinAfterDelete({
         redis: this.redis,
         pinService: this.pinService,
         kind: "DIRECT",
+        directType: "PRIVATE",
         roomId: result.roomId,
         messageId,
         userId,
@@ -487,11 +493,20 @@ export class PrivateMessageController {
     // one they just hid. The shared room snapshot is NOT changed — the other
     // participant keeps seeing the original last message.
     if (type !== "forEveryone" && result.roomId) {
-      void this.messageService
-        .recalculateLastMessageAfterDeleteForMe(
-          result.roomId,
-          result.sequenceNumber ?? 0,
-          userId
+      // AFTER the pin hook, same reason as the forEveryone branch: on a
+      // delete-for-me of the PINNED message the hook hides this user's copy of
+      // the "<actor> pinned a message" line, which is very often their current
+      // last visible message. A recalc racing it re-points their list preview
+      // at a line they can no longer see.
+      void pinCleanup
+        .then(({ hiddenSystemLineSeq }) =>
+          this.messageService.recalculateLastMessageAfterDeleteForMe(
+            result.roomId,
+            // The hidden pin line is usually NEWER than the deleted message —
+            // the effective-last decision is made on the newest removed row.
+            Math.max(result.sequenceNumber ?? 0, hiddenSystemLineSeq),
+            userId
+          )
         )
         .then((recalc) => {
           // Skip unless the deleted message was the viewer's effective last
@@ -680,19 +695,27 @@ export class PrivateMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { data: [], hasMore: false, nextCursor: null },
+            { data: [], hasMore: false, nextCursor: null, totalCount: 0 },
             t("CHAT_NO_MESSAGES_FOUND", req.locale)
           )
         );
       return;
     }
-    const result = await this.messageService.searchMessages({
-      roomId,
-      userId,
-      query,
-      limit,
-      cursor,
-    });
+    // The counter reads "n of TOTAL", so the total is the whole room's match count,
+    // not this page's. Counted on the FIRST page only — a cursor page is a
+    // continuation of a result set whose total the client already holds.
+    const [result, totalCount] = await Promise.all([
+      this.messageService.searchMessages({
+        roomId,
+        userId,
+        query,
+        limit,
+        cursor,
+      }),
+      cursor
+        ? Promise.resolve(null)
+        : this.messageService.countSearchResults(roomId, query, userId),
+    ]);
     const enriched = await this.messageService.enrichMessages(result.messages);
     const data = enriched.map((m) => ({
       ...m,
@@ -701,14 +724,17 @@ export class PrivateMessageController {
     const msg = data.length
       ? t("CHAT_MESSAGES_SEARCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
-    res
-      .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(
-          { data, hasMore: result.hasMore, nextCursor: result.nextCursor },
-          msg
-        )
-      );
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          data,
+          hasMore: result.hasMore,
+          nextCursor: result.nextCursor,
+          ...(totalCount !== null ? { totalCount } : {}),
+        },
+        msg
+      )
+    );
   });
 
   forwardMessage = asyncHandler(async (req: Request, res: Response) => {

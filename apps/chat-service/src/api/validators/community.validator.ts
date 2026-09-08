@@ -184,6 +184,11 @@ export const listRoomsSchema = searchRoomsSchema.omit({ query: true });
 
 export const pinCommunityMessageSchema = z.object({
   communityId: z.string().optional(),
+  // Both pin routes reach the SAME controller: `POST /rooms/:roomId/pins`
+  // carries the target in the body, `POST /rooms/:roomId/messages/:messageId/pin`
+  // in the path. The key was missing here, so zod's strip dropped it from the
+  // body and the controller pinned `undefined` — every REST pin 404'd.
+  messageId: z.string().min(1).optional(),
 });
 
 export const unpinCommunityMessageSchema = z.object({

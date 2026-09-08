@@ -15,6 +15,8 @@ const markAllLeft = jest.fn(async () => {});
 const provisionForCommunity = jest.fn(async () => {});
 const setCommunityType = jest.fn(async () => {});
 const upsert = jest.fn(async () => {});
+const findLiveMemberUserIds = jest.fn(async () => [] as string[]);
+const markLeftForUsers = jest.fn(async () => 0);
 const listAllIdsWithStatus = jest.fn();
 const listCommunities = jest.fn();
 
@@ -34,6 +36,8 @@ jest.mock("../../src/repositories/room-member.repository.js", () => ({
   RoomMemberRepository: class {
     markAllLeft = markAllLeft;
     upsert = upsert;
+    findLiveMemberUserIds = findLiveMemberUserIds;
+    markLeftForUsers = markLeftForUsers;
   },
 }));
 jest.mock("../../src/grpc/community.client.js", () => ({
@@ -98,5 +102,57 @@ describe("reconcileCommunityRooms — rooms with no community record", () => {
 
     expect(deactivateForCommunity).not.toHaveBeenCalled();
     expect(markAllLeft).not.toHaveBeenCalled();
+  });
+});
+
+describe("reconcileCommunityRooms — mirror rows whose membership is gone", () => {
+  it("marks a chat member absent from the community list as left", async () => {
+    (findLiveMemberUserIds as jest.Mock).mockResolvedValue(["u-real", "u-ghost"]);
+    (listCommunities as jest.Mock).mockResolvedValue({
+      communities: [
+        {
+          id: LIVE,
+          deleted: false,
+          communityType: "PRIVATE",
+          name: "Live",
+          adminId: "a",
+          avatarUrl: "",
+          members: [{ userId: "u-real", status: "ACTIVE", role: "MEMBER" }],
+        },
+      ],
+      hasMore: false,
+      nextAfterId: "",
+    });
+
+    await reconcileCommunityRooms();
+
+    expect(markLeftForUsers).toHaveBeenCalledWith(LIVE, ["u-ghost"]);
+  });
+
+  it("writes nothing when every mirror row still has a membership", async () => {
+    (findLiveMemberUserIds as jest.Mock).mockResolvedValue(["u-real"]);
+    (listCommunities as jest.Mock).mockResolvedValue({
+      communities: [
+        {
+          id: LIVE,
+          deleted: false,
+          communityType: "PRIVATE",
+          name: "Live",
+          adminId: "a",
+          avatarUrl: "",
+          // A LEFT membership still EXISTS — the live sync owns that status, not this diff.
+          members: [
+            { userId: "u-real", status: "ACTIVE", role: "MEMBER" },
+            { userId: "u-left", status: "LEFT", role: "MEMBER" },
+          ],
+        },
+      ],
+      hasMore: false,
+      nextAfterId: "",
+    });
+
+    await reconcileCommunityRooms();
+
+    expect(markLeftForUsers).not.toHaveBeenCalled();
   });
 });

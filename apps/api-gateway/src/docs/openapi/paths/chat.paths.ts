@@ -2250,7 +2250,7 @@ const unreadSummary = {
     operationId: "getChatUnreadSummary",
     summary: "Get chat unread badge summary",
     description:
-      "Returns unread counts for private, group, and community surfaces plus `chatUnread` (private + group) for the inbox badge.",
+      "Returns unread MESSAGE totals for private, group, and community surfaces plus the matching unread CONVERSATION counts. Nav badges use `chatUnreadConversations` / `communityUnreadConversations` — a conversation with many unread messages counts once.",
     security: [{ bearerAuth: [] }],
     responses: {
       ...successResponse("Unread summary", "ChatUnreadSummary"),

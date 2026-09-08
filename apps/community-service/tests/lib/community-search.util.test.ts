@@ -79,7 +79,19 @@ describe("normalizeForSearch", () => {
   });
 
   it("preserves non-Latin letters instead of stripping them", () => {
-    expect(normalizeForSearch("Café")).toBe("café");
+    expect(normalizeForSearch("ทดสอบ")).toBe("ทดสอบ");
+    expect(normalizeForSearch("日本語")).toBe("日本語");
+    expect(normalizeForSearch("한국어")).toBe("한국어");
+  });
+
+  // Folded, not preserved: a diacritic is formatting, and this endpoint is
+  // formatting-insensitive by design. "cafe" has to find "Café", and "nguyen"
+  // has to find "Nguyễn" — a Vietnamese name is typed without marks far more
+  // often than with them.
+  it("folds diacritics so an unaccented query still matches", () => {
+    expect(normalizeForSearch("Café")).toBe("cafe");
+    expect(normalizeForSearch("Nguyễn")).toBe("nguyen");
+    expect(normalizeForSearch("Đặng")).toBe("dang");
   });
 });
 

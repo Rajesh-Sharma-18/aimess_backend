@@ -7,11 +7,17 @@
  * that made credential stuffing cheap: the passwords people pick unaided
  * concentrate on a very short list, and an attacker only has to try that list.
  *
- * The approach follows NIST SP 800-63B rather than the older
- * composition-rule tradition: length plus a blocklist of known-bad choices
- * beats "one uppercase, one digit, one symbol", which pushes people toward
- * `Password1!` — a string that satisfies every composition rule and is on every
- * cracking list.
+ * The rules are, as of 2026-09-08 and by product decision, the classic
+ * COMPOSITION set: 8-50 characters, one uppercase, one lowercase, one digit,
+ * one symbol, and no whitespace anywhere.
+ *
+ * That is deliberately not what NIST SP 800-63B recommends, and the trade is
+ * worth naming: composition rules push people toward `Password1!` — a string
+ * that satisfies every rule here and sits on every cracking list. 800-63B
+ * leans on length plus a blocklist instead, and the blocklist is disabled (see
+ * `checkPasswordPolicy`), so nothing catches that particular password. What
+ * composition does buy is the floor: it rules out the all-lowercase and
+ * all-digit strings that make up most of an unaided guessing run.
  *
  * This is the CREATION policy. Login deliberately does not apply it (see
  * `auth.validator.ts`), so accounts created under the old rule keep working
@@ -21,14 +27,26 @@
 /**
  * Minimum length for a new password.
  *
- * 12 rather than 8: an 8-character password drawn from the way people actually
- * choose them is within reach of an offline attack against a stolen hash, and
- * bcrypt's work factor buys far less than length does.
+ * 8 by product decision (2026-09-07), reverted from 12. What this gives up: an
+ * 8-character password drawn from the way people actually choose them is within
+ * reach of an offline attack against a stolen hash, and bcrypt's work factor
+ * buys far less than length does. The blocklist that was meant to carry that
+ * weight is itself disabled as of 2026-09-08 (see `checkPasswordPolicy`), so
+ * the composition rules below are what stands beside this floor.
  */
-export const PASSWORD_MIN_LENGTH = 12;
+export const PASSWORD_MIN_LENGTH = 8;
 
 /**
- * Maximum length.
+ * Maximum length, in characters.
+ *
+ * 50 by the same product decision. It sits below PASSWORD_MAX_BYTES, so for
+ * ASCII this is the rule that fires; the byte cap below still matters because
+ * 50 multi-byte characters can exceed 72 bytes.
+ */
+export const PASSWORD_MAX_LENGTH = 50;
+
+/**
+ * Maximum length, in bytes.
  *
  * 72 bytes, not an arbitrary 128: bcrypt silently TRUNCATES at 72, so anything
  * beyond that is not part of the password no matter what the form said. A user
@@ -202,9 +220,40 @@ export function containsIdentifier(
   return password.toLowerCase().includes(needle);
 }
 
+/**
+ * The composition rules, in the order they are reported.
+ *
+ * `\s` rather than a literal space: a tab or a newline pasted in from another
+ * field is just as invisible to the person typing it, and just as likely to
+ * make the password unreproducible on another keyboard. Checked BEFORE the
+ * symbol rule so whitespace can never be what satisfies "needs a symbol" —
+ * hence `[^A-Za-z0-9\s]` there rather than a bare `[^A-Za-z0-9]`.
+ */
+const PASSWORD_COMPOSITION: ReadonlyArray<{
+  pattern: RegExp;
+  failure: PasswordPolicyFailure;
+  /** True when the pattern MATCHING is the failure, rather than the pass. */
+  forbidden?: true;
+}> = [
+  {
+    pattern: /\s/u,
+    failure: "AUTH_PASSWORD_CONTAINS_SPACE",
+    forbidden: true,
+  },
+  { pattern: /[A-Z]/u, failure: "AUTH_PASSWORD_NEEDS_UPPERCASE" },
+  { pattern: /[a-z]/u, failure: "AUTH_PASSWORD_NEEDS_LOWERCASE" },
+  { pattern: /\d/u, failure: "AUTH_PASSWORD_NEEDS_NUMBER" },
+  { pattern: /[^A-Za-z0-9\s]/u, failure: "AUTH_PASSWORD_NEEDS_SYMBOL" },
+];
+
 export type PasswordPolicyFailure =
   | "AUTH_PASSWORD_TOO_SHORT"
   | "AUTH_PASSWORD_TOO_LONG"
+  | "AUTH_PASSWORD_CONTAINS_SPACE"
+  | "AUTH_PASSWORD_NEEDS_UPPERCASE"
+  | "AUTH_PASSWORD_NEEDS_LOWERCASE"
+  | "AUTH_PASSWORD_NEEDS_NUMBER"
+  | "AUTH_PASSWORD_NEEDS_SYMBOL"
   | "AUTH_PASSWORD_TOO_COMMON"
   | "AUTH_PASSWORD_CONTAINS_IDENTIFIER";
 
@@ -217,15 +266,62 @@ export type PasswordPolicyFailure =
  */
 export function checkPasswordPolicy(
   password: string,
+  // Unused only because the identifier rule below is commented out. The
+  // parameter and its name stay so every caller keeps compiling and so
+  // re-enabling the rule is a one-line revert rather than a signature change.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   identifier?: string | null
 ): PasswordPolicyFailure | null {
   if (password.length < PASSWORD_MIN_LENGTH) return "AUTH_PASSWORD_TOO_SHORT";
-  if (Buffer.byteLength(password, "utf8") > PASSWORD_MAX_BYTES) {
+  if (
+    password.length > PASSWORD_MAX_LENGTH ||
+    Buffer.byteLength(password, "utf8") > PASSWORD_MAX_BYTES
+  ) {
     return "AUTH_PASSWORD_TOO_LONG";
   }
-  if (isCommonPassword(password)) return "AUTH_PASSWORD_TOO_COMMON";
-  if (containsIdentifier(password, identifier)) {
-    return "AUTH_PASSWORD_CONTAINS_IDENTIFIER";
+  for (const { pattern, failure, forbidden } of PASSWORD_COMPOSITION) {
+    if (pattern.test(password) === Boolean(forbidden)) return failure;
   }
+  // DISABLED BY PRODUCT DECISION (2026-09-08): the blocklist no longer refuses
+  // anything, so `Test@1234`, `password1234` and `P@ssw0rd!` are all accepted.
+  //
+  // The client had already been told to stop DISPLAYING this refusal (see
+  // `isTemporarilyHiddenError` in the web client). That left the worst of both:
+  // registration still failed here, and the user was shown nothing explaining
+  // why. Withdrawing the rule itself is the coherent half of that decision —
+  // hiding a refusal without lifting it is not a policy, it is a dead end.
+  //
+  // What this gives up, and it is the whole point of the rule: the passwords
+  // people pick unaided concentrate on a very short list, so an attacker only
+  // has to try that list. This was the control NIST SP 800-63B leans on in
+  // place of composition rules, and the identifier rule below is already off —
+  // length and the bcrypt work factor are now the only things left.
+  //
+  // Commented rather than deleted so re-enabling is a one-line revert.
+  // `isCommonPassword` stays exported and still covered by tests, and
+  // `AUTH_PASSWORD_TOO_COMMON` stays in the failure union and the message
+  // catalogue, for the same reason.
+  //
+  // if (isCommonPassword(password)) return "AUTH_PASSWORD_TOO_COMMON";
+  //
+  // DISABLED BY PRODUCT DECISION (2026-09-07): a password may now restate the
+  // account name or email local part, so `Saul_Goodman` / `Saul_Goodman@1234`
+  // is accepted.
+  //
+  // What this gives up: the account name is PUBLIC — it is how other users find
+  // you — so a password derived from it is guessable by anyone who can see the
+  // profile, and it is the first thing a targeted guessing run tries. With the
+  // blocklist above now off too, length and the bcrypt work factor are the only
+  // things standing behind such an account.
+  //
+  // Commented rather than deleted so re-enabling is a one-line revert.
+  // `containsIdentifier` below is deliberately kept (still exported and still
+  // covered by tests) so the rule does not have to be rewritten from scratch,
+  // and `AUTH_PASSWORD_CONTAINS_IDENTIFIER` stays in the failure union and the
+  // message catalogue for the same reason.
+  //
+  // if (containsIdentifier(password, identifier)) {
+  //   return "AUTH_PASSWORD_CONTAINS_IDENTIFIER";
+  // }
   return null;
 }

@@ -43,6 +43,14 @@ export type UserListItem = {
   username: string;
   /** firstName + lastName (trimmed, single-spaced); null when both are absent. */
   fullName: string | null;
+  /**
+   * The login handle frozen at signup (auth-service `account`), which the
+   * search matches. It drifts from `username` once a user renames their
+   * profile, so the panel shows it whenever the two differ — otherwise a hit
+   * on the handle looks like an unexplained result. null on the mirror path,
+   * which does not carry it.
+   */
+  account: string | null;
   /** null when the user has no email on file (never an empty string). */
   email: string | null;
   status: UserStatus;
@@ -302,3 +310,64 @@ export type BulkResult = {
   failed: number;
   results: BulkResultItem[];
 };
+
+// ---------------------------------------------------------------------------
+// Linked devices (GET /v1/users/:userId/devices).
+// ---------------------------------------------------------------------------
+
+/**
+ * One device linked to a user, as the admin panel renders it.
+ *
+ * Every optional attribute is `| null` rather than an empty string or a zero:
+ * auth-service flattens nulls onto proto3 scalars, and this layer restores the
+ * distinction so the UI can print "—" for "we don't know" instead of a made-up
+ * 0 for a screen density or a `false` for a root check that never ran.
+ *
+ * Nothing here is a credential. There is no token, no FCM registration id and
+ * no session secret — a device row is diagnostics, and the panel must not
+ * become a place to read authentication material out of.
+ */
+export interface UserDeviceRow {
+  deviceId: string;
+  platform: string;
+  deviceType: string | null;
+  deviceName: string | null;
+  manufacturer: string | null;
+  brand: string | null;
+  model: string | null;
+  osVersion: string | null;
+  sdkInt: number | null;
+  appVersion: string | null;
+  appBuild: number | null;
+  buildType: string | null;
+  installerPackage: string | null;
+  locale: string | null;
+  language: string | null;
+  country: string | null;
+  timezone: string | null;
+  utcOffsetMinutes: number | null;
+  screenWidthPx: number | null;
+  screenHeightPx: number | null;
+  screenDensityDpi: number | null;
+  networkType: string | null;
+  carrier: string | null;
+  /** Client-asserted fraud signals. Spoofable — a flag is a prompt to look, not a verdict. */
+  isEmulator: boolean | null;
+  isRooted: boolean | null;
+  /** Server-derived at login time; never supplied by the client. */
+  ipAddress: string | null;
+  countryCode: string | null;
+  createdAt: number;
+  updatedAt: number;
+  lastSeenAt: number;
+  lastLoginAt: number;
+  /** Live sessions keyed on this device right now; 0 = signed out here. */
+  activeSessionCount: number;
+  isActive: boolean;
+}
+
+/** Query for GET /v1/users/:userId/devices. */
+export interface ListUserDevicesQuery {
+  page: number;
+  limit: number;
+}

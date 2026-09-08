@@ -52,21 +52,6 @@ export function resolveSrsName(stream: {
 }
 
 /**
- * True when the row predates the ingest/playback split.
- *
- * Such a row is published under its own secret, so the secret is already
- * public for it and demanding one on `on_publish` would only break a broadcast
- * that is currently on air. They are grandfathered until they end; every new
- * stream requires the secret.
- */
-export function isLegacyStream(stream: {
-  streamKey: string;
-  playbackId?: string | null;
-}): boolean {
-  return !stream.playbackId || stream.playbackId === stream.streamKey;
-}
-
-/**
  * Parse the publish secret out of the query string SRS forwards.
  *
  * SRS puts the publish URL's query string in the hook's `param` field, with a

@@ -87,6 +87,9 @@ import { CommunityMessageController } from "./api/controllers/community-message.
 import { CallController } from "./api/controllers/call.controller.js";
 import { PresenceController } from "./api/controllers/presence.controller.js";
 import { MessageContextController } from "./api/controllers/message-context.controller.js";
+import { MessageSearchController } from "./api/controllers/message-search.controller.js";
+import { MessageSearchService } from "./services/message-search.service.js";
+import { MessageSearchRepository } from "./repositories/message-search.repository.js";
 
 // -- gRPC --
 import { startGrpcServer } from "./grpc/server.js";
@@ -348,6 +351,46 @@ const startServer = async () => {
       }
     }
 
+    // Whole-account message-body search sorts {createdAt: -1, _id: -1} over every
+    // room the caller can read. Every pre-existing index either ends in
+    // sequenceNumber or omits _id, so Mongo could not match that sort pattern and
+    // fell back to a blocking in-memory sort with NO early termination — a limit of
+    // 20 still examined every live message in those rooms. Declared on the schema
+    // too; created here so existing deployments pick them up without a `db push`.
+    // No $text index here on purpose: the boot block above drops those.
+    const searchSortIndexes: {
+      collection: string;
+      key: Record<string, 1 | -1 | "text">;
+      name: string;
+    }[] = [
+      {
+        collection: "private_messages",
+        key: { roomId: 1, isDeleted: 1, createdAt: -1, _id: -1 },
+        name: "private_messages_search_sort_idx",
+      },
+      {
+        collection: "group_messages",
+        key: { roomId: 1, isDeleted: 1, createdAt: -1, _id: -1 },
+        name: "group_messages_search_sort_idx",
+      },
+      {
+        collection: "general_room_messages",
+        key: { roomId: 1, deletedForAll: 1, createdAt: -1, _id: -1 },
+        name: "general_room_messages_search_sort_idx",
+      },
+    ];
+    for (const idx of searchSortIndexes) {
+      try {
+        await ensureMongoIndex(prisma, idx.collection, {
+          key: idx.key,
+          name: idx.name,
+        });
+      } catch (err) {
+        logger.warn(`Failed to create ${idx.name} — continuing`);
+        logger.warn(err);
+      }
+    }
+
     // Community's half of the nav-badge unread summary queries room_members BY
     // USER (`where: { userId, status }`), and RoomMember's only indexes are
     // `(roomId, userId)` unique and `(roomId, status)` — neither prefixed on
@@ -356,13 +399,47 @@ const startServer = async () => {
     // of every community message, which is exactly the path that has to stay
     // cheap as membership grows. Declared on the schema too; created here so
     // existing deployments pick it up without a `prisma db push`.
+    // updatedAt trails the pair so findSearchScope's recency-ordered cap
+    // (`orderBy updatedAt desc`, take SEARCH_SCOPE_ROOM_LIMIT) is index-served
+    // instead of sorting every membership row the user holds.
     try {
       await ensureMongoIndex(prisma, "room_members", {
-        key: { userId: 1, status: 1 },
-        name: "room_members_user_status_idx",
+        key: { userId: 1, status: 1, updatedAt: -1 },
+        name: "room_members_user_status_updated_idx",
+      });
+      // Superseded: [userId, status] is a prefix of the index above. Dropped only
+      // after the wider one is in place, and only on the boot that widened it.
+      await dropMongoIndexIfExists(
+        prisma,
+        "room_members",
+        "room_members_user_status_idx"
+      );
+    } catch (err) {
+      logger.warn(
+        "Failed to create room_members_user_status_updated_idx — continuing"
+      );
+      logger.warn(err);
+    }
+
+    // findSearchScope's private half: `participants has userId` ordered by
+    // lastMessageAt desc, take N. PrivateRoom's standalone [participants] and
+    // [lastMessageAt desc] each serve only one half — the first blocking-sorts
+    // every room the caller is in (find() sorts don't spill; >32MB is a hard
+    // error), the second scans the whole collection for a dormant account. A
+    // point bound on the multikey leading field plus a non-multikey sort field
+    // is the case where the index can still provide the sort. Declared on the
+    // schema too; created here so existing deployments pick it up without a
+    // `prisma db push`. Both narrow indexes are kept — [participants] is a
+    // prefix of this one and [lastMessageAt] backs unrelated reads.
+    try {
+      await ensureMongoIndex(prisma, "private_rooms", {
+        key: { participants: 1, lastMessageAt: -1 },
+        name: "private_rooms_participants_last_message_at_idx",
       });
     } catch (err) {
-      logger.warn("Failed to create room_members_user_status_idx — continuing");
+      logger.warn(
+        "Failed to create private_rooms_participants_last_message_at_idx — continuing"
+      );
       logger.warn(err);
     }
 
@@ -454,6 +531,9 @@ const startServer = async () => {
     const notificationRepo = new NotificationRepository(prisma);
     const callRepo = new CallRepository(prisma);
     const privateMessageReportRepo = new PrivateMessageReportRepository(prisma);
+    // Whole-account message-body search. Separate from the three per-room
+    // search paths, which stay exactly as they are.
+    const messageSearchRepo = new MessageSearchRepository(prisma);
 
     // 3. Instantiate services
     const userSnapshotService = new UserSnapshotService();
@@ -932,6 +1012,18 @@ const startServer = async () => {
       ),
       callCtrl: new CallController(callService),
       presenceCtrl: new PresenceController(presenceService),
+      messageSearchCtrl: new MessageSearchController(
+        new MessageSearchService(
+          messageSearchRepo,
+          privateRoomRepo,
+          groupRoomRepo,
+          groupMemberRepo,
+          generalRoomRepo,
+          roomMemberRepo,
+          userSnapshotService,
+          cacheRepo
+        )
+      ),
       messageContextCtrl: new MessageContextController(
         privateMessageService,
         groupMessageService,

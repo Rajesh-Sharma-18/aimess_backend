@@ -84,6 +84,8 @@ export interface CheckStreamAccessResult {
 export interface DeleteCommentParams {
   commentId: string;
   requesterId: string;
+  /** The stream the caller claims the comment is in — verified server-side. */
+  livestreamId: string;
 }
 export interface DeleteCommentResult {
   success: boolean;
@@ -179,6 +181,7 @@ export function createStreamClient(): StreamClient {
       call<unknown, DeleteCommentResult>("deleteComment", {
         commentId: p.commentId,
         requesterId: p.requesterId,
+        livestreamId: p.livestreamId,
       }).then((r) => ({
         success: r.success ?? false,
         commentId: r.commentId ?? "",

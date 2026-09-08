@@ -776,8 +776,12 @@ export class CommunityMessageController {
     // first (or raced this) would re-point lastActivity at a line that is about
     // to be tombstoned, and the community list would preview a deleted message
     // forever. `unpinAfterDelete` never throws, so this cannot fail the delete.
+    // `hiddenSystemLineSeq` is the pin line the hook hid for THIS user (0 when
+    // none): usually newer than the message they deleted, so it — not the
+    // message's own sequence — decides whether their list row must move.
+    let hiddenPinLineSeq = 0;
     if (result.roomId) {
-      await unpinAfterDelete({
+      ({ hiddenSystemLineSeq: hiddenPinLineSeq } = await unpinAfterDelete({
         redis: this.redis,
         pinService: this.pinService,
         kind: "COMMUNITY",
@@ -786,7 +790,7 @@ export class CommunityMessageController {
         messageId,
         userId,
         scope: type === "forEveryone" ? "forEveryone" : "forMe",
-      });
+      }));
     }
 
     // lastActivity recalculation MUST complete (including the synchronous
@@ -820,7 +824,7 @@ export class CommunityMessageController {
         const recalc =
           await this.service.recalculateLastMessageAfterDeleteForMe(
             result.roomId,
-            result.sequenceNumber ?? 0,
+            Math.max(result.sequenceNumber ?? 0, hiddenPinLineSeq),
             userId
           );
         // Skip unless the deleted message was the viewer's effective last
@@ -1031,19 +1035,27 @@ export class CommunityMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { data: [], hasMore: false, nextCursor: null },
+            { data: [], hasMore: false, nextCursor: null, totalCount: 0 },
             t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
           )
         );
       return;
     }
-    const result = await this.service.searchMessages({
-      roomId,
-      userId,
-      query,
-      limit,
-      cursor,
-    });
+    // The counter reads "n of TOTAL", so the total is the whole room's match count,
+    // not this page's. Counted on the FIRST page only — a cursor page is a
+    // continuation of a result set whose total the client already holds.
+    const [result, totalCount] = await Promise.all([
+      this.service.searchMessages({
+        roomId,
+        userId,
+        query,
+        limit,
+        cursor,
+      }),
+      cursor
+        ? Promise.resolve(null)
+        : this.service.countSearchResults(roomId, query, userId),
+    ]);
     const data = result.messages.map((m) => ({
       ...m,
       searchScore: result.scores.get((m as { id: string }).id) ?? 0,
@@ -1051,23 +1063,29 @@ export class CommunityMessageController {
     const msg = data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
-    res
-      .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(
-          { data, hasMore: result.hasMore, nextCursor: result.nextCursor },
-          msg
-        )
-      );
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          data,
+          hasMore: result.hasMore,
+          nextCursor: result.nextCursor,
+          ...(totalCount !== null ? { totalCount } : {}),
+        },
+        msg
+      )
+    );
   });
 
   pinMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const { messageId, communityId } = req.body as {
-      messageId: string;
+    const { messageId: bodyMessageId, communityId } = req.body as {
+      messageId?: string;
       communityId: string;
     };
+    // `/rooms/:roomId/messages/:messageId/pin` puts the target in the path,
+    // `/rooms/:roomId/pins` in the body — one controller serves both.
+    const messageId = (req.params.messageId as string) || (bodyMessageId ?? "");
     const result = await this.pinService.pin({
       roomId,
       messageId,

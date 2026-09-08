@@ -185,7 +185,9 @@ const sortOrderFilter = z
 export const listUsersQuerySchema = z
   .object({
     // `q` is the public search param (case-insensitive partial match over
-    // username + email). `search` is kept as a backward-compatible alias.
+    // username, first name, last name, full name and email — the name fields
+    // are resolved via user-service, which owns them; auth-service only knows
+    // email + account). `search` is kept as a backward-compatible alias.
     q: z.string().trim().min(1).optional(),
     search: z.string().trim().min(1).optional(),
     status: userStatusFilter,
@@ -271,6 +273,21 @@ export const userReportsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type UserReportsQueryInput = z.infer<typeof userReportsQuerySchema>;
+
+// ---------------------------------------------------------------------------
+// Linked-devices list query (GET /users/:userId/devices).
+// ---------------------------------------------------------------------------
+/**
+ * Same offset shape the reports list uses, so the admin panel's pagination
+ * component works unchanged. A user realistically owns a handful of devices,
+ * but the page size is bounded anyway — the list is reachable by any admin
+ * holding USERS_VIEW and must not be a way to pull an unbounded response.
+ */
+export const userDevicesQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(1000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type UserDevicesQueryInput = z.infer<typeof userDevicesQuerySchema>;
 
 // ---------------------------------------------------------------------------
 // Ban.

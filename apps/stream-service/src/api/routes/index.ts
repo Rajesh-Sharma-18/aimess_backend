@@ -12,6 +12,13 @@ export function createServiceRoutes(controller: StreamController): IRouter {
   const router = Router();
 
   router.post("/streams", authenticateAccessToken, controller.createStream);
+  // Before the `/streams/:id` routes below — Express matches in registration
+  // order, so a later literal path loses to the parameter that precedes it.
+  router.post(
+    "/streams/resolve",
+    authenticateAccessToken,
+    controller.resolveSource
+  );
   router.get("/streams", authenticateAccessToken, controller.listStreams);
   router.get("/streams/:id", authenticateAccessToken, controller.getStream);
   router.patch(

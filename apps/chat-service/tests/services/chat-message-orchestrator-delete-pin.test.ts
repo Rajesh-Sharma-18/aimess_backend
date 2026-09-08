@@ -37,12 +37,14 @@ function buildOrchestrator() {
     unpin: jest.fn(),
     unpinDeletedMessage: jest.fn().mockResolvedValue(null),
     findActivePinRoomId: jest.fn().mockResolvedValue(null),
+    hidePinSystemMessageForUser: jest.fn().mockResolvedValue(null),
   };
   const groupPinService = {
     pin: jest.fn(),
     unpin: jest.fn(),
     unpinDeletedMessage: jest.fn().mockResolvedValue(null),
     findActivePinRoomId: jest.fn().mockResolvedValue(null),
+    hidePinSystemMessageForUser: jest.fn().mockResolvedValue(null),
   };
 
   const orchestrator = new ChatMessageOrchestrator(
@@ -209,6 +211,57 @@ describe("ChatMessageOrchestrator.deleteDirect", () => {
       messageId: MSG_ID,
       action: "unpinned",
     });
+  });
+
+  it("forMe on a PINNED message hides the pin SYSTEM line for the actor only, and recalculates on ITS sequence", async () => {
+    const { orchestrator, groupMessageService, groupPinService, redis } =
+      buildOrchestrator();
+    groupMessageService.deleteForMe.mockResolvedValue({
+      id: MSG_ID,
+      roomId: ROOM_ID,
+      sequenceNumber: 5,
+      createdAt: new Date(),
+    });
+    groupPinService.findActivePinRoomId.mockResolvedValue(ROOM_ID);
+    const SYS_ID = "s".repeat(24);
+    // The "<actor> pinned a message" line is NEWER than the message it
+    // announces — seq 9 vs the deleted message's 5.
+    groupPinService.hidePinSystemMessageForUser.mockResolvedValue({
+      messageId: SYS_ID,
+      roomId: ROOM_ID,
+      sequenceNumber: 9,
+    });
+
+    await orchestrator.deleteDirect({
+      conversationType: "GROUP",
+      roomId: ROOM_ID,
+      messageId: MSG_ID,
+      userId: USER_ID,
+      scope: "forMe",
+    });
+    await settle();
+
+    expect(groupPinService.hidePinSystemMessageForUser).toHaveBeenCalledWith(
+      MSG_ID,
+      USER_ID
+    );
+    // Tombstone for the line goes to the actor's own channel — never conv:<roomId>.
+    const sysTombstone = redis.publish.mock.calls.find(
+      (c: unknown[]) =>
+        String(c[1]).includes("message:delete") && String(c[1]).includes(SYS_ID)
+    );
+    expect(sysTombstone?.[0]).toBe(`user:${USER_ID}`);
+    expect(JSON.parse(String(sysTombstone?.[1])).data).toMatchObject({
+      messageId: SYS_ID,
+      type: "forMe",
+      deletedBy: USER_ID,
+    });
+    // The list recalculation is made on the NEWEST removed row (the line, 9),
+    // not the message the user tapped (5) — otherwise a pin line that outlived
+    // its message keeps the inbox row previewing it.
+    expect(
+      groupMessageService.recalculateLastMessageAfterDeleteForMe
+    ).toHaveBeenCalledWith(ROOM_ID, 9, USER_ID);
   });
 
   it("publishes no pin event when the deleted message was not pinned", async () => {

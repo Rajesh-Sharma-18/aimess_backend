@@ -21,6 +21,9 @@ import type { SupportedLocale } from "@aimess/constants";
 
 const AuthRefreshSchema = z.object({ refreshToken: z.string().min(1) });
 
+/** How far ahead of expiry the `session:expired` warning is aimed. */
+const SESSION_WARN_LEAD_MS = 5 * 60 * 1000;
+
 export interface SessionTimers {
   clearSessionTimers: () => void;
   scheduleSessionTimers: (expiresAt: number) => void;
@@ -49,7 +52,20 @@ export function createSessionTimers(
 
   const scheduleSessionTimers = (expiresAt: number): void => {
     clearSessionTimers();
-    const warnMs = Math.max(0, expiresAt - Date.now() - 5 * 60 * 1000);
+    // Warn 5 minutes out, but never sooner than halfway through the token's
+    // own life. A flat 5-minute lead goes NEGATIVE for any access token whose
+    // lifetime is under 5 minutes, clamps to 0, and fires the warning the
+    // instant the socket connects — the client refreshes, this re-arms at 0
+    // again, and the pair spin as fast as the network allows. Halving instead
+    // keeps a short-lived token on a sane cadence and leaves the normal
+    // (1 hour) case untouched.
+    const lifetimeMs = expiresAt - Date.now();
+    const warnMs = Math.max(
+      0,
+      lifetimeMs > SESSION_WARN_LEAD_MS
+        ? lifetimeMs - SESSION_WARN_LEAD_MS
+        : Math.floor(lifetimeMs / 2)
+    );
     sessionWarnTimer = setTimeout(() => {
       sessionWarnTimer = null;
       socket.emit("session:expired", {

@@ -901,6 +901,11 @@ export function registerStreamNamespace(
             const code = (err as { code?: number }).code;
             if (code === grpcStatus.PERMISSION_DENIED) {
               ackError(callback, "FORBIDDEN", locale);
+            } else if (code === grpcStatus.NOT_FOUND) {
+              // The stream no longer exists (deleted or swept between join and
+              // send). Permanent, so it must not read as the retryable
+              // SERVICE_ERROR the else-branch returns.
+              ackError(callback, "NOT_FOUND", locale);
             } else {
               logger.warn(`/stream stream:comment gRPC error: ${String(err)}`);
               ackError(callback, "SERVICE_ERROR", locale);
@@ -922,6 +927,16 @@ export function registerStreamNamespace(
           return;
         }
         const { streamId, before, after, limit } = r.data;
+        // Same room gate as stream:comment / stream:react / stream:comment:delete.
+        // Without it this handler read any stream's chat for any caller who knew
+        // a streamId — no join, no access check, no trace in the viewer list.
+        // stream-service enforces the authoritative gate on every GetComments
+        // call; this only stops the pointless round trip (and the enumeration
+        // it enabled) for a socket that never entered the room.
+        if (!socket.rooms.has(roomKey(streamId))) {
+          ackError(callback, "FORBIDDEN", locale);
+          return;
+        }
         void (async () => {
           try {
             const res = await streamClient.getComments({
@@ -1020,6 +1035,10 @@ export function registerStreamNamespace(
             const result = await streamClient.deleteComment({
               commentId,
               requesterId: userId,
+              // Send the streamId the room check above was performed against.
+              // It used to be dropped here, which made that check decorative
+              // and let the ack reveal which stream any commentId belonged to.
+              livestreamId: streamId,
             });
             ackOk(callback, "SOCKET_STREAM_COMMENT_DELETED", locale, {
               commentId: result.commentId,

@@ -108,15 +108,20 @@ export function createInternalRoutes(
         return;
       }
 
-      // Transcoded quality renditions (KEY_480p, KEY_360p) re-publish into SRS
-      // via RTMP and trigger hooks too — allow them through without a DB lookup.
-      // Must match HLS_QUALITY_LADDER in srs.service.ts — production only
-      // produces these two rungs.
-      const QUALITY_SUFFIXES = ["_1080p", "_720p", "_480p", "_360p"];
-      if (QUALITY_SUFFIXES.some((s) => streamKey.endsWith(s))) {
-        res.json(0);
-        return;
-      }
+      // NOTE: rendition names (`<name>_1080p` … `_360p`) are deliberately NOT
+      // special-cased here. They used to be allowed unconditionally, before any
+      // DB lookup or secret check — which made every rung of a live stream's
+      // public quality ladder publishable by anyone who could read the
+      // playbackId out of their own player URL.
+      //
+      // Nothing legitimate needs that branch: renditions never reach this hook.
+      // On the server they are produced by external ffmpeg workers pushing into
+      // I-03, which runs no http_hooks at all; locally the transcode block
+      // publishes into `vhost abr`, which likewise has none. See
+      // docs/calls/SRS-Server-Snapshot-2026-08-04.md §1 and docker/srs/aimess.conf.
+      //
+      // So a rendition-suffixed name arriving here is an outside publisher, and
+      // falls through to handlePublish, which denies an unknown name and logs it.
 
       try {
         switch (action) {

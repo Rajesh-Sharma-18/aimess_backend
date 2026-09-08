@@ -181,14 +181,39 @@ export const AUTH_MESSAGES = {
   // signing in and are asked for something stronger only when they next change
   // it. Each is a distinct key so the client can say what to fix.
   AUTH_PASSWORD_TOO_SHORT: {
-    vi: "Mật khẩu phải có ít nhất 12 ký tự",
-    en: "Password must be at least 12 characters.",
-    th: "รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร",
+    vi: "Mật khẩu phải có ít nhất 8 ký tự",
+    en: "Password must be at least 8 characters.",
+    th: "รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร",
   },
   AUTH_PASSWORD_TOO_LONG: {
-    vi: "Mật khẩu quá dài (tối đa 72 ký tự)",
-    en: "Password is too long (maximum 72 characters).",
-    th: "รหัสผ่านยาวเกินไป (สูงสุด 72 ตัวอักษร)",
+    vi: "Mật khẩu quá dài (tối đa 50 ký tự)",
+    en: "Password is too long (maximum 50 characters).",
+    th: "รหัสผ่านยาวเกินไป (สูงสุด 50 ตัวอักษร)",
+  },
+  AUTH_PASSWORD_CONTAINS_SPACE: {
+    vi: "Mật khẩu không được chứa khoảng trắng",
+    en: "Password must not contain spaces.",
+    th: "รหัสผ่านต้องไม่มีช่องว่าง",
+  },
+  AUTH_PASSWORD_NEEDS_UPPERCASE: {
+    vi: "Mật khẩu phải có ít nhất một chữ cái in hoa",
+    en: "Password must contain at least one uppercase letter.",
+    th: "รหัสผ่านต้องมีอักษรพิมพ์ใหญ่อย่างน้อยหนึ่งตัว",
+  },
+  AUTH_PASSWORD_NEEDS_LOWERCASE: {
+    vi: "Mật khẩu phải có ít nhất một chữ cái thường",
+    en: "Password must contain at least one lowercase letter.",
+    th: "รหัสผ่านต้องมีอักษรพิมพ์เล็กอย่างน้อยหนึ่งตัว",
+  },
+  AUTH_PASSWORD_NEEDS_NUMBER: {
+    vi: "Mật khẩu phải có ít nhất một chữ số",
+    en: "Password must contain at least one number.",
+    th: "รหัสผ่านต้องมีตัวเลขอย่างน้อยหนึ่งตัว",
+  },
+  AUTH_PASSWORD_NEEDS_SYMBOL: {
+    vi: "Mật khẩu phải có ít nhất một ký tự đặc biệt",
+    en: "Password must contain at least one special character.",
+    th: "รหัสผ่านต้องมีอักขระพิเศษอย่างน้อยหนึ่งตัว",
   },
   AUTH_PASSWORD_TOO_COMMON: {
     vi: "Mật khẩu này quá phổ biến. Vui lòng chọn mật khẩu khác",

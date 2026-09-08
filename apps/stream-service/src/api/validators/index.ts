@@ -127,6 +127,32 @@ export const reportsQuerySchema = z.object({
   before: z.string().min(1).optional(),
 });
 
+/**
+ * POST /streams/resolve body — turn a watch-page URL into a playable media URL.
+ *
+ * Same http(s)-only guard as `createStreamSchema.sourceUrl`: this value is
+ * handed to a subprocess and then to every client's player, so a `javascript:`
+ * or `file:` URL is refused at the edge rather than deeper in.
+ */
+export const resolveSourceSchema = z.object({
+  url: z
+    .string()
+    .min(1)
+    .max(2048)
+    .url()
+    .refine(
+      (value) => {
+        try {
+          return /^https?:$/.test(new URL(value).protocol);
+        } catch {
+          return false;
+        }
+      },
+      { message: "url must be an http(s) URL" }
+    ),
+});
+
+export type ResolveSourceInput = z.infer<typeof resolveSourceSchema>;
 export type CreateStreamInput = z.infer<typeof createStreamSchema>;
 export type ListStreamsQuery = z.infer<typeof listStreamsQuerySchema>;
 export type UpdateStreamInput = z.infer<typeof updateStreamSchema>;

@@ -2784,12 +2784,16 @@ export function createMessagingImpl(
             mode?: string;
             roomIds?: string[];
             limit?: number;
+            skip?: number;
           };
           const viewerId = req.viewerId ?? "";
           const q = req.q || undefined;
           const mode = String(req.mode ?? "ACTIVE").toUpperCase();
           const roomIds = (req.roomIds ?? []).filter(Boolean);
           const limit = Math.min(Math.max(req.limit || 10, 1), 100);
+          // Paged listings only. BY_IDS resolves an explicit set, so an offset
+          // into it would silently drop ids the caller asked for.
+          const skip = Math.max(req.skip || 0, 0);
 
           // Same membership source the unified inbox lists a group from
           // (ACTIVE + LEFT + KICKED, BANNED excluded) — one query, no per-group
@@ -2830,7 +2834,8 @@ export function createMessagingImpl(
             rows = await deps.groupRoomRepo.searchInRoomIds(
               candidateIds,
               q,
-              limit
+              limit,
+              skip
             );
           } else if (mode === "BY_IDS") {
             rows = await deps.groupRoomRepo.findManyByRoomIds(roomIds);
@@ -2838,7 +2843,8 @@ export function createMessagingImpl(
             rows = await deps.groupRoomRepo.searchInRoomIds(
               activeRoomIds,
               q,
-              limit
+              limit,
+              skip
             );
           }
 
@@ -4006,17 +4012,25 @@ export function createCommunityImpl(
           // one. A recalc that raced it would re-point lastActivity at a line
           // about to be tombstoned, and the community list would preview a
           // deleted message forever. `unpinAfterDelete` never throws.
+          // `hiddenSystemLineSeq` is the pin line the hook hid for THIS user
+          // (0 when none): usually newer than the message they deleted, so it
+          // — not the message's own sequence — decides whether their list row
+          // must move.
+          let hiddenPinLineSeq = 0;
           if (result?.roomId) {
-            await unpinAfterDelete({
-              redis,
-              pinService: deps.communityPinService,
-              kind: "COMMUNITY",
-              roomId: result.roomId,
-              communityId: req.communityId,
-              messageId: req.messageId,
-              userId: req.userId,
-              scope: req.deleteType === "forEveryone" ? "forEveryone" : "forMe",
-            });
+            ({ hiddenSystemLineSeq: hiddenPinLineSeq } = await unpinAfterDelete(
+              {
+                redis,
+                pinService: deps.communityPinService,
+                kind: "COMMUNITY",
+                roomId: result.roomId,
+                communityId: req.communityId,
+                messageId: req.messageId,
+                userId: req.userId,
+                scope:
+                  req.deleteType === "forEveryone" ? "forEveryone" : "forMe",
+              }
+            ));
           }
 
           // lastActivity recalculation MUST complete (including the
@@ -4085,7 +4099,7 @@ export function createCommunityImpl(
             forMeRecalc =
               await deps.communityMessageService.recalculateLastMessageAfterDeleteForMe(
                 result.roomId,
-                result.sequenceNumber ?? 0,
+                Math.max(result.sequenceNumber ?? 0, hiddenPinLineSeq),
                 req.userId
               );
             if (forMeRecalc !== null && forMeRecalc.wasEffectiveLast) {
@@ -4990,3 +5004,4 @@ export function createNotificationImpl(
     },
   };
 }
+

@@ -166,6 +166,45 @@ const envSchema = z.object({
   /** ffmpeg binary path for URL re-stream ingest (host prerequisite in dev). */
   FFMPEG_PATH: z.string().default("ffmpeg"),
 
+  // ---- yt-dlp source resolver (URL streams whose host has no embeddable player) ----
+  /**
+   * Off unless the host actually has the binary — an enabled resolver with no
+   * `yt-dlp` on PATH fails every request instead of falling back to the
+   * client's platform-embed path.
+   */
+  /**
+   * Parsed strictly, and loudly. The previous `v === "true"` silently treated
+   * YTDLP_ENABLED=1 / yes / On / a typo as OFF, so the feature could be
+   * "configured" and simply never run with nothing in the logs to say why.
+   * An unrecognised value now fails env validation at boot instead.
+   */
+  YTDLP_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v.trim().toLowerCase())
+    .refine(
+      (v) => ["true", "1", "yes", "on", "false", "0", "no", "off", ""].includes(v),
+      { message: "must be one of true/1/yes/on or false/0/no/off" }
+    )
+    .transform((v) => ["true", "1", "yes", "on"].includes(v)),
+  YTDLP_PATH: z.string().default("yt-dlp"),
+  /** Hard kill for one extraction. yt-dlp will otherwise wait on a dead host. */
+  YTDLP_TIMEOUT_MS: z.coerce.number().positive().default(20_000),
+  /**
+   * How long a resolved media URL is reused. Must stay well under the shortest
+   * lifetime hosts give their signed URLs (commonly ~6h, sometimes minutes),
+   * because a cached URL that has already expired plays as a hard 403.
+   */
+  YTDLP_CACHE_TTL_SEC: z.coerce.number().positive().default(900),
+  /** Skips renditions above this height so a 4K source cannot pick an unplayable ladder rung. */
+  YTDLP_MAX_HEIGHT: z.coerce.number().positive().default(1080),
+  /**
+   * Ceiling on concurrent yt-dlp processes for the whole service. The gateway's
+   * limiter is per-session, so without a global cap N sessions fork N
+   * extractions and the container dies of memory, not of rate.
+   */
+  YTDLP_MAX_CONCURRENCY: z.coerce.number().positive().default(4),
+
   // ---- MinIO (resolve stored avatar object keys to full download URLs) ----
   MINIO_ENDPOINT: z.string().url(),
   MINIO_PUBLIC_ENDPOINT: z.preprocess(

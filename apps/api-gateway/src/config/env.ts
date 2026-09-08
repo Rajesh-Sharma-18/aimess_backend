@@ -183,6 +183,16 @@ const envSchema = z.object({
   /** Per-session ceiling for free-text search (each call fans out downstream). */
   SEARCH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
   /**
+   * Per-session ceiling for the livestream REST surface (`/streams/*`).
+   *
+   * Sized generously: the bucket is shared across everything a client sends to
+   * the segment — comment paging, viewer polling, moderation — and starving it
+   * has real consequences. The publisher heartbeat and quality reports are
+   * exempted from the limiter entirely rather than budgeted for; see
+   * `streamRateLimiter`.
+   */
+  STREAM_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(200),
+  /**
    * Number of reverse-proxy hops in front of the gateway (0 = direct clients).
    * Use 1 behind nginx/ALB. Do not use `true` — express-rate-limit rejects it.
    */

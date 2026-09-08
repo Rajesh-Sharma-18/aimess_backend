@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
-import { ForbiddenError } from "@aimess/errors";
+import { ForbiddenError, NotFoundError } from "@aimess/errors";
 import { withServiceAuth } from "@aimess/grpc-utils";
 
 import type { LivestreamCommentService } from "../services/livestream-comment.service.js";
@@ -11,6 +11,7 @@ import type {
   AdminStreamRow,
   LivestreamService,
 } from "../services/livestream.service.js";
+import { LIVE_STATUSES } from "../repositories/livestream.repository.js";
 
 /** Map an admin stream row → the gRPC wire shape (Date→epoch ms, null→""). */
 function toAdminStreamWire(r: AdminStreamRow): Record<string, unknown> {
@@ -90,6 +91,12 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
               code: grpc.status.PERMISSION_DENIED,
               message: String(err),
             });
+          } else if (err instanceof NotFoundError) {
+            // addComment now rejects an unknown livestreamId instead of writing
+            // an orphan row. Without this branch that lands as INTERNAL, which
+            // the gateway surfaces as the retryable SERVICE_ERROR — telling a
+            // client to retry a request that can never succeed.
+            callback({ code: grpc.status.NOT_FOUND, message: String(err) });
           } else {
             callback({ code: grpc.status.INTERNAL, message: String(err) });
           }
@@ -528,22 +535,25 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             callback(null, { streams: [] });
             return;
           }
-          // No explicit status filter: a RECONNECTING stream (publisher mid
-          // reconnect-grace after a drop) must still surface here — otherwise
-          // the community's isLive/liveStreams[] flips false during a brief
-          // publisher blip, which is exactly what the reconnect-grace feature
-          // is meant to prevent. listStreams() with no status returns
-          // PENDING+LIVE+RECONNECTING; filter out PENDING (never actually
-          // live) to match this RPC's original LIVE-only contract.
+          // A RECONNECTING stream (publisher mid reconnect-grace after a drop)
+          // must still surface here — otherwise the community's
+          // isLive/liveStreams[] flips false during a brief publisher blip,
+          // which is exactly what the reconnect-grace feature is meant to
+          // prevent.
+          //
+          // Ask the query for the status SET rather than omitting `status` and
+          // filtering the page afterwards. Omitting it returns
+          // PENDING+LIVE+RECONNECTING ordered `id asc`, so on a community
+          // holding 20+ PENDING rows the real live streams were pushed off the
+          // end of the page and the in-memory filter returned nothing —
+          // reporting a live community as dark.
           const result = await deps.livestreamService.listStreamsInternal({
             communityId,
+            status: LIVE_STATUSES,
             limit: 20,
           });
-          const liveOrReconnecting = result.items.filter(
-            (s) => s.status === "LIVE" || s.status === "RECONNECTING"
-          );
           callback(null, {
-            streams: liveOrReconnecting.map((s) => ({
+            streams: result.items.map((s) => ({
               id: s.id,
               title: s.title,
               thumbnail: s.thumbnail ?? "",
@@ -718,10 +728,12 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
           const req = call.request as {
             commentId: string;
             requesterId: string;
+            livestreamId?: string;
           };
           const result = await deps.commentService.deleteComment(
             req.commentId,
-            req.requesterId
+            req.requesterId,
+            req.livestreamId || undefined
           );
           callback(null, {
             success: true,

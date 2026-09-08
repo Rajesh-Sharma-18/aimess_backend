@@ -107,6 +107,17 @@ model PrivateRoom {
 
   @@index([participants])
   @@index([lastMessageAt(sort: Desc)])
+  // findSearchScope: `participants has userId` + `orderBy lastMessageAt desc` +
+  // take N. Neither index above serves both halves — [participants] blocking-sorts
+  // every room the caller is in (find() sorts never spill to disk), and
+  // [lastMessageAt] walks the whole collection newest-first until N of the
+  // caller's rooms surface. A POINT bound on the multikey leading field with a
+  // NON-multikey sort field is exactly the case where path-level multikey metadata
+  // lets the index provide the sort, so this one early-terminates. Same shape as
+  // GroupMember's [userId, status, updatedAt Desc] and RoomMember's
+  // [userId, status, updatedAt Desc]. Both indexes above are kept: [participants]
+  // is still a prefix, and [lastMessageAt] backs unrelated reads.
+  @@index([participants, lastMessageAt(sort: Desc)])
   // Backs the restamp repair pass: WHERE autoDeleteRestampPending != null.
   @@index([autoDeleteRestampPending])
   @@map("private_rooms")
@@ -181,6 +192,11 @@ model PrivateMessage {
   // findByRoomIdSeq is the sequence-ordered read, and it is what the web client
   // paginates with.
   @@index([roomId, isDeleted, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
+  // Serves the message-body search sort {createdAt: -1, _id: -1}. The index above
+  // ends in sequenceNumber, so it cannot match that sort pattern — Mongo fell back
+  // to a blocking in-memory sort with no early termination, examining every live
+  // message in the caller's rooms for a page of 20.
+  @@index([roomId, isDeleted, createdAt(sort: Desc), id(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
@@ -366,6 +382,9 @@ model GroupMessage {
   // get a deterministic, index-backed total order with early-termination preserved.
   @@index([roomId, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
   @@index([roomId, isDeleted, createdAt(sort: Desc)])
+  // Message-body search sort {createdAt: -1, _id: -1} — see PrivateMessage's twin.
+  // The index above omits _id, so it does not match the sort pattern.
+  @@index([roomId, isDeleted, createdAt(sort: Desc), id(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
@@ -616,6 +635,9 @@ model GeneralRoomMessage {
   // both before (desc) and after (asc, reverse scan) directions — index-backed sort
   // with early termination instead of a full-room blocking sort.
   @@index([roomId, deletedForAll, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
+  // Message-body search sort {createdAt: -1, _id: -1} — see PrivateMessage's twin.
+  // The index above ends in sequenceNumber, so it cannot match that sort pattern.
+  @@index([roomId, deletedForAll, createdAt(sort: Desc), id(sort: Desc)])
   // Covering index for findUpdatedAtSince (incremental sync): roomId + updatedAt ASC,
   // sequenceNumber tiebreak. Tombstones are intentionally not filtered, so deletedForAll
   // is excluded here.
@@ -658,8 +680,10 @@ model RoomMember {
   // prefixed on userId, so both queries were collection scans over every
   // membership row in the product. GroupMember and PrivateRoom already carry
   // the equivalent; community was the only one of the three summary halves
-  // whose lookup was unindexed.
-  @@index([userId, status])
+  // whose lookup was unindexed. Widened with updatedAt so findSearchScope's
+  // recency-ordered cap is index-served too; [userId, status] is still a prefix,
+  // so every query the narrow index backed is unaffected.
+  @@index([userId, status, updatedAt(sort: Desc)])
   @@map("room_members")
 }
 

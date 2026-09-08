@@ -9,6 +9,7 @@ import {
   normalizeForSearch,
   buildUserSearchFilter,
   buildNormalizedFullName,
+  type PeopleSearchCursor,
 } from "../lib/user-search.util.js";
 import { PLACEHOLDER_DATE_OF_BIRTH } from "../lib/profile-fields.util.js";
 import {
@@ -50,12 +51,41 @@ function buildSearchFilter(q: string | undefined): {
  */
 function buildDiscoveryWhere(
   q: string | undefined,
-  viewer: ViewerGraph
+  viewer: ViewerGraph,
+  cursor?: PeopleSearchCursor,
+  alwaysVisibleIds?: string[]
 ): Prisma.UserProfileWhereInput {
   // Both clauses land in AND — `buildSearchFilter` already owns that key, so
   // concatenate instead of spreading (a spread would silently drop the search).
   return {
-    AND: [...(buildSearchFilter(q).AND ?? []), discoverableWhere(viewer)],
+    AND: [
+      ...(buildSearchFilter(q).AND ?? []),
+      // `alwaysVisibleIds` widens the `whoCanFindMe` gate for ids the CALLER
+      // has already authorized — never `discoverableWhere` itself, which three
+      // other queries share. Every other clause (text, deletedAt, excludeIds,
+      // keyset) still applies to those rows.
+      alwaysVisibleIds?.length
+        ? {
+            OR: [
+              discoverableWhere(viewer),
+              { userId: { in: alwaysVisibleIds } },
+            ],
+          }
+        : discoverableWhere(viewer),
+      // Keyset "after" for orderBy [firstName asc, userId asc]. Same collation
+      // drives both the sort and this comparison, so the two agree by
+      // construction — which is the whole reason skip is droppable.
+      ...(cursor
+        ? [
+            {
+              OR: [
+                { firstName: { gt: cursor.firstName } },
+                { firstName: cursor.firstName, userId: { gt: cursor.userId } },
+              ],
+            },
+          ]
+        : []),
+    ],
   };
 }
 
@@ -241,21 +271,32 @@ export const userProfileRepository = {
     });
   },
 
+  /**
+   * `cursor` and `skip` are alternatives, not a pair: a cursor walks the
+   * [firstName, userId] keyset and makes `skip` meaningless, so it is dropped.
+   * Offset callers (discovery pages) simply omit the cursor.
+   *
+   * `alwaysVisibleIds` are ids exempt from the `whoCanFindMe` gate because the
+   * caller already authorized them — today only the viewer's existing
+   * private-room peers (user search), never a set the viewer merely matched.
+   */
   findUsersNotInList(
     excludeIds: string[],
     q: string | undefined,
     skip: number,
     take: number,
-    viewer: ViewerGraph
+    viewer: ViewerGraph,
+    cursor?: PeopleSearchCursor,
+    alwaysVisibleIds?: string[]
   ) {
     return prisma.userProfile.findMany({
       where: {
         userId: { notIn: excludeIds },
         deletedAt: null,
-        ...buildDiscoveryWhere(q, viewer),
+        ...buildDiscoveryWhere(q, viewer, cursor, alwaysVisibleIds),
       },
       select: DISCOVERY_SELECT,
-      skip,
+      skip: cursor ? undefined : skip,
       take,
       // Tiebreaker: `firstName` is not unique, and an unstable sort under
       // skip/take drops and duplicates rows across pages.

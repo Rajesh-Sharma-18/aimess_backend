@@ -70,6 +70,8 @@ import { CommunityMessageController } from "../../src/api/controllers/community-
 import { CallController } from "../../src/api/controllers/call.controller.js";
 import { PresenceController } from "../../src/api/controllers/presence.controller.js";
 import { MessageContextController } from "../../src/api/controllers/message-context.controller.js";
+import { MessageSearchController } from "../../src/api/controllers/message-search.controller.js";
+import { MessageSearchService } from "../../src/services/message-search.service.js";
 
 /**
  * A Proxy whose every property is a fresh jest.fn() (memoized per key). Lets a
@@ -156,6 +158,7 @@ export interface BuiltMocks {
   roomMemberRepo: any;
   notificationRepo: any;
   callRepo: any;
+  messageSearchRepo: any;
   cacheRepo: any;
   // peers / infra
   userServiceClient: any;
@@ -390,6 +393,7 @@ export function buildApp(): BuiltApp {
     system: 0,
   });
   const callRepo = repoMock();
+  const messageSearchRepo = repoMock();
 
   // -- Peers / collaborators --
   // UserSnapshotService is real (it calls the mocked user-service-client lib +
@@ -695,6 +699,18 @@ export function buildApp(): BuiltApp {
       groupMessageService,
       communityMessageService
     ),
+    messageSearchCtrl: new MessageSearchController(
+      new MessageSearchService(
+        messageSearchRepo,
+        privateRoomRepo,
+        groupRoomRepo,
+        groupMemberRepo,
+        generalRoomRepo,
+        roomMemberRepo,
+        userSnapshotService,
+        cacheRepo
+      )
+    ),
   };
 
   const app = createApp(controllers);
@@ -717,6 +733,7 @@ export function buildApp(): BuiltApp {
       roomMemberRepo,
       notificationRepo,
       callRepo,
+      messageSearchRepo,
       cacheRepo,
       userServiceClient,
       friendshipGrpcClient,

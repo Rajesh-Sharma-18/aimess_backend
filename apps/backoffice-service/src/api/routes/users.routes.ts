@@ -9,6 +9,7 @@ import {
   getUserDetails,
   listOtherCommunityMembers,
   listUserCommunities,
+  listUserDevices,
   listUserReports,
   listUsers,
   reactivateUser,
@@ -31,6 +32,7 @@ import {
   listUsersQuerySchema,
   suspendUserSchema,
   userCommunityMembersParamSchema,
+  userDevicesQuerySchema,
   userIdParamSchema,
   userReportsQuerySchema,
 } from "../validators/index.js";
@@ -99,6 +101,17 @@ usersRoutes.get(
   validateParams(userIdParamSchema),
   validateQuery(userReportsQuerySchema),
   listUserReports
+);
+// User → Linked Devices. Own endpoint rather than a field on `/users/:userId`:
+// the detail response is already a fan-out over five services, devices are
+// paginated, and an admin who never opens the block should not pay a gRPC round
+// trip for it on every profile view.
+usersRoutes.get(
+  "/users/:userId/devices",
+  requirePermission(PERMISSIONS.USERS_VIEW),
+  validateParams(userIdParamSchema),
+  validateQuery(userDevicesQuerySchema),
+  listUserDevices
 );
 // User → Communities grid + the co-member grid for a specific community. The
 // more-specific `/communities/:communityId/members` is declared before the

@@ -59,7 +59,10 @@ import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { PresenceService } from "./presence.service.js";
 import { buildDeletePayload } from "../lib/chat-message.serializer.js";
 import { recalcConvAfterSystemLineRetraction } from "../events/recalc-conv-after-retraction.js";
-import { unpinAfterDelete } from "../lib/pin-after-delete.js";
+import {
+  unpinAfterDelete,
+  type UnpinAfterDeleteResult,
+} from "../lib/pin-after-delete.js";
 import { renderConvOverrides } from "../lib/recipient-override-render.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
 
@@ -1079,7 +1082,9 @@ export class ChatMessageOrchestrator {
     // The last-message recalculation below must therefore run AFTER it — a
     // recalc racing the retraction re-pins the snapshot to a line that is about
     // to be tombstoned, and the list then previews a deleted message forever.
-    let pinCleanup: Promise<void> = Promise.resolve();
+    let pinCleanup: Promise<UnpinAfterDeleteResult> = Promise.resolve({
+      hiddenSystemLineSeq: 0,
+    });
     if (result.roomId) {
       pinCleanup = unpinAfterDelete({
         redis: this.redis,
@@ -1088,6 +1093,7 @@ export class ChatMessageOrchestrator {
             ? this.groupPinService
             : this.privatePinService,
         kind: "DIRECT",
+        directType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
         roomId: result.roomId,
         messageId: params.messageId,
         userId: params.userId,
@@ -1243,19 +1249,31 @@ export class ChatMessageOrchestrator {
 
     if (params.scope === "forMe" && result.roomId) {
       const rId = result.roomId;
-      const recalcPromise =
-        conversationType === "GROUP"
-          ? this.groupMessageService.recalculateLastMessageAfterDeleteForMe(
-              rId,
-              result.sequenceNumber ?? 0,
-              params.userId
-            )
-          : this.privateMessageService.recalculateLastMessageAfterDeleteForMe(
-              rId,
-              result.sequenceNumber ?? 0,
-              params.userId
-            );
-      void recalcPromise
+      // Started INSIDE the pin hook's continuation, never before it: on a
+      // delete-for-me of the PINNED message the hook hides this user's copy of
+      // the "<actor> pinned a message" line, which is very often their current
+      // last visible message. A recalc racing it re-points their list preview
+      // at a line they can no longer see.
+      void pinCleanup
+        .then(async ({ hiddenSystemLineSeq }) => {
+          // The hidden pin line is usually NEWER than the deleted message —
+          // the effective-last decision is made on the newest removed row.
+          const removedSeq = Math.max(
+            result.sequenceNumber ?? 0,
+            hiddenSystemLineSeq
+          );
+          return conversationType === "GROUP"
+            ? await this.groupMessageService.recalculateLastMessageAfterDeleteForMe(
+                rId,
+                removedSeq,
+                params.userId
+              )
+            : await this.privateMessageService.recalculateLastMessageAfterDeleteForMe(
+                rId,
+                removedSeq,
+                params.userId
+              );
+        })
         .then((recalc) => {
           if (recalc === null || !recalc.wasEffectiveLast) return;
           const preview = recalc.hasLastMessage

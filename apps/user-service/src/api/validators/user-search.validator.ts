@@ -25,7 +25,25 @@ export type RemoveRecentUserSearchQuery = z.infer<
 export const unifiedSearchQuerySchema = z.object({
   q: z.string().trim().max(100).optional(),
   page: z.coerce.number().int().positive().max(1000).default(1),
-  // "Other" is capped at 10 per page — search results, not a full directory.
-  limit: z.coerce.number().int().min(1).max(10).default(10),
+  // Opaque people keyset — see `encodePeopleCursor`. Supersedes `page` when
+  // present, and marks the request as a continuation: the bounded heads
+  // (`chat`, and the group half of `other`) are omitted from those pages.
+  cursor: z.string().trim().min(1).max(512).optional(),
+  // "Other" is capped per page — search results, not a full directory. The
+  // default stays 10 so existing callers keep their page size; the ceiling is
+  // 50 because the unified /search gateway pages people 20-50 at a time.
+  limit: z.coerce.number().int().min(1).max(50).default(10),
 });
 export type UnifiedSearchQuery = z.infer<typeof unifiedSearchQuerySchema>;
+
+/**
+ * `GET /users/search/groups` — groups the caller is an ACTIVE member of.
+ * `cursor` is the plain row offset of the next page, as a string, because the
+ * underlying listing is offset-paged rather than keyset-paged.
+ */
+export const groupSearchQuerySchema = z.object({
+  q: z.string().trim().max(100).optional(),
+  cursor: z.coerce.number().int().min(0).max(10_000).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(10),
+});
+export type GroupSearchQuery = z.infer<typeof groupSearchQuerySchema>;

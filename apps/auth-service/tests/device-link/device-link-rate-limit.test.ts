@@ -58,6 +58,25 @@ describe("QR login rate limiting", () => {
     expect(lastStatus).toBe(201);
   });
 
+  /**
+   * The bug this pins: `/devices/link/result` is POLLED — every 2s for the
+   * 60-second life of a QR, which is 30 requests for one QR alone — and it was
+   * mounted on the 5/minute limiter named for QR GENERATION. The QR started
+   * answering 429 about ten seconds after it appeared.
+   */
+  it("lets the browser poll a QR's result far past the generation budget", async () => {
+    let lastStatus = 0;
+    // Comfortably more than `QR_GENERATION_RATE_LIMIT_MAX` (5) — this is the
+    // shape of one ordinary QR being waited on, not abuse.
+    for (let i = 0; i < 30; i++) {
+      const res = await request(app)
+        .post("/api/auth/devices/link/result")
+        .send({ linkToken: "11111111-1111-4111-8111-111111111111" });
+      lastStatus = res.status;
+    }
+    expect(lastStatus).not.toBe(429);
+  });
+
   it("caps QR scan at 10 requests/minute/user → 429 on the 11th", async () => {
     const token = bearer(makeAccessToken());
     let lastStatus = 0;

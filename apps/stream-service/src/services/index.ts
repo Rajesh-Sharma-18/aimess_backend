@@ -7,6 +7,8 @@ export type {
   ListStreamsResult,
   PublishCredentialsResult,
 } from "./livestream.service.js";
+export { MediaResolverService } from "./media-resolver.service.js";
+export type { ResolvedSource, ResolveOutcome } from "./media-resolver.service.js";
 export { LivestreamCommentService } from "./livestream-comment.service.js";
 export type {
   CommentDto,

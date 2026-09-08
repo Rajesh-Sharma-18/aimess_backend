@@ -668,7 +668,8 @@ export class GroupRoomRepository {
   async searchInRoomIds(
     roomIds: string[],
     q: string | undefined,
-    limit: number
+    limit: number,
+    skip = 0
   ): Promise<GroupRoom[]> {
     if (roomIds.length === 0) return [];
     return this.prisma.groupRoom.findMany({
@@ -677,7 +678,11 @@ export class GroupRoomRepository {
         status: VISIBLE_ROOM_STATUS,
         ...(q ? { AND: buildGroupSearchFilter(q) } : {}),
       },
-      orderBy: { lastMessageAt: "desc" },
+      // Stable across pages: `lastMessageAt` alone ties on rooms that have never
+      // been written to, and an offset walk over a tied order can repeat or drop
+      // a row. `roomId` breaks the tie.
+      orderBy: [{ lastMessageAt: "desc" }, { roomId: "desc" }],
+      skip,
       take: limit,
     });
   }
