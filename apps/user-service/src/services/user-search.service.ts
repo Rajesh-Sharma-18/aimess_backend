@@ -27,6 +27,8 @@ import { mediaUrlStrategy } from "../config/storage.js";
 import {
   decodePeopleCursor,
   encodePeopleCursor,
+  normalizeForSearch,
+  rankByUsername,
 } from "../lib/user-search.util.js";
 import type { UnifiedSearchQuery } from "../api/validators/user-search.validator.js";
 
@@ -449,33 +451,78 @@ export const userSearchService = {
     // belongs to. Skipped entirely on a cursor page — it is a bounded head,
     // not a paged list, so re-fetching it would only duplicate rows.
     // ---------------------------------------------------------------------
+    // Exact `@handle` head. Runs on EVERY page, not just the first: the row is
+    // emitted on page 1 only (below), but its id has to leave the keyset on all
+    // of them, or the hoisted row comes back a second time when the walk
+    // reaches wherever its first name actually sorts.
+    //
+    // `normalizeForSearch` has already stripped the `@` and every separator, so
+    // "@Smiley_Creatures", "smiley creatures" and "smileycreatures" are one
+    // lookup against one indexed field.
+    const normalizedQ = q ? normalizeForSearch(q) : "";
+    const [exactHandleHit, chatUserProfiles, chatGroupSummaries] =
+      await Promise.all([
+        normalizedQ
+          ? userProfileRepository.findDiscoverableByNormalizedUsername(
+              normalizedQ,
+              viewerGraph,
+              [...peerRoomByUserId.keys()]
+            )
+          : Promise.resolve(null),
+        !cursor && friendIds.length
+          ? userProfileRepository.findUsersInList(friendIds, q, 0, CHAT_LIMIT)
+          : Promise.resolve([]),
+        cursor
+          ? Promise.resolve([])
+          : messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
+      ]);
+
+    // Self is never a search result, and a peer who blocked the viewer with no
+    // conversation to open is subtracted everywhere else — the exact-handle
+    // door does not get to be the exception to either.
+    const exactHit =
+      exactHandleHit &&
+      exactHandleHit.userId !== viewerId &&
+      !hiddenWithoutRoom.has(exactHandleHit.userId)
+        ? exactHandleHit
+        : null;
+    const isExactFriend = exactHit
+      ? friendIds.includes(exactHit.userId)
+      : false;
+
+    // ---------------------------------------------------------------------
     const chat: SearchResultItem[] = [];
     const chatGroupIds: string[] = [];
     if (!cursor) {
-      const [chatUserProfiles, chatGroupSummaries] = await Promise.all([
-        friendIds.length
-          ? userProfileRepository.findUsersInList(friendIds, q, 0, CHAT_LIMIT)
-          : Promise.resolve([]),
-        messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
-      ]);
-
       // Friends with an existing room sort by recency first; roomless friends
-      // fall to the end in query order.
+      // fall to the end in query order — then the handle tiers reorder on top,
+      // so an exact/prefix handle match outranks a name-only one either way.
       chatUserProfiles.sort(
         (a, b) =>
           (roomOrderIndex.get(a.userId) ?? Infinity) -
           (roomOrderIndex.get(b.userId) ?? Infinity)
       );
+      const chatRanked = rankByUsername(chatUserProfiles, q);
+      // An exact-handle FRIEND belongs in this bucket, and must lead it even
+      // when their first name put them past CHAT_LIMIT in the query above.
+      const chatHead =
+        exactHit && isExactFriend
+          ? [
+              exactHit,
+              ...chatRanked.filter((p) => p.userId !== exactHit.userId),
+            ]
+          : chatRanked;
 
       // Rows are independent, so the per-row avatar headObject + presigns run
       // together rather than one round-trip after another.
       chat.push(
-        ...(await Promise.all(
-          chatUserProfiles.slice(0, CHAT_LIMIT).map(toItem)
-        ))
+        ...(await Promise.all(chatHead.slice(0, CHAT_LIMIT).map(toItem)))
       );
-      for (const g of chatGroupSummaries) {
-        if (chat.length >= CHAT_LIMIT) break;
+      // Groups get their OWN CHAT_LIMIT rather than whatever the friends left
+      // over. They are a different category, not a competitor: sharing one
+      // budget meant a query matching ten friends returned zero groups, which
+      // reads as "you have no such group" on a Group tab that is groups-only.
+      for (const g of chatGroupSummaries.slice(0, CHAT_LIMIT)) {
         chat.push(await toGroupItem(g));
         chatGroupIds.push(g.roomId);
       }
@@ -498,6 +545,11 @@ export const userSearchService = {
       // so the row renders as blocked rather than addable.
       ...hiddenWithoutRoom,
       ...friendIds, // only accepted friends are excluded from "other"
+      // The exact-handle head is served ONCE, above the page. Leaving it in the
+      // keyset would serve it a second time when the walk reaches its first
+      // name, so it is excluded on every page — including the ones that do not
+      // emit it, which is the page the duplicate would have landed on.
+      ...(exactHit ? [exactHit.userId] : []),
     ];
     const [otherUserProfiles, otherGroupSummaries] = await Promise.all([
       // One row past the page: its presence is `hasMore`, and it is sliced off
@@ -527,13 +579,24 @@ export const userSearchService = {
     ]);
 
     const otherPage = otherUserProfiles.slice(0, otherTake);
-    const other: SearchResultItem[] = await Promise.all(otherPage.map(toItem));
-    for (const g of otherGroupSummaries) {
-      if (other.length >= otherTake) break;
+    // An exact-handle NON-friend leads this bucket on page 1. It rides ON TOP of
+    // the page rather than inside it: trimming a keyset row to make room would
+    // move `nextCursor` back a row and skip whatever it displaced.
+    const otherHead =
+      exactHit && !isExactFriend && !cursor
+        ? [exactHit, ...rankByUsername(otherPage, q)]
+        : rankByUsername(otherPage, q);
+    const other: SearchResultItem[] = await Promise.all(otherHead.map(toItem));
+    // Own budget, same reason as the `chat` half above — a full page of people
+    // must not silently swallow the whole group category.
+    for (const g of otherGroupSummaries.slice(0, otherTake)) {
       other.push(await toGroupItem(g));
     }
 
     const hasMore = otherUserProfiles.length > otherTake;
+    // The keyset boundary, NOT the ranked head: `rankByHandle` reorders the page
+    // for display only, and paging from a re-sorted last row would re-walk rows
+    // the caller already has.
     const last = otherPage.at(-1);
     return {
       // Omitted, not emptied, on a cursor page — an empty array would read as
