@@ -1,5 +1,5 @@
 import { logger } from "@aimess/logger";
-import { connectRedis } from "@aimess/redis";
+import { connectRedis, createSubscriber } from "@aimess/redis";
 
 import { env } from "../config/env.js";
 import {
@@ -23,13 +23,25 @@ import {
  * DELIVERED is touched — only what is still queued.
  */
 export function startPendingPushSync(): void {
-  const sub = connectRedis({
+  // connectRedis returns a process-wide SINGLETON. psubscribing on it put that
+  // shared client into subscriber mode, after which ioredis rejected every
+  // ordinary command on it — which killed cacheGetJson/cacheSetJson for the
+  // whole service (measured: 114 failures/hour, every notification-settings
+  // read and write). Ensure the singleton exists, then take a separate
+  // connection for the subscription.
+  connectRedis({
     host: env.REDIS_HOST,
     port: env.REDIS_PORT,
     password: env.REDIS_PASSWORD,
   });
+  const sub = createSubscriber();
 
-  void sub.psubscribe("conv:*", "community:*");
+  void (async () => {
+    if (sub.status === "wait") await sub.connect();
+    await sub.psubscribe("conv:*", "community:*");
+  })().catch(() => {
+    logger.warn("pending-push-sync: subscriber failed to start");
+  });
   sub.on("pmessage", (_pattern: string, _channel: string, raw: string) => {
     try {
       const parsed = JSON.parse(raw) as {

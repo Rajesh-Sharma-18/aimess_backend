@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 import { parseSupportedLocale } from "@aimess/constants";
 import {
   connectRedis,
+  createSubscriber,
   SESSION_LOCALE_CHANNEL,
   type SessionLocaleChange,
 } from "@aimess/redis";
@@ -29,11 +30,15 @@ import { deviceTokenRepository } from "../repositories/device-token.repository.j
  * and this consumer has to issue a write for every message it receives.
  */
 export async function startSessionLocaleConsumer(): Promise<void> {
-  const subscriber = connectRedis({
+  // connectRedis returns a SINGLETON, so this consumer never actually had its
+  // own connection despite the note above — it shared one with every cache
+  // caller, and subscribing broke all of them. createSubscriber duplicates it.
+  connectRedis({
     host: env.REDIS_HOST,
     port: env.REDIS_PORT,
     password: env.REDIS_PASSWORD,
   });
+  const subscriber = createSubscriber();
   if (subscriber.status === "wait") await subscriber.connect();
   await subscriber.subscribe(SESSION_LOCALE_CHANNEL);
 

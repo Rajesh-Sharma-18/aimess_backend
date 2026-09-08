@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 
 import { logger } from "@aimess/logger";
+import { connectRedis } from "@aimess/redis";
 
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
@@ -48,6 +49,13 @@ async function start() {
   installProcessGuards();
 
   try {
+    // Populates the @aimess/redis singleton that getRedis() returns. Without
+    // it the chat ban-gate threw "Redis client not initialized" on EVERY
+    // request and failed open — measured at 361 warnings/hour in production,
+    // meaning that gate has never actually run. The Socket.IO adapter builds
+    // its own clients from the same URL, so this adds one connection.
+    connectRedis({ url: env.REDIS_URL });
+
     const messagingClient = createMessagingClient();
     const mediaClient = createMediaClient();
     const app = createApp(messagingClient, mediaClient);
