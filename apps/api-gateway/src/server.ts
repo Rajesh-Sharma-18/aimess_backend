@@ -54,7 +54,12 @@ async function start() {
     // request and failed open — measured at 361 warnings/hour in production,
     // meaning that gate has never actually run. The Socket.IO adapter builds
     // its own clients from the same URL, so this adds one connection.
-    connectRedis({ url: env.REDIS_URL });
+    // Connect eagerly: the client is created with `lazyConnect`, and the pool
+    // is configured with `enableOfflineQueue: false`, so the first request to
+    // arrive before the socket is up fails with "Stream isn't writeable"
+    // instead of waiting. Observed once per restart before this await.
+    const redis = connectRedis({ url: env.REDIS_URL });
+    if (redis.status === "wait") await redis.connect();
 
     const messagingClient = createMessagingClient();
     const mediaClient = createMediaClient();
