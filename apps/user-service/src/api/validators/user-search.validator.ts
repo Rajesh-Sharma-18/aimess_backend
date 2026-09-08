@@ -35,3 +35,15 @@ export const unifiedSearchQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(10),
 });
 export type UnifiedSearchQuery = z.infer<typeof unifiedSearchQuerySchema>;
+
+/**
+ * `GET /users/search/groups` — groups the caller is an ACTIVE member of.
+ * `cursor` is the plain row offset of the next page, as a string, because the
+ * underlying listing is offset-paged rather than keyset-paged.
+ */
+export const groupSearchQuerySchema = z.object({
+  q: z.string().trim().max(100).optional(),
+  cursor: z.coerce.number().int().min(0).max(10_000).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(10),
+});
+export type GroupSearchQuery = z.infer<typeof groupSearchQuerySchema>;

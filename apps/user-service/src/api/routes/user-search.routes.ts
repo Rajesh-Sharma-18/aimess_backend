@@ -4,6 +4,7 @@ import {
   clearRecentUserSearches,
   recordRecentUserSearch,
   removeRecentUserSearch,
+  searchGroups,
   searchUsersUnified,
 } from "../controllers/user-search.controller.js";
 import { validateBody } from "../middleware/validate-body.js";
@@ -11,6 +12,7 @@ import { validateParams } from "../middleware/validate-params.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
 import {
+  groupSearchQuerySchema,
   recordRecentUserSearchSchema,
   removeRecentUserSearchParamsSchema,
   removeRecentUserSearchQuerySchema,
@@ -26,6 +28,14 @@ userSearchRoutes.get(
   "/",
   validateQuery(unifiedSearchQuerySchema),
   searchUsersUnified
+);
+
+// GET  /api/v1/users/search/groups — ACTIVE-membership groups only.
+// Declared before the `/recent/...` routes so the literal path wins.
+userSearchRoutes.get(
+  "/groups",
+  validateQuery(groupSearchQuerySchema),
+  searchGroups
 );
 
 // POST /api/v1/users/search/recent
