@@ -1,12 +1,23 @@
 import type { Request, Response } from "express";
 import { asyncHandler, ApiResponse } from "@aimess/utils";
-import { BadRequestError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ServiceUnavailableError,
+  TooManyRequestsError,
+} from "@aimess/errors";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
 import type { LivestreamService } from "../../services/livestream.service.js";
 import type { LivestreamCommentService } from "../../services/livestream-comment.service.js";
 import {
+  MediaResolverService,
+  ResolverBusyError,
+  ResolverUnavailableError,
+  SourceHostForbiddenError,
+} from "../../services/media-resolver.service.js";
+import {
   createStreamSchema,
+  resolveSourceSchema,
   listStreamsQuerySchema,
   updateStreamSchema,
   reportQualitySchema,
@@ -22,8 +33,48 @@ import {
 export class StreamController {
   constructor(
     private readonly livestreamService: LivestreamService,
-    private readonly commentService: LivestreamCommentService
+    private readonly commentService: LivestreamCommentService,
+    private readonly mediaResolver: MediaResolverService
   ) { }
+
+  /**
+   * Resolves a watch-page URL to a directly playable media URL.
+   *
+   * Deliberately NOT tied to a stream row: the website calls it while the
+   * broadcaster is still typing a URL into the go-live form, and the native
+   * clients call it before handing a source to AVPlayer / ExoPlayer. Clients
+   * try their own platform-embed mapping first and only fall back here, so a
+   * failure is expected traffic rather than an error path.
+   */
+  resolveSource = asyncHandler(async (req: Request, res: Response) => {
+    const parsed = resolveSourceSchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    try {
+      // A 200 with `source: null` covers both "extraction is switched off here"
+      // and "nothing playable at that link". Neither is a failure of this
+      // service, and returning 4xx/5xx for them made an optional feature that
+      // is simply disabled look like an outage in the client's console.
+      const outcome = await this.mediaResolver.resolve(parsed.data.url);
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(outcome, t("STREAM_SOURCE_RESOLVED", req.locale)));
+    } catch (error) {
+      if (error instanceof SourceHostForbiddenError) {
+        throw new BadRequestError("STREAM_SOURCE_HOST_FORBIDDEN");
+      }
+      // Saturated, not broken — 429 tells the client to retry rather than to
+      // give up on the feature.
+      if (error instanceof ResolverBusyError) {
+        throw new TooManyRequestsError("STREAM_RESOLVER_BUSY");
+      }
+      // Enabled but the binary is missing: the one case that really is a 503.
+      if (error instanceof ResolverUnavailableError) {
+        throw new ServiceUnavailableError("STREAM_RESOLVER_UNAVAILABLE");
+      }
+      throw error;
+    }
+  });
 
   createStream = asyncHandler(async (req: Request, res: Response) => {
     const parsed = createStreamSchema.safeParse(req.body);

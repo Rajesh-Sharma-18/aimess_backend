@@ -18,6 +18,11 @@ export const STREAM_MESSAGES = {
     vi: "Lấy thông tin buổi phát trực tiếp thành công.",
     th: "ดึงข้อมูลสตรีมเรียบร้อยแล้ว",
   },
+  STREAM_SOURCE_RESOLVED: {
+    en: "Stream source resolved successfully.",
+    vi: "Phân giải nguồn phát trực tiếp thành công.",
+    th: "แปลงแหล่งสตรีมเรียบร้อยแล้ว",
+  },
   STREAM_UPDATED: {
     en: "Stream updated successfully.",
     vi: "Cập nhật buổi phát trực tiếp thành công.",
@@ -178,6 +183,27 @@ export const STREAM_MESSAGES = {
     en: "You do not have permission to view these reports.",
     vi: "Bạn không có quyền xem các báo cáo này.",
     th: "คุณไม่มีสิทธิ์ดูรายงานเหล่านี้",
+  },
+
+  STREAM_SOURCE_UNRESOLVABLE: {
+    en: "No playable video could be found at this link.",
+    vi: "Không tìm thấy video có thể phát tại liên kết này.",
+    th: "ไม่พบวิดีโอที่เล่นได้จากลิงก์นี้",
+  },
+  STREAM_SOURCE_HOST_FORBIDDEN: {
+    en: "This link points to an address that cannot be resolved.",
+    vi: "Liên kết này trỏ đến một địa chỉ không thể phân giải.",
+    th: "ลิงก์นี้ชี้ไปยังที่อยู่ที่ไม่สามารถแปลงได้",
+  },
+  STREAM_RESOLVER_BUSY: {
+    en: "Too many links are being checked right now. Please try again shortly.",
+    vi: "Có quá nhiều liên kết đang được kiểm tra. Vui lòng thử lại sau giây lát.",
+    th: "มีลิงก์จำนวนมากกำลังถูกตรวจสอบ กรุณาลองใหม่อีกครั้ง",
+  },
+  STREAM_RESOLVER_UNAVAILABLE: {
+    en: "Link resolution is unavailable right now. Please try again later.",
+    vi: "Chức năng phân giải liên kết hiện không khả dụng. Vui lòng thử lại sau.",
+    th: "ขณะนี้ไม่สามารถแปลงลิงก์ได้ กรุณาลองใหม่ภายหลัง",
   },
 
   // ── Conflict ───────────────────────────────────────────────────────────────

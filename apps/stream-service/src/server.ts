@@ -25,6 +25,7 @@ import {
   SrsService,
   LivestreamService,
   LivestreamCommentService,
+  MediaResolverService,
 } from "./services/index.js";
 
 // -- gRPC clients --
@@ -112,8 +113,17 @@ async function start() {
       commentReportRepo
     );
 
+    // Shares the service's redis client: resolved media URLs are signed and
+    // short-lived, so the cache is what keeps a popular stream from re-running
+    // yt-dlp for every viewer that joins.
+    const mediaResolver = new MediaResolverService(redis);
+
     // 3. Controllers
-    const controller = new StreamController(livestreamService, commentService);
+    const controller = new StreamController(
+      livestreamService,
+      commentService,
+      mediaResolver
+    );
 
     // 4. gRPC server with real service delegates
     startGrpcServer(env.STREAM_GRPC_PORT, {
