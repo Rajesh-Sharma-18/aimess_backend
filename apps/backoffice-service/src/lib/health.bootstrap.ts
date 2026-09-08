@@ -14,6 +14,10 @@ import { postgresInfraProbe } from "../probes/postgres.infra.probe.js";
 import { redisInfraProbe } from "../probes/redis.infra.probe.js";
 import { rabbitmqInfraProbe } from "../probes/rabbitmq.infra.probe.js";
 import { minioInfraProbe } from "../probes/minio.infra.probe.js";
+import { mongodbInfraProbe } from "../probes/mongodb.infra.probe.js";
+import { clamavInfraProbe } from "../probes/clamav.infra.probe.js";
+import { srsInfraProbe } from "../probes/srs.infra.probe.js";
+import { livekitInfraProbe } from "../probes/livekit.infra.probe.js";
 
 /**
  * Single source of truth for "which components does System Health monitor".
@@ -44,4 +48,8 @@ export function bootstrapHealthChecks(): void {
   healthInfrastructureRegistry.registerInfrastructure(redisInfraProbe);
   healthInfrastructureRegistry.registerInfrastructure(rabbitmqInfraProbe);
   healthInfrastructureRegistry.registerInfrastructure(minioInfraProbe);
+  healthInfrastructureRegistry.registerInfrastructure(mongodbInfraProbe);
+  healthInfrastructureRegistry.registerInfrastructure(clamavInfraProbe);
+  healthInfrastructureRegistry.registerInfrastructure(srsInfraProbe);
+  healthInfrastructureRegistry.registerInfrastructure(livekitInfraProbe);
 }

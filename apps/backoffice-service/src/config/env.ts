@@ -40,6 +40,26 @@ const envSchema = z.object({
 
   RABBITMQ_URL: z.string().min(1),
 
+  // ---- System Health probe targets (reachability only; backoffice never
+  // queries these stores/servers — the owning service does). ----
+  /**
+   * MongoDB (chat-service's store). Host/port are read from this URL when set,
+   * otherwise from MONGODB_HOST/MONGODB_PORT.
+   */
+  MONGO_DATABASE_URL: z.string().min(1).optional(),
+  MONGODB_HOST: z.string().default("127.0.0.1"),
+  MONGODB_PORT: z.coerce.number().positive().default(27017),
+  /** ClamAV daemon (media-service owns the scanning; this is the clamd socket). */
+  CLAMAV_HOST: z.string().default("127.0.0.1"),
+  CLAMAV_PORT: z.coerce.number().positive().default(3310),
+  /** SRS (OSSRS) media server HTTP API — same base stream-service uses. */
+  SRS_API_URL: z.string().url().default("http://localhost:1985"),
+  /**
+   * LiveKit signaling base — the same value chat-service uses (a ws:// URL).
+   * The probe swaps the scheme for http(s) and hits LiveKit's root health path.
+   */
+  LIVEKIT_URL: z.string().min(1).default("ws://localhost:7880"),
+
   // gRPC endpoints of the services the dashboard aggregates (live, read-only).
   AUTH_GRPC_URL: z.string().default("0.0.0.0:4001"),
   USER_GRPC_URL: z.string().default("0.0.0.0:4002"),

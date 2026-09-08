@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import net from "node:net";
 import { bucketExists } from "@aimess/storage";
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
@@ -413,6 +414,210 @@ export async function probeObjectStorage(): Promise<InfraHealth> {
       "Object Storage (MinIO)",
       "down",
       { latencyMs: null, bucket },
+      null,
+      noteFrom(err)
+    );
+  }
+}
+
+/**
+ * Bounded TCP connect — the cheapest honest reachability signal for a
+ * dependency backoffice holds no client for. Resolves the connect latency, or
+ * rejects on refusal/timeout; the socket is always destroyed.
+ *
+ * ponytail: port-open only, not a protocol handshake — a listening-but-wedged
+ * daemon still reads as up. Upgrade to a real client ping if that matters.
+ */
+function tcpConnect(host: string, port: number): Promise<number> {
+  const start = performance.now();
+  return new Promise<number>((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    const done = (err?: Error): void => {
+      socket.destroy();
+      if (err) reject(err);
+      else resolve(round(performance.now() - start));
+    };
+    socket.setTimeout(PROBE_TIMEOUT_MS);
+    socket.once("connect", () => done());
+    socket.once("timeout", () => done(new ProbeTimeoutError(PROBE_TIMEOUT_MS)));
+    socket.once("error", (err: Error) => done(err));
+  });
+}
+
+/**
+ * Mongo host/port for the probe. `MONGO_DATABASE_URL` (the same connection
+ * string chat-service uses) wins when set; the first host of a seed list is
+ * probed, since any one reachable member proves the cluster is addressable.
+ */
+function mongoTarget(): { host: string; port: number } {
+  const url = env.MONGO_DATABASE_URL;
+  if (url) {
+    // `new URL` rejects multi-host seed lists, so take the first host manually.
+    const authority = url.replace(/^mongodb(\+srv)?:\/\//, "").split("/")[0];
+    const hostPart = (authority.split("@").pop() ?? "").split(",")[0];
+    const [host, port] = hostPart.split(":");
+    if (host) return { host, port: Number(port) || env.MONGODB_PORT };
+  }
+  return { host: env.MONGODB_HOST, port: env.MONGODB_PORT };
+}
+
+/** MongoDB (chat-service's store) reachability — bounded TCP connect. */
+export async function probeMongo(): Promise<InfraHealth> {
+  const { host, port } = mongoTarget();
+  try {
+    const latencyMs = await tcpConnect(host, port);
+    return infra(
+      "mongodb",
+      "Chat Database (MongoDB)",
+      latencyMs > SLOW_INFRA_MS ? "degraded" : "healthy",
+      { latencyMs, engine: "mongodb", host: `${host}:${String(port)}` },
+      latencyMs
+    );
+  } catch (err) {
+    return infra(
+      "mongodb",
+      "Chat Database (MongoDB)",
+      "down",
+      { latencyMs: null, engine: "mongodb", host: `${host}:${String(port)}` },
+      null,
+      noteFrom(err)
+    );
+  }
+}
+
+/**
+ * ClamAV reachability — clamd's own `zPING` command (null-terminated, the
+ * modern form) which answers `PONG`. Cheaper and more truthful than a bare
+ * connect: it proves the daemon is answering, not just listening.
+ */
+function clamavPing(host: string, port: number): Promise<number> {
+  const start = performance.now();
+  return new Promise<number>((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    let reply = "";
+    const done = (err?: Error): void => {
+      socket.destroy();
+      if (err) reject(err);
+      else resolve(round(performance.now() - start));
+    };
+    socket.setTimeout(PROBE_TIMEOUT_MS);
+    socket.once("connect", () => socket.write("zPING\0"));
+    socket.on("data", (chunk: Buffer) => {
+      reply += chunk.toString("utf8");
+      if (reply.includes("PONG")) done();
+    });
+    socket.once("timeout", () => done(new ProbeTimeoutError(PROBE_TIMEOUT_MS)));
+    socket.once("error", (err: Error) => done(err));
+    socket.once("close", () => {
+      if (!reply.includes("PONG"))
+        done(new Error(`unexpected PING reply: ${reply.trim() || "(empty)"}`));
+    });
+  });
+}
+
+/** ClamAV antivirus daemon — media-service scans through it post-upload. */
+export async function probeClamAv(): Promise<InfraHealth> {
+  const host = env.CLAMAV_HOST;
+  const port = env.CLAMAV_PORT;
+  const target = `${host}:${String(port)}`;
+  try {
+    const latencyMs = await clamavPing(host, port);
+    return infra(
+      "antivirus",
+      "Antivirus (ClamAV)",
+      latencyMs > SLOW_INFRA_MS ? "degraded" : "healthy",
+      { latencyMs, host: target },
+      latencyMs
+    );
+  } catch (err) {
+    return infra(
+      "antivirus",
+      "Antivirus (ClamAV)",
+      "down",
+      { latencyMs: null, host: target },
+      null,
+      noteFrom(err)
+    );
+  }
+}
+
+/**
+ * SRS media server — its unauthenticated `GET /api/v1/versions`, the lightest
+ * call on the same HTTP API stream-service already drives.
+ */
+export async function probeSrs(): Promise<InfraHealth> {
+  const start = performance.now();
+  try {
+    const res = await fetch(`${env.SRS_API_URL}/api/v1/versions`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    const latencyMs = round(performance.now() - start);
+    if (!res.ok) {
+      return infra(
+        "media_server",
+        "Media Server (SRS)",
+        "down",
+        { latencyMs: null, protocol: "http-api" },
+        null,
+        `HTTP ${String(res.status)}`
+      );
+    }
+    const body = (await res.json()) as { data?: { version?: string } };
+    return infra(
+      "media_server",
+      "Media Server (SRS)",
+      latencyMs > SLOW_INFRA_MS ? "degraded" : "healthy",
+      { latencyMs, version: body.data?.version ?? null, protocol: "http-api" },
+      latencyMs
+    );
+  } catch (err) {
+    return infra(
+      "media_server",
+      "Media Server (SRS)",
+      "down",
+      { latencyMs: null, protocol: "http-api" },
+      null,
+      noteFrom(err)
+    );
+  }
+}
+
+/**
+ * LiveKit (calls SFU) — its unauthenticated root path answers `OK` on the same
+ * port as signaling, so no API key is needed to tell up from down. `LIVEKIT_URL`
+ * is a ws(s):// URL for clients; the health call needs http(s).
+ */
+export async function probeLiveKit(): Promise<InfraHealth> {
+  const url = env.LIVEKIT_URL.replace(/^ws/, "http");
+  const start = performance.now();
+  try {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    const latencyMs = round(performance.now() - start);
+    if (!res.ok) {
+      return infra(
+        "livekit",
+        "Calls SFU (LiveKit)",
+        "down",
+        { latencyMs: null, transport: "webrtc" },
+        null,
+        `HTTP ${String(res.status)}`
+      );
+    }
+    return infra(
+      "livekit",
+      "Calls SFU (LiveKit)",
+      latencyMs > SLOW_INFRA_MS ? "degraded" : "healthy",
+      { latencyMs, transport: "webrtc" },
+      latencyMs
+    );
+  } catch (err) {
+    return infra(
+      "livekit",
+      "Calls SFU (LiveKit)",
+      "down",
+      { latencyMs: null, transport: "webrtc" },
       null,
       noteFrom(err)
     );

@@ -35,7 +35,18 @@ describe("bootstrapHealthChecks", () => {
         .getInfrastructure()
         .map((i) => i.key)
         .sort()
-    ).toEqual(["database", "message_queue", "object_storage", "redis"].sort());
+    ).toEqual(
+      [
+        "antivirus",
+        "database",
+        "livekit",
+        "media_server",
+        "message_queue",
+        "mongodb",
+        "object_storage",
+        "redis",
+      ].sort()
+    );
   });
 
   it("is idempotent — calling it again does not throw or duplicate entries", () => {
@@ -43,6 +54,6 @@ describe("bootstrapHealthChecks", () => {
     bootstrapHealthChecks();
 
     expect(healthServiceRegistry.getServices()).toHaveLength(8);
-    expect(healthInfrastructureRegistry.getInfrastructure()).toHaveLength(4);
+    expect(healthInfrastructureRegistry.getInfrastructure()).toHaveLength(8);
   });
 });
