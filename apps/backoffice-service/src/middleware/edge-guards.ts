@@ -2,7 +2,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import type { Request, RequestHandler, Response } from "express";
 
 import { logger } from "@aimess/logger";
-import { sendApiError } from "@aimess/utils";
+import { buildIpAllowList, sendApiError } from "@aimess/utils";
 
 import { env, getAdminIpWhitelist } from "../config/env.js";
 
@@ -77,7 +77,9 @@ export const ADMIN_CREDENTIAL_PATHS = [
   "/auth/reset-password",
 ] as const;
 
-const allowlist = getAdminIpWhitelist();
+const allowlist = buildIpAllowList(getAdminIpWhitelist(), (entry, reason) => {
+  logger.warn(`ADMIN_IP_WHITELIST: ignoring "${entry}" — ${reason}`);
+});
 
 /**
  * Source-address allowlist for the whole admin surface.
@@ -94,13 +96,13 @@ const allowlist = getAdminIpWhitelist();
  * address.
  */
 export const adminIpAllowlist: RequestHandler = (req, res, next) => {
-  if (allowlist.length === 0) {
+  if (allowlist === null) {
     next();
     return;
   }
 
   const ip = req.ip ?? req.socket.remoteAddress ?? "";
-  if (allowlist.includes(ip)) {
+  if (allowlist.check(ip)) {
     next();
     return;
   }

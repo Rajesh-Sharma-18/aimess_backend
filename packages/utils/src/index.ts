@@ -7,6 +7,7 @@ export * from "./datetime.js";
 export * from "./format-zod-error";
 export * from "./fallback-counter";
 export * from "./http-url";
+export * from "./ip-allowlist";
 export * from "./locale-middleware";
 export * from "./mail-recipient";
 export * from "./resolve-locale";
