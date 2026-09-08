@@ -43,6 +43,14 @@ export type UserListItem = {
   username: string;
   /** firstName + lastName (trimmed, single-spaced); null when both are absent. */
   fullName: string | null;
+  /**
+   * The login handle frozen at signup (auth-service `account`), which the
+   * search matches. It drifts from `username` once a user renames their
+   * profile, so the panel shows it whenever the two differ — otherwise a hit
+   * on the handle looks like an unexplained result. null on the mirror path,
+   * which does not carry it.
+   */
+  account: string | null;
   /** null when the user has no email on file (never an empty string). */
   email: string | null;
   status: UserStatus;

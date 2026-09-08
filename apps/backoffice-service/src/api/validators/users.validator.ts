@@ -185,7 +185,9 @@ const sortOrderFilter = z
 export const listUsersQuerySchema = z
   .object({
     // `q` is the public search param (case-insensitive partial match over
-    // username + email). `search` is kept as a backward-compatible alias.
+    // username, first name, last name, full name and email — the name fields
+    // are resolved via user-service, which owns them; auth-service only knows
+    // email + account). `search` is kept as a backward-compatible alias.
     q: z.string().trim().min(1).optional(),
     search: z.string().trim().min(1).optional(),
     status: userStatusFilter,

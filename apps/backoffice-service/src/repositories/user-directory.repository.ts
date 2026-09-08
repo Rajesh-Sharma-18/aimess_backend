@@ -345,9 +345,11 @@ function toListItem(
   return {
     userId: r.userId,
     username: r.username,
-    // UserIndex (admin_db mirror) does not carry firstName/lastName — those
-    // live on user-service's UserProfile, only joined in on the live gRPC path.
+    // UserIndex (admin_db mirror) does not carry firstName/lastName or the auth
+    // login handle — those live on user-service's UserProfile and auth-service
+    // respectively, only joined in on the live gRPC path.
     fullName: null,
+    account: null,
     email: orNull(r.email),
     status: r.status,
     reportCount: r.reportCount,
@@ -644,6 +646,20 @@ function bucketMatches(
 }
 
 /**
+ * Search term → userIds whose user-service profile matches it by username,
+ * first name, last name, or full name. Same helper `report.repository.ts` and
+ * `livestream.repository.ts` use. A down user-service degrades to "no extra
+ * matches" rather than failing the whole list — email/account search still works.
+ */
+async function resolveProfileIdsByName(search: string): Promise<string[]> {
+  try {
+    return await userClient.adminSearchProfileIds(search);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Live directory repository: identity from auth-service, display profile from
  * user-service, reportCount from admin_db (Report). All upstream reads go
  * through opossum breakers (see auth.client / user.client). A down upstream
@@ -728,6 +744,16 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       req.status = expanded;
     }
 
+    // 2c. Display-name search. auth-service only knows `email` + `account` —
+    //     the username shown in the table and the user's first/last name live
+    //     in user-service, so a search for either could never match. Resolve
+    //     the same term against user-service profiles and hand auth the id set
+    //     to OR into its own match (same helper the reports/livestream lists
+    //     use). This is the root cause of "username search doesn't work".
+    if (query.search) {
+      req.searchUserIds = await resolveProfileIdsByName(query.search);
+    }
+
     // 3. Identity list from auth-service.
     const { users, total } = await authClient.adminListUsers(req);
 
@@ -761,6 +787,7 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
         joinedAt: Date.parse(u.createdAt),
         username: profile?.username ?? u.account,
         fullName: buildFullName(profile?.firstName, profile?.lastName),
+        account: orNull(u.account),
         avatarUrl: profile?.avatarUrl || null,
         reportCount: countMap.get(u.id) ?? 0,
         moderationStatus,

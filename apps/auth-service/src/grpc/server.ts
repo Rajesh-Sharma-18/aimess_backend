@@ -220,6 +220,7 @@ const authImpl: grpc.UntypedServiceImplementation = {
           offset?: number;
           userIds?: string[];
           excludeUserIds?: string[];
+          searchUserIds?: string[];
         };
 
         const { users, total } = await adminUsersRepository.adminListUsers({
@@ -233,6 +234,7 @@ const authImpl: grpc.UntypedServiceImplementation = {
           offset: req.offset ?? 0,
           userIds: req.userIds ?? [],
           excludeUserIds: req.excludeUserIds ?? [],
+          searchUserIds: req.searchUserIds ?? [],
         });
 
         callback(null, {
