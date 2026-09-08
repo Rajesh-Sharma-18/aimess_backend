@@ -273,6 +273,21 @@ export const userReportsQuerySchema = z.object({
 export type UserReportsQueryInput = z.infer<typeof userReportsQuerySchema>;
 
 // ---------------------------------------------------------------------------
+// Linked-devices list query (GET /users/:userId/devices).
+// ---------------------------------------------------------------------------
+/**
+ * Same offset shape the reports list uses, so the admin panel's pagination
+ * component works unchanged. A user realistically owns a handful of devices,
+ * but the page size is bounded anyway — the list is reachable by any admin
+ * holding USERS_VIEW and must not be a way to pull an unbounded response.
+ */
+export const userDevicesQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(1000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type UserDevicesQueryInput = z.infer<typeof userDevicesQuerySchema>;
+
+// ---------------------------------------------------------------------------
 // Ban.
 // ---------------------------------------------------------------------------
 /** Max length for a free-text custom ban reason (predefined codes are far shorter). */

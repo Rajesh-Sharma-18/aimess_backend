@@ -156,6 +156,66 @@ export const adminListUserIdsByDeviceTypeBreaker: Breaker<
     >("adminListUserIdsByDeviceType", args)
 );
 
+/**
+ * One device row as auth-service puts it on the wire.
+ *
+ * proto3 scalars, so absent values arrive as "" / 0 / false. `presentFields`
+ * names the numeric/boolean fields that were actually stored — see the proto.
+ */
+export interface RawAdminUserDeviceRecord {
+  deviceId: string;
+  platform: string;
+  deviceType: string;
+  deviceName: string;
+  manufacturer: string;
+  brand: string;
+  model: string;
+  osVersion: string;
+  sdkInt: number;
+  appVersion: string;
+  appBuild: number;
+  buildType: string;
+  installerPackage: string;
+  locale: string;
+  language: string;
+  country: string;
+  timezone: string;
+  utcOffsetMinutes: number;
+  screenWidthPx: number;
+  screenHeightPx: number;
+  screenDensityDpi: number;
+  networkType: string;
+  carrier: string;
+  isEmulator: boolean;
+  isRooted: boolean;
+  ipAddress: string;
+  countryCode: string;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+  lastLoginAt: string;
+  activeSessionCount: number;
+  presentFields?: string[];
+}
+
+interface RawAdminListUserDevicesResponse {
+  devices?: RawAdminUserDeviceRecord[];
+  total?: string | number;
+}
+
+// Admin Panel user detail: the devices linked to one user.
+export const adminListUserDevicesBreaker: Breaker<
+  { userId: string; limit: number; offset: number },
+  RawAdminListUserDevicesResponse
+> = makeBreaker(
+  "auth.adminListUserDevices",
+  (args: { userId: string; limit: number; offset: number }) =>
+    call<typeof args, RawAdminListUserDevicesResponse>(
+      "adminListUserDevices",
+      args
+    )
+);
+
 // Treat gRPC NOT_FOUND as benign so opossum re-throws the original ServiceError
 // (with `.code`) instead of masking it via the makeBreaker fallback — lets the
 // repo map a missing user to null (→ 404) rather than a generic 5xx. A real
@@ -300,6 +360,19 @@ export const authClient = {
   }): Promise<{ userIds: string[]; total: number }> {
     const r = await adminListUserIdsByDeviceTypeBreaker.fire(args);
     return { userIds: r.userIds ?? [], total: Number(r.total ?? 0) };
+  },
+  /**
+   * Devices linked to ONE user, newest activity first. `userId` is enforced in
+   * auth-service's own `where` clause, so there is no cross-user leak to guard
+   * against here.
+   */
+  async adminListUserDevices(args: {
+    userId: string;
+    limit: number;
+    offset: number;
+  }): Promise<{ devices: RawAdminUserDeviceRecord[]; total: number }> {
+    const r = await adminListUserDevicesBreaker.fire(args);
+    return { devices: r.devices ?? [], total: Number(r.total ?? 0) };
   },
   // NOT_FOUND rejects the breaker; the repo layer catches and maps to null.
   async adminGetUser(userId: string): Promise<AdminUserRecord> {

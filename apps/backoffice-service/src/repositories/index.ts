@@ -37,6 +37,10 @@ export {
   type UserCommunitiesRepository,
 } from "./user-communities.repository.js";
 export {
+  userDevicesRepository,
+  type UserDevicesRepository,
+} from "./user-devices.repository.js";
+export {
   moderationActionRepository,
   type ModerationActionInput,
 } from "./moderation-action.repository.js";

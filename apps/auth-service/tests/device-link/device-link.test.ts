@@ -38,6 +38,8 @@ jest.mock("../../src/middleware/rate-limiters.js", () => ({
   qrGenerationRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
     next(),
   qrScanRateLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+  qrResultPollRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
+    next(),
   sensitiveAuthRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
     next(),
   changePasswordRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>

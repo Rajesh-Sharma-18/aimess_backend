@@ -2374,6 +2374,7 @@ export const userPaths = {
                           roomId: "room_group456",
                           name: "Weekend Hikers",
                           avatar: "",
+                          avatarUrl: null,
                           description: "",
                           memberCount: 12,
                           isActiveMember: true,

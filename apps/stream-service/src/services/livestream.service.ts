@@ -4,7 +4,6 @@ import { randomBytes } from "node:crypto";
 import {
   generatePlaybackId,
   generateStreamKey,
-  isLegacyStream,
   publishSecretMatches,
   resolveSrsName,
 } from "../lib/stream-identity.js";
@@ -22,12 +21,14 @@ import {
 } from "@aimess/errors";
 import { formatStreamDuration } from "@aimess/constants";
 
+import { NON_SRS_SOURCE_TYPES } from "../constants/index.js";
 import { env } from "../config/env.js";
 import type { Livestream } from "../generated/prisma/index.js";
 import type {
   AdminStreamFilter,
   LivestreamRepository,
 } from "../repositories/livestream.repository.js";
+import { LIVE_STATUSES } from "../repositories/livestream.repository.js";
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
 import type { LivestreamViewerSessionRepository } from "../repositories/livestream-viewer-session.repository.js";
 import { buildHlsQualityUrls, buildFlvQualityUrls } from "./srs.service.js";
@@ -319,6 +320,21 @@ export class LivestreamService {
   ) {}
 
   /**
+   * Epoch ms of the last SRS publisher scan that came back complete; 0 = never.
+   *
+   * The heartbeat sweeper ends streams on the ABSENCE of a recent stamp, and
+   * since those stamps now come from `reconcileWithSrs`, an unreachable SRS
+   * means no stamps — which would read as "every broadcast died" and end them
+   * all one timeout later. This records that SRS actually answered, so the
+   * sweeper can tell "the publisher stopped" apart from "we stopped looking".
+   *
+   * ponytail: per-process, like the sweeper that reads it. A second instance
+   * keeps its own clock and its own sweep, so they cannot disagree about a
+   * stream — only about when to check it.
+   */
+  private lastPublisherScanAt = 0;
+
+  /**
    * Go-live: authorize the creator (membership gate, optional), enforce the
    * per-community concurrency cap, mint a stream key + playback URLs and persist
    * a PENDING stream. Returns the record plus owner-only ingest endpoints.
@@ -562,14 +578,20 @@ export class LivestreamService {
     // This hook carries no JWT and is the ONLY gate on who may publish. It used
     // to authenticate on the stream name alone — and that name was also the
     // path segment of every viewer's playback URL, so any viewer could read it
-    // out of the player and take over the broadcast. New streams publish under
-    // a public name and prove the right to do so with `?secret=`.
+    // out of the player and take over the broadcast. Streams publish under a
+    // public name and prove the right to do so with `?secret=`.
     //
-    // Rows created before the split have no separate name: they are published
-    // under their own secret, so demanding one would break a broadcast that is
-    // currently on air, and the secret is already public for them regardless.
-    // They are grandfathered until they end.
-    if (publishAuth !== "trusted" && !isLegacyStream(stream)) {
+    // No grandfather clause: a row with no `playbackId` (created before the
+    // split, 31fd2a2c) used to skip this check entirely, and forever — the
+    // exemption was keyed on the row's shape rather than on a date, so it also
+    // covered any row a restore or a future code path produced without one.
+    //
+    // The split is already on staging, so pre-split rows CAN exist there; they
+    // are simply old, and any that is still LIVE is a stuck row the sweeper
+    // should have ended rather than a broadcast worth protecting. The cost of
+    // requiring the secret unconditionally is therefore at most a genuinely
+    // on-air pre-split stream at deploy time, which the runbook drains.
+    if (publishAuth !== "trusted") {
       if (!publishSecretMatches(publishAuth.secret, stream.streamKey)) {
         logger.warn(
           `on_publish denied for stream id=${stream.id}: missing or wrong publish secret`
@@ -627,11 +649,42 @@ export class LivestreamService {
       return false;
     }
 
+    // The community-wide cap, enforced HERE rather than only at create.
+    //
+    // `createStream` checks it, but a fresh row is PENDING and PENDING never
+    // occupies a slot by design — so N different creators could each hold a
+    // PENDING row and all publish, putting the community over the cap while
+    // `publishCommunityStreamStarted` capped the *reported* count and hid it.
+    // PENDING → LIVE is the transition that actually takes the slot.
+    //
+    // `stream.id` is excluded because a RECONNECTING row already counts itself:
+    // without that, resuming a stream in a community at cap would be denied by
+    // its own presence in the count.
+    //
+    // ponytail: count-then-write, like the guard above it. Losing the race needs
+    // two publishes inside one DB round trip at exactly the cap; a Redis
+    // INCR-with-ceiling keyed on the community and released in finalizeAsEnded
+    // is the upgrade if that ever bites.
+    if (!(await this.isUnderCommunityCap(stream))) return false;
+
     const playback = this.srsService.buildPlaybackUrls(resolveSrsName(stream));
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "LIVE",
       disconnectedAt: null,
       publisherClientId: clientId ?? null,
+      // Seed the liveness clock at the moment the stream becomes LIVE.
+      //
+      // `findStaleLiveStreams` can only match a row whose `lastHeartbeatAt` is
+      // PRESENT — Prisma omits an unset optional field, and `{field: null}`
+      // does not match an absent one. Only iOS calls POST /heartbeat; web and
+      // Android emit a socket event that never reaches this service. So a
+      // browser or Android broadcast used to carry no `lastHeartbeatAt` at all
+      // and could never be swept: a host who force-quit stayed LIVE forever,
+      // locking themselves out of going live anywhere via countLiveByCreator.
+      // Stamping here makes the field always present on a LIVE row, so the
+      // existing sweeper works with no query change; reconcileWithSrs then
+      // keeps it fresh for as long as SRS actually has the publisher.
+      lastHeartbeatAt: new Date(),
       // Resume: keep the original livedAt so duration/history stay continuous
       // across the blip. Fresh publish: stamp it for the first time.
       ...(isResume ? {} : { livedAt: new Date() }),
@@ -948,10 +1001,19 @@ export class LivestreamService {
       throw new ConflictError("STREAM_ALREADY_ACTIVE");
     }
 
+    // Community-wide cap — see the matching guard in handlePublish for why this
+    // has to run at the LIVE transition and not only at create.
+    if (!(await this.isUnderCommunityCap(stream))) {
+      throw new ConflictError("STREAM_COMMUNITY_CONCURRENCY_LIMIT");
+    }
+
     const playback = this.srsService.buildPlaybackUrls(resolveSrsName(stream));
     const updated = await this.streamRepo.updateById(id, {
       status: "LIVE",
       disconnectedAt: null,
+      // Seed the liveness clock — see the same stamp in handlePublish for why
+      // an absent `lastHeartbeatAt` makes a stream unsweepable.
+      lastHeartbeatAt: new Date(),
       ...(isResume ? {} : { livedAt: new Date() }),
       hlsUrl: playback.hlsUrl,
       flvUrl: playback.flvUrl,
@@ -1274,7 +1336,8 @@ export class LivestreamService {
    */
   async listStreamsInternal(params: {
     communityId?: string;
-    status?: string;
+    /** One status, or a set of them — see `listByCommunity`. */
+    status?: string | readonly string[];
     limit: number;
     cursor?: string;
     /** When set, drop rows this user is per-stream banned from. */
@@ -1314,10 +1377,17 @@ export class LivestreamService {
   }
 
   /**
-   * Single stream fetch. When `userId` is provided the ban list is checked and
-   * a ForbiddenError is thrown if the user is banned — preventing banned users
-   * from reading stream metadata over REST. The live Redis viewer count is merged
-   * in when present.
+   * Single stream fetch. When `userId` is provided the caller is gated exactly
+   * as they are on the socket join path ({@link checkAccess}): per-stream ban,
+   * community-wide ban, and — for a PRIVATE community — membership. The row
+   * carries directly-playable `hlsUrl`/`flvUrl`, so this endpoint hands out
+   * media access rather than metadata, and it previously enforced only the
+   * per-stream ban: any authenticated caller holding a streamId could read a
+   * private community's playback URLs straight out of it, bypassing the gate
+   * `listStreams` applies to the very same rows.
+   *
+   * Fail-open on a community-service error, matching `checkAccess`. The live
+   * Redis viewer count is merged in when present.
    */
   async getStream(id: string, userId?: string): Promise<StreamView> {
     const stream = await this.streamRepo.findById(id);
@@ -1325,6 +1395,25 @@ export class LivestreamService {
 
     if (userId && (await this.banRepo.isBanned(id, userId))) {
       throw new ForbiddenError("STREAM_BANNED");
+    }
+
+    if (userId && stream.creatorId !== userId) {
+      try {
+        const access = await this.communityClient.checkCommunityAccess(
+          stream.communityId,
+          userId
+        );
+        if (access.isBanned) throw new ForbiddenError("STREAM_BANNED");
+        if (!access.isMember && !access.isPublicCommunity) {
+          throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
+        }
+      } catch (error) {
+        // A deny decided above must not be swallowed by the outage catch.
+        if (error instanceof ForbiddenError) throw error;
+        logger.warn(
+          `getStream: community access check failed for stream=${id} user=${userId}: ${String(error)}`
+        );
+      }
     }
 
     const view = toView(stream);
@@ -1525,10 +1614,15 @@ export class LivestreamService {
    * Intentionally silent — a single stale stream failure does not block the rest.
    */
   async sweepStaleStreams(): Promise<void> {
+    // Reconcile FIRST. It is what refreshes `lastHeartbeatAt` from the live SRS
+    // publisher list and what records that SRS answered at all, and both sweeps
+    // below decide whether to end a stream on exactly that evidence. Running it
+    // last meant every sweep judged a stream on data up to a full tick old, and
+    // the first tick after a restart judged it on no data whatsoever.
+    await this.reconcileWithSrs();
     await this.sweepStaleLiveStreams();
     await this.sweepStaleReconnectingStreams();
     await this.sweepStalePendingStreams();
-    await this.reconcileWithSrs();
   }
 
   /**
@@ -1565,7 +1659,12 @@ export class LivestreamService {
     const publishers = await this.srsService.listPublishers();
     // null = at least one SRS instance was unreachable; skip rather than act on
     // an incomplete picture.
-    if (publishers === null || publishers.length === 0) return;
+    if (publishers === null) return;
+    // A complete answer, even an empty one, means SRS is reachable and the
+    // heartbeat refreshes below are trustworthy. `sweepStaleLiveStreams` reads
+    // this to decide whether ending streams is safe — see its guard.
+    this.lastPublisherScanAt = Date.now();
+    if (publishers.length === 0) return;
 
     let streams: Livestream[];
     try {
@@ -1577,10 +1676,19 @@ export class LivestreamService {
       return;
     }
 
-    const byKey = new Map(streams.map((s) => [s.streamKey, s]));
+    // Keyed by the name SRS actually reports, NOT by `streamKey`.
+    //
+    // `listPublishers()` reads `client.name` — the name a stream is PUBLISHED
+    // under, which since the ingest/playback split is the `playbackId`. Keying
+    // this map by `streamKey` meant every post-split row was fetched from the
+    // DB (findBySrsNames matches either column) and then dropped by the lookup
+    // below, so the whole reconciler was inert for new streams: dropped-webhook
+    // recovery, orphaned-publisher re-kick and reconnect resume all silently
+    // did nothing, and every live publisher logged "unknown name" every tick.
+    const bySrsName = new Map(streams.map((s) => [resolveSrsName(s), s]));
 
     for (const publisher of publishers) {
-      const stream = byKey.get(publisher.streamKey);
+      const stream = bySrsName.get(publisher.streamKey);
 
       if (!stream) {
         // Unknown key still publishing. `handlePublish` denies unknown keys, so
@@ -1626,6 +1734,31 @@ export class LivestreamService {
         continue;
       }
 
+      // ── SRS has the publisher and we agree it is LIVE ─────────────────────
+      // Refresh the liveness clock. This is the ONLY liveness signal a browser
+      // or Android broadcast has: neither calls POST /heartbeat (their
+      // `stream:heartbeat` is a socket event that only touches Redis TTLs and
+      // never reaches this service), so without this the stamp seeded at
+      // go-live would age out and the sweeper would end a perfectly healthy
+      // stream at STREAM_HEARTBEAT_TIMEOUT_MS.
+      //
+      // Deliberately reuses the publisher list this pass already fetched
+      // rather than polling per stream: one write per actually-publishing
+      // stream per tick, no extra SRS round trips, and it covers every
+      // SRS-ingested source type instead of just OBS_RTMP.
+      if (stream.status === "LIVE") {
+        try {
+          await this.streamRepo.updateById(stream.id, {
+            lastHeartbeatAt: new Date(),
+          });
+        } catch (err) {
+          logger.warn(
+            `reconcileWithSrs: heartbeat refresh failed for stream=${stream.id} — ${String(err)}`
+          );
+        }
+        continue;
+      }
+
       if (stream.status !== "ENDED" && stream.status !== "CANCELLED") continue;
 
       const kicked = await this.srsService.kickClientById(
@@ -1639,10 +1772,38 @@ export class LivestreamService {
   }
 
   private async sweepStaleLiveStreams(): Promise<void> {
+    // Refuse to act on stamps we may simply have stopped writing.
+    //
+    // `lastHeartbeatAt` is now refreshed from the SRS publisher scan, so an
+    // unreachable SRS produces exactly the same evidence as a room full of
+    // dead broadcasts: no recent stamps. Ending on that would turn one SRS
+    // outage into every live stream on the platform being killed a timeout
+    // later. A cold start reads 0 and so also skips, which is the safe
+    // direction — nothing is ended until we have seen SRS answer once.
+    //
+    // The skip is SRS-shaped, so it must not cover sources SRS never sees.
+    // A URL/YOUTUBE broadcast is a remote embed with no publisher at all, and
+    // its `lastHeartbeatAt` comes from one place only: the owner's
+    // authenticated POST /heartbeat. SRS being unreachable says nothing about
+    // it, but blanket-skipping meant one flaky instance stopped EVERY stream
+    // on the platform from ever auto-ending — which is what let an embed
+    // broadcast outlive its host's session indefinitely, viewers still
+    // watching, after the host was logged out and could not stop it.
+    const scanAge = Date.now() - this.lastPublisherScanAt;
+    const srsScanStale = scanAge > env.STREAM_HEARTBEAT_TIMEOUT_MS;
+    if (srsScanStale) {
+      logger.warn(
+        `sweepStaleLiveStreams: no complete SRS publisher scan in ${String(Math.round(scanAge / 1000))}s; limiting this sweep to ${NON_SRS_SOURCE_TYPES.join("/")} streams, whose liveness does not depend on SRS`
+      );
+    }
+
     const cutoff = new Date(Date.now() - env.STREAM_HEARTBEAT_TIMEOUT_MS);
     let stale: Awaited<ReturnType<typeof this.streamRepo.findStaleLiveStreams>>;
     try {
-      stale = await this.streamRepo.findStaleLiveStreams(cutoff);
+      stale = await this.streamRepo.findStaleLiveStreams(
+        cutoff,
+        srsScanStale ? NON_SRS_SOURCE_TYPES : undefined
+      );
     } catch (err) {
       logger.warn(`sweepStaleStreams: DB query failed — ${String(err)}`);
       return;
@@ -1700,16 +1861,32 @@ export class LivestreamService {
     // null = an SRS instance was unreachable; an empty map then means "we know
     // nothing", which degrades to the previous end-everything behaviour.
     const publishers = await this.srsService.listPublishers();
+    // Keyed by the name SRS reports (the published name), so the lookup below
+    // must use `resolveSrsName` too — see reconcileWithSrs. Reading this map by
+    // `stream.streamKey` never matched a post-split row, so the resume branch
+    // was unreachable and every stream past its grace window was ended even
+    // while SRS still had its publisher open.
     const publishingClientIds = new Map(
       (publishers ?? []).map((p) => [p.streamKey, p.clientId])
     );
 
     for (const stream of stale) {
       try {
-        const clientId = publishingClientIds.get(stream.streamKey);
+        const srsName = resolveSrsName(stream);
+        const clientId = publishingClientIds.get(srsName);
+        // "trusted", for the same reason reconcileWithSrs passes it: SRS has
+        // ALREADY accepted this publisher — `listPublishers()` is where the
+        // clientId came from — so there is no publish URL here to read a secret
+        // out of, and authorisation happened at that publisher's on_publish.
+        //
+        // This used to fall through to the default `{ secret: "" }`, which the
+        // secret check then rejected, so the resume branch could never be taken
+        // for a stream that had one: the sweeper asked SRS, SRS said "still
+        // publishing", and the stream was finalized as ENDED anyway — the exact
+        // outcome this re-check exists to prevent.
         if (
           clientId &&
-          (await this.handlePublish(stream.streamKey, clientId))
+          (await this.handlePublish(srsName, clientId, "trusted"))
         ) {
           logger.info(
             `sweepStaleReconnectingStreams: resumed stream=${stream.id} — SRS still has publisher client=${clientId}`
@@ -1992,6 +2169,27 @@ export class LivestreamService {
    * a later socket-based host join reuses this same open row and
    * `closeAllOpenForStream` closes it alongside every viewer on ENDED.
    */
+  /**
+   * True when `stream` may occupy a live slot in its community.
+   *
+   * Shared by the two paths that flip a stream to LIVE. Excludes the stream's
+   * own row, so a RECONNECTING stream resuming does not count itself out. Logs
+   * on refusal: `handlePublish` answers SRS with a bare deny and `markLive`
+   * throws a 409, and neither carries a reason the broadcaster can see, so this
+   * line is the only diagnostic when someone asks why a publish was dropped.
+   */
+  private async isUnderCommunityCap(stream: Livestream): Promise<boolean> {
+    const active = await this.streamRepo.countActiveByCommunity(
+      stream.communityId,
+      stream.id
+    );
+    if (active < env.STREAM_MAX_CONCURRENT_PER_COMMUNITY) return true;
+    logger.warn(
+      `go-live denied for stream id=${stream.id}: community=${stream.communityId} already has ${String(active)} live stream(s), cap=${String(env.STREAM_MAX_CONCURRENT_PER_COMMUNITY)}`
+    );
+    return false;
+  }
+
   private async recordHostViewerJoin(
     streamId: string,
     creatorId: string
@@ -2179,18 +2377,35 @@ export class LivestreamService {
       };
     }
 
-    // Community-wide ban (ADMIN-applied in community-service) is also a hard
-    // block — same shape as the local per-stream ban, including for the owner
-    // (a banned member loses the stream too, no exceptions). Fail-open on a
-    // community-service outage: consistent with every other community-service
-    // read in this method, an outage must not black out viewing on its own —
-    // the local ban above remains the always-available, synchronous hard gate.
+    // Community-wide ban (ADMIN-applied in community-service) is a hard block —
+    // same shape as the local per-stream ban, including for the owner (a banned
+    // member loses the stream too, no exceptions).
+    //
+    // The SAME call also decides whether this user may see the stream at all.
+    // Viewing used to be ungated by membership entirely ("non-members can watch
+    // silently"), which is the right product choice for a PUBLIC community and
+    // was never meant to cover a PRIVATE one — but the check did not
+    // distinguish them, so any authenticated user who had a streamId could join
+    // a private community's broadcast and receive its playback URLs.
+    // `listStreams` already gates on exactly this (see checkCommunityAccess
+    // there); this closes the same hole on the join path.
+    //
+    // `checkCommunityAccess` and `checkBan` are the same underlying RPC —
+    // `checkCommunityMembership` — so reading membership and visibility here
+    // costs nothing over the ban check it replaces.
+    //
+    // Fail-open on a community-service outage: consistent with every other
+    // community-service read in this method, an outage must not black out
+    // viewing on its own — the local ban above remains the always-available,
+    // synchronous hard gate. (listStreams fails CLOSED on the same call, and
+    // deliberately: it hands out a whole community's playback URLs, where this
+    // gates one stream the caller already knows the id of.)
     try {
-      const communityBan = await this.communityClient.checkBan(
+      const communityAccess = await this.communityClient.checkCommunityAccess(
         stream.communityId,
         userId
       );
-      if (communityBan.isBanned) {
+      if (communityAccess.isBanned) {
         return {
           allowed: false,
           isBanned: true,
@@ -2209,9 +2424,34 @@ export class LivestreamService {
           videoLostSince: null,
         };
       }
+      // Owner exempt: a creator whose membership lapsed still reaches their own
+      // stream, matching the owner short-circuit further down.
+      if (
+        !communityAccess.isMember &&
+        !communityAccess.isPublicCommunity &&
+        stream.creatorId !== userId
+      ) {
+        return {
+          allowed: false,
+          isBanned: false,
+          status: "",
+          reason: "NOT_MEMBER",
+          canComment: false,
+          streamStatus: "",
+          title: "",
+          description: "",
+          thumbnail: null,
+          creatorId: "",
+          hlsUrl: null,
+          hlsQualities: {},
+          flvUrl: null,
+          flvQualities: {},
+          videoLostSince: null,
+        };
+      }
     } catch (error) {
       logger.warn(
-        `checkAccess: community ban check failed for stream=${streamId} user=${userId}: ${String(error)}`
+        `checkAccess: community access check failed for stream=${streamId} user=${userId}: ${String(error)}`
       );
     }
 
@@ -2530,17 +2770,43 @@ export class LivestreamService {
     mutedUntil: number
   ): Promise<void> {
     if (!communityId || !userId) return;
+    await this.relayToPresentStreams(communityId, userId, (streamId) => ({
+      event: isMuted ? "stream:member_muted" : "stream:member_unmuted",
+      data: { streamId, userId, mutedUntil },
+    }));
+  }
 
+  /**
+   * Publish an event to every stream in `communityId` that `userId` is actually
+   * present in (as a viewer, or as its creator). Shared by the mute and ban
+   * relays, whose bodies were otherwise identical — and which both used to ask
+   * for `status: "LIVE"` alone.
+   *
+   * That exact-match filter is the bug this closes: a stream whose publisher is
+   * mid-blip sits in RECONNECTING, so it was excluded, and a member banned or
+   * muted during a reconnect was never kicked and never told. Every other
+   * consumer in the service counts RECONNECTING as still-going; this asks for
+   * the same `LIVE_STATUSES` set rather than one status, so it cannot drift
+   * again.
+   *
+   * Best-effort throughout — a relay failure must never fail the
+   * community-service caller that triggered the moderation action.
+   */
+  private async relayToPresentStreams(
+    communityId: string,
+    userId: string,
+    build: (streamId: string) => { event: string; data: unknown }
+  ): Promise<void> {
     let liveStreams: StreamView[];
     try {
       ({ items: liveStreams } = await this.listStreamsInternal({
         communityId,
-        status: "LIVE",
+        status: LIVE_STATUSES,
         limit: 50,
       }));
     } catch (error) {
       logger.warn(
-        `broadcastMuteStatusForCommunity: listStreams failed for community=${communityId}: ${String(error)}`
+        `relayToPresentStreams: listStreams failed for community=${communityId}: ${String(error)}`
       );
       return;
     }
@@ -2560,14 +2826,11 @@ export class LivestreamService {
       try {
         await this.redis.publish(
           `stream:${stream.id}`,
-          JSON.stringify({
-            event: isMuted ? "stream:member_muted" : "stream:member_unmuted",
-            data: { streamId: stream.id, userId, mutedUntil },
-          })
+          JSON.stringify(build(stream.id))
         );
       } catch (error) {
         logger.warn(
-          `mute status broadcast failed for stream=${stream.id}: ${String(error)}`
+          `relayToPresentStreams: publish failed for stream=${stream.id}: ${String(error)}`
         );
       }
     }
@@ -2652,47 +2915,10 @@ export class LivestreamService {
     isBanned: boolean
   ): Promise<void> {
     if (!communityId || !userId || !isBanned) return;
-
-    let liveStreams: StreamView[];
-    try {
-      ({ items: liveStreams } = await this.listStreamsInternal({
-        communityId,
-        status: "LIVE",
-        limit: 50,
-      }));
-    } catch (error) {
-      logger.warn(
-        `broadcastBanStatusForCommunity: listStreams failed for community=${communityId}: ${String(error)}`
-      );
-      return;
-    }
-
-    for (const stream of liveStreams) {
-      let isPresent = stream.creatorId === userId;
-      if (!isPresent) {
-        try {
-          isPresent =
-            (await this.redis.hexists(sessionKey(stream.id), userId)) === 1;
-        } catch {
-          isPresent = false;
-        }
-      }
-      if (!isPresent) continue;
-
-      try {
-        await this.redis.publish(
-          `stream:${stream.id}`,
-          JSON.stringify({
-            event: "stream:banned",
-            data: { streamId: stream.id, userId },
-          })
-        );
-      } catch (error) {
-        logger.warn(
-          `ban status broadcast failed for stream=${stream.id}: ${String(error)}`
-        );
-      }
-    }
+    await this.relayToPresentStreams(communityId, userId, (streamId) => ({
+      event: "stream:banned",
+      data: { streamId, userId },
+    }));
   }
 
   /**

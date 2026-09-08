@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { checkPasswordPolicy } from "../../lib/password-policy.js";
+import { deviceInfoField } from "./device-info.validator.js";
 
 export const accountSchema = z
   .string()
@@ -48,9 +49,9 @@ export type ValidateAccountInput = z.infer<typeof validateAccountSchema>;
 /**
  * The CREATION policy for a password: register, reset and change all use it.
  *
- * Login deliberately does NOT (see `loginPasswordSchema` below), so every
- * account created under the older 8-character rule keeps signing in and is only
- * asked for something stronger when it next sets a password.
+ * Login deliberately does NOT (see `loginPasswordSchema` below), so an account
+ * whose password predates the current rule keeps signing in and is only asked
+ * to satisfy the rule when it next SETS a password.
  *
  * The rules live in `lib/password-policy.ts`; this schema is the boundary that
  * applies them and maps each failure to its own message key, so the client can
@@ -78,6 +79,10 @@ export const registerSchema = z
     password: passwordSchema,
     fcmTokens: fcmTokensSchema.optional().default([]),
     proof: challengeSchema.optional(),
+    // Optional by contract — see device-info.validator.ts. A client that sends
+    // nothing (or an explicit null) registers no device row and keeps the
+    // server-derived session metadata it has always had.
+    device: deviceInfoField,
   })
   // Re-checked at the object level because the account name is only known
   // here: a password that merely restates the public account name is guessable
@@ -127,6 +132,7 @@ export const loginSchema = z.object({
   password: loginPasswordSchema,
   fcmTokens: fcmTokensSchema.optional().default([]),
   rememberMe: z.boolean().optional().default(false),
+  device: deviceInfoField,
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;

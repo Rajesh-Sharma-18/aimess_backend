@@ -6,6 +6,7 @@ import { logger } from "@aimess/logger";
 import { makeBreaker, makeGrpcCall } from "@aimess/grpc-utils";
 
 import { env } from "../config/env.js";
+import { onlyUuidPeers } from "../lib/peer-id.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
@@ -40,7 +41,7 @@ const resolvePrivateRoomsBreaker = makeBreaker(
     call<
       { viewerId: string; peerUserIds: string[] },
       { matches?: PrivateRoomMatch[] }
-    >("resolvePrivateRooms", args).then((r) => r.matches ?? [])
+    >("resolvePrivateRooms", args).then((r) => onlyUuidPeers(r.matches ?? []))
 );
 // A chat-service outage must not fail user search — degrade to "no room known".
 resolvePrivateRoomsBreaker.fallback(() => []);
@@ -51,7 +52,7 @@ const listPrivateRoomsBreaker = makeBreaker(
     call<{ viewerId: string; limit: number }, { rooms?: PrivateRoomMatch[] }>(
       "listPrivateRooms",
       args
-    ).then((r) => r.rooms ?? [])
+    ).then((r) => onlyUuidPeers(r.rooms ?? []))
 );
 listPrivateRoomsBreaker.fallback(() => []);
 
@@ -239,8 +240,8 @@ export const messagingGrpcClient = {
       return await call<
         { userId: string; peerUserIds: string[] },
         { rooms?: PrivateRoomMatch[] }
-      >("getOrCreatePrivateRooms", { userId, peerUserIds }).then(
-        (r) => r.rooms ?? []
+      >("getOrCreatePrivateRooms", { userId, peerUserIds }).then((r) =>
+        onlyUuidPeers(r.rooms ?? [])
       );
     } catch (err) {
       logger.warn(`messaging.getOrCreatePrivateRooms failed: ${String(err)}`);

@@ -152,6 +152,21 @@ const envSchema = z.object({
   /** Max QR scan requests per minute per user/IP (spec: 10). */
   QR_SCAN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
   /**
+   * Max QR result-POLL requests per minute per IP.
+   *
+   * Sized from what the waiting browser actually does, not from the generation
+   * budget it used to share: it polls every 2s, so a single 60-second QR costs
+   * 30 requests on its own, and during a rotation it briefly polls the previous
+   * token as well. 120 covers that with room for a second tab, and still bounds
+   * the endpoint — which only reads one Redis key and whose 256-bit linkToken
+   * is not guessable, so volume is the only thing worth limiting here.
+   */
+  QR_RESULT_POLL_RATE_LIMIT_MAX: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(120),
+  /**
    * Extra seconds the Redis key survives PAST `expiresAt` so the expiry
    * sweeper (which ticks every QR_LINK_SWEEPER_INTERVAL_MS) has a window to
    * observe + atomically mark a still-PENDING/SCANNED session EXPIRED before

@@ -4,8 +4,16 @@ import type { Request } from "express";
 import { UAParser } from "ua-parser-js";
 
 import { DeviceType } from "../generated/prisma/client.js";
+import type { DeviceInfoInput } from "../api/validators/device-info.validator.js";
 
-/** Session metadata derived on the server from HTTP headers (no client device fields). */
+/**
+ * Session metadata for one authentication.
+ *
+ * Derived on the server from HTTP headers, then OVERLAID with the client's
+ * `device` payload where it supplied one (see `applyDeviceInfo`). The header
+ * derivation stays as the floor so a client that sends nothing behaves exactly
+ * as it did before the payload existed.
+ */
 export type SessionContext = {
   deviceId: string;
   deviceType: DeviceType;
@@ -19,6 +27,12 @@ export type SessionContext = {
   ipAddress: string | null;
   userAgent: string | null;
   countryCode: string | null;
+  /**
+   * The validated client payload, carried through so the new-session funnel can
+   * upsert the device row without re-reading the request. Null when the client
+   * sent none.
+   */
+  device: DeviceInfoInput | null;
 };
 
 /**
@@ -136,7 +150,57 @@ function buildDeviceName(parser: UAParser): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
-export function buildSessionContext(req: Request): SessionContext {
+/**
+ * Map the client's (platform, form factor) pair onto the single `DeviceType`
+ * column sessions have always used.
+ *
+ * The two are different axes: the contract's `platform` is ANDROID/IOS/WEB and
+ * its `deviceType` is PHONE/TABLET/DESKTOP, while `DeviceType` mixes them —
+ * ANDROID, IOS, WEB and DESKTOP. Mapping WEB straight through would move every
+ * desktop browser out of the DESKTOP bucket that announcement targeting
+ * (`AdminListUserIdsByDeviceType`) already segments on, so a web client that
+ * reports the DESKTOP form factor keeps landing in DESKTOP.
+ */
+function mapClientPlatform(device: DeviceInfoInput): DeviceType {
+  if (device.platform === "ANDROID") return DeviceType.ANDROID;
+  if (device.platform === "IOS") return DeviceType.IOS;
+  return device.deviceType === "DESKTOP" ? DeviceType.DESKTOP : DeviceType.WEB;
+}
+
+/**
+ * Overlay a validated client `device` payload onto the header-derived context.
+ *
+ * Only fields the client actually supplied win; anything it omitted keeps the
+ * server-derived value, so a partial payload never blanks out metadata the
+ * user agent could still explain. `ipAddress`, `countryCode` and `userAgent`
+ * are NOT overlaid at all — those stay server-derived by contract.
+ *
+ * `deviceId` is the one that matters most: with a payload the session row keys
+ * on the client's real per-install id (the same one push registration uses)
+ * instead of the sha256(userAgent|ip) fingerprint, which is what makes a
+ * session, a push token and a device record refer to the same device.
+ */
+export function applyDeviceInfo(
+  context: SessionContext,
+  device: DeviceInfoInput | null | undefined
+): SessionContext {
+  if (!device) return context;
+
+  return {
+    ...context,
+    deviceId: device.deviceId,
+    deviceType: mapClientPlatform(device),
+    deviceName: device.deviceName ?? context.deviceName,
+    osVersion: device.osVersion ?? context.osVersion,
+    appVersion: device.appVersion ?? context.appVersion,
+    device,
+  };
+}
+
+export function buildSessionContext(
+  req: Request,
+  device?: DeviceInfoInput | null
+): SessionContext {
   const userAgent =
     typeof req.headers["user-agent"] === "string"
       ? req.headers["user-agent"]
@@ -156,7 +220,7 @@ export function buildSessionContext(req: Request): SessionContext {
       typeof platformHeader === "string" ? platformHeader : undefined
     ) ?? mapDeviceType(parser);
 
-  return {
+  const context: SessionContext = {
     deviceId: buildDeviceId(userAgent, ipAddress),
     deviceType,
     deviceName: buildDeviceName(parser),
@@ -167,5 +231,8 @@ export function buildSessionContext(req: Request): SessionContext {
     ipAddress,
     userAgent: userAgent || null,
     countryCode: resolveCountryCode(req),
+    device: null,
   };
+
+  return applyDeviceInfo(context, device);
 }

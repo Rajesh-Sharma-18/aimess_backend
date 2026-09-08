@@ -17,7 +17,10 @@ import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import { recalcConvAfterSystemLineRetraction } from "../../events/recalc-conv-after-retraction.js";
 import { publishConvEffectiveLastLoss } from "../../events/publish-effective-last-loss.js";
-import { unpinAfterDelete } from "../../lib/pin-after-delete.js";
+import {
+  unpinAfterDelete,
+  type UnpinAfterDeleteResult,
+} from "../../lib/pin-after-delete.js";
 import {
   autoDeleteWireFields,
   buildChatMessageEvent,
@@ -511,12 +514,15 @@ export class GroupMessageController {
     // The recalculation below must therefore run AFTER it — a recalc racing the
     // retraction re-points the snapshot at a line that is about to be
     // tombstoned, and the list then previews a deleted message forever.
-    let pinCleanup: Promise<void> = Promise.resolve();
+    let pinCleanup: Promise<UnpinAfterDeleteResult> = Promise.resolve({
+      hiddenSystemLineSeq: 0,
+    });
     if (result?.roomId) {
       pinCleanup = unpinAfterDelete({
         redis: this.redis,
         pinService: this.pinService,
         kind: "DIRECT",
+        directType: "GROUP",
         roomId: result.roomId,
         messageId,
         userId,
@@ -601,8 +607,21 @@ export class GroupMessageController {
     if (result?.roomId && scope === "forMe") {
       const rId = result.roomId;
       const deletedSeq = result.sequenceNumber ?? 0;
-      void this.messageService
-        .recalculateLastMessageAfterDeleteForMe(rId, deletedSeq, userId)
+      // AFTER the pin hook, same reason as the forEveryone branch: on a
+      // delete-for-me of the PINNED message the hook hides this member's copy
+      // of the "<actor> pinned a message" line, which is very often their
+      // current last visible message. A recalc racing it re-points their list
+      // preview at a line they can no longer see.
+      void pinCleanup
+        .then(({ hiddenSystemLineSeq }) =>
+          this.messageService.recalculateLastMessageAfterDeleteForMe(
+            rId,
+            // The hidden pin line is usually NEWER than the deleted message —
+            // the effective-last decision is made on the newest removed row.
+            Math.max(deletedSeq, hiddenSystemLineSeq),
+            userId
+          )
+        )
         .then((recalc) => {
           if (!recalc || !recalc.wasEffectiveLast) return; // no-op: not the last
           const preview = recalc.hasLastMessage

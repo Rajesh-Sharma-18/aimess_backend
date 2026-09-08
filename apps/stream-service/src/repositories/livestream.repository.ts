@@ -11,7 +11,7 @@ import type {
  * setting up, never published — never occupies a live slot) and the terminal
  * ENDED status.
  */
-const LIVE_STATUSES = ["LIVE", "RECONNECTING"] as const;
+export const LIVE_STATUSES = ["LIVE", "RECONNECTING"] as const;
 
 /** Statuses considered "occupying a concurrency slot" for a community. */
 const ACTIVE_STATUSES = ["PENDING", ...LIVE_STATUSES] as const;
@@ -131,17 +131,28 @@ export class LivestreamRepository {
    */
   async listByCommunity(params: {
     communityId?: string;
-    status?: string;
+    /**
+     * One status (exact match) or a SET of them (`IN`). The set form exists so a
+     * caller that wants "currently broadcasting" can ask for
+     * `LIVE_STATUSES` directly instead of omitting `status` and filtering the
+     * page afterwards: omitting it also pulls in PENDING and flips the sort to
+     * `id asc`, so on a community holding enough PENDING rows the real LIVE
+     * streams get pushed off the end of the page and silently skipped.
+     */
+    status?: string | readonly string[];
     limit: number;
     cursor?: string;
   }): Promise<Livestream[]> {
     const { communityId, status, limit, cursor } = params;
     const isActiveOnly = !status;
+    const statusFilter = Array.isArray(status)
+      ? { status: { in: [...status] } }
+      : { status: status as string };
     const where: Prisma.LivestreamWhereInput = {
       ...(communityId ? { communityId } : {}),
       // No explicit status filter → only currently-relevant streams (PENDING/LIVE).
       // Ended streams must be requested explicitly via ?status=.
-      ...(isActiveOnly ? { status: { in: [...ACTIVE_STATUSES] } } : { status }),
+      ...(isActiveOnly ? { status: { in: [...ACTIVE_STATUSES] } } : statusFilter),
       ...(cursor ? { id: isActiveOnly ? { gt: cursor } : { lt: cursor } } : {}),
     };
     return this.prisma.livestream.findMany({
@@ -159,9 +170,25 @@ export class LivestreamRepository {
    * counting toward the community's concurrent-stream cap until it either
    * resumes or the grace window finalizes it ENDED.
    */
-  async countActiveByCommunity(communityId: string): Promise<number> {
+  async countActiveByCommunity(
+    communityId: string,
+    /**
+     * Exclude one stream from the count — the row being transitioned.
+     *
+     * Required by the go-live cap: a RECONNECTING stream already counts toward
+     * LIVE_STATUSES via its own row, so a `count >= MAX` check run while
+     * resuming it would deny every reconnect once a community sits at cap,
+     * killing healthy broadcasts mid-blip. Same shape as
+     * {@link countActiveByCommunityAndCreator}'s parameter.
+     */
+    excludeStreamId?: string
+  ): Promise<number> {
     return this.prisma.livestream.count({
-      where: { communityId, status: { in: [...LIVE_STATUSES] } },
+      where: {
+        communityId,
+        status: { in: [...LIVE_STATUSES] },
+        ...(excludeStreamId ? { NOT: { id: excludeStreamId } } : {}),
+      },
     });
   }
 
@@ -290,11 +317,19 @@ export class LivestreamRepository {
    * Deliberately scoped to `status: "LIVE"` only — a RECONNECTING stream is
    * governed by the separate, shorter reconnect-grace window (see
    * {@link findStaleReconnectingStreams}), not this heartbeat timeout.
+   *
+   * `sourceTypes` narrows the sweep to those ingest modes. The caller uses it
+   * to keep sweeping the sources SRS has no opinion about while SRS itself is
+   * unreachable — see `sweepStaleLiveStreams`.
    */
-  async findStaleLiveStreams(cutoff: Date): Promise<Livestream[]> {
+  async findStaleLiveStreams(
+    cutoff: Date,
+    sourceTypes?: readonly string[]
+  ): Promise<Livestream[]> {
     return this.prisma.livestream.findMany({
       where: {
         status: "LIVE",
+        ...(sourceTypes ? { sourceType: { in: [...sourceTypes] } } : {}),
         OR: [
           // Guard only. A bare `lt` also matches an EXPLICIT null, which would
           // end a stream on the first tick after go-live rather than after the

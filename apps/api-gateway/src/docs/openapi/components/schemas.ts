@@ -4002,6 +4002,98 @@ export const openApiSchemas = {
     },
     required: ["challenge", "difficultyBits", "expiresAt"],
   },
+  /**
+   * The optional `device` object every auth endpoint accepts.
+   *
+   * Nullable end to end: clients that predate it send nothing and keep working
+   * unchanged, which is why it appears in no `required` list below.
+   *
+   * IP address and geo-IP country are deliberately absent — the server derives
+   * both from the request. So are restricted identifiers (IMEI, MAC, phone
+   * number, advertising id, GPS, installed apps, contacts, Wi-Fi SSID); they
+   * would each change what the app must declare on its store listing.
+   */
+  DeviceInfo: {
+    type: "object",
+    nullable: true,
+    description:
+      "Device the authentication came from. Optional; omit or send null. `deviceId` must be the SAME stable per-install id the client sends to `POST /devices` for push, so a session, a push token and a device record all describe one device.",
+    properties: {
+      deviceId: {
+        type: "string",
+        maxLength: 256,
+        description:
+          "Stable per-install identifier (Android: ANDROID_ID or a persisted UUID; web: a UUID in localStorage). Never regenerated per login.",
+        example: "9774d56d682e549c",
+      },
+      platform: { type: "string", enum: ["ANDROID", "IOS", "WEB"] },
+      deviceType: {
+        type: "string",
+        enum: ["PHONE", "TABLET", "DESKTOP"],
+        nullable: true,
+        description:
+          "Form factor, NOT the platform. DESKTOP is web-only; mobile clients send PHONE or TABLET.",
+      },
+      deviceName: {
+        type: "string",
+        nullable: true,
+        description: "Human label for the Linked Devices screen.",
+        example: "Chrome on Windows",
+      },
+      manufacturer: { type: "string", nullable: true },
+      brand: { type: "string", nullable: true },
+      model: { type: "string", nullable: true },
+      osVersion: { type: "string", nullable: true, example: "14" },
+      sdkInt: {
+        type: "integer",
+        nullable: true,
+        description: "Android Build.VERSION.SDK_INT. Null on iOS and web.",
+      },
+      appVersion: { type: "string", nullable: true, example: "1.4.2" },
+      appBuild: { type: "integer", nullable: true },
+      buildType: { type: "string", nullable: true, enum: ["debug", "release"] },
+      installerPackage: {
+        type: "string",
+        nullable: true,
+        description: "Store that installed the app; null when sideloaded, always null on web.",
+      },
+      locale: { type: "string", nullable: true, example: "en-IN" },
+      language: { type: "string", nullable: true, example: "en" },
+      country: {
+        type: "string",
+        nullable: true,
+        description: "Derived from the LOCALE only — never from SIM, GPS or IP. May be null.",
+        example: "IN",
+      },
+      timezone: { type: "string", nullable: true, example: "Asia/Kolkata" },
+      utcOffsetMinutes: { type: "integer", nullable: true, example: 330 },
+      screenWidthPx: { type: "integer", nullable: true },
+      screenHeightPx: { type: "integer", nullable: true },
+      screenDensityDpi: {
+        type: "integer",
+        nullable: true,
+        description:
+          "Android-style DPI (mdpi = 160). Web clients report round(devicePixelRatio * 160) so the value is comparable across platforms.",
+      },
+      networkType: {
+        type: "string",
+        nullable: true,
+        enum: ["WIFI", "CELLULAR", "ETHERNET", "VPN", "OTHER", "NONE", "UNKNOWN"],
+      },
+      carrier: { type: "string", nullable: true },
+      isEmulator: {
+        type: "boolean",
+        nullable: true,
+        description: "Client-asserted and spoofable. Recorded as a fraud SIGNAL; never blocks a login on its own.",
+      },
+      isRooted: {
+        type: "boolean",
+        nullable: true,
+        description: "Client-asserted and spoofable. Recorded as a fraud SIGNAL; never blocks a login on its own.",
+      },
+    },
+    required: ["deviceId", "platform"],
+  },
   RegisterRequest: {
     type: "object",
     properties: {
@@ -4012,9 +4104,10 @@ export const openApiSchemas = {
         pattern: "^[a-z0-9_]+$",
         example: "johndoe",
       },
-      password: { type: "string", minLength: 12, maxLength: 72 },
+      password: { type: "string", minLength: 8, maxLength: 50 },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
       proof: { $ref: "#/components/schemas/SignupProof" },
+      device: { $ref: "#/components/schemas/DeviceInfo" },
     },
     required: ["account", "password", "proof"],
   },
@@ -4056,6 +4149,7 @@ export const openApiSchemas = {
           "When true, the issued refresh token is longer-lived (30 days) so the session persists across app restarts, and the httpOnly `aimess_rt` cookie is persistent rather than a session cookie. Access-token lifetime is unchanged.",
       },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
+      device: { $ref: "#/components/schemas/DeviceInfo" },
     },
     required: ["account", "password"],
   },
@@ -4180,7 +4274,7 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       resetToken: { type: "string", minLength: 32 },
-      password: { type: "string", minLength: 8, maxLength: 128 },
+      password: { type: "string", minLength: 8, maxLength: 50 },
     },
     required: ["resetToken", "password"],
   },
@@ -4201,6 +4295,7 @@ export const openApiSchemas = {
           "Google ID token obtained from the client's Google Sign-In flow (verified server-side against the configured Google OAuth client id).",
       },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
+      device: { $ref: "#/components/schemas/DeviceInfo" },
     },
     required: ["idToken"],
   },
@@ -4232,6 +4327,7 @@ export const openApiSchemas = {
           },
         ],
       },
+      device: { $ref: "#/components/schemas/DeviceInfo" },
     },
     required: ["identityToken"],
   },
@@ -4295,7 +4391,7 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       currentPassword: { type: "string", minLength: 8 },
-      newPassword: { type: "string", minLength: 8 },
+      newPassword: { type: "string", minLength: 8, maxLength: 50 },
     },
     required: ["currentPassword", "newPassword"],
   },
@@ -5824,7 +5920,15 @@ export const openApiSchemas = {
         description: "The group's stable id (also its chat roomId).",
       },
       name: { type: "string" },
-      avatar: { type: "string" },
+      avatar: {
+        type: "string",
+        description: "Raw stored object key (`group-avatars/...`). Not loadable directly — render `avatarUrl`.",
+      },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description: "Presigned view URL for `avatar`, or null when the group has no logo.",
+      },
       description: { type: "string" },
       memberCount: { type: "integer" },
       isActiveMember: {
@@ -5837,6 +5941,7 @@ export const openApiSchemas = {
       "roomId",
       "name",
       "avatar",
+      "avatarUrl",
       "description",
       "memberCount",
       "isActiveMember",
