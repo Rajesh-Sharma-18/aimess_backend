@@ -74,8 +74,30 @@ export class RedisRateLimitStore implements Store {
   localKeys = false;
 
   private windowMs = 60_000;
-  /** Namespace for every gateway limiter key. Public: part of the Store interface. */
-  prefix = "rl:gw:";
+  /**
+   * Namespace for this limiter's keys. Public: part of the Store interface.
+   *
+   * The RULE is in the prefix, and has to be. It used to be a flat `rl:gw:`, so
+   * every limiter in `rate-limit.ts` incremented ONE counter per IP —
+   * `auth.sensitive`, `auth.otp`, `search`, `media`, `devices` and the global
+   * backstop all landed on `rl:gw:<ip>` — and each one then compared that shared
+   * total against its own `max`. The strictest limiter therefore rejected
+   * traffic belonging to every other one: 20 requests of ANY anonymous kind
+   * exhausted `auth.sensitive`, so a browser that had merely loaded the login
+   * page was answered 429 on `POST /auth/challenge`.
+   *
+   * That also silently undid the splits this file's callers deliberately made —
+   * `otpRateLimiter` exists precisely so "a user legitimately re-requesting a
+   * code" does not burn the login budget, and it was burning it anyway.
+   *
+   * Every limiter's `max` and window are unchanged; they are now counted
+   * separately, which is what each of them already documents itself as doing.
+   */
+  prefix: string;
+
+  constructor(rule: string) {
+    this.prefix = `rl:gw:${rule}:`;
+  }
 
   init(options: Options): void {
     this.windowMs = options.windowMs;

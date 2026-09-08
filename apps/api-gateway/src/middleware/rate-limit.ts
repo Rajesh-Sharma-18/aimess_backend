@@ -166,7 +166,9 @@ function createLimiter({ rule, windowMs, max, scope, skip }: LimiterSpec) {
     // is what the test harness and a single-process local run want. Production
     // cannot select it — see the boot assertion in config/env.ts.
     store:
-      env.RATE_LIMIT_STORE === "redis" ? new RedisRateLimitStore() : undefined,
+      env.RATE_LIMIT_STORE === "redis"
+        ? new RedisRateLimitStore(rule)
+        : undefined,
     standardHeaders: "draft-7",
     legacyHeaders: false,
     skip,
