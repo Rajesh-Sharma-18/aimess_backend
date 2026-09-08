@@ -222,10 +222,14 @@ check_frontend_env() {
     grep -qE "^${k}=.+" "$f" || { echo "    !! $k is missing, blank or commented out"; bad=1; }
   done
 
-  # Anything but "true" makes the client log full request and response bodies
-  # to the browser console.
-  grep -qE '^NEXT_PUBLIC_IS_PRODUCTION=true$' "$f" || {
-    echo "    !! NEXT_PUBLIC_IS_PRODUCTION must be exactly 'true' on a live build"; bad=1; }
+  if [ "$SVC" = website ]; then
+    # Website only. Anything but "true" makes the client log full request and
+    # response bodies to the browser console. The admin panel does not read this
+    # key at all and its .env.production has never carried it, so requiring it
+    # there just blocks a legitimate build.
+    grep -qE '^NEXT_PUBLIC_IS_PRODUCTION=true$' "$f" || {
+      echo "    !! NEXT_PUBLIC_IS_PRODUCTION must be exactly 'true' on a live build"; bad=1; }
+  fi
 
   if [ "$SVC" = website ]; then
     # app.config.ts derives the v2 base by replacing this exact suffix. A bare
