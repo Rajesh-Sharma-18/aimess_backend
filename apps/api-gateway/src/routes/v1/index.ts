@@ -17,7 +17,10 @@ import { getServicesForVersion } from "../../versioning/registry.js";
 import { env } from "../../config/env.js";
 import { appVersionRouter } from "./app-version.routes.js";
 import { createLegacyUploadsRouter } from "./legacy-uploads.routes.js";
-import { createNotificationsAliasRouter } from "./notifications.routes.js";
+import {
+  createNotificationCategoriesAliasRouter,
+  createNotificationsAliasRouter,
+} from "./notifications.routes.js";
 import { createLinkedDevicesAliasRouter } from "./linked-devices.routes.js";
 import { invitesRouter } from "./invites.routes.js";
 import { searchRouter } from "./search.routes.js";
@@ -72,6 +75,16 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   if (env.NOTIFICATION_SERVICE_URL) {
     v1Router.use("/notifications/fcm-token", deviceTokenRateLimiter);
     v1Router.use(createNotificationsAliasRouter(env.NOTIFICATION_SERVICE_URL));
+  }
+
+  // Stable alias: GET /api/v1/notifications/categories is forwarded to
+  // chat-service, which owns the catalogue. The path is the shared
+  // Android/iOS/Web contract; the canonical route
+  // (/api/v1/chat/notifications/categories) keeps working unchanged.
+  if (env.CHAT_SERVICE_URL) {
+    v1Router.use(
+      createNotificationCategoriesAliasRouter(env.CHAT_SERVICE_URL)
+    );
   }
 
   // Stricter throttle on sensitive auth endpoints, applied before the generic

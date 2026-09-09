@@ -87,6 +87,10 @@ export {
   updateCategoryVisibility,
   deleteCategory,
 } from "./category.controller.js";
+export {
+  listNotificationCategories,
+  updateNotificationCategory,
+} from "./notification-category.controller.js";
 export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";
 export { getSystemHealth } from "./system-health.controller.js";
 export {

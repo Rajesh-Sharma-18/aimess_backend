@@ -229,6 +229,47 @@ export interface AdminCallingEnabled {
   updatedAt: number | null;
 }
 
+/** Notification-category catalogue row, straight off the wire. */
+export interface RawAdminNotificationCategory {
+  id: string;
+  priority: number | string;
+  defaultLabel: string;
+  iconKey: string;
+  enabledPlatforms: string[];
+  updatedAt: string | number;
+}
+
+export interface AdminNotificationCategory {
+  id: string;
+  priority: number;
+  defaultLabel: string;
+  iconKey: string;
+  enabledPlatforms: string[];
+  updatedAt: number;
+}
+
+/**
+ * Update request for ONE category. The two `has*` flags carry presence: proto3
+ * cannot tell "field omitted" from "field sent as its zero value", and both
+ * zero values are meaningful here (priority 0, and an empty platform list = the
+ * chip is hidden everywhere). Same convention as community.proto's category
+ * update.
+ */
+export interface AdminUpdateNotificationCategoryReq {
+  categoryId: string;
+  priority: number;
+  hasPriority: boolean;
+  enabledPlatforms: string[];
+  hasEnabledPlatforms: boolean;
+  actorId: string;
+}
+
+export interface RawAdminNotificationCategoryMutation {
+  ok: boolean;
+  category?: RawAdminNotificationCategory;
+  errorCode: string;
+}
+
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
   keepCase: false,
   longs: String,
@@ -463,8 +504,42 @@ export const adminSetCallingEnabledBreaker: Breaker<
     )
 );
 
+export const adminListNotificationCategoriesBreaker: NoArgBreaker<{
+  categories: RawAdminNotificationCategory[];
+}> = makeBreakerNoArgs("chat.adminListNotificationCategories", () =>
+  call<unknown, { categories: RawAdminNotificationCategory[] }>(
+    "adminListNotificationCategories",
+    {}
+  )
+);
+
+export const adminUpdateNotificationCategoryBreaker: Breaker<
+  AdminUpdateNotificationCategoryReq,
+  RawAdminNotificationCategoryMutation
+> = makeBreaker(
+  "chat.adminUpdateNotificationCategory",
+  (req: AdminUpdateNotificationCategoryReq) =>
+    call<
+      AdminUpdateNotificationCategoryReq,
+      RawAdminNotificationCategoryMutation
+    >("adminUpdateNotificationCategory", req)
+);
+
 /** int64-as-string → number. */
 const int = (v: string | number | undefined): number => Number(v ?? 0) || 0;
+
+function toNotificationCategory(
+  r: RawAdminNotificationCategory
+): AdminNotificationCategory {
+  return {
+    id: r.id,
+    priority: int(r.priority),
+    defaultLabel: r.defaultLabel,
+    iconKey: r.iconKey,
+    enabledPlatforms: r.enabledPlatforms ?? [],
+    updatedAt: int(r.updatedAt),
+  };
+}
 
 function toCallingEnabled(r: RawAdminCallingEnabled): AdminCallingEnabled {
   const updatedAt = int(r.updatedAt);
@@ -584,5 +659,31 @@ export const chatClient = {
     req: AdminGetGroupMessagesReq
   ): Promise<AdminGetGroupMessagesRes> {
     return adminGetGroupMessagesBreaker.fire(req);
+  },
+
+  async adminListNotificationCategories(): Promise<
+    AdminNotificationCategory[]
+  > {
+    const r = await adminListNotificationCategoriesBreaker.fire();
+    return (r.categories ?? []).map(toNotificationCategory);
+  },
+
+  async adminUpdateNotificationCategory(
+    req: AdminUpdateNotificationCategoryReq
+  ): Promise<{
+    ok: boolean;
+    category: AdminNotificationCategory | null;
+    errorCode: string;
+  }> {
+    // Every field is spelled out, including the `has*` flags and the defaults
+    // for whatever the caller left out: an untyped request literal that omits a
+    // field does not "leave it unchanged", it sends the zero value, and the
+    // omission is silent on both ends.
+    const r = await adminUpdateNotificationCategoryBreaker.fire(req);
+    return {
+      ok: Boolean(r.ok),
+      category: r.category ? toNotificationCategory(r.category) : null,
+      errorCode: r.errorCode || "",
+    };
   },
 };

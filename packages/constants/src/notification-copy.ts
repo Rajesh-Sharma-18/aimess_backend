@@ -839,3 +839,147 @@ export const authCopy = register("auth", {
     body: t("NOTIF_AUTH_EMAIL_CHANGED_BODY", locale),
   }),
 });
+
+// -----------------------------------------------------------------------------
+// Language-neutral notification payload (templateId + params)
+// -----------------------------------------------------------------------------
+
+/**
+ * Argument NAMES for every registered copy builder, keyed by its ref.
+ *
+ * A {@link CopyDescriptor} stores the builder's arguments POSITIONALLY, which is
+ * all a server-side replay needs — it calls the same function back. Clients get
+ * the same ticket as `templateId` + `params` so they can render the sentence
+ * from their own catalogue while offline, and a positional array would force
+ * every client to re-derive the order per template. Naming them once, here,
+ * keeps that knowledge on the server side of the contract.
+ *
+ * These names are a PERSISTED CLIENT CONTRACT in the same way the refs are:
+ * renaming one silently changes the params a client interpolates. Adding a
+ * builder without adding its names here fails `notification-copy-params.test.ts`.
+ */
+export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
+  "friend.requested": ["requesterName"],
+  "friend.acceptedForRequester": ["addresseeName"],
+  "friend.acceptedForAddressee": ["requesterName"],
+  "friend.rejected": ["addresseeName"],
+  "friend.rejectedSelf": ["requesterName"],
+  "friend.cancelled": ["requesterName"],
+
+  "resolution.friendAccepted": ["name"],
+  "resolution.friendNowFriends": [],
+  "resolution.friendDeclined": [],
+  "resolution.friendDeclinedSelf": [],
+  "resolution.friendCancelled": [],
+
+  "community.joinRequested": ["communityName", "requesterName"],
+  "community.livestreamStarted": ["communityName", "hostName"],
+  "community.livestreamEnded": ["communityName", "hostName", "duration"],
+  "community.joinRequestApproved": ["communityName", "decidedByName"],
+  "community.joinRequestRejected": ["communityName"],
+  "community.memberJoined": ["communityName"],
+  "community.memberAdded": ["communityName"],
+  "community.memberAddedForModerators": ["communityName"],
+  "community.adminTransferred": ["communityName"],
+  "community.roleChanged": ["newRole", "communityName"],
+  "community.memberKicked": ["communityName"],
+  "community.memberBanned": ["communityName"],
+  "community.memberUnbanned": ["communityName"],
+  "community.memberMuted": ["mutedUntil", "communityName"],
+  "community.memberUnmuted": ["communityName"],
+  "community.memberWarned": ["note", "communityName"],
+  "community.inviteSent": ["communityName"],
+  "community.inviteAccepted": ["communityName"],
+  "community.reportCreated": ["communityName"],
+  "community.reportActioned": ["communityName"],
+  "community.reportResolved": ["communityName"],
+  "community.deleted": ["communityName"],
+  "community.closed": ["communityName"],
+  "community.reopened": ["communityName"],
+
+  // Both take ONE options object; it is passed through under its own name
+  // rather than flattened. Neither reaches the Notification Center (chat
+  // messages are push-only), so nothing renders these from a ticket.
+  "chat.message": ["params"],
+  "chat.messageBurst": ["params"],
+
+  "group.memberAdded": ["groupName"],
+  "group.memberMuted": ["groupName", "mutedUntil"],
+  "group.memberUnmuted": ["groupName"],
+
+  "call.ringing": ["callerName", "callType"],
+  "call.missed": ["callerName", "callType"],
+  "call.cancelled": [],
+  "call.activity": [
+    "peerName",
+    "callType",
+    "status",
+    "direction",
+    "durationSec",
+    "ringDurationSec",
+  ],
+
+  "account.banned": [],
+  "account.suspended": [],
+  "account.reinstated": [],
+
+  "auth.newLogin": ["browser", "location"],
+  "auth.passwordChanged": [],
+  "auth.emailChanged": [],
+};
+
+/** Every ref currently in the replay registry — the test's completeness oracle. */
+export function registeredCopyRefs(): string[] {
+  return [...REGISTRY.keys()].sort();
+}
+
+/** The builder behind a ref, so a test can compare declared names to arity. */
+export function copyBuilderArity(ref: string): number | null {
+  const build = REGISTRY.get(ref);
+  return build ? build.length : null;
+}
+
+/**
+ * The language-neutral half of a notification row: WHICH sentence and WITH WHAT
+ * values, with no rendered text at all.
+ *
+ * Clients render `t(templateId, params)` from their own catalogue, which is what
+ * makes an offline language switch re-render cached rows without a fetch. A ref
+ * the client does not recognise — an older build, or authored content that never
+ * had a ticket — falls back to the row's stored `title`/`body`.
+ */
+export interface NotificationTemplateRef {
+  templateId: string;
+  params: Record<string, unknown>;
+}
+
+/**
+ * Read a stored `data.copyRef` ticket as `templateId` + NAMED params.
+ *
+ * `null` for a row with no ticket (authored content: announcements, ban notices,
+ * a moderator's note) and for a ticket whose ref is no longer registered — both
+ * of which are exactly the "use the server title/body" case.
+ */
+export function describeCopyTicket(
+  copyRef: string | undefined | null
+): NotificationTemplateRef | null {
+  if (!copyRef) return null;
+  let parsed: CopyDescriptor;
+  try {
+    parsed = JSON.parse(copyRef) as CopyDescriptor;
+  } catch {
+    return null;
+  }
+  const ref = parsed?.ref;
+  if (typeof ref !== "string" || !REGISTRY.has(ref)) return null;
+  const args = Array.isArray(parsed.args) ? parsed.args : [];
+  const names = COPY_PARAM_NAMES[ref] ?? [];
+  const params: Record<string, unknown> = {};
+  args.forEach((value, index) => {
+    // Unnamed trailing argument (a builder that gained a parameter before this
+    // table did): keep it addressable rather than dropping data on the floor.
+    const name = names[index] ?? `arg${String(index)}`;
+    if (value !== null && value !== undefined) params[name] = value;
+  });
+  return { templateId: ref, params };
+}

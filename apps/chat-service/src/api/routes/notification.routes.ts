@@ -13,6 +13,10 @@ export function createNotificationRoutes(ctrl: NotificationController): Router {
   const router = Router();
 
   router.get("/", authenticate, ctrl.getNotifications);
+  // Server-driven category catalogue (Android / iOS / Web share this one
+  // response). Declared before the parameterised routes below so `categories`
+  // is never read as a notification id.
+  router.get("/categories", authenticate, ctrl.getCategories);
   router.get("/sync", authenticate, ctrl.syncNotifications);
   router.post(
     "/read",

@@ -21,6 +21,7 @@
     "export:attachment-resource-map": "tsx scripts/export-attachment-resource-map.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
+    "db:seed": "tsx prisma/seed/notification-categories.seed.ts",
     "lint": "eslint .",
     "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs"
   },

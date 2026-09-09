@@ -847,6 +847,36 @@ model SystemFlag {
 }
 
 // -----------------------------------------------------------------------------
+// NotificationCategoryConfig — the fixed, admin-tunable notification catalogue.
+//
+// SIX rows, seeded by `prisma/seed/notification-categories.seed.ts`. There is
+// no create and no delete path anywhere in the product: `_id` IS the stable
+// catalogue id ("FRIEND_REQUEST", "CALLS", …), which makes the seed idempotent
+// by construction (a re-run finds the row by id) and makes renaming or reusing
+// an id impossible without a deliberate data migration. Admins change only
+// `priority` and `enabledPlatforms`.
+//
+// `enabledPlatforms` holds the platforms the chip is shown on; a platform is
+// disabled by being ABSENT. One field instead of three booleans so a fourth
+// client (desktop, watch) is a seed value rather than a schema change — and
+// disabling a category only hides the chip, it never touches a stored
+// notification, which is why nothing here is referenced by the Notification
+// model.
+// -----------------------------------------------------------------------------
+model NotificationCategoryConfig {
+  id               String   @id @map("_id")
+  priority         Int
+  defaultLabel     String
+  iconKey          String
+  enabledPlatforms String[]
+  updatedBy        String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("notification_categories")
+}
+
+// -----------------------------------------------------------------------------
 // PrivateMessageReport
 // -----------------------------------------------------------------------------
 model PrivateMessageReport {
