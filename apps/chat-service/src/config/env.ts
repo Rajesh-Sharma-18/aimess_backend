@@ -150,11 +150,15 @@ const envSchema = z.object({
   // default mirrors community-service's so an unset env cannot split them.
   INVITE_LINK_BASE_URL: z.string().url().default("https://ai5dev.tech"),
 
-  // LiveKit (self-hosted). See Docs/calls/CALLS-LIVEKIT.md.
-  // LIVEKIT_URL is the WS URL clients connect to (ws://localhost:7880 dev,
-  // wss://livekit.example.com in prod). API key/secret must match the
-  // docker-compose LIVEKIT_KEYS pair.
-  LIVEKIT_URL: z.string().default("ws://localhost:7880"),
+  // LiveKit Cloud. See Docs/calls/CALLS-LIVEKIT.md.
+  // LIVEKIT_URL is the wss:// project URL, and it is REQUIRED with no default.
+  // It is not merely read here: it is stamped verbatim into every call payload
+  // and every VoIP push as `livekitUrl`, and the clients connect to whatever it
+  // says. The old default was ws://localhost:7880, so an environment that
+  // forgot the variable booted happily and told every phone to dial ITSELF --
+  // calls then fail at media with no server-side error to find. Failing the
+  // boot is the only safe default, same posture as the key/secret below.
+  LIVEKIT_URL: z.string().min(1),
   // Required, with NO default. These used to fall back to a key/secret pair
   // published in this repository, and chat-service mints EVERY 1-to-1 call join
   // token with them (roomJoin/canPublish/canSubscribe over a room named after

@@ -350,16 +350,17 @@ services:
   # ============================================================================
   # config-render — substitutes secrets into the committed config templates.
   #
-  # SRS and LiveKit both read a config FILE, and both need a shared secret
-  # inside it: SRS carries the hook secret in its http_hooks URLs (it cannot set
-  # request headers), and LiveKit needs the webhook api_key. Those files are
-  # tracked in git, so the secrets used to be committed literals — the SRS hook
-  # secret is the only authenticator on a publicly-routable endpoint, and the
-  # LiveKit pair signs every call token.
+  # SRS reads a config FILE and needs the hook secret inside it: it carries that
+  # secret in its http_hooks URLs (it cannot set request headers). The file is
+  # tracked in git, so the secret used to be a committed literal — and it is the
+  # only authenticator on a publicly-routable endpoint.
   #
-  # The templates now carry __SRS_HOOK_SECRET__ / __LIVEKIT_API_KEY__ and this
-  # one-shot service renders them into a named volume before either server
-  # starts. Nothing writes back to the repo, and no secret is ever committed.
+  # The template now carries __SRS_HOOK_SECRET__ and this one-shot service
+  # renders it into a named volume before SRS starts. Nothing writes back to the
+  # repo, and no secret is ever committed.
+  #
+  # Used to render the LiveKit config too; calls moved to LiveKit Cloud, which
+  # is configured from its dashboard and has no local config file.
   # ============================================================================
   config-render:
     image: alpine:3.20
@@ -368,11 +369,9 @@ services:
 
     environment:
       SRS_HOOK_SECRET: "${SRS_HOOK_SECRET}"
-      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY}"
 
     volumes:
       - ./docker/srs/aimess.conf:/templates/srs/aimess.conf:ro
-      - ./docker/livekit/config.yaml:/templates/livekit/config.yaml:ro
       - rendered-config:/rendered
 
     # Refuses to render a template whose secret is unset, rather than emitting a
@@ -389,13 +388,8 @@ services:
           echo "config-render: SRS_HOOK_SECRET is unset — refusing to render an SRS config with no hook authentication." >&2
           exit 1
         fi
-        if [ -z "$${LIVEKIT_API_KEY:-}" ]; then
-          echo "config-render: LIVEKIT_API_KEY is unset — refusing to render a LiveKit config with no webhook key." >&2
-          exit 1
-        fi
         sed "s|__SRS_HOOK_SECRET__|$$SRS_HOOK_SECRET|g" /templates/srs/aimess.conf > /rendered/aimess.conf
-        sed "s|__LIVEKIT_API_KEY__|$$LIVEKIT_API_KEY|g" /templates/livekit/config.yaml > /rendered/config.yaml
-        echo "config-render: rendered SRS and LiveKit configs"
+        echo "config-render: rendered SRS config"
 
     networks:
       - aimess-network
@@ -446,51 +440,6 @@ services:
         condition: service_completed_successfully
 
     command: ["./objs/srs", "-c", "rendered/aimess.conf"]
-
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-    networks:
-      - aimess-network
-
-  # ============================================================================
-  # LiveKit — self-hosted media SFU (+ embedded TURN) for 1-to-1 audio/video
-  # calls. Replaces the old Socket.IO WebRTC signaling + external STUN/TURN.
-  # See Docs/calls/CALLS-LIVEKIT.md.
-  #
-  # Ports:
-  #   7880/tcp  — signaling (WebSocket)
-  #   7881/tcp  — RTC/TCP fallback
-  #   50000-50100/udp — media (UDP), keep the range small for local dev
-  #
-  # Keys via LIVEKIT_KEYS env (format: "<apikey>: <secret>"). Redis reuses
-  # the shared aimess-redis service so we're multi-node-ready by default.
-  # ============================================================================
-  livekit:
-    image: livekit/livekit-server:latest
-    container_name: aimess-livekit
-    restart: unless-stopped
-
-    command: ["--config", "/etc/livekit/config.yaml"]
-
-    environment:
-      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
-
-    ports:
-      - "${LIVEKIT_PORT:-7880}:7880"
-      - "${LIVEKIT_RTC_TCP_PORT:-7881}:7881"
-      - "50000-50100:50000-50100/udp"
-
-    volumes:
-      # Rendered by `config-render` — the committed template carries a
-      # __LIVEKIT_API_KEY__ placeholder, never a real key.
-      - rendered-config:/etc/livekit:ro
-
-    depends_on:
-      redis:
-        condition: service_started
-      config-render:
-        condition: service_completed_successfully
 
     extra_hosts:
       - "host.docker.internal:host-gateway"

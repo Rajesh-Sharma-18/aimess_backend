@@ -11,7 +11,7 @@
 # `ufw status` shows that port as denied — ufw never sees the packet.
 #
 # So:
-#   • HOST services (nginx, sshd, LiveKit on network_mode:host) → ufw.
+#   • HOST services (nginx, sshd) → ufw.
 #   • CONTAINER published ports (Postgres, Mongo, RabbitMQ, MinIO) → rules in
 #     the DOCKER-USER chain, which Docker evaluates FIRST and never flushes.
 #
@@ -47,19 +47,16 @@ ufw default allow outgoing
 ufw allow 80/tcp  comment 'HTTP (ACME + redirect)'
 ufw allow 443/tcp comment 'HTTPS'
 
-# LiveKit runs with network_mode:host, so it binds host ports directly and ufw
-# DOES apply to it (unlike the published container ports handled below).
-#   7880  signaling WS (also fronted by nginx)
-#   7881  RTC/TCP fallback for UDP-blocked clients
-#   50000-50100/udp  media
-#   5349  embedded TURN over TLS — the relay of last resort for clients whose
-#         network blocks the direct UDP path. Closed, those clients join the
-#         room and then time out with no media.
-# These must be open to the whole internet — participants connect from
-# arbitrary addresses, so no source restriction is possible.
-ufw allow 7881/tcp comment 'LiveKit RTC TCP fallback'
-ufw allow 5349/tcp comment 'LiveKit TURN over TLS'
-ufw allow 50000:50100/udp comment 'LiveKit media (UDP)'
+# Calls run on LiveKit Cloud, so nothing on this host terminates call media any
+# more. The self-hosted server used to need 7881/tcp, 5349/tcp (embedded TURN)
+# and 50000-50100/udp open to the WHOLE internet — participants connect from
+# arbitrary addresses, so no source restriction was possible.
+#
+# ufw does not remove a rule just because this script stopped adding it. On a
+# box provisioned before the cutover those three are still open:
+#   ufw delete allow 7881/tcp
+#   ufw delete allow 5349/tcp
+#   ufw delete allow 50000:50100/udp
 
 ufw --force enable
 echo "    ufw enabled."

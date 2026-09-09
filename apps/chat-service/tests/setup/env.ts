@@ -33,6 +33,7 @@ process.env.JWT_ACCESS_SECRET = "test-access-secret-do-not-use-in-prod";
 // Call join tokens are minted with this pair. The schema used to default it to
 // a value published in the repo; now that it is required, the harness supplies
 // it like any other mandatory var.
+process.env.LIVEKIT_URL = "wss://test.livekit.cloud";
 process.env.LIVEKIT_API_KEY = "test-livekit-key";
 process.env.LIVEKIT_API_SECRET = "test-livekit-secret-do-not-use-in-prod";
 

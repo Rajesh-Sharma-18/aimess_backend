@@ -55,10 +55,15 @@ const envSchema = z.object({
   /** SRS (OSSRS) media server HTTP API — same base stream-service uses. */
   SRS_API_URL: z.string().url().default("http://localhost:1985"),
   /**
-   * LiveKit signaling base — the same value chat-service uses (a ws:// URL).
-   * The probe swaps the scheme for http(s) and hits LiveKit's root health path.
+   * LiveKit signaling base — the same value chat-service uses (a wss:// URL).
+   * The probe swaps the scheme for http(s) and hits LiveKit's root health path,
+   * which LiveKit Cloud answers 200 on, unauthenticated, same as self-hosted.
+   *
+   * Required, with no default. The old ws://localhost:7880 default outlived the
+   * self-hosted container, so the dashboard reported LiveKit DOWN while calls
+   * were fine — a false alarm that costs someone an afternoon.
    */
-  LIVEKIT_URL: z.string().min(1).default("ws://localhost:7880"),
+  LIVEKIT_URL: z.string().min(1),
 
   // gRPC endpoints of the services the dashboard aggregates (live, read-only).
   AUTH_GRPC_URL: z.string().default("0.0.0.0:4001"),

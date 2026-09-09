@@ -16,8 +16,8 @@ set -euo pipefail
 
 ROLE="${1:-}"
 case "$ROLE" in
-  dev01) DOMAINS=(ai5dev.tech www.ai5dev.tech minio.ai5dev.tech auth.ai5dev.tech rabbitmq.ai5dev.tech media.ai5stream.tech)
-         BACKENDS=(3000 9000 9001 15672 7880)
+  dev01) DOMAINS=(ai5dev.tech www.ai5dev.tech minio.ai5dev.tech auth.ai5dev.tech rabbitmq.ai5dev.tech)
+         BACKENDS=(3000 9000 9001 15672)
          # Retired with the move to the apex: no longer served, so its
          # certificate is deliberately left out of HAProxy's bundle.
          SKIP_CERTS=(website.ai5dev.tech)

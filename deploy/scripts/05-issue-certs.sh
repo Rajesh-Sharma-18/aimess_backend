@@ -19,7 +19,7 @@
 # only once the record actually points at this server. If a name still points
 # somewhere else, validation fails with an unhelpful "Invalid response" error.
 #
-# For grey-cloud names (minio, livekit — see the notes in their site configs)
+# For grey-cloud names (minio — see the note in its site config)
 # validation comes straight here, which is simpler.
 #
 # If any record cannot serve HTTP-01, switch to DNS-01 instead:
@@ -48,14 +48,13 @@ NGINX_SRC="$SCRIPT_DIR/../nginx"
 if [ "$ROLE" = "dev01" ]; then
   # minio-console is listed last because its DNS record may not exist yet — see
   # the note in dev01-minio-console.conf.
-  # media.ai5stream.tech serves LiveKit signalling. It is DNS-only, so call
-  # media reaches the host directly. auth.ai5dev.tech serves the MinIO console —
-  # both names are reused; the services they are named after are internal only.
+  # auth.ai5dev.tech serves the MinIO console — the name is reused; the service
+  # it is named after is internal only.
   # An entry may list several names separated by commas — they go into ONE SAN
   # certificate whose directory is named after the first. The site serves the
   # apex, so www is a SAN on the same cert rather than a second certificate.
-  DOMAINS=("ai5dev.tech,www.ai5dev.tech" minio.ai5dev.tech rabbitmq.ai5dev.tech media.ai5stream.tech auth.ai5dev.tech)
-  SITES=(dev01-website.conf dev01-minio.conf dev01-rabbitmq.conf dev01-livekit.conf dev01-minio-console.conf)
+  DOMAINS=("ai5dev.tech,www.ai5dev.tech" minio.ai5dev.tech rabbitmq.ai5dev.tech auth.ai5dev.tech)
+  SITES=(dev01-website.conf dev01-minio.conf dev01-rabbitmq.conf dev01-minio-console.conf)
 else
   DOMAINS=(api.ai5dev.tech admin.ai5dev.tech backoffice.ai5dev.tech)
   SITES=(dev02-api.conf dev02-admin.conf dev02-backoffice.conf)
@@ -183,20 +182,10 @@ systemctl reload nginx
 EOF
 chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
 
-# LiveKit's embedded TURN reads its certificate ONCE at startup — unlike nginx
-# it cannot be reloaded — so a renewal leaves it serving the expired one. The
-# failure is invisible: signaling and direct-UDP calls keep working, and only
-# clients that need the TURN relay break, three months after anyone touched
-# this. Restart is a sub-second blip and drops no established call.
-# Dev 01 only; the container does not exist on Dev 02.
-if [ "$ROLE" = "dev01" ]; then
-  cat > /etc/letsencrypt/renewal-hooks/deploy/restart-livekit.sh <<'EOF'
-#!/bin/sh
-docker restart aimess-livekit 2>/dev/null || true
-EOF
-  chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/restart-livekit.sh
-  echo "    installed LiveKit TURN certificate-renewal hook"
-fi
+# The LiveKit TURN certificate-renewal hook lived here. Calls moved to LiveKit
+# Cloud and the container is gone, so it is no longer installed. On a box
+# provisioned before the cutover, delete the leftover:
+#   rm -f /etc/letsencrypt/renewal-hooks/deploy/restart-livekit.sh
 
 systemctl list-timers 'certbot*' --no-pager || true
 certbot renew --dry-run || echo "WARNING: renewal dry-run failed — investigate before the 90-day expiry."
