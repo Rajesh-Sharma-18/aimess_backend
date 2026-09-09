@@ -58,7 +58,7 @@ services:
       NOTIFICATION_SERVICE_URL: http://notifications-service:3006
       MEDIA_SERVICE_URL: http://media-service:3009
       BACKOFFICE_SERVICE_URL: http://backoffice-service:3010
-      STREAM_SERVICE_URL: ${STREAM_SERVICE_URL:-http://stream-service:3007}
+      STREAM_SERVICE_URL: http://stream-service:3007
       # gRPC dial targets.
       AUTH_GRPC_URL: auth-service:4001
       USER_GRPC_URL: user-service:4002
@@ -66,7 +66,7 @@ services:
       CHAT_GRPC_URL: chat-service:4004
       NOTIFICATION_GRPC_URL: notifications-service:4006
       MEDIA_GRPC_URL: media-service:4009
-      STREAM_GRPC_URL: ${STREAM_GRPC_URL:-stream-service:4007}
+      STREAM_GRPC_URL: stream-service:4007
       # nginx is the only thing in front of this container, and it sets
       # X-Forwarded-For. One hop — not zero, or rate limiting keys every
       # request to the nginx IP and one abusive client throttles everybody.
@@ -131,7 +131,7 @@ services:
       COMMUNITY_DATABASE_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@${DEV01_IP}:27017/community_db?authSource=admin&tls=${MONGO_TLS:-false}&directConnection=true
       USER_GRPC_URL: user-service:4002
       CHAT_GRPC_URL: chat-service:4004
-      STREAM_GRPC_URL: ${STREAM_GRPC_URL:-stream-service:4007}
+      STREAM_GRPC_URL: stream-service:4007
     # No published ports — see user-service above.
 
   # ===========================================================================
@@ -253,7 +253,7 @@ services:
       COMMUNITY_GRPC_URL: community-service:4003
       CHAT_GRPC_URL: chat-service:4004
       MEDIA_GRPC_URL: media-service:4009
-      STREAM_GRPC_URL: ${STREAM_GRPC_URL:-stream-service:4007}
+      STREAM_GRPC_URL: stream-service:4007
       # HTTP fan-out targets. The schema defaults are `http://0.0.0.0:PORT`,
       # which is a BIND address — measured ECONNREFUSED from inside this
       # container, so every admin action that reached one of these four services
@@ -261,7 +261,7 @@ services:
       USER_HTTP_URL: http://user-service:3002
       MEDIA_HTTP_URL: http://media-service:3009
       NOTIFICATIONS_HTTP_URL: http://notifications-service:3006
-      STREAM_HTTP_URL: ${STREAM_SERVICE_URL}
+      STREAM_HTTP_URL: http://stream-service:3007
       # System Health probe target. backoffice reads MONGODB_HOST, but the
       # Mongo-backed services set MONGO_HOST — without this the schema default
       # 127.0.0.1 was probed and the MongoDB row always read Down.
