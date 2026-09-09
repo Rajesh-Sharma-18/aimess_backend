@@ -26,7 +26,7 @@ jest.mock("../../src/services/index.js", () => {
   };
 });
 
-import { NotFoundError } from "@aimess/errors";
+import { BadRequestError, NotFoundError } from "@aimess/errors";
 import request from "supertest";
 
 import { app } from "../../src/app.js";
@@ -87,6 +87,47 @@ describe("GET /v1/notification-categories", () => {
       "CALLS",
     ]);
     expect(res.body.data[0].enabledPlatforms).toEqual(ALL_PLATFORMS);
+  });
+
+  it.each([
+    ["zero", 0],
+    ["a negative", -1],
+    ["past the catalogue size", 7],
+    ["a fraction", 1.5],
+    ["a string", "abc"],
+    ["null", null],
+  ])("rejects %s priority before it reaches the service", async (_label, priority) => {
+    const res = await request(app)
+      .patch("/v1/notification-categories/CALLS")
+      .set(auth())
+      .send({ priority });
+
+    expect(res.status).toBe(400);
+    expect(svc.updateCategory).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 6])("accepts priority %p", async (priority) => {
+    svc.updateCategory.mockResolvedValue({ ...catalogue()[1], priority });
+
+    const res = await request(app)
+      .patch("/v1/notification-categories/CALLS")
+      .set(auth())
+      .send({ priority });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("surfaces a priority chat-service refused as a 400, not a 404", async () => {
+    svc.updateCategory.mockRejectedValue(
+      new BadRequestError("NOTIFICATION_CATEGORY_PRIORITY_INVALID")
+    );
+
+    const res = await request(app)
+      .patch("/v1/notification-categories/CALLS")
+      .set(auth())
+      .send({ priority: 1 });
+
+    expect(res.status).toBe(400);
   });
 
   it("rejects an admin without settings.manage", async () => {

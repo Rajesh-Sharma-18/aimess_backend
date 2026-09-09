@@ -6,6 +6,14 @@
  * chat-service and their ids are a persisted client contract, so the panel can
  * change a row's `priority` and its per-platform enablement and nothing else.
  */
+/**
+ * How many categories the fixed catalogue holds — and therefore the highest
+ * priority that means anything. Kept here rather than imported from
+ * chat-service (separate service, separate deployable); the seed that owns the
+ * six rows lives there and the count is part of the contract between them.
+ */
+export const NOTIFICATION_CATEGORY_COUNT = 6;
+
 export type NotificationPlatform = "ANDROID" | "IOS" | "WEB";
 
 export interface NotificationCategoryRow {

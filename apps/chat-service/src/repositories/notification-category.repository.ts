@@ -39,10 +39,16 @@ export class NotificationCategoryRepository {
   }
 
   /**
-   * Apply an administrator's change to ONE existing row. `updateMany` scoped to
-   * the id (rather than `update`) so an unknown id changes nothing and reports
-   * `0` instead of throwing — the caller turns that into a 404, and a category
-   * can never be conjured into existence by a write.
+   * Apply an administrator's change to ONE existing row.
+   *
+   * A priority change is a REORDER, not a plain field write: the target is
+   * moved into the requested slot and the whole catalogue is renumbered
+   * 1..N in ONE transaction. That is what keeps the stored ordering free of
+   * duplicates and gaps no matter what an admin types — two rows can never end
+   * up sharing a priority, because no single write ever sets one in isolation.
+   *
+   * `null` when the id is not one of the seeded categories: the target row is
+   * read before anything is written, so a write can never create a category.
    */
   async updateConfig(
     id: string,
@@ -52,19 +58,47 @@ export class NotificationCategoryRepository {
       updatedBy?: string | null;
     }
   ): Promise<NotificationCategoryConfig | null> {
-    const result = await this.prisma.notificationCategoryConfig.updateMany({
-      where: { id },
-      data: {
-        ...(changes.priority !== undefined
-          ? { priority: changes.priority }
-          : {}),
-        ...(changes.enabledPlatforms !== undefined
-          ? { enabledPlatforms: changes.enabledPlatforms }
-          : {}),
-        updatedBy: changes.updatedBy ?? null,
-      },
-    });
-    if (result.count === 0) return null;
-    return this.findById(id);
+    const rows = await this.listAll();
+    const target = rows.find((row) => row.id === id);
+    if (!target) return null;
+
+    // id → the new priority it has to be written with. Only rows that actually
+    // move are in here; an unchanged row is not rewritten.
+    const moved = new Map<string, number>();
+    if (changes.priority !== undefined) {
+      const ordered = rows.filter((row) => row.id !== id);
+      // Clamped defensively — the service rejects an out-of-range priority
+      // before this point, so this only guards a future second caller.
+      const slot = Math.min(Math.max(changes.priority, 1), rows.length);
+      ordered.splice(slot - 1, 0, target);
+      ordered.forEach((row, index) => {
+        if (row.priority !== index + 1) moved.set(row.id, index + 1);
+      });
+    }
+
+    const writes = [...moved]
+      .filter(([rowId]) => rowId !== id)
+      .map(([rowId, priority]) =>
+        this.prisma.notificationCategoryConfig.update({
+          where: { id: rowId },
+          data: { priority },
+        })
+      );
+    // The target is written last so its row is the transaction's final result.
+    writes.push(
+      this.prisma.notificationCategoryConfig.update({
+        where: { id },
+        data: {
+          ...(moved.has(id) ? { priority: moved.get(id) } : {}),
+          ...(changes.enabledPlatforms !== undefined
+            ? { enabledPlatforms: changes.enabledPlatforms }
+            : {}),
+          updatedBy: changes.updatedBy ?? null,
+        },
+      })
+    );
+
+    const results = await this.prisma.$transaction(writes);
+    return results[results.length - 1] ?? null;
   }
 }

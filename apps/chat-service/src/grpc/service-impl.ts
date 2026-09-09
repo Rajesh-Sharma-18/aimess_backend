@@ -2668,6 +2668,17 @@ export function createMessagingImpl(
             },
           });
         } catch (err) {
+          // A rejected priority is a normal outcome of an admin edit, not a
+          // transport failure — it travels back on the same {ok:false,
+          // errorCode} channel as an unknown id so the panel can render it as
+          // a 400 instead of a dead gRPC call.
+          if (isAppError(err) && err.statusCode === 400) {
+            callback(null, {
+              ok: false,
+              errorCode: err.messageKey ?? "BAD_REQUEST",
+            });
+            return;
+          }
           logger.error(
             `gRPC adminUpdateNotificationCategory error: ${String(err)}`
           );

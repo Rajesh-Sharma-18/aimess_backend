@@ -1,4 +1,4 @@
-import { NotFoundError } from "@aimess/errors";
+import { BadRequestError, NotFoundError } from "@aimess/errors";
 
 import {
   chatClient,
@@ -51,8 +51,12 @@ export const notificationCategoryRepository = {
       actorId,
     });
     if (!res.ok || !res.category) {
-      // The only failure chat-service reports is an id outside the seeded
-      // catalogue — which is exactly a 404, never an implicit create.
+      // Two failures, two statuses: a priority chat-service refused is a 400
+      // (the request was understood and rejected), anything else is an id
+      // outside the seeded catalogue — a 404, never an implicit create.
+      if (res.errorCode === "NOTIFICATION_CATEGORY_PRIORITY_INVALID") {
+        throw new BadRequestError(res.errorCode);
+      }
       throw new NotFoundError(res.errorCode || "NOTIFICATION_CATEGORY_NOT_FOUND");
     }
     return toRow(res.category);

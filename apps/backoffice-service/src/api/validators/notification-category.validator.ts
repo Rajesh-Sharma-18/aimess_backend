@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { NOTIFICATION_CATEGORY_COUNT } from "../../types/notification-category.types.js";
+
 /**
  * Zod schemas for the Super Admin notification-category API.
  *
@@ -25,9 +27,18 @@ export const notificationPlatformEnum = z.enum(["ANDROID", "IOS", "WEB"]);
 
 export const updateNotificationCategorySchema = z
   .object({
-    // Ascending render order. Bounded so a typo cannot bury a category behind
-    // an unreachable priority; duplicates are allowed and break on id.
-    priority: z.number().int().min(1).max(999).optional(),
+    // Ascending render order: a whole number in 1..N, N being the size of the
+    // fixed catalogue. Anything else — 0, a negative, 1.5, "abc", null, a
+    // slot past the last category — is rejected here and again in chat-service,
+    // which owns the rows. A priority another category already holds IS
+    // accepted: it is a reorder, and chat-service renumbers the catalogue in
+    // one transaction so the stored order stays unique and gap-free.
+    priority: z
+      .number()
+      .int()
+      .min(1)
+      .max(NOTIFICATION_CATEGORY_COUNT)
+      .optional(),
     // The platforms the chip is shown on. An EMPTY array is valid and means
     // "hidden everywhere" — which hides the chip, and never touches a single
     // stored notification.

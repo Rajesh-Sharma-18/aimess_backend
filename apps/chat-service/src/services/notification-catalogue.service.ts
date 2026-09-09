@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 
+import { BadRequestError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
 import type { NotificationCategoryRepository } from "../repositories/notification-category.repository.js";
 import {
+  NOTIFICATION_CATEGORY_IDS,
   NOTIFICATION_CATEGORY_SEED,
   type NotificationCategoryId,
   type NotificationPlatform,
@@ -140,6 +142,22 @@ export class NotificationCatalogueService {
     },
     actorId?: string | null
   ): Promise<NotificationCategoryAdminDTO | null> {
+    // Validated HERE, not only at the panel's request schema: this service is
+    // the owner of the catalogue and the last place a write can be stopped, so
+    // a direct API/gRPC call that skipped the UI is rejected the same way.
+    // Fractions, zero, negatives and anything past the catalogue size are out;
+    // a priority that another row already holds is NOT — that is a reorder, and
+    // the repository renumbers the rest rather than storing a duplicate.
+    if (changes.priority !== undefined) {
+      const { priority } = changes;
+      if (
+        !Number.isInteger(priority) ||
+        priority < 1 ||
+        priority > NOTIFICATION_CATEGORY_IDS.length
+      ) {
+        throw new BadRequestError("NOTIFICATION_CATEGORY_PRIORITY_INVALID");
+      }
+    }
     const row = await this.repo.updateConfig(id, {
       ...changes,
       updatedBy: actorId ?? null,
