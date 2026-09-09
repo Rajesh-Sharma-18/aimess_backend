@@ -261,7 +261,15 @@ services:
       USER_HTTP_URL: http://user-service:3002
       MEDIA_HTTP_URL: http://media-service:3009
       NOTIFICATIONS_HTTP_URL: http://notifications-service:3006
-      STREAM_HTTP_URL: ${STREAM_SERVICE_URL:-http://stream-service:3007}
+      STREAM_HTTP_URL: ${STREAM_SERVICE_URL}
+      # System Health probe target. backoffice reads MONGODB_HOST, but the
+      # Mongo-backed services set MONGO_HOST — without this the schema default
+      # 127.0.0.1 was probed and the MongoDB row always read Down.
+      MONGODB_HOST: ${MONGO_HOST}
+      # Only registers the ClamAV probe when CLAMAV_ENABLED=true. The host must
+      # be named here too, or the probe would fall back to 127.0.0.1 the moment
+      # that flag is flipped on.
+      CLAMAV_HOST: clamav
       CORS_ALLOWED_ORIGINS: ${ADMIN_WEB_ORIGIN}
       TRUST_PROXY_HOPS: "1"
     ports:

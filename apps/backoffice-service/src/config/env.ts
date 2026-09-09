@@ -47,12 +47,23 @@ const envSchema = z.object({
   // ---- System Health probe targets (reachability only; backoffice never
   // queries these stores/servers — the owning service does). ----
   /**
-   * MongoDB (chat-service's store). Host/port are read from this URL when set,
-   * otherwise from MONGODB_HOST/MONGODB_PORT.
+   * MongoDB instance shared by chat, notifications, media and community.
+   * Host/port are read from this URL when set, otherwise from
+   * MONGODB_HOST/MONGODB_PORT.
    */
   MONGO_DATABASE_URL: z.string().min(1).optional(),
   MONGODB_HOST: z.string().default("127.0.0.1"),
   MONGODB_PORT: z.coerce.number().positive().default(27017),
+  /**
+   * Mirrors media-service's flag (same string-then-transform shape so the two
+   * never disagree). False means antivirus is deliberately not part of this
+   * environment, so System Health skips the probe instead of reporting a
+   * component nobody runs as Down.
+   */
+  CLAMAV_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
   /** ClamAV daemon (media-service owns the scanning; this is the clamd socket). */
   CLAMAV_HOST: z.string().default("127.0.0.1"),
   CLAMAV_PORT: z.coerce.number().positive().default(3310),
