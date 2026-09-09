@@ -1,12 +1,11 @@
-import dotenv from "dotenv";
-
 import { PrismaClient } from "../../src/generated/prisma/index.js";
 import { NOTIFICATION_CATEGORY_SEED } from "../../src/lib/notification-category.js";
 
-// Load .env so the schema datasource resolves with the full connection string
-// (incl. directConnection=true for standalone Mongo). Without this the URL is
-// undefined when run via `tsx`.
-dotenv.config();
+// The datasource URL is resolved the same way the service resolves it, rather
+// than left to `env("MONGO_DATABASE_URL")` in the schema: only the MONGO_* parts
+// are in .env, so the bare env var is undefined under `tsx` and Prisma fails
+// validation before the first query. Imported lazily inside the direct-run
+// block so the Jest suite can import the seed function without a real .env.
 
 /** The subset of PrismaClient the seed touches, so a test can stand it in. */
 export interface NotificationCategorySeedClient {
@@ -97,20 +96,26 @@ export async function seedNotificationCategories(
 const isDirectRun = process.argv[1]?.includes("notification-categories.seed");
 
 if (isDirectRun) {
-  const prisma = new PrismaClient();
-  seedNotificationCategories(prisma)
-    .then(({ created, updated }) => {
-      // eslint-disable-next-line no-console
-      console.log(
-        `Notification categories seeded — ${String(created)} created, ${String(updated)} already present.`
-      );
+  // Dynamic import, not top level: `await` at module scope would break the
+  // Jest suite that imports this file under the CommonJS transform.
+  void import("../../src/config/env.js")
+    .then(async ({ env }) => {
+      const prisma = new PrismaClient({
+        datasourceUrl: env.MONGO_DATABASE_URL,
+      });
+      try {
+        const { created, updated } = await seedNotificationCategories(prisma);
+        // eslint-disable-next-line no-console
+        console.log(
+          `Notification categories seeded — ${String(created)} created, ${String(updated)} already present.`
+        );
+      } finally {
+        await prisma.$disconnect();
+      }
     })
     .catch((error: unknown) => {
       // eslint-disable-next-line no-console
       console.error(error);
       process.exit(1);
-    })
-    .finally(() => {
-      void prisma.$disconnect();
     });
 }
