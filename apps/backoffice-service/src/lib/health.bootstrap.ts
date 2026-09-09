@@ -2,6 +2,7 @@ import {
   healthInfrastructureRegistry,
   healthServiceRegistry,
 } from "./health-registry.js";
+import { env } from "../config/env.js";
 import { authServiceProbe } from "../probes/auth.service.probe.js";
 import { communityServiceProbe } from "../probes/community.service.probe.js";
 import { chatServiceProbe } from "../probes/chat.service.probe.js";
@@ -49,7 +50,12 @@ export function bootstrapHealthChecks(): void {
   healthInfrastructureRegistry.registerInfrastructure(rabbitmqInfraProbe);
   healthInfrastructureRegistry.registerInfrastructure(minioInfraProbe);
   healthInfrastructureRegistry.registerInfrastructure(mongodbInfraProbe);
-  healthInfrastructureRegistry.registerInfrastructure(clamavInfraProbe);
+  // ClamAV is optional infrastructure: it is off in environments that do not
+  // scan uploads. Registering it there would report a component nobody runs as
+  // Down forever, so skip the probe rather than emit a permanently red row.
+  if (env.CLAMAV_ENABLED) {
+    healthInfrastructureRegistry.registerInfrastructure(clamavInfraProbe);
+  }
   healthInfrastructureRegistry.registerInfrastructure(srsInfraProbe);
   healthInfrastructureRegistry.registerInfrastructure(livekitInfraProbe);
 }
