@@ -12,9 +12,11 @@
  * keep their own scopes — and blocks keep priority.
  */
 const findMany = jest.fn().mockResolvedValue([]);
+/** The exact-`@handle` head. Answers nothing here — these cases search a NAME. */
+const findFirst = jest.fn().mockResolvedValue(null);
 
 jest.mock("../../src/config/prisma.js", () => ({
-  prisma: { userProfile: { findMany } },
+  prisma: { userProfile: { findMany, findFirst } },
 }));
 jest.mock("../../src/repositories/friendship.repository.js", () => ({
   friendshipRepository: {
@@ -73,7 +75,8 @@ const searchWhere = () => findMany.mock.calls[0]![0].where;
 /** One search token and no cursor, so the discovery clause is the last AND. */
 const discoveryClause = () => searchWhere().AND.at(-1);
 
-const search = () => request(app).get("/api/v1/users/search?q=jane").set(auth());
+const search = () =>
+  request(app).get("/api/v1/users/search?q=jane").set(auth());
 
 beforeEach(() => {
   findMany.mockResolvedValue([]);

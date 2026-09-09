@@ -8,6 +8,7 @@ jest.mock("../../src/repositories/user-profile.repository.js", () => ({
   userProfileRepository: {
     findByUserIds: jest.fn(async () => []),
     findDiscoverableByUserIds: jest.fn(async () => []),
+    findDiscoverableByNormalizedUsername: jest.fn(async () => null),
     findUsersInList: jest.fn(async () => []),
     countUsersInList: jest.fn(async () => 0),
     findUsersNotInList: jest.fn(async () => []),
@@ -105,6 +106,7 @@ beforeEach(() => {
   recentRepo.findByUserId.mockResolvedValue([]);
   recentRepo.upsert.mockResolvedValue(undefined);
   pRepo.findDiscoverableByUserIds.mockResolvedValue([]);
+  pRepo.findDiscoverableByNormalizedUsername.mockResolvedValue(null);
   pRepo.findUsersInList.mockResolvedValue([]);
   pRepo.findUsersNotInList.mockResolvedValue([]);
   friendRepo.findAllBlocks.mockResolvedValue([]);
@@ -835,5 +837,109 @@ describe("GET /api/v1/users/search", () => {
 
     expect(JSON.stringify(res.body)).not.toContain("whoCanSendFriendRequests");
     expect(JSON.stringify(res.body)).not.toContain("NO_ONE");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Handle-first ranking
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("GET /api/v1/users/search — handle-first", () => {
+  const EXACT_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+  const search = (q: string) =>
+    request(app).get("/api/v1/users/search").query({ q }).set(auth());
+
+  it.each(["@Smiley_Creatures", "Smiley_Creatures", "smileycreatures"])(
+    "resolves %s to the same exact-handle row",
+    async (q) => {
+      pRepo.findDiscoverableByNormalizedUsername.mockResolvedValue(
+        profile(EXACT_ID, { username: "Smiley_Creatures" })
+      );
+
+      const res = await search(q);
+
+      expect(res.status).toBe(200);
+      // The `@` and the underscore are gone before the lookup — one normalized
+      // handle, one indexed equality, whichever way the reader typed it.
+      expect(pRepo.findDiscoverableByNormalizedUsername).toHaveBeenCalledWith(
+        "smileycreatures",
+        expect.anything(),
+        []
+      );
+      expect(res.body.data.other[0]).toMatchObject({
+        type: "USER",
+        userId: EXACT_ID,
+      });
+    }
+  );
+
+  it("leads the page with the exact handle and drops it from the keyset", async () => {
+    pRepo.findDiscoverableByNormalizedUsername.mockResolvedValue(
+      profile(EXACT_ID, { username: "cat", firstName: "Zara" })
+    );
+    // What the keyset would have served on its own: `firstName asc` puts every
+    // substring match ahead of "Zara", which is how an exact handle ends up
+    // pages deep.
+    pRepo.findUsersNotInList.mockResolvedValue([
+      profile(OTHER_ID, { username: "thecatlover", firstName: "Ann" }),
+    ]);
+
+    const res = await search("cat");
+
+    expect(
+      res.body.data.other.map((r: { userId: string }) => r.userId)
+    ).toEqual([EXACT_ID, OTHER_ID]);
+    // Served once. Left in the keyset it would come back when the walk reached
+    // "Zara", so the id leaves the page query on EVERY page.
+    expect(pRepo.findUsersNotInList.mock.calls[0]![0]).toContain(EXACT_ID);
+  });
+
+  it("never lets an exact handle bypass the self or block rules", async () => {
+    pRepo.findDiscoverableByNormalizedUsername.mockResolvedValue(
+      profile(TEST_USER_ID, { username: "me" })
+    );
+
+    const res = await search("me");
+
+    expect(res.body.data.other).toEqual([]);
+  });
+
+  it("orders a page handle-exact, prefix, then name-only", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([
+      profile(OTHER_ID, { username: "dogperson", firstName: "Aaa" }),
+      profile(PEER_ID, { username: "catloversonly", firstName: "Bbb" }),
+      profile(EXACT_ID, { username: "cat", firstName: "Ccc" }),
+    ]);
+
+    const res = await search("cat");
+
+    expect(
+      res.body.data.other.map((r: { userId: string }) => r.userId)
+    ).toEqual([
+      EXACT_ID,
+      PEER_ID,
+      // A name-only match still ranks — it just ranks last.
+      OTHER_ID,
+    ]);
+  });
+
+  it("keeps groups out of the people budget", async () => {
+    friendRepo.findAllForUser.mockResolvedValue([]);
+    grpc.listActiveGroups.mockResolvedValue([
+      groupSummary({ isActiveMember: true }),
+    ]);
+    pRepo.findUsersNotInList.mockResolvedValue(
+      Array.from({ length: 10 }, (_, i) =>
+        profile(`dddddddd-dddd-4ddd-8ddd-${String(i).padStart(12, "0")}`)
+      )
+    );
+
+    const res = await search("test");
+
+    // A full page of people used to swallow the whole group category.
+    expect(
+      res.body.data.chat.some((r: { type: string }) => r.type === "GROUP")
+    ).toBe(true);
   });
 });

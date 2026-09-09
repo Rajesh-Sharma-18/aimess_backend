@@ -17,6 +17,28 @@ export { tokenizeSearchQuery };
  */
 export { normalizeForSearch } from "@aimess/utils";
 
+import { rankByHandle } from "@aimess/utils";
+
+/**
+ * Handle-first reorder of ONE page of communities: exact `@handle` → handle
+ * prefix → handle substring → name-only. The page order underneath is `id desc`
+ * (newest first), which is a recency order, not a relevance one — without this
+ * `@catloversonly` ranks below any community merely created later whose NAME
+ * happens to contain the term.
+ *
+ * ponytail: page-local, like every other ranker here. Communities do not get
+ * user-service's exact-handle head query because a community handle is long and
+ * near-unique, so an exact match is essentially never buried behind a page of
+ * substring matches the way a short username can be. Add the head lookup if a
+ * short-handle collision ever proves otherwise.
+ */
+export function rankCommunitiesByHandle<T extends { handle: string }>(
+  rows: T[],
+  q: string | undefined
+): T[] {
+  return rankByHandle(rows, q, (row) => row.handle);
+}
+
 /**
  * Builds the Prisma `AND`-of-`OR` clauses backing community search by name
  * and/or handle.

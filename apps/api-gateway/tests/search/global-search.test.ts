@@ -29,6 +29,7 @@ const failure = (status: number, code?: string) =>
 const MESSAGE_CURSOR = "1782133107521_507f1f77bcf86cd799439011";
 const COMMUNITY_CURSOR = "68b0f1c2a4d3e5f6a7b8c9d0";
 const PEOPLE_CURSOR = "Sm9objBfdTE";
+const GROUP_CURSOR = "Z3JwXzk";
 
 const HITS = [
   {
@@ -64,17 +65,30 @@ const peopleEnvelope = (nextCursor: string | null) => ({
   nextCursor,
 });
 
-type LegName = "users" | "communities" | "messages";
+// user-service's group leg — its OWN endpoint and envelope, keyed `groups`,
+// not the `chat`/`other` buckets the people leg returns.
+const groupEnvelope = (nextCursor: string | null) => ({
+  groups: [
+    { type: "GROUP", roomId: "grp_9", name: "Johnson Fans", isActiveMember: true },
+  ],
+  hasMore: nextCursor !== null,
+  nextCursor,
+});
+
+type LegName = "users" | "groups" | "communities" | "messages";
 
 const routeFetch = (per: Partial<Record<LegName, Response>>) =>
   jest.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.includes("/users/search")) return per.users ?? json(peopleEnvelope(null));
+    // Checked FIRST: "/api/v1/users/search/groups" also contains "/users/search",
+    // so testing the people leg first would swallow every group call.
+    if (url.includes("/users/search/groups"))
+      return per.groups ?? json(groupEnvelope(null));
+    if (url.includes("/users/search"))
+      return per.users ?? json(peopleEnvelope(null));
     if (url.includes("/communities/mine"))
       return per.communities ?? json(communityEnvelope([], null));
-    return (
-      per.messages ?? json({ data: [], hasMore: false, nextCursor: null })
-    );
+    return per.messages ?? json({ data: [], hasMore: false, nextCursor: null });
   });
 
 const urlsOf = (spy: ReturnType<typeof routeFetch>) =>
@@ -124,8 +138,9 @@ describe("GET /api/v1/search", () => {
     expect(url).toContain("/api/chat/messages/search");
     // The whole page belongs to the one leg a single filter names.
     expect(paramOf(url as string, "limit")).toBe("20");
-    const headers = (spy.mock.calls[0]?.[1] as { headers: Record<string, string> })
-      .headers;
+    const headers = (
+      spy.mock.calls[0]?.[1] as { headers: Record<string, string> }
+    ).headers;
     expect(headers.authorization).toBe(AUTH);
     // Localized downstream strings came back in the default locale without this.
     expect(headers["x-lang"]).toBe("th");
@@ -155,12 +170,16 @@ describe("GET /api/v1/search", () => {
     expect(res.status).toBe(200);
     expect(spy).toHaveBeenCalledTimes(1);
     expect(res.body.data.data).toEqual([
-      { type: "community", id: "c1", community: { id: "c1", name: "Johns Club" } },
+      {
+        type: "community",
+        id: "c1",
+        community: { id: "c1", name: "Johns Club" },
+      },
     ]);
     expect(res.body.data.nextCursor).toBe(COMMUNITY_CURSOR);
   });
 
-  it("filter=people carries both buckets with the row verbatim", async () => {
+  it("filter=people carries the user rows verbatim and drops the groups", async () => {
     const spy = routeFetch({ users: json(peopleEnvelope(PEOPLE_CURSOR)) });
     global.fetch = spy as unknown as typeof fetch;
 
@@ -170,6 +189,8 @@ describe("GET /api/v1/search", () => {
 
     expect(res.status).toBe(200);
     expect(spy).toHaveBeenCalledTimes(1);
+    // The People tab is people. A GROUP row stamped `type: "person"` is a row no
+    // client can render as either kind.
     expect(res.body.data.data).toEqual([
       {
         type: "person",
@@ -177,14 +198,38 @@ describe("GET /api/v1/search", () => {
         bucket: "chat",
         person: { type: "USER", userId: "u1", username: "john" },
       },
-      {
-        type: "person",
-        id: "grp_9",
-        bucket: "other",
-        person: { type: "GROUP", roomId: "grp_9", name: "Johnson Fans" },
-      },
     ]);
     expect(res.body.data.nextCursor).toBe(PEOPLE_CURSOR);
+  });
+
+  it("filter=group calls the group leg and pages it, not the people leg", async () => {
+    const spy = routeFetch({ groups: json(groupEnvelope(GROUP_CURSOR)) });
+    global.fetch = spy as unknown as typeof fetch;
+
+    const res = await request(app)
+      .get(`${BASE}?q=john&filter=group`)
+      .set("authorization", AUTH);
+
+    expect(res.status).toBe(200);
+    expect(spy).toHaveBeenCalledTimes(1);
+    // Its OWN endpoint. Groups reaching search as a side effect of the people
+    // leg is what surfaced memberships the caller no longer holds.
+    expect(urlsOf(spy)[0]).toContain("/users/search/groups");
+    expect(res.body.data.data).toEqual([
+      {
+        type: "group",
+        id: "grp_9",
+        group: {
+          type: "GROUP",
+          roomId: "grp_9",
+          name: "Johnson Fans",
+          isActiveMember: true,
+        },
+      },
+    ]);
+    // A real cursor, so a group list actually walks past page 1.
+    expect(res.body.data.nextCursor).toBe(GROUP_CURSOR);
+    expect(res.body.data.hasMore).toBe(true);
   });
 
   it("filter=all splits the page by quota and emits sections in source order", async () => {
@@ -192,6 +237,7 @@ describe("GET /api/v1/search", () => {
       messages: json({ data: HITS, hasMore: false, nextCursor: null }),
       communities: json(communityEnvelope([{ id: "c1" }], null)),
       users: json(peopleEnvelope(null)),
+      groups: json(groupEnvelope(null)),
     });
     global.fetch = spy as unknown as typeof fetch;
 
@@ -200,7 +246,7 @@ describe("GET /api/v1/search", () => {
       .set("authorization", AUTH);
 
     expect(res.status).toBe(200);
-    expect(spy).toHaveBeenCalledTimes(3);
+    expect(spy).toHaveBeenCalledTimes(4);
 
     const byLeg = Object.fromEntries(
       urlsOf(spy).map((url) => [
@@ -208,18 +254,24 @@ describe("GET /api/v1/search", () => {
           ? "message"
           : url.includes("/communities/mine")
             ? "community"
-            : "people",
+            : url.includes("/users/search/groups")
+              ? "group"
+              : "people",
         url,
       ])
     );
-    // ceil(20/2), ceil(20/4), floor(20/4) — no category can consume the page.
+    // ceil(20/2) for messages; the other three share the half that is left, each
+    // with a floor of 4. No category can consume the page.
     expect(paramOf(byLeg.message as string, "limit")).toBe("10");
     expect(paramOf(byLeg.community as string, "limit")).toBe("5");
     expect(paramOf(byLeg.people as string, "limit")).toBe("5");
+    expect(paramOf(byLeg.group as string, "limit")).toBe("5");
 
+    // People before groups inside the people leg, so the two categories arrive
+    // contiguous rather than interleaved by whichever bucket they sat in.
     expect(
       res.body.data.data.map((item: { type: string }) => item.type)
-    ).toEqual(["message", "community", "person", "person"]);
+    ).toEqual(["message", "community", "person", "group"]);
     // Every leg exhausted → the scroll ends rather than re-serving page 1.
     expect(res.body.data.nextCursor).toBeNull();
     expect(res.body.data.hasMore).toBe(false);
@@ -230,6 +282,7 @@ describe("GET /api/v1/search", () => {
       messages: json({ data: HITS, hasMore: true, nextCursor: MESSAGE_CURSOR }),
       communities: json(communityEnvelope([{ id: "c1" }], COMMUNITY_CURSOR)),
       users: json(peopleEnvelope(PEOPLE_CURSOR)),
+      groups: json(groupEnvelope(GROUP_CURSOR)),
     }) as unknown as typeof fetch;
 
     const first = await request(app)
@@ -245,17 +298,34 @@ describe("GET /api/v1/search", () => {
       .set("authorization", AUTH);
 
     expect(second.status).toBe(200);
-    expect(spy).toHaveBeenCalledTimes(3);
+    expect(spy).toHaveBeenCalledTimes(4);
     const sent = urlsOf(spy);
-    expect(paramOf(sent.find((u) => u.includes("/messages/search")) as string, "cursor")).toBe(
-      MESSAGE_CURSOR
-    );
     expect(
-      paramOf(sent.find((u) => u.includes("/communities/mine")) as string, "cursor")
+      paramOf(
+        sent.find((u) => u.includes("/messages/search")) as string,
+        "cursor"
+      )
+    ).toBe(MESSAGE_CURSOR);
+    expect(
+      paramOf(
+        sent.find((u) => u.includes("/communities/mine")) as string,
+        "cursor"
+      )
     ).toBe(COMMUNITY_CURSOR);
-    expect(paramOf(sent.find((u) => u.includes("/users/search")) as string, "cursor")).toBe(
-      PEOPLE_CURSOR
-    );
+    expect(
+      paramOf(
+        sent.find(
+          (u) => u.includes("/users/search") && !u.includes("/groups")
+        ) as string,
+        "cursor"
+      )
+    ).toBe(PEOPLE_CURSOR);
+    expect(
+      paramOf(
+        sent.find((u) => u.includes("/users/search/groups")) as string,
+        "cursor"
+      )
+    ).toBe(GROUP_CURSOR);
   });
 
   it("keeps an exhausted leg exhausted instead of re-serving its first page", async () => {
@@ -263,6 +333,7 @@ describe("GET /api/v1/search", () => {
       messages: json({ data: HITS, hasMore: true, nextCursor: MESSAGE_CURSOR }),
       communities: json(communityEnvelope([], null)),
       users: json(peopleEnvelope(null)),
+      groups: json(groupEnvelope(null)),
     }) as unknown as typeof fetch;
 
     const first = await request(app)
@@ -276,7 +347,7 @@ describe("GET /api/v1/search", () => {
       .get(`${BASE}?q=john&cursor=${encodeURIComponent(cursor)}`)
       .set("authorization", AUTH);
 
-    // Only the message leg still has a cursor — the other two are not called again.
+    // Only the message leg still has a cursor — the other three are not called again.
     expect(spy).toHaveBeenCalledTimes(1);
     expect(urlsOf(spy)[0]).toContain("/messages/search");
   });
@@ -301,7 +372,9 @@ describe("GET /api/v1/search", () => {
         .map((item) => item.id);
 
     global.fetch = messagePager(failure(500)) as unknown as typeof fetch;
-    const first = await request(app).get(`${BASE}?q=john`).set("authorization", AUTH);
+    const first = await request(app)
+      .get(`${BASE}?q=john`)
+      .set("authorization", AUTH);
     expect(messageIds(first)).toEqual(["m1"]);
 
     // Mid-scroll blip: the message leg 500s on the page it was asked for.
@@ -314,7 +387,11 @@ describe("GET /api/v1/search", () => {
     expect(messageIds(second)).toEqual([]);
 
     const spy = messagePager(
-      json({ data: [{ ...HITS[0], messageId: "m2" }], hasMore: false, nextCursor: null })
+      json({
+        data: [{ ...HITS[0], messageId: "m2" }],
+        hasMore: false,
+        nextCursor: null,
+      })
     );
     global.fetch = spy as unknown as typeof fetch;
     const third = await request(app)
@@ -325,7 +402,10 @@ describe("GET /api/v1/search", () => {
 
     // The blip must not have rewound the leg: same cursor, and m1 never repeats.
     expect(
-      paramOf(urlsOf(spy).find((u) => u.includes("/messages/search")) as string, "cursor")
+      paramOf(
+        urlsOf(spy).find((u) => u.includes("/messages/search")) as string,
+        "cursor"
+      )
     ).toBe(MESSAGE_CURSOR);
     expect(messageIds(third)).toEqual(["m2"]);
   });
@@ -335,9 +415,9 @@ describe("GET /api/v1/search", () => {
     global.fetch = spy as unknown as typeof fetch;
 
     // Every leg skipped = no downstream call = the token is never verified, and
-    // this route only ever emits `nextCursor: null` once all three are done.
+    // this route only ever emits `nextCursor: null` once all four are done.
     const forged = Buffer.from(
-      JSON.stringify({ v: 1, m: null, c: null, p: null })
+      JSON.stringify({ v: 1, m: null, c: null, p: null, g: null })
     ).toString("base64url");
     const res = await request(app)
       .get(`${BASE}?q=john&cursor=${forged}`)
@@ -371,7 +451,9 @@ describe("GET /api/v1/search", () => {
   });
 
   it("surfaces a rejected token instead of reporting no results", async () => {
-    global.fetch = routeFetch({ users: failure(401) }) as unknown as typeof fetch;
+    global.fetch = routeFetch({
+      users: failure(401),
+    }) as unknown as typeof fetch;
     const res = await request(app)
       .get(`${BASE}?q=john`)
       .set("authorization", AUTH);
@@ -406,7 +488,7 @@ describe("GET /api/v1/search", () => {
     expect(res.status).toBe(200);
     expect(
       res.body.data.data.map((item: { type: string }) => item.type)
-    ).toEqual(["community", "person", "person"]);
+    ).toEqual(["community", "person", "group"]);
   });
 
   it("surfaces a 400 on the sentinel this route sends itself", async () => {
@@ -473,6 +555,10 @@ describe("GET /api/v1/search", () => {
   it("503s when every leg fails", async () => {
     global.fetch = routeFetch({
       users: failure(500),
+      // "Every leg" is four now. Leaving this one answering made the route
+      // return a 200 with a group section, which is the correct behaviour for
+      // three-down-one-up — just not what this case is about.
+      groups: failure(500),
       communities: failure(500),
       messages: failure(500),
     }) as unknown as typeof fetch;
