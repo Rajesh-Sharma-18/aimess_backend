@@ -98,6 +98,26 @@ describe("accountRestoreService.restore", () => {
     expect(audit.mock.calls[0][0].event).toBe("ACCOUNT_RESTORED");
   });
 
+  it("clears the ban flag BEFORE the DB write, so a Redis failure is retriable", async () => {
+    // The flag has no TTL. Clearing it after `restoreUser` committed meant a
+    // failed DEL left a restored user blocked by every service guard forever:
+    // the retry finds the account already ACTIVE, takes the re-drive path, and
+    // skips the clear. Failing first leaves the account deleted and the whole
+    // operation repeatable.
+    findUnique.mockResolvedValue({
+      id: USER_ID,
+      status: "PENDING_DELETION",
+      deletedAt: new Date("2026-08-13T10:00:00.000Z"),
+    });
+    clearBan.mockRejectedValueOnce(new Error("redis down"));
+
+    await expect(
+      accountRestoreService.restore({ userId: USER_ID })
+    ).rejects.toThrow("redis down");
+
+    expect(repo.restoreUser).not.toHaveBeenCalled();
+  });
+
   // The regression that makes a partial restore recoverable.
   it("re-drives an already-ACTIVE account: republishes without rewriting", async () => {
     findUnique.mockResolvedValue({

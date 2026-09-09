@@ -53,8 +53,13 @@ export const connectRedis = ({
       retryStrategy: (attempt: number) => Math.min(attempt * 200, 2000),
     } as const;
 
+    // `tls` has to be applied on BOTH paths. It was honoured only on host/port,
+    // so a service configured with a `redis://` URL and `REDIS_TLS=true` got a
+    // silent cleartext connection — the switch it set was simply dropped. A
+    // `rediss://` URL already implies TLS in ioredis; passing the option too is
+    // a no-op, so the two ways of asking for it now agree.
     redis = url
-      ? new Redis(url, { ...common })
+      ? new Redis(url, { ...common, ...(tls ? { tls: {} } : {}) })
       : new Redis({
           host,
           port,

@@ -146,6 +146,53 @@ describe("gateway env — production boot assertions", () => {
     expect(errors.join("\n")).toContain("ADMIN_IP_WHITELIST");
   });
 
+  it("refuses an admin IP allowlist whose entries are ALL malformed", async () => {
+    // The list is not empty, so the old length check passed it — but every
+    // entry is rejected by the parser, which then returns "no restriction" and
+    // opens the entire /admin surface. A misconfiguration must never be the
+    // thing that removes the control.
+    const { exited, errors } = await loadEnv({
+      ...VALID_PRODUCTION,
+      ADMIN_IP_WHITELIST: "203.0.113.0/33,not-an-ip",
+    });
+
+    expect(exited).toBe(true);
+    expect(errors.join("\n")).toContain("no usable entries");
+  });
+
+  it("boots when only SOME entries are malformed", async () => {
+    // A surviving rule still enforces a perimeter; the bad entry is logged and
+    // ignored, exactly as before.
+    const { exited } = await loadEnv({
+      ...VALID_PRODUCTION,
+      ADMIN_IP_WHITELIST: "203.0.113.10,not-an-ip",
+    });
+
+    expect(exited).toBe(false);
+  });
+
+  it("refuses an explicit 0.0.0.0/0 admin allowlist", async () => {
+    // Allow-all spelled out. Identical in effect to the empty list refused
+    // above, so it is refused for the same reason rather than being obeyed
+    // silently on the one perimeter where it cannot be intended.
+    const { exited, errors } = await loadEnv({
+      ...VALID_PRODUCTION,
+      ADMIN_IP_WHITELIST: "0.0.0.0/0",
+    });
+
+    expect(exited).toBe(true);
+    expect(errors.join("\n")).toContain("matches every address");
+  });
+
+  it("accepts a CIDR admin allowlist", async () => {
+    const { exited } = await loadEnv({
+      ...VALID_PRODUCTION,
+      ADMIN_IP_WHITELIST: "198.51.100.0/24,2001:db8::/32",
+    });
+
+    expect(exited).toBe(false);
+  });
+
   it("applies none of these assertions outside production", async () => {
     // Local development must stay frictionless: the same configuration that is
     // refused above is fine when NODE_ENV is not production.
@@ -154,7 +201,7 @@ describe("gateway env — production boot assertions", () => {
       NODE_ENV: "development",
       CORS_ALLOW_ANY_ORIGIN: "true",
       RATE_LIMIT_ENABLED: "false",
-      ADMIN_IP_WHITELIST: "",
+      ADMIN_IP_WHITELIST: "0.0.0.0/0,garbage",
       JWT_ADMIN_SECRET: "",
     });
 

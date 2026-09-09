@@ -169,6 +169,19 @@ export const accountBanService = {
       throw new NotFoundError("USER_NOT_FOUND");
     }
 
+    // The Redis flag is cleared BEFORE the status row, the mirror image of
+    // `apply`, and for the same fail-closed reason read the other way round.
+    //
+    // The flag has no TTL — it is permanent until this DEL — and every service
+    // guard reads it, so a DEL that fails after the row already said ACTIVE
+    // left a user who is unbanned in the database and blocked everywhere
+    // forever, with nothing to reconcile the two and no admin action able to
+    // retry it (a second `lift` sees an already-ACTIVE row). Clearing first
+    // makes the failure mode "still banned, lift again", which is the safe one:
+    // the row stays BANNED, so a stale clear cannot become a backdoor unban
+    // either, since login checks the status row independently.
+    await clearUserBanned(redis, input.userId);
+
     await prisma.authUser.update({
       where: { id: input.userId },
       data: {
@@ -178,8 +191,6 @@ export const accountBanService = {
         suspendedBy: null,
       },
     });
-
-    await clearUserBanned(redis, input.userId);
 
     void publishUserBanEvent(redis, input.userId, "user:unbanned", {
       type: "SYSTEM",

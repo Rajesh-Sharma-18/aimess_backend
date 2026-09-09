@@ -1,7 +1,11 @@
 import dotenv from "dotenv";
 import { z } from "zod";
 
-import { assertNoPlaceholderCredentials, expandFileSecrets } from "@aimess/utils";
+import {
+  adminIpWhitelistFailures,
+  assertNoPlaceholderCredentials,
+  expandFileSecrets,
+} from "@aimess/utils";
 
 dotenv.config();
 
@@ -231,11 +235,7 @@ function assertProductionInvariants(): void {
 
   const failures: string[] = [];
 
-  if (getAdminIpWhitelist().length === 0) {
-    failures.push(
-      "ADMIN_IP_WHITELIST is empty — an empty list means allow-all, so the admin API (including the unauthenticated login and password-reset endpoints) would be reachable from any address."
-    );
-  }
+  failures.push(...adminIpWhitelistFailures(getAdminIpWhitelist()));
 
   if (env.JWT_ADMIN_SECRET.length < 32) {
     failures.push(
