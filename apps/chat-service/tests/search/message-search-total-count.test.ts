@@ -26,7 +26,6 @@ import { PrivateMessageRepository } from "../../src/repositories/private-message
 import { GeneralRoomMessageRepository } from "../../src/repositories/general-room-message.repository.js";
 import {
   makeTimelinePrisma,
-  matchDoc,
   type EmuDoc,
 } from "../helpers/timeline-emulator.js";
 
@@ -238,6 +237,59 @@ describe("group in-chat search — totalCount matches the results", () => {
     expect(page.messages.map((m) => m.id)).toEqual([oid(2)]);
     expect(await repo.countSearchResults(ROOM, "hi", USER, cutoff)).toBe(1);
   });
+
+  // A member who left or was kicked keeps read access frozen at that instant.
+  // Search has to stop at the same place history does, on BOTH halves.
+  it("stops a left/kicked member's results and total at their read cutoff", async () => {
+    const repo = groupRepo([
+      { text: "hi while a member" },
+      { text: "hi after they left" },
+    ]);
+    const readCutoffBefore = new Date(T0 + 500); // between the two rows
+
+    const page = await repo.searchByText({
+      roomId: ROOM,
+      query: "hi",
+      limit: 30,
+      userId: USER,
+      readCutoffBefore,
+    });
+    expect(page.messages.map((m) => m.id)).toEqual([oid(1)]);
+    expect(
+      await repo.countSearchResults(
+        ROOM,
+        "hi",
+        USER,
+        undefined,
+        readCutoffBefore
+      )
+    ).toBe(1);
+  });
+
+  // A rejoin stacks both bounds: joined-at floor AND (for the prior session) a
+  // frozen ceiling. The window between them is all either half may report.
+  it("applies the join floor and the left ceiling together", async () => {
+    const repo = groupRepo([
+      { text: "hi before joining" },
+      { text: "hi while a member" },
+      { text: "hi after leaving" },
+    ]);
+    const cutoff = new Date(T0 + 500);
+    const readCutoffBefore = new Date(T0 + 1500);
+
+    const page = await repo.searchByText({
+      roomId: ROOM,
+      query: "hi",
+      limit: 30,
+      userId: USER,
+      cutoff,
+      readCutoffBefore,
+    });
+    expect(page.messages.map((m) => m.id)).toEqual([oid(2)]);
+    expect(
+      await repo.countSearchResults(ROOM, "hi", USER, cutoff, readCutoffBefore)
+    ).toBe(1);
+  });
 });
 
 // ── private ─────────────────────────────────────────────────────────────────
@@ -303,107 +355,216 @@ describe("private in-chat search — totalCount matches the results", () => {
 
 // ── community ───────────────────────────────────────────────────────────────
 
-type CommunityRow = { message: string; systemMessageType?: string };
+type CommunityRow = {
+  message: string;
+  systemMessageType?: string;
+  /** Delete-for-me by this viewer — the `deletedBy` array community uses. */
+  deletedForMe?: boolean;
+  /** Delete-for-everyone tombstone. */
+  deletedForAll?: boolean;
+  /** PERSONAL row targeted at someone else (e.g. another member's join line). */
+  visibleToUserId?: string;
+};
 
+/**
+ * Mirrors what community-service actually persists: an ORDINARY message carries
+ * NO `systemMessageType` / `visibleToUserId` key at all, rather than an explicit
+ * `null`. That difference is the whole bug this file now locks down — the count
+ * used to run through Prisma, whose `{ field: null }` matches an explicit null
+ * but NOT a missing field, so it counted zero rows in every real room while a
+ * fixture that wrote explicit nulls happily agreed with the result list.
+ */
 function communityDocs(rows: CommunityRow[]): EmuDoc[] {
   return rows.map((r, i) => ({
     _id: oid(i + 1),
     roomId: ROOM,
     createdAt: new Date(T0 + i * 1000),
     message: r.message,
-    deletedForAll: false,
-    deletedBy: [],
-    visibleToUserId: null,
-    systemMessageType: r.systemMessageType ?? null,
-    systemMetadata: null,
+    deletedForAll: r.deletedForAll ?? false,
+    deletedBy: r.deletedForMe ? [USER] : [],
+    ...(r.visibleToUserId ? { visibleToUserId: r.visibleToUserId } : {}),
+    ...(r.systemMessageType ? { systemMessageType: r.systemMessageType } : {}),
     sentBy: "someone",
   }));
 }
 
-/**
- * Community counts through Prisma's `findMany` rather than `aggregateRaw` (it
- * needs whole rows for the in-memory visibility filter), so the emulator's
- * raw-pipeline `findMany` cannot serve it alone. This adds the handful of Prisma
- * `where` operators the count actually emits.
- */
-function communityPrisma(docs: EmuDoc[]) {
-  const raw = makeTimelinePrisma("generalRoomMessage", docs).generalRoomMessage;
-  const findMany = jest.fn(async (args: Record<string, unknown>) => {
-    const where = (args.where ?? {}) as Record<string, never>;
-    if ((where as { id?: { in?: string[] } }).id?.in) {
-      return raw.findMany(args as never);
-    }
-    return docs
-      .filter((d) =>
-        Object.entries(where).every(([key, cond]) => {
-          const c = cond as { contains?: string; lte?: Date } | null;
-          if (key === "message" && c?.contains !== undefined) {
-            return String(d.message ?? "")
-              .toLowerCase()
-              .includes(c.contains.toLowerCase());
-          }
-          if (key === "createdAt" && c?.lte !== undefined) {
-            return (d.createdAt as Date) <= c.lte;
-          }
-          return matchDoc(d, { [key]: cond });
-        })
-      )
-      .map((d) => ({ ...d, id: d._id }));
+function communityRepo(rows: CommunityRow[]) {
+  return new GeneralRoomMessageRepository(
+    makeTimelinePrisma("generalRoomMessage", communityDocs(rows)) as never
+  );
+}
+
+/** One search plus its counter, the pair the controller answers with. */
+async function searchCommunity(
+  rows: CommunityRow[],
+  query: string,
+  limit = 30
+) {
+  const repo = communityRepo(rows);
+  const page = await repo.searchByText({
+    roomId: ROOM,
+    query,
+    limit,
+    userId: USER,
   });
-  return { generalRoomMessage: { ...raw, findMany } };
+  const totalCount = await repo.countSearchResults(ROOM, query, USER);
+  return { repo, page, totalCount };
 }
 
 describe("community in-chat search — totalCount matches the results", () => {
   it("leaves community system lines out of results and total", async () => {
-    const repo = new GeneralRoomMessageRepository(
-      communityPrisma(
-        communityDocs([
-          { message: "Hi" },
-          {
-            message: "Abhishek joined the community",
-            systemMessageType: "COMMUNITY_JOINED",
-          },
-          { message: "unrelated" },
-        ])
-      ) as never
+    const { page, totalCount } = await searchCommunity(
+      [
+        { message: "Hi" },
+        {
+          message: "Abhishek joined the community",
+          systemMessageType: "COMMUNITY_JOINED",
+        },
+        { message: "unrelated" },
+      ],
+      "hi"
     );
 
-    const page = await repo.searchByText({
-      roomId: ROOM,
-      query: "hi",
-      limit: 30,
-      userId: USER,
-    });
     expect(page.messages.map((m) => m.id)).toEqual([oid(1)]);
-    expect(await repo.countSearchResults(ROOM, "hi", USER)).toBe(1);
+    expect(totalCount).toBe(1);
   });
 
-  it("counts every genuine match and nothing else", async () => {
-    const repo = new GeneralRoomMessageRepository(
-      communityPrisma(
-        communityDocs([
-          { message: "hi" },
-          { message: "Hi there" },
-          { message: "saying hi again" },
-          { message: "unrelated" },
-          {
-            message: "Asha joined the community",
-            systemMessageType: "COMMUNITY_JOINED",
-          },
-        ])
-      ) as never
+  // The exact production reproduction: ordinary rows have no
+  // `systemMessageType` key, and the counter reported 0 beside 3 results.
+  it("counts rows that carry no systemMessageType field at all", async () => {
+    const { page, totalCount } = await searchCommunity(
+      [
+        { message: "hi" },
+        { message: "Hi there" },
+        { message: "saying hi again" },
+        { message: "unrelated" },
+        {
+          message: "Asha joined the community",
+          systemMessageType: "COMMUNITY_JOINED",
+        },
+      ],
+      "hi"
     );
+
+    expect(page.messages).toHaveLength(3);
+    expect(totalCount).toBe(3);
+  });
+
+  it("reports an empty result set as 0", async () => {
+    const { page, totalCount } = await searchCommunity(
+      [{ message: "hi" }],
+      "nonexistentkeyword"
+    );
+
+    expect(page.messages).toEqual([]);
+    expect(page.hasMore).toBe(false);
+    expect(totalCount).toBe(0);
+  });
+
+  it("excludes a message the caller deleted for themselves from both halves", async () => {
+    const { page, totalCount } = await searchCommunity(
+      [{ message: "hi one" }, { message: "hi two", deletedForMe: true }],
+      "hi"
+    );
+
+    expect(page.messages.map((m) => m.id)).toEqual([oid(1)]);
+    expect(totalCount).toBe(1);
+  });
+
+  it("hides a delete-for-everyone row from both halves", async () => {
+    const { page, totalCount } = await searchCommunity(
+      [{ message: "hi one" }, { message: "hi two", deletedForAll: true }],
+      "hi"
+    );
+
+    expect(page.messages.map((m) => m.id)).toEqual([oid(1)]);
+    expect(totalCount).toBe(1);
+  });
+
+  it("never surfaces a row targeted at ANOTHER member", async () => {
+    const { page, totalCount } = await searchCommunity(
+      [
+        { message: "hi everyone" },
+        { message: "hi, only Asha sees this", visibleToUserId: "user-2" },
+      ],
+      "hi"
+    );
+
+    expect(page.messages.map((m) => m.id)).toEqual([oid(1)]);
+    expect(totalCount).toBe(1);
+  });
+
+  it("caps a BANNED viewer's results AND total at their ban instant", async () => {
+    const repo = communityRepo([
+      { message: "hi before the ban" },
+      { message: "hi after the ban" },
+    ]);
+    const readCutoff = new Date(T0 + 500); // between the two rows
 
     const page = await repo.searchByText({
       roomId: ROOM,
       query: "hi",
       limit: 30,
       userId: USER,
+      readCutoff,
     });
-    expect(page.messages).toHaveLength(3);
-    expect(await repo.countSearchResults(ROOM, "hi", USER)).toBe(3);
-    expect(
-      await repo.countSearchResults(ROOM, "nonexistentkeyword", USER)
-    ).toBe(0);
+    expect(page.messages.map((m) => m.id)).toEqual([oid(1)]);
+    expect(await repo.countSearchResults(ROOM, "hi", USER, readCutoff)).toBe(1);
+  });
+
+  it("holds the total steady across pages and never pages past the matches", async () => {
+    const rows: CommunityRow[] = [];
+    for (let i = 0; i < 35; i += 1) rows.push({ message: `hi ${i}` });
+    rows.push({
+      message: "Asha joined the community",
+      systemMessageType: "COMMUNITY_JOINED",
+    });
+    rows.push({ message: "hi hidden", deletedForMe: true });
+    const repo = communityRepo(rows);
+
+    const total = await repo.countSearchResults(ROOM, "hi", USER);
+    expect(total).toBe(35);
+
+    const first = await repo.searchByText({
+      roomId: ROOM,
+      query: "hi",
+      limit: 30,
+      userId: USER,
+    });
+    expect(first.messages).toHaveLength(30);
+    expect(first.hasMore).toBe(true);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await repo.searchByText({
+      roomId: ROOM,
+      query: "hi",
+      limit: 30,
+      userId: USER,
+      cursor: first.nextCursor,
+    });
+    expect(second.messages).toHaveLength(5);
+    expect(second.hasMore).toBe(false);
+
+    const seen = [...first.messages, ...second.messages].map((m) => m.id);
+    expect(new Set(seen).size).toBe(35);
+    // Nothing hidden ever reached a page, so the total still describes the set.
+    expect(await repo.countSearchResults(ROOM, "hi", USER)).toBe(total);
+  });
+
+  // A second session/reload is just the same call again: same user, same rows.
+  it("answers a repeated identical search with the same set and total", async () => {
+    const rows: CommunityRow[] = [
+      { message: "hi one" },
+      { message: "hi two", deletedForMe: true },
+      { message: "hi three" },
+    ];
+    const a = await searchCommunity(rows, "hi");
+    const b = await searchCommunity(rows, "hi");
+
+    expect(b.page.messages.map((m) => m.id)).toEqual(
+      a.page.messages.map((m) => m.id)
+    );
+    expect(b.totalCount).toBe(a.totalCount);
+    expect(b.totalCount).toBe(2);
   });
 });

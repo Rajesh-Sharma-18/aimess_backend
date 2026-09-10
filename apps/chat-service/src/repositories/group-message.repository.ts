@@ -886,21 +886,35 @@ export class GroupMessageRepository {
    * the results. Same rule the cross-room search already applies — see
    * `message-search.repository.ts`. `null` matches a missing field too, so rows
    * written before the column existed are unaffected.
+   *
+   * The two `createdAt` bounds are the SAME pair {@link timelineMatch} applies,
+   * so a search window can never be wider than the history window: `cutoff` is
+   * the lower one (join / clear-chat), `readCutoffBefore` the upper one a
+   * LEFT/KICKED member's read access froze at.
    */
   private searchMatch(
     roomId: string,
     userId: string,
-    cutoff?: Date
+    cutoff?: Date,
+    readCutoffBefore?: Date
   ): Record<string, unknown> {
-    return {
+    const core = {
       roomId,
       isDeleted: false,
       deletedForUserIds: { $ne: userId },
       systemEvent: null,
-      ...(cutoff
-        ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
-        : {}),
     };
+    const bounds: Record<string, unknown>[] = [];
+    if (cutoff) {
+      bounds.push({ createdAt: { $gt: { $date: cutoff.toISOString() } } });
+    }
+    if (readCutoffBefore) {
+      bounds.push({
+        createdAt: { $lte: { $date: readCutoffBefore.toISOString() } },
+      });
+    }
+    if (bounds.length === 0) return core;
+    return { $and: [core, ...bounds] };
   }
 
   async searchByText(params: {
@@ -910,6 +924,8 @@ export class GroupMessageRepository {
     userId: string;
     cursor?: string | null;
     cutoff?: Date;
+    /** A member who left/was kicked searches only up to this instant. */
+    readCutoffBefore?: Date;
   }): Promise<{
     messages: GroupMessage[];
     scores: Map<string, number>;
@@ -917,7 +933,12 @@ export class GroupMessageRepository {
     nextCursor: string | null;
   }> {
     const pipeline = buildTextSearchPipeline({
-      match: this.searchMatch(params.roomId, params.userId, params.cutoff),
+      match: this.searchMatch(
+        params.roomId,
+        params.userId,
+        params.cutoff,
+        params.readCutoffBefore
+      ),
       field: "content.text",
       query: params.query,
       cursor: parseSearchCursor(params.cursor),
@@ -1088,11 +1109,13 @@ export class GroupMessageRepository {
     roomId: string,
     query: string,
     userId: string,
-    cutoff?: Date
+    cutoff?: Date,
+    /** A member who left/was kicked counts only up to this instant. */
+    readCutoffBefore?: Date
   ): Promise<number> {
     const result = (await this.prisma.groupMessage.aggregateRaw({
       pipeline: buildTextSearchCountPipeline({
-        match: this.searchMatch(roomId, userId, cutoff),
+        match: this.searchMatch(roomId, userId, cutoff, readCutoffBefore),
         field: "content.text",
         query,
       }) as unknown as Prisma.InputJsonValue[],

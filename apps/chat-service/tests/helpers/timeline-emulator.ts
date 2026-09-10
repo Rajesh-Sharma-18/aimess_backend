@@ -9,11 +9,12 @@
  * Supported $match operators: plain equality (roomId/isDeleted), equality to
  * `null` (which, as in real Mongo, also matches a MISSING field — that is what
  * lets `systemEvent: null` exclude system rows without a migration), `$ne` (array
- * membership for deletedForUserIds, or scalar), `$regex`/`$options` (the
+ * membership for deletedForUserIds, or scalar), `$in` (a `null` member of which
+ * matches a missing field too, as in real Mongo), `$regex`/`$options` (the
  * case-insensitive substring match message search runs on), dotted
  * `deletedFor.<user>` with `$exists:false` (per-user delete-for-me MAP),
  * `createdAt` range ($lt/$lte/$gt/$gte with {$date}) and equality ({$date}),
- * `_id` range ($lt/$gt with {$oid}), and `$or`. Pipeline stages: $match,
+ * `_id` range ($lt/$gt with {$oid}), `$or` and `$and`. Pipeline stages: $match,
  * $sort {createdAt,_id}, $limit, $count, and $project (only its `createdAt` key
  * is honoured — search reads the field back to build its keyset cursor).
  */
@@ -44,6 +45,13 @@ function dateMs(v: { $date: string }): number {
 function matchField(doc: EmuDoc, key: string, cond: unknown): boolean {
   if (key === "$or") {
     return (cond as Array<Record<string, unknown>>).some((sub) =>
+      matchDoc(doc, sub)
+    );
+  }
+  // `$and` is how a match carries TWO bounds on one field (a join/clear floor
+  // and a left/kicked ceiling on `createdAt`), which a plain object cannot hold.
+  if (key === "$and") {
+    return (cond as Array<Record<string, unknown>>).every((sub) =>
       matchDoc(doc, sub)
     );
   }
@@ -79,6 +87,14 @@ function matchField(doc: EmuDoc, key: string, cond: unknown): boolean {
   }
   if ("$ne" in c) {
     return Array.isArray(value) ? !value.includes(c.$ne) : value !== c.$ne;
+  }
+  // As in real Mongo, a `null` entry inside `$in` also matches a MISSING field —
+  // that is what lets `visibleToUserId: { $in: [null, userId] }` keep ordinary
+  // (untargeted) rows, which carry no such field at all.
+  if ("$in" in c) {
+    return (c.$in as unknown[]).some((want) =>
+      want === null ? value === null || value === undefined : value === want
+    );
   }
   // Range operators against createdAt (date) or _id (oid string).
   const cmp = (op: string, against: unknown): boolean => {

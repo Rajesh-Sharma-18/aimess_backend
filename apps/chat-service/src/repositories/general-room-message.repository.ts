@@ -24,7 +24,7 @@ import {
 } from "../lib/quote-refresh.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import {
-  buildSearchCursor,
+  buildTextSearchCountPipeline,
   buildTextSearchPipeline,
   orderByIds,
   parseSearchCursor,
@@ -117,8 +117,6 @@ function isLatestPersonalJoinSessionForUser(
   }
   return true;
 }
-
-const SEARCH_VISIBILITY_ROUNDS = 3;
 
 export class GeneralRoomMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -1238,12 +1236,60 @@ export class GeneralRoomMessageRepository {
     return stale.map((m) => m.id);
   }
 
+  /**
+   * The ONE per-viewer predicate in-chat community search runs on, shared by
+   * {@link searchByText} and {@link countSearchResults} so the result list and
+   * the "n of TOTAL" counter can never answer different questions.
+   *
+   * Every clause is expressed in raw Mongo, because that is the only dialect in
+   * which both halves can share one object — and the count's old hand-written
+   * Prisma `where` is exactly what drifted: Prisma's `{ field: null }` does NOT
+   * match a field-absent document (Mongo's does), and ordinary community
+   * messages carry no `systemMessageType` at all, so the count matched NOTHING
+   * and every community search reported `totalCount: 0` beside a full page of
+   * results.
+   *
+   *  - `deletedForAll: false`        — tombstones are nobody's hit.
+   *  - `deletedBy: { $ne }`          — messages this viewer deleted for themselves.
+   *  - `visibleToUserId: $in[null,u]` — PERSONAL targeting; the `null` entry
+   *      matches field-absent (ordinary) rows natively, which is why this can be
+   *      a DB clause rather than the in-memory `isVisibleToUser` pass it replaces.
+   *  - `systemMessageType: null`     — SYSTEM rows are room events, not anybody's
+   *      message, and the stored English third-person line is re-rendered per
+   *      viewer and locale on the read path, so the text being matched is not the
+   *      text anyone sees. Same rule the cross-room search applies. Excluding all
+   *      of them also makes `isVisibleToUser`'s hidden-system and personal-join
+   *      branches moot here — the only rule left for a non-system row is the
+   *      `visibleToUserId` clause above.
+   *  - `createdAt <= readCutoff`     — a BANNED viewer reads pre-ban history only.
+   *
+   * `roomId` is an ObjectId column, so it is matched as `{ $oid }` — a plain
+   * string never matches a BSON ObjectId in aggregateRaw, and that silently made
+   * every community message search return 0 rows. Private/group search pass a
+   * plain string because their `roomId` is a plain String column.
+   */
+  private searchMatch(
+    roomId: string,
+    userId: string,
+    readCutoff?: Date | null
+  ): Record<string, unknown> {
+    return {
+      roomId: { $oid: roomId },
+      deletedForAll: false,
+      deletedBy: { $ne: userId },
+      visibleToUserId: { $in: [null, userId] },
+      systemMessageType: null,
+      ...(readCutoff
+        ? { createdAt: { $lte: { $date: readCutoff.toISOString() } } }
+        : {}),
+    };
+  }
+
   async searchByText(params: {
     roomId: string;
     query: string;
     limit: number;
     userId: string;
-    viewerIsActiveMember?: boolean;
     cursor?: string | null;
     readCutoff?: Date | null;
   }): Promise<{
@@ -1252,117 +1298,61 @@ export class GeneralRoomMessageRepository {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    const activeMember = params.viewerIsActiveMember ?? true;
-    const collected: GeneralRoomMessage[] = [];
-    const scores = new Map<string, number>();
-    let cursor = params.cursor ?? null;
-    let hasMore = false;
-    let nextCursor: string | null = null;
+    // Every visibility rule now lives in the `$match`, so the page comes back
+    // exactly `limit` visible rows and `hasMore`/`nextCursor` are the keyset's
+    // own. The old shape filtered deleted-for-me and personal rows in memory
+    // AFTER the DB `$limit`, which needed a re-query loop to refill the page and
+    // let the page and the total disagree about what "visible" means.
+    const pipeline = buildTextSearchPipeline({
+      match: this.searchMatch(params.roomId, params.userId, params.readCutoff),
+      field: "message",
+      query: params.query,
+      cursor: parseSearchCursor(params.cursor),
+      limit: params.limit,
+    });
 
-    for (let round = 0; round < SEARCH_VISIBILITY_ROUNDS; round += 1) {
-      const pipeline = buildTextSearchPipeline({
-        match: {
-          // `roomId` is an ObjectId column, so it must be matched as `{ $oid }`
-          // — a plain string never matches a BSON ObjectId in aggregateRaw, and
-          // that silently made every community message search return 0 rows.
-          // Private/group search pass a plain string because their `roomId` is
-          // a plain String column.
-          roomId: { $oid: params.roomId },
-          deletedForAll: false,
-          // SYSTEM rows are room events, not anybody's message, and the stored
-          // line is re-rendered per viewer and locale on the read path — so the
-          // text being matched is not the text anyone sees. Left in, a member
-          // whose NAME contained the query dragged every lifecycle line they
-          // appear in into the results and inflated the "n of TOTAL" counter.
-          // Same rule the cross-room search already applies, and it must stay
-          // in lockstep with countSearchResults below. `null` matches a missing
-          // field too, so rows predating the column are unaffected.
-          systemMessageType: null,
-          ...(params.readCutoff
-            ? {
-                createdAt: { $lte: { $date: params.readCutoff.toISOString() } },
-              }
-            : {}),
-        },
-        field: "message",
-        query: params.query,
-        cursor: parseSearchCursor(cursor),
-        limit: params.limit,
-      });
-
-      const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
-        pipeline: pipeline as unknown as Prisma.InputJsonValue[],
-      })) as unknown as Parameters<typeof readTextSearchPage>[0];
-      const page = readTextSearchPage(raw ?? [], params.limit);
-      hasMore = page.hasMore;
-      nextCursor = page.nextCursor;
-      if (!page.ids.length) break;
-
-      const rows = await this.prisma.generalRoomMessage.findMany({
-        where: { id: { in: page.ids } },
-      });
-      const visible = orderByIds(rows, page.ids).filter((msg) => {
-        const deletedBy = (msg.deletedBy ?? []) as string[];
-        return (
-          !deletedBy.includes(params.userId) &&
-          isVisibleToUser(msg, params.userId, activeMember)
-        );
-      });
-      for (const msg of visible) {
-        if (collected.length >= params.limit) break;
-        collected.push(msg);
-        const score = page.scores.get(msg.id);
-        if (score !== undefined) scores.set(msg.id, score);
-      }
-      if (collected.length >= params.limit || !page.hasMore) break;
-      cursor = page.nextCursor;
-      if (!cursor) break;
+    const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: pipeline as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Parameters<typeof readTextSearchPage>[0];
+    const page = readTextSearchPage(raw ?? [], params.limit);
+    if (!page.ids.length) {
+      return {
+        messages: [],
+        scores: page.scores,
+        hasMore: false,
+        nextCursor: null,
+      };
     }
 
-    if (collected.length >= params.limit && collected.length > 0) {
-      const last = collected[collected.length - 1]!;
-      nextCursor = buildSearchCursor(last.createdAt, last.id);
-      hasMore = true;
-    }
-
-    return { messages: collected, scores, hasMore, nextCursor };
+    const rows = await this.prisma.generalRoomMessage.findMany({
+      where: { id: { in: page.ids } },
+    });
+    return {
+      messages: orderByIds(rows, page.ids),
+      scores: page.scores,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor,
+    };
   }
 
+  /** Total matches for the in-chat "n of TOTAL" counter. Shares
+   *  {@link searchMatch} and the regex builder with {@link searchByText}, so the
+   *  total is exactly the number of rows a caller could page to. */
   async countSearchResults(
     roomId: string,
     query: string,
     userId: string,
-    viewerIsActiveMember = true,
     /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
     readCutoff?: Date | null
   ): Promise<number> {
-    // Mirrors searchByText's per-user filter (deletedBy/isVisibleToUser) so the
-    // reported total — and therefore totalPage/hasMore — matches what the user
-    // actually sees, instead of a raw room-wide match count.
-    const messages = await this.prisma.generalRoomMessage.findMany({
-      where: {
-        roomId,
-        deletedForAll: false,
-        // Must match searchByText's exclusion exactly — see the note there.
-        systemMessageType: null,
-        message: { contains: query, mode: "insensitive" },
-        ...(readCutoff ? { createdAt: { lte: readCutoff } } : {}),
-      },
-      select: {
-        deletedBy: true,
-        visibleToUserId: true,
-        systemMessageType: true,
-        systemMetadata: true,
-        sentBy: true,
-      },
-    });
-    return messages.filter((msg) => {
-      const deletedBy = (msg.deletedBy ?? []) as string[];
-      return (
-        !deletedBy.includes(userId) &&
-        isVisibleToUser(msg, userId, viewerIsActiveMember)
-      );
-    }).length;
+    const result = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: buildTextSearchCountPipeline({
+        match: this.searchMatch(roomId, userId, readCutoff),
+        field: "message",
+        query,
+      }) as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ total: number }>;
+    return result[0]?.total ?? 0;
   }
 
   async countByRoom(roomId: string): Promise<number> {
