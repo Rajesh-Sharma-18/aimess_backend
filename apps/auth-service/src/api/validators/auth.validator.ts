@@ -133,8 +133,16 @@ export type RegisterInput = z.infer<typeof registerSchema>;
  * before the rule with a shorter password — they would get a validation error
  * instead of a login. This only has to keep non-strings and absurd lengths away
  * from the repository and bcrypt; whether the value is correct is bcrypt's job.
+ *
+ * Both bounds carry their own sentence for the same reason every other field
+ * here does: the client shows `message` verbatim, so a bare `.max(128)` reached
+ * the sign-in form as zod's own "Too big: expected string to have <=128
+ * characters".
  */
-export const existingPasswordSchema = z.string().min(1).max(128);
+export const existingPasswordSchema = z
+  .string()
+  .min(1, "Please enter your password")
+  .max(128, "Password is too long");
 
 /** Alias kept for the login schema below, which reads better with this name. */
 const loginPasswordSchema = existingPasswordSchema;

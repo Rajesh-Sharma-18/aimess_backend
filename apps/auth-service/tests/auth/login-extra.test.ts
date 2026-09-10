@@ -232,4 +232,18 @@ describe("POST /api/auth/login (extra branches)", () => {
 
     expect(res.status).not.toBe(400);
   });
+
+  // The sign-in form renders `message` verbatim, so an over-long password used
+  // to reach the user as zod's own "Too big: expected string to have <=128
+  // characters". Every other field on this schema already carries its own
+  // sentence; this one now does too.
+  it("400s on an over-long password with a sentence, not zod's default", async () => {
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "johndoe", password: "a".repeat(129) });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("VALIDATION_FAILED");
+    expect(res.body.message).toBe("Password is too long");
+  });
 });
