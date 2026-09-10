@@ -1269,6 +1269,15 @@ export class GeneralRoomMessageRepository {
           // a plain String column.
           roomId: { $oid: params.roomId },
           deletedForAll: false,
+          // SYSTEM rows are room events, not anybody's message, and the stored
+          // line is re-rendered per viewer and locale on the read path — so the
+          // text being matched is not the text anyone sees. Left in, a member
+          // whose NAME contained the query dragged every lifecycle line they
+          // appear in into the results and inflated the "n of TOTAL" counter.
+          // Same rule the cross-room search already applies, and it must stay
+          // in lockstep with countSearchResults below. `null` matches a missing
+          // field too, so rows predating the column are unaffected.
+          systemMessageType: null,
           ...(params.readCutoff
             ? {
                 createdAt: { $lte: { $date: params.readCutoff.toISOString() } },
@@ -1334,6 +1343,8 @@ export class GeneralRoomMessageRepository {
       where: {
         roomId,
         deletedForAll: false,
+        // Must match searchByText's exclusion exactly — see the note there.
+        systemMessageType: null,
         message: { contains: query, mode: "insensitive" },
         ...(readCutoff ? { createdAt: { lte: readCutoff } } : {}),
       },

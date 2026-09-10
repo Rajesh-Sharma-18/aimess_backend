@@ -6,11 +6,16 @@
  * repository code can be exercised against an in-memory dataset and a full
  * history traversal can be proven (every message reachable exactly once).
  *
- * Supported $match operators: plain equality (roomId/isDeleted), `$ne` (array
- * membership for deletedForUserIds, or scalar), dotted `deletedFor.<user>` with
- * `$exists:false` (per-user delete-for-me MAP), `createdAt` range ($lt/$lte/$gt/
- * $gte with {$date}) and equality ({$date}), `_id` range ($lt/$gt with {$oid}),
- * and `$or`. Pipeline stages: $match, $sort {createdAt,_id}, $limit, $count.
+ * Supported $match operators: plain equality (roomId/isDeleted), equality to
+ * `null` (which, as in real Mongo, also matches a MISSING field — that is what
+ * lets `systemEvent: null` exclude system rows without a migration), `$ne` (array
+ * membership for deletedForUserIds, or scalar), `$regex`/`$options` (the
+ * case-insensitive substring match message search runs on), dotted
+ * `deletedFor.<user>` with `$exists:false` (per-user delete-for-me MAP),
+ * `createdAt` range ($lt/$lte/$gt/$gte with {$date}) and equality ({$date}),
+ * `_id` range ($lt/$gt with {$oid}), and `$or`. Pipeline stages: $match,
+ * $sort {createdAt,_id}, $limit, $count, and $project (only its `createdAt` key
+ * is honoured — search reads the field back to build its keyset cursor).
  */
 
 export type EmuDoc = {
@@ -47,8 +52,11 @@ function matchField(doc: EmuDoc, key: string, cond: unknown): boolean {
     ? getPath(doc, key)
     : (doc as Record<string, unknown>)[key];
 
-  // Plain scalar equality.
-  if (cond === null || typeof cond !== "object") return value === cond;
+  // Plain scalar equality. Mongo treats a MISSING field as equal to null, and
+  // message search leans on that: `systemEvent: null` must also exclude rows
+  // written before the column existed.
+  if (cond === null) return value === null || value === undefined;
+  if (typeof cond !== "object") return value === cond;
 
   const c = cond as Record<string, unknown>;
 
@@ -59,6 +67,12 @@ function matchField(doc: EmuDoc, key: string, cond: unknown): boolean {
   if ("$oid" in c) return value === (c as { $oid: string }).$oid;
 
   // Operator object.
+  if ("$regex" in c) {
+    return new RegExp(
+      c.$regex as string,
+      (c.$options as string | undefined) ?? ""
+    ).test(String(value ?? ""));
+  }
   if ("$exists" in c) {
     const exists = value !== undefined;
     return exists === (c.$exists as boolean);
@@ -105,8 +119,14 @@ export function matchDoc(doc: EmuDoc, match: Record<string, unknown>): boolean {
  */
 export function makeTimelinePrisma(model: string, docs: EmuDoc[]) {
   const aggregateRaw = jest.fn(async ({ pipeline }: { pipeline: any[] }) => {
-    const match = pipeline.find((s) => "$match" in s)?.$match ?? {};
-    let rows = docs.filter((d) => matchDoc(d, match));
+    // EVERY $match stage, not just the first: search emits the keyset bound as
+    // its own stage so a caller-supplied `createdAt` cutoff in the base match is
+    // not silently overwritten. Honouring only the first would page from the top
+    // forever.
+    const matches = pipeline
+      .filter((s) => "$match" in s)
+      .map((s) => s.$match as Record<string, unknown>);
+    let rows = docs.filter((d) => matches.every((m) => matchDoc(d, m)));
 
     if (pipeline.find((s) => "$count" in s)) {
       return rows.length ? [{ total: rows.length }] : [];
@@ -131,7 +151,19 @@ export function makeTimelinePrisma(model: string, docs: EmuDoc[]) {
       | number
       | undefined;
     if (limit != null) rows = rows.slice(0, limit);
-    return rows.map((d) => ({ _id: { $oid: d._id } }));
+    // Search projects createdAt and reads it back to build "<ms>_<id>"; the
+    // timeline pipelines project neither, so they still see just the _id.
+    const project = pipeline.find((s) => "$project" in s)?.$project as
+      | Record<string, unknown>
+      | undefined;
+    return rows.map((d) =>
+      project?.createdAt
+        ? {
+            _id: { $oid: d._id },
+            createdAt: { $date: d.createdAt.toISOString() },
+          }
+        : { _id: { $oid: d._id } }
+    );
   });
 
   const findMany = jest.fn(
