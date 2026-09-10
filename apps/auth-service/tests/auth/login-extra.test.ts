@@ -83,6 +83,29 @@ describe("POST /api/auth/login (extra branches)", () => {
     expect(repo.findByAccountForLogin).not.toHaveBeenCalled();
   });
 
+  // Every path that STORES an email lowercases it, and the lookup is an exact
+  // -match unique index — so a user who linked name@example.com and typed it back
+  // with the capitals their keyboard offered was told the credentials were wrong.
+  it("matches a linked email case-insensitively", async () => {
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "  John@Example.COM ", password: PASSWORD });
+
+    expect(res.status).toBe(200);
+    expect(repo.findByEmailForLogin).toHaveBeenCalledWith("john@example.com");
+  });
+
+  // The counterpart: account names are stored with the case the user chose, so
+  // folding them here would break username login for every mixed-case handle.
+  it("preserves the case of an account-name identifier", async () => {
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "  JohnDoe ", password: PASSWORD });
+
+    expect(res.status).toBe(200);
+    expect(repo.findByAccountForLogin).toHaveBeenCalledWith("JohnDoe");
+  });
+
   it("returns 401 when logging in by email that is not yet verified", async () => {
     repo.findByEmailForLogin.mockResolvedValue(
       activeUser({ emailVerified: false })

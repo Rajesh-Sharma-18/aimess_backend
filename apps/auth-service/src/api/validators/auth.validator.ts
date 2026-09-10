@@ -40,8 +40,35 @@ export const challengeSchema = z.object({
   solution: z.string().min(1).max(128),
 });
 
+/** Login handle: username (`account`) or verified linked email. */
+export const loginIdentifierSchema = z
+  .string()
+  .trim()
+  .min(3, "Please enter your account name or email address")
+  .max(254, "Account name or email address is too long")
+  .refine(
+    (value) => {
+      const asEmail = z.string().email().safeParse(value.toLowerCase());
+      const asAccount = accountSchema.safeParse(value);
+      return asEmail.success || asAccount.success;
+    },
+    { message: "Please enter a valid account name or email address" }
+  );
+
+/**
+ * Body of `POST /auth/accounts/validate` — "does an account already exist for
+ * this handle?".
+ *
+ * Accepts the full LOGIN identifier, not just a username. The endpoint is step 1
+ * of the two-step login form as well as the signup form's availability check,
+ * and while it took `accountSchema` alone a user whose only handle is a linked
+ * email could never get past that step: the address failed validation with 400
+ * before any credential was ever checked. The signup form only ever sends a
+ * username-shaped value (it gates on its own regex first), so widening this
+ * changes nothing there.
+ */
 export const validateAccountSchema = z.object({
-  account: accountSchema,
+  account: loginIdentifierSchema,
 });
 
 export type ValidateAccountInput = z.infer<typeof validateAccountSchema>;
@@ -99,21 +126,6 @@ export const registerSchema = z
   });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
-
-/** Login handle: username (`account`) or verified linked email. */
-export const loginIdentifierSchema = z
-  .string()
-  .trim()
-  .min(3, "Please enter your account name or email address")
-  .max(254, "Account name or email address is too long")
-  .refine(
-    (value) => {
-      const asEmail = z.string().email().safeParse(value.toLowerCase());
-      const asAccount = accountSchema.safeParse(value);
-      return asEmail.success || asAccount.success;
-    },
-    { message: "Please enter a valid account name or email address" }
-  );
 
 /**
  * Login deliberately does NOT reuse `passwordSchema`. That schema is the

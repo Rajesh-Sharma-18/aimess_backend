@@ -543,14 +543,30 @@ export const authRepository = {
     });
   },
 
+  /**
+   * Creates a social account and its provider link together.
+   *
+   * `email`/`emailVerified` are the PROFILE email — the address the user links
+   * by hand — and social sign-in passes null/false for them: a Google or Apple
+   * address belongs to `providerEmail` on the link row, never to the profile
+   * field the Settings screen renders. They stay in the signature because the
+   * column is real and a future flow may legitimately seed it.
+   *
+   * `primaryAccount` is stamped here rather than through
+   * {@link setPrimaryAccountIfUnset} because the row is brand new: the provider
+   * that created the account IS its first sign-in method, and writing it inside
+   * the same transaction means no reader can ever see the account without one.
+   */
   createUserWithLinkedAccount(params: {
     account: string;
     email: string | null;
     emailVerified: boolean;
     provider: AuthProvider;
     providerUserId: string;
+    primaryAccount?: AuthProvider | null;
     displayName?: string | null;
     providerEmail?: string | null;
+    providerEmailVerified?: boolean;
   }) {
     return prisma.$transaction(async (tx) => {
       const user = await tx.authUser.create({
@@ -558,12 +574,14 @@ export const authRepository = {
           account: params.account,
           email: params.email,
           emailVerified: params.emailVerified,
+          primaryAccount: params.primaryAccount ?? undefined,
           passwordHash: null,
         },
         select: {
           id: true,
           account: true,
           email: true,
+          primaryAccount: true,
           createdAt: true,
         },
       });
@@ -574,6 +592,7 @@ export const authRepository = {
           provider: params.provider,
           providerUserId: params.providerUserId,
           email: params.providerEmail ?? params.email ?? undefined,
+          emailVerified: params.providerEmailVerified ?? false,
           displayName: params.displayName ?? undefined,
         },
       });

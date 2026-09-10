@@ -92,6 +92,17 @@ async function loginExistingLinkedUser(
   device: DeviceInfoInput | null | undefined
 ): Promise<SocialLoginResult> {
   assertUserCanLogin(user);
+
+  // Backfill, not a switch. Accounts created by a social sign-in before
+  // primaryAccount was stamped at creation still carry null, and this is the
+  // flow that knows which provider founded them. setPrimaryAccountIfUnset is a
+  // no-op the moment a value exists, so a repeat sign-in — or an account that
+  // has since linked an email by hand — is never overwritten.
+  await authRepository.setPrimaryAccountIfUnset(
+    user.id,
+    provider === "GOOGLE" ? AuthProvider.GOOGLE : AuthProvider.APPLE
+  );
+
   const tokens = await issueTokensForUser(req, user, device);
   const isProfileCompleted = await authRepository.getProfileCompleted(user.id);
 
@@ -106,6 +117,38 @@ async function loginExistingLinkedUser(
     isProfileCompleted,
     tokens,
   };
+}
+
+/**
+ * The account an incoming, provider-VERIFIED address already belongs to.
+ *
+ * Two places can hold that address and they mean different things:
+ *
+ *   - `AuthUser.email` — the PROFILE email, set only by the OTP-verified
+ *     link-email flow. Matching it is what lets a user who linked
+ *     name@example.com by hand then sign in with the Google account on that
+ *     same address and land on their existing account.
+ *   - `LinkedAccount.email` — the address a provider reported. Since a social
+ *     sign-in no longer copies its address into the profile field, this is the
+ *     ONLY record of it, so an account founded by Google must be findable here
+ *     when the same person later arrives via Apple. Without this lookup that
+ *     second provider would create a duplicate account.
+ *
+ * Both sides are verified: the caller has already checked the incoming token's
+ * `email_verified`, and the link lookup filters on its own `emailVerified` so
+ * a client-supplied address can never resolve to somebody else's account.
+ */
+async function findAccountForVerifiedProviderEmail(
+  email: string
+): Promise<AuthUserRow | null> {
+  const byProfileEmail = await authRepository.findByEmail(email);
+  if (byProfileEmail) {
+    return byProfileEmail;
+  }
+
+  const byProviderEmail =
+    await linkedAccountRepository.findUserByVerifiedProviderEmail(email);
+  return byProviderEmail?.user ?? null;
 }
 
 async function signInWithProvider(
@@ -137,11 +180,17 @@ async function signInWithProvider(
     return loginExistingLinkedUser(req, provider, existingLink.user, device);
   }
 
-  // Auto-link to an existing account by email ONLY when the email was verified
-  // by the provider's cryptographically-signed token. A client-supplied or
-  // unverified email must never merge into an existing account (takeover risk).
+  // Which account, if any, already owns this address? Asked once and reused by
+  // both the auto-link branch and the sign-up guard below, which need the same
+  // answer for opposite reasons.
+  const existingUser = profile.email
+    ? await findAccountForVerifiedProviderEmail(profile.email)
+    : null;
+
+  // Auto-link to that account ONLY when the email was verified by the
+  // provider's cryptographically-signed token. A client-supplied or unverified
+  // email must never merge into an existing account (takeover risk).
   if (profile.email && profile.emailVerified) {
-    const existingUser = await authRepository.findByEmail(profile.email);
     if (existingUser) {
       assertUserCanLogin(existingUser);
 
@@ -153,6 +202,10 @@ async function signInWithProvider(
           provider: authProvider,
           providerUserId: profile.sub,
           email: profile.email,
+          // The token asserted it — the `profile.emailVerified` guard on this
+          // branch is exactly that proof — so this link may later resolve a
+          // sign-in from the OTHER provider on the same address.
+          emailVerified: true,
           displayName: profile.displayName,
         });
       } catch (error) {
@@ -161,18 +214,30 @@ async function signInWithProvider(
         }
       }
 
+      // The account existed before this provider did, so whatever founded it
+      // keeps the primary slot; this only fills a slot that was never set.
+      await authRepository.setPrimaryAccountIfUnset(
+        existingUser.id,
+        authProvider
+      );
+
       await authRepository.mergeFcmTokens(existingUser.id, fcmTokens);
       const tokens = await issueTokensForUser(req, existingUser, device);
+      const isProfileCompleted = await authRepository.getProfileCompleted(
+        existingUser.id
+      );
 
       return {
         isNewUser: false,
         user: {
           userId: existingUser.id,
           account: existingUser.account,
+          // The PROFILE email, which for a Google/Apple-created account is
+          // null. The provider's own address is never substituted here.
           email: existingUser.email,
           provider,
         },
-        isProfileCompleted: existingUser.isProfileCompleted,
+        isProfileCompleted,
         tokens,
       };
     }
@@ -182,11 +247,24 @@ async function signInWithProvider(
     throw new ConflictError("AUTH_SOCIAL_EMAIL_REQUIRED");
   }
 
-  // Sign-UP, not sign-in: no AuthUser owns this address yet, so a brand-new
-  // account is about to claim it. An admin account in backoffice's admin_db may
-  // already hold it — the auto-link branch above never sees that database, and
-  // no index spans the two. Existing users keep signing in through the branches
-  // above; only creating a NEW account on an admin's email is refused.
+  // Sign-UP, not sign-in. Reaching here means the address did not resolve to an
+  // account through the branch above — either nothing owns it, or the incoming
+  // token did not assert it as verified.
+  //
+  // The second case must not fall through into account creation. It used to be
+  // caught by AuthUser.email's unique index, because a social sign-up wrote the
+  // provider address there; now that it does not, an unverified token claiming
+  // an address an account already owns would quietly found a SECOND account on
+  // it. Refused instead, with the same AUTH_EMAIL_EXISTS the check below uses
+  // so nothing new is leaked about who owns what.
+  if (existingUser) {
+    throw new ConflictError("AUTH_EMAIL_EXISTS");
+  }
+
+  // An admin account in backoffice's admin_db may hold the address — the branch
+  // above never sees that database, and no index spans the two. Existing users
+  // keep signing in through the branches above; only creating a NEW account on
+  // an admin's email is refused.
   await assertEmailAvailable(profile.email);
 
   const accountBase = buildSocialAccountBase(
@@ -198,12 +276,21 @@ async function signInWithProvider(
 
   const user = await authRepository.createUserWithLinkedAccount({
     account,
-    email: profile.email,
-    emailVerified: profile.emailVerified,
+    // The PROFILE email stays EMPTY. A Google/Apple address is the provider's,
+    // not something the user chose to publish on this account, and the Settings
+    // "Email" row renders this column — so writing it here made signing in with
+    // Google silently populate a field the user never filled in. The address is
+    // kept on the link below (`providerEmail`), where the Linked Accounts
+    // section reads it and where sign-in resolves it.
+    email: null,
+    emailVerified: false,
     provider: authProvider,
     providerUserId: profile.sub,
+    // The provider that created the account IS its first sign-in method.
+    primaryAccount: authProvider,
     displayName: profile.displayName,
     providerEmail: profile.email,
+    providerEmailVerified: profile.emailVerified,
   });
 
   // Provider names ride the creation event so user-service seeds the profile

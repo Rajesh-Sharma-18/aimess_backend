@@ -18,11 +18,13 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
     getProfileCompleted: jest.fn(),
     findByEmail: jest.fn(),
     createUserWithLinkedAccount: jest.fn(),
+    setPrimaryAccountIfUnset: jest.fn(),
   },
 }));
 jest.mock("../../src/repositories/linked-account.repository.js", () => ({
   linkedAccountRepository: {
     findByProvider: jest.fn(),
+    findUserByVerifiedProviderEmail: jest.fn(),
     create: jest.fn(),
   },
 }));
@@ -98,13 +100,18 @@ beforeEach(() => {
   repo.recordSuccessfulLogin.mockResolvedValue(undefined);
   repo.getProfileCompleted.mockResolvedValue(true);
   repo.findByEmail.mockResolvedValue(null);
+  repo.setPrimaryAccountIfUnset.mockResolvedValue(null);
   repo.createUserWithLinkedAccount.mockResolvedValue({
     id: "new-user-1",
     account: "googleuser1",
-    email: "john@example.com",
+    // Null, matching what the repository now writes: a social sign-up leaves the
+    // PROFILE email empty and keeps the provider address on the link row.
+    email: null,
+    primaryAccount: "GOOGLE",
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
   });
   linkRepo.findByProvider.mockResolvedValue(null);
+  linkRepo.findUserByVerifiedProviderEmail.mockResolvedValue(null);
   linkRepo.create.mockResolvedValue(undefined);
   issue.mockResolvedValue({ tokens: TOKENS, sessionId: "sess-1" });
   // mockReset, not mockClear: a rejection set by one spec would otherwise
@@ -151,6 +158,98 @@ describe("POST /api/auth/google", () => {
     // is already complete — no avatar is involved in that answer.
     expect(res.body.data.isProfileCompleted).toBe(true);
     expect(repo.createUserWithLinkedAccount).toHaveBeenCalledTimes(1);
+  });
+
+  // The bug this whole change exists for: signing in with Google silently filled
+  // the Settings "Email" row with the Google address, which the user never chose
+  // to put there. It belongs to the provider link and nowhere else.
+  it("leaves the profile email empty and keeps the Google address on the link", async () => {
+    const res = await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(res.status).toBe(200);
+    expect(repo.createUserWithLinkedAccount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: null,
+        emailVerified: false,
+        providerEmail: "john@example.com",
+        providerEmailVerified: true,
+      })
+    );
+    expect(res.body.data.user.email).toBeNull();
+  });
+
+  it("stamps primaryAccount = GOOGLE on the account it creates", async () => {
+    await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(repo.createUserWithLinkedAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ primaryAccount: "GOOGLE" })
+    );
+  });
+
+  // Accounts created before primaryAccount was stamped at creation still carry
+  // null, and this is the flow that knows which provider founded them.
+  it("backfills primaryAccount for an existing Google account, never overwriting", async () => {
+    linkRepo.findByProvider.mockResolvedValue({ user: activeUser() });
+
+    await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    // set-IF-UNSET: a value already there (say EMAIL, from linking an address
+    // by hand) survives, because the WHERE clause matches no row.
+    expect(repo.setPrimaryAccountIfUnset).toHaveBeenCalledWith(
+      "user-1",
+      "GOOGLE"
+    );
+  });
+
+  // Without this lookup, a Google-created account — whose address now lives ONLY
+  // on its link row — is invisible to a later Apple sign-in on the same address,
+  // and that sign-in founds a duplicate account.
+  it("resolves an account by its verified PROVIDER email, not just the profile email", async () => {
+    repo.findByEmail.mockResolvedValue(null);
+    linkRepo.findUserByVerifiedProviderEmail.mockResolvedValue({
+      user: activeUser({ email: null }),
+    });
+
+    const res = await request(app)
+      .post("/api/auth/apple")
+      .send({ identityToken: "valid-apple-token" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isNewUser).toBe(false);
+    expect(repo.createUserWithLinkedAccount).not.toHaveBeenCalled();
+    expect(linkRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "APPLE", emailVerified: true })
+    );
+  });
+
+  // The unique index on auth_users.email used to catch this, because a social
+  // sign-up wrote the provider address there. It no longer does, so the check is
+  // explicit — otherwise an unverified token claiming an address a verified link
+  // already owns would found a SECOND account on it.
+  it("refuses to found a second account on an address a verified link owns", async () => {
+    verifyGoogle.mockResolvedValue({
+      sub: "other-google-sub",
+      email: "john@example.com",
+      emailVerified: false,
+      displayName: "John",
+    });
+    repo.findByEmail.mockResolvedValue(null);
+    linkRepo.findUserByVerifiedProviderEmail.mockResolvedValue({
+      user: activeUser({ email: null }),
+    });
+
+    const res = await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(res.status).toBe(409);
+    expect(repo.createUserWithLinkedAccount).not.toHaveBeenCalled();
   });
 
   it("leaves a new account incomplete when the token carried no name", async () => {
@@ -490,7 +589,8 @@ describe("POST /api/auth/apple", () => {
     expect(publishCreated).not.toHaveBeenCalled();
   });
 
-  // Test 5 — a private-relay address is just the verified Apple email.
+  // Test 5 — a private-relay address is just the verified Apple email, and it
+  // lands on the LINK rather than on the account's profile email.
   it("treats a private-relay address as the verified provider email", async () => {
     verifyApple.mockResolvedValue({
       sub: "apple-sub-123",
@@ -509,9 +609,12 @@ describe("POST /api/auth/apple", () => {
     );
     expect(repo.createUserWithLinkedAccount).toHaveBeenCalledWith(
       expect.objectContaining({
-        email: "abc123@privaterelay.appleid.com",
+        // Profile email stays empty; the address belongs to the provider link.
+        email: null,
+        emailVerified: false,
         providerEmail: "abc123@privaterelay.appleid.com",
-        emailVerified: true,
+        providerEmailVerified: true,
+        primaryAccount: "APPLE",
       })
     );
   });
