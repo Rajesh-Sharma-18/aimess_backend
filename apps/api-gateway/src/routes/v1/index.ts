@@ -4,6 +4,9 @@ import { createServiceProxy } from "../../proxy/create-service-proxy.js";
 import { createChatBanGate } from "../../middleware/ban-gate.js";
 import {
   sensitiveAuthRateLimiter,
+  accountValidateRateLimiter,
+  loginRateLimiter,
+  refreshRateLimiter,
   otpRateLimiter,
   inviteLinkPreviewRateLimiter,
   deviceTokenRateLimiter,
@@ -91,7 +94,6 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   // service proxy below. Must be registered ahead of the proxy mount so it runs
   // first on these paths.
   for (const sensitivePath of [
-    "/auth/login",
     "/auth/google",
     "/auth/apple",
     // Previously unthrottled at the edge: password reset accepts an OTP and
@@ -99,18 +101,6 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
     // Both were covered only by the global backstop.
     "/auth/reset-password",
     "/auth/register",
-    // Refresh mints a fresh access token from a bearer-equivalent credential
-    // and carries no Authorization header, so the global limiter fell back to
-    // the IP bucket and allowed ~144k guesses a day per address with no
-    // account lockout on the path. The admin router has always treated its
-    // identical endpoint as sensitive; this mirrors that. `/auth/token` is the
-    // same primitive under auth-service's own path name.
-    "/auth/refresh",
-    "/auth/token",
-    // Unauthenticated availability oracle: 409 for a taken account, 200
-    // otherwise, over the whole 3-32 character handle namespace. Enumerated
-    // handles feed targeted credential stuffing against /auth/login.
-    "/auth/accounts",
     // Issues the proof of work that /auth/register and /auth/accounts/validate
     // require. Unauthenticated by necessity — it is the first call a new user
     // makes — so it is throttled like the endpoints it guards, or it becomes a
@@ -119,6 +109,29 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   ]) {
     v1Router.use(sensitivePath, sensitiveAuthRateLimiter);
   }
+
+  // The three endpoints a normal session touches most, each on its OWN counter.
+  //
+  // All three were in the loop above, sharing `auth.sensitive` — one limiter
+  // object is one Redis key prefix, so validate/login/refresh spent a single
+  // 20-per-15-minutes budget between them. Typing a name into the signup form
+  // (debounced validate), pressing Continue on the login screen (another
+  // validate), signing in, and then letting the access token expire twice was
+  // enough to exhaust it, and the 429 then lasted a quarter of an hour and
+  // applied to signing in as much as to the probe that caused it.
+  //
+  // Unauthenticated availability oracle: 409 for a taken account, 200
+  // otherwise, over the whole 3-32 character handle namespace. Enumerated
+  // handles feed targeted credential stuffing against /auth/login — hence its
+  // own ceiling rather than none, just a ceiling sized for a form field.
+  v1Router.use("/auth/accounts", accountValidateRateLimiter);
+  v1Router.use("/auth/login", loginRateLimiter);
+  // Refresh mints a fresh access token from a bearer-equivalent credential and
+  // carries no Authorization header, so the global limiter falls back to the IP
+  // bucket. `/auth/token` is the same primitive under auth-service's own path
+  // name and shares the bucket with it, deliberately — they are one operation.
+  v1Router.use("/auth/refresh", refreshRateLimiter);
+  v1Router.use("/auth/token", refreshRateLimiter);
 
   // OTP endpoints get their own, looser bucket. Sharing `auth.sensitive` with
   // login meant a user legitimately re-requesting a code burned the login

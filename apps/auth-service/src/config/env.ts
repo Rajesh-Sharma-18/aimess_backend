@@ -122,6 +122,38 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(15),
+
+  /**
+   * `POST /accounts/validate` — its own bucket, mirroring the gateway's.
+   *
+   * It used to share `sensitiveAuthRateLimiter` with login, register and the
+   * signup challenge. A signup form asks this endpoint while the user types,
+   * so a careful typist spent the budget they then needed to sign in. Short
+   * window so a genuine 429 clears in a minute.
+   */
+  ACCOUNT_VALIDATE_RATE_LIMIT_MAX: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30),
+  ACCOUNT_VALIDATE_RATE_LIMIT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1),
+
+  /**
+   * `POST /login` — its own bucket, and only FAILED attempts count against it
+   * (see `loginRateLimiter`). The per-account lockout above
+   * (AUTH_MAX_FAILED_LOGINS / AUTH_LOCKOUT_MINUTES) is the control that stops a
+   * distributed run; this is the per-address ceiling on top of it.
+   */
+  LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(15),
+  LOGIN_RATE_LIMIT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5),
   // DELETE_ACCOUNT_RATE_LIMIT_MAX removed 2026-08-12 — DELETE /auth/account is
   // no longer throttled. Leaving the variable set in a .env file is harmless;
   // nothing reads it.
