@@ -94,16 +94,20 @@ export async function getUserLocale(userId: string): Promise<SupportedLocale> {
   return resolveLocale(null, settings.language || null);
 }
 
-/** Bust the cached entry (called from the user.settings_updated consumer). */
+/**
+ * Bust the cached entry (called from the user.settings_updated consumer).
+ *
+ * Deliberately PROPAGATES a Redis failure rather than swallowing it. This is
+ * the only thing that makes a settings change visible before the TTL, and the
+ * entry it failed to delete has no expiry short enough to cover the gap: a
+ * swallowed error meant the consumer acked the message and the user kept the
+ * old mute / quiet-hours / category state for the rest of the TTL, with nothing
+ * left anywhere that knew a change was owed. Let the caller requeue instead.
+ */
 export async function invalidateNotificationSettings(
   userId: string
 ): Promise<void> {
-  try {
-    await cacheDel(redis, cacheKey(userId));
-  } catch (error) {
-    logger.warn(`Failed to invalidate notif settings cache for ${userId}`);
-    logger.warn(error);
-  }
+  await cacheDel(redis, cacheKey(userId));
 }
 
 /**

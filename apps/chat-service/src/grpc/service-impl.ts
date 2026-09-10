@@ -51,10 +51,12 @@ import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
 import type { CallService } from "../services/call.service.js";
 import type { CallFlagService } from "../services/call-flag.service.js";
+import type { NotificationCatalogueService } from "../services/notification-catalogue.service.js";
 import type { CallAnalyticsRepository } from "../repositories/call-analytics.repository.js";
 import type { PresenceService } from "../services/presence.service.js";
 import type { CommunityMessageService } from "../services/community-message.service.js";
 import { resolveConversationType } from "../lib/conversation-type.js";
+import { parsePlatform } from "../lib/notification-category.js";
 import type { CommunityPinService } from "../services/community-pin.service.js";
 import type { NotificationRepository } from "../repositories/notification.repository.js";
 import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
@@ -177,6 +179,8 @@ export interface GrpcDeps {
   callAnalyticsRepo: CallAnalyticsRepository;
   /** Platform-wide calling kill-switch, read/written by the admin panel. */
   callFlagService: CallFlagService;
+  /** Fixed notification-category catalogue, configured from Super Admin. */
+  notificationCatalogueService: NotificationCatalogueService;
   presenceService: PresenceService;
   communityMessageService: CommunityMessageService;
   communityPinService: CommunityPinService;
@@ -2574,6 +2578,110 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC adminSetCallingEnabled error: ${String(err)}`);
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
+    // Super Admin: the whole notification-category catalogue, every platform.
+    // Uncached read (`listForAdmin`) so the grid always shows the persisted
+    // truth rather than a node's cached client view.
+    adminListNotificationCategories: (
+      _call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const categories =
+            await deps.notificationCatalogueService.listForAdmin();
+          callback(null, {
+            categories: categories.map((c) => ({
+              id: c.id,
+              priority: c.priority,
+              defaultLabel: c.defaultLabel,
+              iconKey: c.iconKey,
+              enabledPlatforms: c.enabledPlatforms,
+              updatedAt: new Date(c.updatedAt).getTime(),
+            })),
+          });
+        } catch (err) {
+          logger.error(
+            `gRPC adminListNotificationCategories error: ${String(err)}`
+          );
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
+    // Super Admin: change ONE category's priority and/or platform enablement.
+    // An unknown id reports NOTIFICATION_CATEGORY_NOT_FOUND — it never creates
+    // a row, which is what keeps the catalogue fixed.
+    adminUpdateNotificationCategory: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            categoryId?: string;
+            priority?: number;
+            hasPriority?: boolean;
+            enabledPlatforms?: string[];
+            hasEnabledPlatforms?: boolean;
+            actorId?: string;
+          };
+          const updated =
+            await deps.notificationCatalogueService.updateCategory(
+              req.categoryId ?? "",
+              {
+                ...(req.hasPriority ? { priority: Number(req.priority) } : {}),
+                ...(req.hasEnabledPlatforms
+                  ? {
+                      enabledPlatforms: (req.enabledPlatforms ?? []).flatMap(
+                        (p) => {
+                          const parsed = parsePlatform(p);
+                          return parsed ? [parsed] : [];
+                        }
+                      ),
+                    }
+                  : {}),
+              },
+              req.actorId || null
+            );
+          if (!updated) {
+            callback(null, {
+              ok: false,
+              errorCode: "NOTIFICATION_CATEGORY_NOT_FOUND",
+            });
+            return;
+          }
+          callback(null, {
+            ok: true,
+            errorCode: "",
+            category: {
+              id: updated.id,
+              priority: updated.priority,
+              defaultLabel: updated.defaultLabel,
+              iconKey: updated.iconKey,
+              enabledPlatforms: updated.enabledPlatforms,
+              updatedAt: new Date(updated.updatedAt).getTime(),
+            },
+          });
+        } catch (err) {
+          // A rejected priority is a normal outcome of an admin edit, not a
+          // transport failure — it travels back on the same {ok:false,
+          // errorCode} channel as an unknown id so the panel can render it as
+          // a 400 instead of a dead gRPC call.
+          if (isAppError(err) && err.statusCode === 400) {
+            callback(null, {
+              ok: false,
+              errorCode: err.messageKey ?? "BAD_REQUEST",
+            });
+            return;
+          }
+          logger.error(
+            `gRPC adminUpdateNotificationCategory error: ${String(err)}`
+          );
           callback(toGrpcCallbackError(err));
         }
       })();

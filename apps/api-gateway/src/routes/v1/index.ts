@@ -17,7 +17,10 @@ import { getServicesForVersion } from "../../versioning/registry.js";
 import { env } from "../../config/env.js";
 import { appVersionRouter } from "./app-version.routes.js";
 import { createLegacyUploadsRouter } from "./legacy-uploads.routes.js";
-import { createNotificationsAliasRouter } from "./notifications.routes.js";
+import {
+  createNotificationCategoriesAliasRouter,
+  createNotificationsAliasRouter,
+} from "./notifications.routes.js";
 import { createLinkedDevicesAliasRouter } from "./linked-devices.routes.js";
 import { invitesRouter } from "./invites.routes.js";
 import { searchRouter } from "./search.routes.js";
@@ -72,6 +75,16 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   if (env.NOTIFICATION_SERVICE_URL) {
     v1Router.use("/notifications/fcm-token", deviceTokenRateLimiter);
     v1Router.use(createNotificationsAliasRouter(env.NOTIFICATION_SERVICE_URL));
+  }
+
+  // Stable alias: GET /api/v1/notifications/categories is forwarded to
+  // chat-service, which owns the catalogue. The path is the shared
+  // Android/iOS/Web contract; the canonical route
+  // (/api/v1/chat/notifications/categories) keeps working unchanged.
+  if (env.CHAT_SERVICE_URL) {
+    v1Router.use(
+      createNotificationCategoriesAliasRouter(env.CHAT_SERVICE_URL)
+    );
   }
 
   // Stricter throttle on sensitive auth endpoints, applied before the generic
@@ -151,7 +164,32 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   // Presigned upload-URL minting is a write-shaped operation that grants an
   // object-store write, so it is sized like the device-token limiter rather
   // than like a read. It previously had none at all.
-  v1Router.use("/media", mediaRateLimiter);
+  // Media is mounted PER PATH, not as one `/media` segment.
+  //
+  // The whole segment used to share `mediaRateLimiter` — a write bucket sized
+  // for presigned-URL minting (30/min) — so the read-shaped calls spent the
+  // write budget. Sending one attachment costs 1 upload-url + 1 confirm + up to
+  // 20 scan-status polls, and opening a media-heavy room mints a download URL
+  // per attachment: a normal user hit 429 on `POST /media/download-url` while
+  // doing nothing abusive. The two shapes get their own buckets.
+  //
+  // media-service already exempts `/download-url` from its OWN limiter for this
+  // reason; the gateway mount was the one still charging it as a write.
+  for (const mediaWritePath of [
+    "/media/upload-url",
+    "/media/confirm",
+    // DELETE /media/uploads/:objectKey — cancels an upload and deletes bytes.
+    "/media/uploads",
+  ]) {
+    v1Router.use(mediaWritePath, mediaRateLimiter);
+  }
+  for (const mediaReadPath of [
+    "/media/download-url",
+    "/media/scan-status",
+    "/media/usage",
+  ]) {
+    v1Router.use(mediaReadPath, readRateLimiter);
+  }
 
   // Livestream REST had no limiter of its own — only the global backstop. Must
   // be registered BEFORE the generic service-proxy loop below: the proxy

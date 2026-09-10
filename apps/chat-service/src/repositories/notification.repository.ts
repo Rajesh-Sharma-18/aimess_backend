@@ -2,7 +2,9 @@
 import {
   categoryWhere,
   LOGIN_DETECTED_TYPE,
+  NOTIFICATION_CATEGORY_IDS,
   type NotificationCategory,
+  type NotificationCategoryId,
 } from "../lib/notification-category.js";
 import { env } from "../config/env.js";
 
@@ -259,14 +261,21 @@ export class NotificationRepository {
   }
 
   /**
-   * Per-tab UNREAD counts for the Notification Center header badges. Six
-   * parallel counts (one per tab) — cheaper than a groupBy round-trip on
-   * Mongo, and each predicate hits the `(userId, type)` index. Unread-only
-   * so the badge decrements live as the user reads rows; the list-page
-   * invalidation on `markRead` / `markAllRead` triggers the refetch.
+   * Per-category UNREAD counts for the Notification Center header badges. One
+   * parallel count per bucket — cheaper than a groupBy round-trip on Mongo, and
+   * each predicate hits the `(userId, type)` index. Unread-only so the badge
+   * decrements live as the user reads rows; the list-page invalidation on
+   * `markRead` / `markAllRead` triggers the refetch.
    *
-   * The per-tab buckets are disjoint (see `categorize`), so they sum to `all`
-   * — a row can never be counted under two tabs.
+   * The buckets are disjoint (see `categorizeId`), so `byId` sums to `all` — a
+   * row can never be counted under two categories.
+   *
+   * Two shapes on purpose. The flat lowercase keys are what released clients
+   * read and are frozen; `byId` is keyed on the catalogue ids the chips are
+   * built from, so a client can look a count up by the id the catalogue gave it
+   * instead of carrying its own id→legacy-name table. Counts are derived from
+   * `type` alone and are NEVER filtered by the catalogue: a category disabled
+   * for a platform still counts, and its rows still list under ALL.
    */
   async countByCategories(
     userId: string,
@@ -278,6 +287,8 @@ export class NotificationRepository {
     mentions: number;
     calls: number;
     system: number;
+    liveNow: number;
+    byId: Record<NotificationCategoryId, number>;
   }> {
     const selfExclusion = excludeSelfLoginWhere(viewerSessionId);
     const base = { userId, isDeleted: false, isRead: false };
@@ -288,16 +299,26 @@ export class NotificationRepository {
           ...combineWhere(selfExclusion, categoryWhere(cat)),
         },
       });
-    const [all, friends, communities, mentions, calls, system] =
-      await Promise.all([
-        countFor("ALL"),
-        countFor("FRIENDS"),
-        countFor("COMMUNITIES"),
-        countFor("MENTIONS"),
-        countFor("CALLS"),
-        countFor("SYSTEM"),
-      ]);
-    return { all, friends, communities, mentions, calls, system };
+    const [all, ...perCategory] = await Promise.all([
+      countFor("ALL"),
+      ...NOTIFICATION_CATEGORY_IDS.map(countFor),
+    ]);
+    const byId = Object.fromEntries(
+      NOTIFICATION_CATEGORY_IDS.map((id, index) => [id, perCategory[index] ?? 0])
+    ) as Record<NotificationCategoryId, number>;
+    return {
+      all,
+      friends: byId.FRIEND_REQUEST,
+      // Frozen key: a released client asking for the "Communities" tab counts
+      // the same rows `?type=COMMUNITIES` lists, and that filter excludes
+      // livestream rows now that LIVE_NOW owns them.
+      communities: byId.COMMUNITY,
+      mentions: byId.MENTION,
+      calls: byId.CALLS,
+      system: byId.SYSTEM,
+      liveNow: byId.LIVE_NOW,
+      byId,
+    };
   }
 
   async deleteById(

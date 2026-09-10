@@ -4,11 +4,44 @@ import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
 import { buildPaginatedResponse } from "../../lib/pagination.js";
-import { parseCategory } from "../../lib/notification-category.js";
+import {
+  parseCategory,
+  parsePlatform,
+} from "../../lib/notification-category.js";
 import type { NotificationService } from "../../services/notification.service.js";
+import type { NotificationCatalogueService } from "../../services/notification-catalogue.service.js";
 
 export class NotificationController {
-  constructor(private readonly service: NotificationService) {}
+  constructor(
+    private readonly service: NotificationService,
+    private readonly catalogue: NotificationCatalogueService
+  ) {}
+
+  /**
+   * The server-driven notification-category catalogue for one platform.
+   *
+   * Shared by Android, iOS and Web: categories enabled for the requested
+   * platform, sorted by the priority an administrator set, with the
+   * `version` / `updatedAt` a client revalidates its offline cache against.
+   * `ALL` is never returned — it is the client's own no-filter state and is
+   * always rendered first.
+   *
+   * An unknown or missing `platform` is not an error: it falls back to WEB
+   * rather than 400ing, because a client that cannot read the catalogue has no
+   * chip row at all, and a typo in a query string is not worth that.
+   */
+  getCategories = asyncHandler(async (req: Request, res: Response) => {
+    const platform = parsePlatform(req.query.platform) ?? "WEB";
+    const catalogue = await this.catalogue.getCatalogue(platform);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          { ...catalogue, platform },
+          t("CHAT_NOTIFICATIONS_FETCHED", req.locale)
+        )
+      );
+  });
 
   getNotifications = asyncHandler(async (req: Request, res: Response) => {
     const { userId, sessionId } = req.auth;

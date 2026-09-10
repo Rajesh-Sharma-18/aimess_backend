@@ -2,7 +2,11 @@ import dotenv from "dotenv";
 import type { Request } from "express";
 import { z } from "zod";
 
-import { assertNoPlaceholderCredentials, expandFileSecrets } from "@aimess/utils";
+import {
+  adminIpWhitelistFailures,
+  assertNoPlaceholderCredentials,
+  expandFileSecrets,
+} from "@aimess/utils";
 
 import type { AppVersionConfig } from "../app-version/types.js";
 
@@ -356,10 +360,8 @@ function assertProductionInvariants(): void {
     );
   }
 
-  if (env.BACKOFFICE_SERVICE_URL && getAdminIpWhitelist().length === 0) {
-    failures.push(
-      "ADMIN_IP_WHITELIST is empty — an empty list means allow-all, so the whole /admin surface (including the unauthenticated login and password-reset paths) would be reachable from any address."
-    );
+  if (env.BACKOFFICE_SERVICE_URL) {
+    failures.push(...adminIpWhitelistFailures(getAdminIpWhitelist()));
   }
 
   if (failures.length > 0) {

@@ -28,6 +28,21 @@ function batchLockKey(batchId: string): string {
   return `announce:batch:${batchId}`;
 }
 
+/**
+ * Announcement device type -> the `Session.deviceType` values it covers.
+ *
+ * The two enums are not the same set. `AnnouncementDeviceType` is
+ * ALL | ANDROID | IOS | WEB, while a session stores ANDROID | IOS | WEB |
+ * DESKTOP because `mapClientPlatform` (auth-service/src/lib/session-context.ts)
+ * folds a web client reporting the DESKTOP form factor into DESKTOP. Passing
+ * "WEB" straight through therefore matched MOBILE browsers only and silently
+ * excluded every desktop and laptop browser — which is where the web app is
+ * actually used. WEB here means "the web app", so it must cover both rows.
+ */
+function sessionDeviceTypesFor(deviceType: "ANDROID" | "IOS" | "WEB"): string[] {
+  return deviceType === "WEB" ? ["WEB", "DESKTOP"] : [deviceType];
+}
+
 /** One page of recipient userIds for the given target/cursor. */
 async function fetchRecipientPage(
   data: AnnouncementDeliverMessage
@@ -41,7 +56,7 @@ async function fetchRecipientPage(
     // announcement to everyone else's Notification Center.
     if (data.deviceType !== "ALL") {
       const { userIds } = await authClient.adminListUserIdsByDeviceType({
-        deviceTypes: [data.deviceType],
+        deviceTypes: sessionDeviceTypesFor(data.deviceType),
         limit: data.limit,
         offset: data.cursor,
       });

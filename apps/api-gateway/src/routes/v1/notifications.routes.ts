@@ -80,6 +80,41 @@ export function createNotificationsAliasRouter(
 }
 
 /**
+ * Contract alias for the server-driven notification-category catalogue.
+ *
+ *   GET /api/v1/notifications/categories?platform=android|ios|web
+ *     → chat-service GET /api/chat/notifications/categories
+ *
+ * The catalogue is owned by chat-service, which owns the Notification model the
+ * categories bucket — so its canonical public path is
+ * `/api/v1/chat/notifications/categories`, reachable through the generic `chat`
+ * proxy. This alias exists because the shared Android/iOS/Web contract names
+ * `/notifications/categories`, and pointing three clients at two different
+ * paths for one response is how they drift. Same relay as the fcm-token alias
+ * above: JWT forwarded, downstream status + envelope returned verbatim.
+ */
+export function createNotificationCategoriesAliasRouter(
+  chatServiceUrl: string
+): IRouter {
+  const router = Router();
+  const upstreamUrl = `${chatServiceUrl.replace(/\/$/, "")}/api/chat/notifications/categories`;
+
+  router.get(
+    "/notifications/categories",
+    asyncHandler(async (req: Request, res: Response) => {
+      const platform = req.query.platform;
+      const query =
+        typeof platform === "string" && platform
+          ? `?platform=${encodeURIComponent(platform)}`
+          : "";
+      return forward(req, res, `${upstreamUrl}${query}`, "GET");
+    })
+  );
+
+  return router;
+}
+
+/**
  * Relay one request to notifications-service verbatim (status + JSON envelope),
  * carrying the caller's JWT so the downstream scopes the write to them.
  */
@@ -87,7 +122,7 @@ async function forward(
   req: Request,
   res: Response,
   url: string,
-  method: "POST" | "DELETE",
+  method: "GET" | "POST" | "DELETE",
   body?: Record<string, unknown>
 ): Promise<Response | void> {
   let upstream: globalThis.Response;
@@ -106,9 +141,7 @@ async function forward(
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
   } catch (error) {
-    logger.error(
-      `${method} /notifications/fcm-token → notifications-service forward failed`
-    );
+    logger.error(`${method} ${url} → upstream forward failed`);
     logger.error(error);
     sendApiError(req, res, {
       statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,

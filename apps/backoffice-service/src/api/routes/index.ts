@@ -5,6 +5,7 @@ import { announcementRoutes } from "./announcement.routes.js";
 import { auditLogRoutes } from "./audit-log.routes.js";
 import { authRoutes } from "./auth.routes.js";
 import { categoryRoutes } from "./category.routes.js";
+import { notificationCategoryRoutes } from "./notification-category.routes.js";
 import { dashboardRoutes } from "./dashboard.routes.js";
 import { livestreamRoutes } from "./livestream.routes.js";
 import { meRoutes } from "./me.routes.js";
@@ -58,6 +59,11 @@ serviceRoutes.use(announcementRoutes);
 // `/admin/v1/categories` (the gateway strips `/admin` and forwards `/v1/*`
 // verbatim). Self-prefixed, NOT nested under a base path — same as moderation.
 serviceRoutes.use(categoryRoutes);
+// Notification Category configuration is self-prefixed with
+// `/notification-categories` so it resolves at `/v1/notification-categories/*`
+// — matching the gateway path `/admin/v1/notification-categories`. Read-and-
+// configure only: no create route, no delete route.
+serviceRoutes.use(notificationCategoryRoutes);
 // Audit Logs routes are self-prefixed with `/audit-logs` so they resolve at
 // `/v1/audit-logs/*` — matching the documented gateway path `/admin/v1/audit-logs`
 // (the gateway strips `/admin` and forwards `/v1/*` verbatim). Self-prefixed, NOT

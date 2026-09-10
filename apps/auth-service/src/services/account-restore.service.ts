@@ -80,18 +80,25 @@ export const accountRestoreService = {
     // the event. The user-service handler is itself idempotent — it exits early
     // on an already-active profile — so re-driving a COMPLETED restore changes
     // nothing, while re-driving a HALF-FINISHED one finishes it.
-    const restoredAt = isDeleted
-      ? (await authRepository.restoreUser(input.userId)).restoredAt
-      : new Date();
-
     if (isDeleted) {
       // The account may have been banned before it was deleted, in which case
       // the Redis ban flag is still set and community-service / stream-service
       // (which consult the flag, not the session) would keep rejecting the
       // restored user. Restoring to ACTIVE has to clear it, exactly as
       // accountBanService.lift does.
+      //
+      // BEFORE the DB write, not after, and for the same reason the re-drive
+      // above exists: the flag has no TTL, and a DEL that failed after
+      // `restoreUser` committed was unrecoverable — the retry finds the account
+      // already ACTIVE, takes the re-drive path, and skips this clear, leaving
+      // a restored user blocked by every guard forever. Failing here instead
+      // leaves the account deleted and the whole operation retriable.
       await clearUserBanned(redis, input.userId);
     }
+
+    const restoredAt = isDeleted
+      ? (await authRepository.restoreUser(input.userId)).restoredAt
+      : new Date();
 
     // Written BEFORE the publish, not after: `restoreUser` has already
     // committed by this point, so the trail must record that mutation even if

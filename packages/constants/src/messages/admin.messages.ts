@@ -348,6 +348,28 @@ export const ADMIN_MESSAGES = {
     th: "ลบหมวดหมู่แล้ว",
   },
 
+  // ── Success: notification categories ─────────────────────────────────────
+  ADMIN_NOTIFICATION_CATEGORIES_FETCHED: {
+    vi: "Đã tải danh mục thông báo",
+    en: "Notification categories fetched",
+    th: "ดึงข้อมูลหมวดหมู่การแจ้งเตือนแล้ว",
+  },
+  ADMIN_NOTIFICATION_CATEGORY_UPDATED: {
+    vi: "Đã cập nhật danh mục thông báo",
+    en: "Notification category updated",
+    th: "อัปเดตหมวดหมู่การแจ้งเตือนแล้ว",
+  },
+  NOTIFICATION_CATEGORY_PRIORITY_INVALID: {
+    vi: "Thứ tự ưu tiên phải là số nguyên từ 1 đến số danh mục hiện có",
+    en: "Priority must be a whole number within the category count",
+    th: "ลำดับความสำคัญต้องเป็นจำนวนเต็มไม่เกินจำนวนหมวดหมู่ที่มี",
+  },
+  NOTIFICATION_CATEGORY_NOT_FOUND: {
+    vi: "Không tìm thấy danh mục thông báo",
+    en: "Notification category not found",
+    th: "ไม่พบหมวดหมู่การแจ้งเตือน",
+  },
+
   // ── Success: communities ─────────────────────────────────────────────────
   ADMIN_COMMUNITIES_FETCHED: {
     vi: "Đã tải danh sách cộng đồng",
