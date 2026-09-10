@@ -58,6 +58,9 @@ function activeUser(overrides: Record<string, unknown> = {}) {
     status: "ACTIVE",
     isProfileCompleted: true,
     role: "USER",
+    // Selected by loginUserSelect and read only when passwordHash is null.
+    primaryAccount: null,
+    linkedAccounts: [],
     ...overrides,
   };
 }

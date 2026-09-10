@@ -11,13 +11,14 @@ import type {
   LoginInput,
   RegisterInput,
 } from "../api/validators/auth.validator.js";
-import { AccountStatus } from "../generated/prisma/client.js";
+import { AccountStatus, AuthProvider } from "../generated/prisma/client.js";
 import { env } from "../config/env.js";
 import {
   isEmailLoginIdentifier,
   normalizeLoginIdentifier,
 } from "../lib/login-identifier.js";
 import { assertNotBanned } from "../lib/account-guard.js";
+import { resolveRequiredSocialProvider } from "../lib/sign-in-methods.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { issueAuthTokens } from "../lib/token.js";
 import { publishUserCreatedSafe } from "../messaging/publish-user-created.js";
@@ -127,8 +128,30 @@ export const authService = {
       throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
     }
 
+    // Password authentication is unavailable on this account — and ONLY here,
+    // where that is already true, may a linked provider be named. An account
+    // that has a hash falls through to the credential check below however many
+    // providers it has linked, so "also linked to Google" never blocks a
+    // password that works.
+    //
+    // This narrows the reason rather than widening what login reveals: the
+    // generic AUTH_PASSWORD_NOT_SET this replaces already answered on exactly
+    // this branch, so an account-name that reaches it was already
+    // distinguishable from an unknown one. What changes is that the client can
+    // now say WHICH button to press instead of "incorrect account or password",
+    // which is simply false for a credential that was never set.
     if (!user.passwordHash) {
-      auditFailure("PASSWORD_NOT_SET", user.id);
+      const provider = resolveRequiredSocialProvider(user);
+      auditFailure(
+        provider ? `PASSWORD_NOT_SET_${provider}` : "PASSWORD_NOT_SET",
+        user.id
+      );
+      if (provider === AuthProvider.GOOGLE) {
+        throw new UnauthorizedError("AUTH_GOOGLE_LOGIN_REQUIRED");
+      }
+      if (provider === AuthProvider.APPLE) {
+        throw new UnauthorizedError("AUTH_APPLE_LOGIN_REQUIRED");
+      }
       throw new UnauthorizedError("AUTH_PASSWORD_NOT_SET");
     }
 

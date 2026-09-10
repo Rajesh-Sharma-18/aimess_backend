@@ -58,6 +58,23 @@ export const AUTH_MESSAGES = {
     en: "This account does not support password login.",
     th: "บัญชีนี้ไม่รองรับการเข้าสู่ระบบด้วยรหัสผ่าน",
   },
+  // The two provider-specific refinements of AUTH_PASSWORD_NOT_SET above.
+  // Password login returns one of these ONLY when the account has no password
+  // hash at all. An account that legitimately supports BOTH a password and a
+  // linked Google/Apple identity still gets the ordinary credential check —
+  // being linked is not the same as being password-less. Naming the provider is
+  // what lets a client point the user at the right button instead of showing
+  // "Incorrect account or password" for a credential that was never set.
+  AUTH_GOOGLE_LOGIN_REQUIRED: {
+    vi: "Tài khoản của bạn được liên kết với Google. Vui lòng tiếp tục bằng Google để đăng nhập",
+    en: "Your account is linked to Google. Please continue with Google to log in.",
+    th: "บัญชีของคุณเชื่อมกับ Google กรุณาดำเนินการต่อด้วย Google เพื่อเข้าสู่ระบบ",
+  },
+  AUTH_APPLE_LOGIN_REQUIRED: {
+    vi: "Tài khoản của bạn được liên kết với Apple. Vui lòng tiếp tục bằng Apple để đăng nhập",
+    en: "Your account is linked to Apple. Please continue with Apple to log in.",
+    th: "บัญชีของคุณเชื่อมกับ Apple กรุณาดำเนินการต่อด้วย Apple เพื่อเข้าสู่ระบบ",
+  },
   AUTH_UNAUTHORIZED: {
     vi: "Yêu cầu xác thực",
     en: "Authentication token is required.",
