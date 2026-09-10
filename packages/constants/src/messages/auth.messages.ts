@@ -88,6 +88,16 @@ export const AUTH_MESSAGES = {
     en: "Your session is invalid or has been revoked. Please sign in again.",
     th: "เซสชันของคุณไม่ถูกต้องหรือถูกเพิกถอนแล้ว กรุณาเข้าสู่ระบบอีกครั้ง",
   },
+  // Distinct from AUTH_REFRESH_TOKEN_INVALID on purpose: this one means no
+  // token arrived at all - no `refreshToken` in the body and no `aimess_rt`
+  // cookie - which almost always means the browser is not sending the cookie
+  // (cross-site SameSite, a wrong cookie path, or a request made without
+  // credentials), not that the session was revoked.
+  AUTH_REFRESH_TOKEN_MISSING: {
+    vi: "Không tìm thấy phiên đăng nhập, vui lòng đăng nhập lại",
+    en: "No session credentials were sent. Please sign in again.",
+    th: "ไม่พบข้อมูลเซสชัน กรุณาเข้าสู่ระบบอีกครั้ง",
+  },
   AUTH_REFRESH_TOKEN_EXPIRED: {
     vi: "Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại",
     en: "Your session has expired. Please sign in again.",
