@@ -1613,18 +1613,32 @@ export function createMessagingImpl(
             privateRoomId?: string;
             groupId?: string;
           };
-          const result = req.groupId
-            ? await deps.callService.initiateGroupCall({
-                callerId: req.callerId ?? "",
-                groupId: req.groupId,
-                type: req.type ?? "AUDIO",
-              })
-            : await deps.callService.initiateCall({
-                callerId: req.callerId ?? "",
-                calleeId: req.calleeId ?? "",
-                type: req.type ?? "AUDIO",
-                privateRoomId: req.privateRoomId ?? null,
-              });
+          // Group calling is not a shipped feature, and this is the ONE place
+          // every entry point converges on before `initiateGroupCall` can run —
+          // so the switch lives here rather than in the socket schema alone.
+          //
+          // The path was fully wired end to end (socket schema, `group_id` on
+          // the wire, `groupMemberRepo` injected in server.ts), which meant any
+          // authenticated user could start a group call with a hand-rolled
+          // `call:initiate { groupId }` and reach a roster fan-out that has no
+          // UI, no tests and nobody watching it. `CallService.initiateGroupCall`
+          // is deliberately left in place for when the feature ships; it just
+          // has no caller until then.
+          //
+          // Before re-enabling, close the four gaps that make the group path
+          // unsafe: membership is snapshotted at initiate and never re-checked
+          // on answer; any participant can end the call for everyone; group
+          // participants are invisible to `findActiveByParticipant`'s busy gate;
+          // and the ring roster is uncapped at 255 members.
+          if (req.groupId) {
+            throw new ForbiddenError("CALLING_DISABLED");
+          }
+          const result = await deps.callService.initiateCall({
+            callerId: req.callerId ?? "",
+            calleeId: req.calleeId ?? "",
+            type: req.type ?? "AUDIO",
+            privateRoomId: req.privateRoomId ?? null,
+          });
 
           callback(null, {
             callId: result.callId,
@@ -1753,6 +1767,13 @@ export function createMessagingImpl(
             cursor: req.cursor ?? null,
             limit: req.limit ?? 20,
           });
+          // `getCallHistory` returns CallDTO now, not the Prisma row — the same
+          // projection the REST twin gets, so this transport cannot serve the
+          // fields that one withholds. The proto's `endedBy` is therefore left
+          // unset: it carried either a user id or a `SYSTEM_*` sentinel, and
+          // `SYSTEM_FRIENDSHIP` told a client that a block ended the call.
+          // Nothing invokes this RPC today (admin call analytics rides the
+          // separate Admin* RPCs), so nothing loses a field it was reading.
           callback(null, {
             calls: result.calls.map((c) => ({
               callId: c.callId,
@@ -1760,11 +1781,10 @@ export function createMessagingImpl(
               calleeId: c.calleeId,
               type: c.type,
               status: c.status,
-              initiatedAt: c.initiatedAt.getTime(),
+              initiatedAt: c.initiatedAt?.getTime() ?? 0,
               answeredAt: c.answeredAt?.getTime() ?? 0,
               endedAt: c.endedAt?.getTime() ?? 0,
               durationSec: c.durationSec ?? 0,
-              endedBy: c.endedBy ?? "",
             })),
             nextCursor: result.nextCursor ?? "",
             hasMore: result.hasMore,

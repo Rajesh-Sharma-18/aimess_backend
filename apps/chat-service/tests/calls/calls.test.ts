@@ -110,6 +110,56 @@ describe("GET /api/chat/calls/:callId", () => {
     expect(mocks.callRepo.findByCallId).toHaveBeenCalledWith("c1");
   });
 
+  /**
+   * The projection has to be pinned HERE, not only on `toCallDTO`, because a
+   * serializer that nothing calls passes its own unit tests perfectly. This was
+   * checked: reverting the service to return the stored row left all 195 call
+   * tests green. This is the assertion that notices.
+   *
+   * `SYSTEM_FRIENDSHIP` is the value that matters most — it says the SERVER
+   * ended this call because the relationship did, which separates a
+   * block-driven teardown from an ordinary hangup. Blocking is deliberately
+   * silent on every other surface, so it must not be inferable from here.
+   */
+  it("SECURITY: never returns the stored row's internal columns", async () => {
+    mocks.callRepo.findByCallId.mockResolvedValue({
+      id: "68c0ffee0000000000000001",
+      callId: "c1",
+      callerId: TEST_USER_ID,
+      calleeId: "peer",
+      status: "ENDED",
+      initiatedAt: new Date(1000),
+      groupId: "g1",
+      calleeIds: ["peer", "third-party", "fourth-party"],
+      endedBy: "SYSTEM_FRIENDSHIP",
+      createdAt: new Date(1000),
+      updatedAt: new Date(1000),
+    });
+
+    const res = await request(app)
+      .get("/api/chat/calls/c1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    for (const leaked of [
+      "id",
+      "groupId",
+      "calleeIds",
+      "createdAt",
+      "updatedAt",
+      "endedBy",
+    ]) {
+      expect(res.body.data).not.toHaveProperty(leaked);
+    }
+    // Belt and braces on the wire itself: no roster member and no internal
+    // sentinel anywhere in the serialized body.
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain("SYSTEM_FRIENDSHIP");
+    expect(body).not.toContain("third-party");
+    // The coarsened replacement is what a client gets instead.
+    expect(res.body.data.endedReason).toBe("SYSTEM");
+  });
+
   // AUDIT H8 — a call must not be readable by a non-participant.
   it("SECURITY: IDOR — 403 when the caller is neither caller nor callee", async () => {
     mocks.callRepo.findByCallId.mockResolvedValue({

@@ -212,7 +212,23 @@ function skipRateLimit(req: Request): boolean {
     // collapse into a single IP bucket, and `on_play` fires once per VIEWER —
     // a busy stream would exhaust the 100/window global cap in seconds and get
     // its on_publish denied.
-    path.startsWith("/internal/srs")
+    path.startsWith("/internal/srs") ||
+    // Same shape, same reason — metered by `livekitWebhookRateLimiter`, not
+    // exempted. LiveKit Cloud sends `Authorization: <jwt>` with NO `Bearer `
+    // prefix, so `credentialKey` sees no credential and every webhook falls
+    // back to ONE IP bucket for LiveKit's egress address, capped at
+    // GLOBAL_RATE_LIMIT_MAX. LiveKit emits ~10-14 events per call and the Cloud
+    // project subscribes to all of them, so ~8 concurrent calls exhausted the
+    // window — and a dropped `room_finished` / `participant_left` is not a
+    // retryable inconvenience: nothing else reconciles the Call row, so BOTH
+    // participants stay "busy" and cannot place or receive a call until the 3h
+    // stale-IN_PROGRESS sweep, while the LiveKit room bills for its own timeout.
+    //
+    // EXACT match, not `startsWith("/livekit")`: as a prefix test `/livekitfoo`
+    // would escape the global limiter too, which is the same bypass class the
+    // `/app-version/check` comment above exists to avoid. There is one route
+    // under this mount; a second one adds a line here.
+    path === "/livekit/webhook"
   );
 }
 
@@ -315,6 +331,33 @@ export const adminLoginRateLimiter = createLimiter({
  */
 export const srsHookRateLimiter = createLimiter({
   rule: "srs.hooks",
+  windowMs: 60 * 1000,
+  max: 3000,
+  scope: "ip",
+});
+
+/**
+ * LiveKit Cloud signed webhooks (POST /livekit/webhook).
+ *
+ * Structurally the twin of `srsHookRateLimiter`: unauthenticated at the edge by
+ * necessity (LiveKit's signature rides `Authorization` with no `Bearer ` prefix,
+ * so the session key generator cannot see it), a 1 MB raw body, and it cannot
+ * share the global bucket — see `skipRateLimit` for what that cost.
+ *
+ * IP-scoped and deliberately generous, for two reasons that both point the same
+ * way. LiveKit Cloud egresses from rotating addresses, which SPREADS legitimate
+ * traffic across buckets rather than concentrating it, so a tight ceiling buys
+ * little; and the real gate is `WebhookReceiver.receive`, which rejects an
+ * unsigned flood for the price of one HMAC. Meanwhile the cost of a ceiling that
+ * DOES bind is two users wedged out of calling for three hours. Asymmetric, so
+ * this is sized to bound a flood, never to shape normal volume: ~15 events per
+ * call puts 3000/min at roughly 200 calls of churn per minute per source.
+ *
+ * Note this is a ceiling, not a guarantee — `RedisRateLimitStore` fails OPEN, so
+ * during a Redis outage it meters nothing at all.
+ */
+export const livekitWebhookRateLimiter = createLimiter({
+  rule: "livekit.webhook",
   windowMs: 60 * 1000,
   max: 3000,
   scope: "ip",

@@ -4,6 +4,7 @@ import { WebhookReceiver } from "livekit-server-sdk";
 import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
+import { livekitWebhookRateLimiter } from "../middleware/rate-limit.js";
 import type { MessagingClient } from "../grpc/clients/messaging.client.js";
 
 /**
@@ -30,6 +31,14 @@ export function createLiveKitWebhookRouter(
 
   router.post(
     "/webhook",
+    // Own bucket, and it must run BEFORE the body parser. This route is exempt
+    // from the global limiter (see `skipRateLimit`), so without this it is
+    // unmetered entirely; and `express.raw` buffers the whole body into heap
+    // before calling next(), so a limiter placed after it would pay a full 1 MB
+    // read for every request it is about to reject. The parser does not filter
+    // a flood away either — a flood carries the same `application/webhook+json`
+    // LiveKit sends, because that is what it is imitating.
+    livekitWebhookRateLimiter,
     // Raw body is required for signature verification.
     express.raw({ type: "application/webhook+json", limit: "1mb" }),
     async (req: Request, res: Response) => {

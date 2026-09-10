@@ -11509,10 +11509,13 @@ export const openApiSchemas = {
   },
 
   // --- Calls ---
+  // Projection of the stored call, not the row. `id` (raw ObjectId),
+  // `calleeIds` (a GROUP call's full ring roster), `groupId`, `createdAt`,
+  // `updatedAt` and the raw `endedBy` are withheld — see
+  // chat-service/src/lib/call.serializer.ts for why each one goes.
   ChatCall: {
     type: "object",
     properties: {
-      id: { type: "string" },
       callId: { type: "string", format: "uuid" },
       callerId: { type: "string", format: "uuid" },
       calleeId: { type: "string", format: "uuid" },
@@ -11525,22 +11528,11 @@ export const openApiSchemas = {
           "ENDED",
           "MISSED",
           "DECLINED",
+          "CANCELLED",
           "FAILED",
         ],
       },
       privateRoomId: { type: "string", nullable: true },
-      groupId: {
-        type: "string",
-        nullable: true,
-        description:
-          "Set only for a GROUP call — the room it was started from. `null` for 1:1, where `calleeId` is authoritative.",
-      },
-      calleeIds: {
-        type: "array",
-        items: { type: "string" },
-        description:
-          "GROUP calls only: every rung member (excludes the caller). Empty for 1:1.",
-      },
       initiatedAt: {
         type: "integer",
         format: "int64",
@@ -11559,20 +11551,21 @@ export const openApiSchemas = {
         description: "Epoch ms.",
       },
       durationSec: { type: "integer", nullable: true },
-      endedBy: { type: "string", format: "uuid", nullable: true },
-      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
-      updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
+      endedReason: {
+        type: "string",
+        enum: ["USER", "SYSTEM"],
+        nullable: true,
+        description:
+          "Who ended the call, coarsened. `USER` = a participant hung up; `SYSTEM` = the server settled it (ring timeout, stale-call sweep, media reconcile, or a relationship change). `null` while the call is still live. Replaces the former `endedBy`, which returned either a raw user id or an internal sentinel — `SYSTEM_FRIENDSHIP` in particular disclosed that a block had ended the call, which is silent on every other surface.",
+      },
     },
     required: [
-      "id",
       "callId",
       "callerId",
       "calleeId",
       "type",
       "status",
       "initiatedAt",
-      "createdAt",
-      "updatedAt",
     ],
   },
   ChatCallList: {

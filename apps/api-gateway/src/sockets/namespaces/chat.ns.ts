@@ -1105,19 +1105,25 @@ export function registerChatNamespace(
   const PresenceSubscribeSchema = z.object({
     peerIds: z.array(z.string().min(1)).max(500),
   });
-  // Exactly one of calleeId (1:1) / groupId (group call) must be present —
-  // the group branch has no privateRoomId concept, so a caller can't send both.
-  const CallInitiateSchema = z
-    .object({
-      calleeId: z.string().min(1).optional(),
-      groupId: z.string().min(1).optional(),
-      callType: z.enum(["AUDIO", "VIDEO"]).default("AUDIO"),
-      privateRoomId: z.string().optional(),
-      legId: z.string().min(1).max(128).optional(),
-    })
-    .refine((v) => Boolean(v.calleeId) !== Boolean(v.groupId), {
-      message: "exactly one of calleeId or groupId is required",
-    });
+  // 1:1 only. `groupId` used to be accepted here as the alternative to
+  // `calleeId`, which made the group ring path reachable by any authenticated
+  // socket even though group calling has no UI and never shipped.
+  //
+  // `calleeId` is now REQUIRED, so a payload carrying only `groupId` fails
+  // validation and is never forwarded. zod strips unknown keys rather than
+  // rejecting them, so a payload carrying BOTH is treated as an ordinary 1:1
+  // call to `calleeId` — harmless, and not worth `.strict()`, which would also
+  // start rejecting every other stray field older clients send.
+  //
+  // The real chokepoint is chat-service, which rejects `group_id` on the wire
+  // regardless of how the request got there — see grpc/service-impl.ts
+  // `initiateCall`. This schema is the trust boundary, not the enforcement.
+  const CallInitiateSchema = z.object({
+    calleeId: z.string().min(1),
+    callType: z.enum(["AUDIO", "VIDEO"]).default("AUDIO"),
+    privateRoomId: z.string().optional(),
+    legId: z.string().min(1).max(128).optional(),
+  });
   // `legId` identifies ONE connection of the user, not one login: two browser
   // tabs share a session (and therefore `socket.data.sessionId`), so the client
   // mints a per-page-load id and sends it here. Optional — a client that omits it
@@ -2207,10 +2213,9 @@ export function registerChatNamespace(
           messagingClient
             .initiateCall({
               callerId: userId,
-              calleeId: r.data.calleeId ?? "",
+              calleeId: r.data.calleeId,
               type: r.data.callType,
               privateRoomId: r.data.privateRoomId,
-              groupId: r.data.groupId,
             })
             .then((result) => {
               // Join the caller's socket to `call:<callId>` so lifecycle events
