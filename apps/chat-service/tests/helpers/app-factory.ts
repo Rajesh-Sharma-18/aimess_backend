@@ -501,12 +501,6 @@ export function buildApp(): BuiltApp {
     userSnapshotService,
     redis
   );
-  const groupMemberService = new GroupMemberService(
-    groupMemberRepo,
-    groupRoomRepo,
-    groupSystemMessageService,
-    redis
-  );
   const groupRoomService = new GroupRoomService(
     groupRoomRepo,
     groupMemberRepo,
@@ -514,6 +508,16 @@ export function buildApp(): BuiltApp {
     groupSystemMessageService,
     redis,
     groupMessageRepo
+  );
+  const groupMemberService = new GroupMemberService(
+    groupMemberRepo,
+    groupRoomRepo,
+    groupSystemMessageService,
+    redis,
+    undefined,
+    undefined,
+    undefined,
+    groupRoomService
   );
   const groupMessageService = new GroupMessageService(
     groupMessageRepo,

@@ -611,15 +611,6 @@ const startServer = async () => {
       userSnapshotService,
       redis
     );
-    const groupMemberService = new GroupMemberService(
-      groupMemberRepo,
-      groupRoomRepo,
-      groupSystemMessageService,
-      redis,
-      userServiceClient,
-      userSnapshotService,
-      cacheRepo
-    );
     const groupRoomService = new GroupRoomService(
       groupRoomRepo,
       groupMemberRepo,
@@ -629,6 +620,16 @@ const startServer = async () => {
       groupMessageRepo,
       userSnapshotService,
       cacheRepo
+    );
+    const groupMemberService = new GroupMemberService(
+      groupMemberRepo,
+      groupRoomRepo,
+      groupSystemMessageService,
+      redis,
+      userServiceClient,
+      userSnapshotService,
+      cacheRepo,
+      groupRoomService
     );
     // Admin Group Management (backoffice gRPC): reads plus the two moderation
     // writes, which delegate to the group services above so disband/remove keep

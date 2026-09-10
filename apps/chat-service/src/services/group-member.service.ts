@@ -57,6 +57,10 @@ export interface GroupUserServiceClient {
   checkFriendship(userA: string, userB: string): Promise<boolean>;
 }
 
+export interface GroupDisbander {
+  disbandGroup(roomId: string, userId: string): Promise<unknown>;
+}
+
 export class GroupMemberService {
   constructor(
     private readonly memberRepo: GroupMemberRepository,
@@ -67,7 +71,8 @@ export class GroupMemberService {
     /** Optional so existing 5-arg construction sites (tests) keep compiling; when
      *  absent the roster is returned bare, exactly as before. */
     private readonly userSnapshotService?: UserSnapshotService,
-    private readonly cacheRepo?: CacheRepository
+    private readonly cacheRepo?: CacheRepository,
+    private readonly groupDisbander?: GroupDisbander
   ) {}
 
   /**
@@ -500,7 +505,14 @@ export class GroupMemberService {
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
     if (member.role === "ADMIN") {
-      throw new BadRequestError("CHAT_OWNER_CANNOT_LEAVE");
+      const activeMembers = await this.memberRepo.countActiveMembers(roomId);
+      if (activeMembers !== 1 || !this.groupDisbander) {
+        throw new BadRequestError("CHAT_OWNER_CANNOT_LEAVE");
+      }
+
+      await this.groupDisbander.disbandGroup(roomId, userId);
+      this.emitGroupRemoved(roomId, userId, "LEAVE");
+      return this.memberRepo.findByRoomAndUser(roomId, userId);
     }
 
     const updated = await this.memberRepo.updateStatus(roomId, userId, "LEFT", {
