@@ -66,6 +66,9 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findCommunitiesByIds: jest.fn(),
     deleteCommunityHard: jest.fn(),
     setMemberDismissed: jest.fn(),
+    updateCommunity: jest.fn(),
+    markAllActiveMembersLeft: jest.fn(),
+    findActiveMemberIds: jest.fn(),
   },
 }));
 
@@ -416,14 +419,8 @@ describe("leaveCommunity — real-time broadcasts", () => {
     expect(postedTypes).not.toContain("MEMBER_LEFT");
   });
 
-  it("emits NO room events when admin is the last member (auto-delete branch)", async () => {
-    // Admin as last member: memberCount === 1, isAdmin = true → deleteCommunityHard, no broadcasts
-    repo.findById.mockResolvedValue({
-      ...community,
-      adminId: ADMIN,
-      memberCount: 1,
-    });
-    repo.findMemberByUserId.mockResolvedValue({
+  describe("admin is the last member", () => {
+    const soleAdminMembership = {
       userId: ADMIN,
       role: "ADMIN",
       status: "ACTIVE",
@@ -434,12 +431,59 @@ describe("leaveCommunity — real-time broadcasts", () => {
       bannedAt: null,
       bannedBy: null,
       banReason: null,
+    };
+
+    beforeEach(() => {
+      repo.findById.mockResolvedValue({
+        ...community,
+        adminId: ADMIN,
+        memberCount: 1,
+      });
+      repo.findMemberByUserId.mockResolvedValue(soleAdminMembership);
+      repo.findMembership.mockResolvedValue(soleAdminMembership);
+      repo.findActiveMemberIds.mockResolvedValue([ADMIN]);
+      repo.updateCommunity.mockResolvedValue(undefined);
+      repo.markAllActiveMembersLeft.mockResolvedValue(undefined);
     });
-    repo.deleteCommunityHard = jest.fn(async () => undefined);
 
-    await communityService.leaveCommunity(CID, ADMIN);
+    it("runs the shared community delete instead of a bare hard delete", async () => {
+      repo.countActiveMembers.mockResolvedValue(1);
 
-    expect(pubRoomEvent).not.toHaveBeenCalled();
+      const member = await communityService.leaveCommunity(CID, ADMIN);
+
+      expect(member.status).toBe("LEFT");
+      expect(repo.deleteCommunityHard).not.toHaveBeenCalled();
+      expect(repo.updateCommunity).toHaveBeenCalledWith(
+        CID,
+        expect.objectContaining({ deletedAt: expect.any(Date) })
+      );
+      expect(repo.markAllActiveMembersLeft).toHaveBeenCalledWith(CID);
+      expect(repo.setMemberCount).toHaveBeenCalledWith(CID, 0);
+      expect(pubRoomEvent).not.toHaveBeenCalled();
+    });
+
+    it("drops the community from the ex-admin's list on every device", async () => {
+      repo.countActiveMembers.mockResolvedValue(1);
+
+      await communityService.leaveCommunity(CID, ADMIN);
+
+      expect(pubUserEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        ADMIN,
+        "community:membership:removed",
+        expect.objectContaining({ communityId: CID, reason: "deleted" })
+      );
+    });
+
+    it("still refuses the leave when the live roster grew past the cached count", async () => {
+      repo.countActiveMembers.mockResolvedValue(2);
+
+      await expect(
+        communityService.leaveCommunity(CID, ADMIN)
+      ).rejects.toMatchObject({ messageKey: "COMMUNITY_ADMIN_CANNOT_LEAVE" });
+      expect(repo.updateCommunity).not.toHaveBeenCalled();
+      expect(repo.deleteCommunityHard).not.toHaveBeenCalled();
+    });
   });
 });
 

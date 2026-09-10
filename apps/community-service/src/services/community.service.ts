@@ -4733,23 +4733,20 @@ export const communityService = {
     // trapped holding a dead room in their list forever. Let them leave like a
     // plain member; the community stays CLOSED and readable for the rest.
     if (isAdmin && !communityAccessPolicy.isOwnerClosed(community)) {
-      if (community.memberCount === 1) {
-        // Admin is the only member → delete the community (members first, then
-        // community in a transaction). No audit needed since the community
-        // ceases to exist; member rows are removed by the transaction.
-        await communityRepository.deleteCommunityHard(communityId);
-        logger.info(
-          `Community deleted as last member left: community=${communityId} by=${callerId}`
-        );
-        // Member row is gone — synthesise the return value from the snapshot
-        // fetched before deletion.
-        return toMemberData({
-          ...membership,
-          status: CommunityMemberStatus.LEFT,
-        });
+      const activeMembers =
+        await communityRepository.countActiveMembers(communityId);
+      if (activeMembers !== 1) {
+        throw new BadRequestError("COMMUNITY_ADMIN_CANNOT_LEAVE");
       }
 
-      throw new BadRequestError("COMMUNITY_ADMIN_CANNOT_LEAVE");
+      await this.deleteCommunity(communityId, callerId);
+      logger.info(
+        `Community deleted as last member left: community=${communityId} by=${callerId}`
+      );
+      return toMemberData({
+        ...membership,
+        status: CommunityMemberStatus.LEFT,
+      });
     }
 
     // Non-admin leave: status → LEFT + recompute. Single-document update +
@@ -5169,24 +5166,24 @@ export const communityService = {
       // admin block is void — let them leave like a member (mirrors single
       // leaveCommunity). Falls through to the non-admin LEFT path below.
       if (isAdmin && !communityAccessPolicy.isOwnerClosed(bulkCommunity)) {
-        if (bulkCommunity.memberCount === 1) {
-          // Admin is the only member — auto-delete the community.
-          await communityRepository.deleteCommunityHard(communityId);
-          logger.info(
-            `Community auto-deleted (last member left via bulk): community=${communityId} by=${callerId}`
-          );
-          results.push({ communityId, status: "DELETED" });
-          leftCount++;
+        const activeMembers =
+          await communityRepository.countActiveMembers(communityId);
+        if (activeMembers !== 1) {
+          results.push({
+            communityId,
+            status: "FAILED",
+            errorCode: "ADMIN_CANNOT_LEAVE",
+          });
+          failedCount++;
           continue;
         }
 
-        // Admin with other members present — block.
-        results.push({
-          communityId,
-          status: "FAILED",
-          errorCode: "ADMIN_CANNOT_LEAVE",
-        });
-        failedCount++;
+        await this.deleteCommunity(communityId, callerId);
+        logger.info(
+          `Community auto-deleted (last member left via bulk): community=${communityId} by=${callerId}`
+        );
+        results.push({ communityId, status: "DELETED" });
+        leftCount++;
         continue;
       }
 
