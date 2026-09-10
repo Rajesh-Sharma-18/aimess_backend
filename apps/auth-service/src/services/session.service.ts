@@ -21,7 +21,7 @@ import {
   markSessionRevoked,
   markSessionsRevoked,
 } from "../lib/session-active-cache.js";
-import { assertNotBanned } from "../lib/account-guard.js";
+import { assertNotBanned, assertNotDeleted } from "../lib/account-guard.js";
 import { toActiveSessionItem } from "../lib/session-serializer.js";
 import { env, accessTokenSigningKey } from "../config/env.js";
 import { redis } from "../config/redis.js";
@@ -202,9 +202,11 @@ export const sessionService = {
       throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
     }
 
-    if (stored.user.deletedAt) {
-      throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
-    }
+    // The holder proved possession of a valid refresh token, so the deleted
+    // state can be named here — and must be: "your account has been disabled"
+    // sends a user who deleted their own account to support for a state they
+    // chose themselves.
+    assertNotDeleted(stored.user.deletedAt);
 
     // Refresh is the bypass a ban has to close: a still-valid refresh token
     // would otherwise mint a fresh 15-minute access token every time, and the
@@ -290,9 +292,11 @@ export const sessionService = {
       throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
     }
 
-    if (stored.user.deletedAt) {
-      throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
-    }
+    // The holder proved possession of a valid refresh token, so the deleted
+    // state can be named here — and must be: "your account has been disabled"
+    // sends a user who deleted their own account to support for a state they
+    // chose themselves.
+    assertNotDeleted(stored.user.deletedAt);
 
     // Refresh is the bypass a ban has to close: a still-valid refresh token
     // would otherwise mint a fresh 15-minute access token every time, and the

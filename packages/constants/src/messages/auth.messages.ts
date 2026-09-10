@@ -53,6 +53,23 @@ export const AUTH_MESSAGES = {
     en: "Your account has been banned by a Super Admin. You cannot access AIMess unless the ban is removed.",
     th: "บัญชีของคุณถูกแบนโดยผู้ดูแลระบบระดับสูง คุณจะไม่สามารถเข้าใช้ AIMess ได้จนกว่าจะมีการปลดแบน",
   },
+  // A soft-deleted account (auth_users.deletedAt set, status PENDING_DELETION).
+  // Deliberately NOT AUTH_ACCOUNT_NOT_ACTIVE above: "disabled, contact support"
+  // sends a user who deleted their own account to support for a state they
+  // chose, and hides the one fact that explains it. Deletion is reversible only
+  // by a Super Admin re-activate within the 30-day grace window, so the copy
+  // says what happened and nothing more.
+  //
+  // Returned by every authentication surface that loads a deleted account
+  // AFTER the caller has proven a credential — Google/Apple sign-in (signed
+  // provider token), refresh, and password login on a CORRECT password. A wrong
+  // password on a deleted account still answers AUTH_INVALID_CREDENTIALS, which
+  // is what keeps this from becoming an account-existence oracle.
+  AUTH_ACCOUNT_DELETED: {
+    vi: "Tài khoản này đã bị xóa",
+    en: "This account has been deleted.",
+    th: "บัญชีนี้ถูกลบไปแล้ว",
+  },
   AUTH_PASSWORD_NOT_SET: {
     vi: "Tài khoản này không hỗ trợ đăng nhập bằng mật khẩu",
     en: "This account does not support password login.",
@@ -447,7 +464,11 @@ export const AUTH_MESSAGES = {
     en: "A verification code to confirm account deletion has been sent to your email.",
     th: "ส่งรหัสยืนยันการลบบัญชีไปยังอีเมลของคุณแล้ว",
   },
-  AUTH_ACCOUNT_DELETED: {
+  // The 200 body of DELETE /api/auth/account. Renamed off AUTH_ACCOUNT_DELETED
+  // so that key can be the ERROR state above: a success sentence read
+  // "deleted successfully" on a login screen, which is the wrong tone for a
+  // refusal and the wrong sentence for the user.
+  AUTH_ACCOUNT_DELETE_SUCCESS: {
     vi: "Tài khoản đã được xóa",
     en: "Your account has been deleted successfully.",
     th: "ลบบัญชีของคุณเรียบร้อยแล้ว",

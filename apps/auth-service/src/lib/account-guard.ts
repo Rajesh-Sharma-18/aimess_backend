@@ -19,6 +19,28 @@ export function assertNotBanned(status: AccountStatus): void {
   }
 }
 
+// A soft-deleted account gets its own code, for the same reason a ban does.
+//
+// Every entry point used to fold `deletedAt` into the generic
+// UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE") below, whose copy reads "Your
+// account has been disabled. Please contact support." — which tells a user who
+// deleted their own account that something was done TO them, and points them at
+// a support queue that cannot help. Deleted and disabled are different states
+// and now answer differently.
+//
+// Call BEFORE the generic status check: a soft delete also sets status to
+// PENDING_DELETION, so a deleted account falls into that branch otherwise.
+//
+// Only ever called where the caller has already proven a credential (a session,
+// a refresh token, a signed provider token, or a verified password). Password
+// login gates it behind the bcrypt compare for exactly this reason — see
+// auth.service.login.
+export function assertNotDeleted(deletedAt: Date | null): void {
+  if (deletedAt) {
+    throw new UnauthorizedError("AUTH_ACCOUNT_DELETED");
+  }
+}
+
 export type ActiveAuthUser = {
   id: string;
   email: string | null;
@@ -33,10 +55,11 @@ export async function loadActiveAuthUser(
 ): Promise<ActiveAuthUser> {
   const user = await authRepository.findByIdForAccountOps(userId);
 
-  if (!user || user.deletedAt) {
+  if (!user) {
     throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
   }
 
+  assertNotDeleted(user.deletedAt);
   assertNotBanned(user.status);
 
   if (user.status !== AccountStatus.ACTIVE) {

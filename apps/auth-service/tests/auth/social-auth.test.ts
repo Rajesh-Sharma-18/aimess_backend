@@ -420,6 +420,50 @@ describe("POST /api/auth/google", () => {
       .send({ idToken: "valid-google-token" });
 
     expect(res.status).toBe(401);
+    expect(res.body.code).toBe("AUTH_ACCOUNT_NOT_ACTIVE");
+  });
+
+  // This is the surface the deleted-account bug was reported on: a soft delete
+  // sets status PENDING_DELETION too, so the account fell into the branch above
+  // and Google sign-in answered "Your account has been disabled. Please contact
+  // support." The provider's signed token is a proven credential, so the real
+  // state can be named here.
+  it("returns 401 AUTH_ACCOUNT_DELETED when the linked account was soft-deleted", async () => {
+    linkRepo.findByProvider.mockResolvedValue({
+      user: activeUser({
+        deletedAt: new Date(),
+        status: "PENDING_DELETION",
+      }),
+    });
+
+    const res = await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe("AUTH_ACCOUNT_DELETED");
+    expect(res.body.message).toBe("This account has been deleted.");
+    expect(issue).not.toHaveBeenCalled();
+  });
+
+  // Same answer down the auto-link branch: a deleted account must never be
+  // resurrected by arriving with a verified address on a NEW provider, and it
+  // must not be told it was disabled either.
+  it("returns 401 AUTH_ACCOUNT_DELETED when a verified email resolves to a deleted account", async () => {
+    linkRepo.findByProvider.mockResolvedValue(null);
+    repo.findByEmail.mockResolvedValue(
+      activeUser({ deletedAt: new Date(), status: "PENDING_DELETION" })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe("AUTH_ACCOUNT_DELETED");
+    // No duplicate account, and no new link on the deleted one.
+    expect(repo.createUserWithLinkedAccount).not.toHaveBeenCalled();
+    expect(linkRepo.create).not.toHaveBeenCalled();
   });
 
   it("returns 401 when the linked account is locked", async () => {

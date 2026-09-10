@@ -103,9 +103,37 @@ export const authService = {
       });
     };
 
-    if (!user || user.deletedAt) {
-      auditFailure(user ? "ACCOUNT_DELETED" : "ACCOUNT_NOT_FOUND", user?.id);
+    if (!user) {
+      auditFailure("ACCOUNT_NOT_FOUND");
       throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
+    }
+
+    // A soft-deleted account is named as deleted — but only to someone who
+    // typed its password correctly.
+    //
+    // This branch used to answer AUTH_INVALID_CREDENTIALS for every caller,
+    // which made a deleted account indistinguishable from one that never
+    // existed. That ambiguity is worth keeping against a guessing attacker and
+    // worth nothing against the person whose account it is: "incorrect account
+    // or password" sends them to reset a password that is fine, over and over.
+    // Verifying the credential first keeps both — the right answer for the
+    // owner, an unchanged one for anybody else — so this is not an enumeration
+    // oracle: without the password the response is byte-identical to before.
+    //
+    // Deliberately BEFORE the locked/banned/status checks: a soft delete also
+    // sets status to PENDING_DELETION, and reaching those would answer
+    // AUTH_ACCOUNT_NOT_ACTIVE ("your account has been disabled") for an account
+    // the user deleted themselves. Nothing below this point can run for a
+    // deleted account, so no failed-attempt counter moves and no token is ever
+    // issued.
+    if (user.deletedAt) {
+      const passwordValid = user.passwordHash
+        ? await bcrypt.compare(input.password, user.passwordHash)
+        : false;
+      auditFailure("ACCOUNT_DELETED", user.id);
+      throw new UnauthorizedError(
+        passwordValid ? "AUTH_ACCOUNT_DELETED" : "AUTH_INVALID_CREDENTIALS"
+      );
     }
 
     if (isEmailLoginIdentifier(identifier) && !user.emailVerified) {

@@ -20,7 +20,7 @@ import {
   generateUniqueAccount,
 } from "../lib/social-account.util.js";
 import { resolveSocialProfileName } from "../lib/social-profile-name.js";
-import { assertNotBanned } from "../lib/account-guard.js";
+import { assertNotBanned, assertNotDeleted } from "../lib/account-guard.js";
 import { assertEmailAvailable } from "../lib/email-availability.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import type { DeviceInfoInput } from "../api/validators/device-info.validator.js";
@@ -53,9 +53,10 @@ function isUniqueConstraintError(error: unknown): boolean {
 }
 
 function assertUserCanLogin(user: AuthUserRow): void {
-  if (user.deletedAt) {
-    throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
-  }
+  // The provider's signed token is the proven credential here, so naming the
+  // deleted state leaks nothing: only whoever controls that Google/Apple
+  // identity ever reaches this line.
+  assertNotDeleted(user.deletedAt);
 
   if (user.lockedUntil && user.lockedUntil > new Date()) {
     throw new UnauthorizedError("AUTH_ACCOUNT_LOCKED");
