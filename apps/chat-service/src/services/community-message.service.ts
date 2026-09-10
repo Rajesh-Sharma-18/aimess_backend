@@ -476,8 +476,7 @@ export class CommunityMessageService {
       // lib/room-lock.ts.
       const { sequenceNumber, revision } = await allocateRoomSlot(
         params.roomId,
-        (id, count) =>
-          this.roomRepo.allocateSequenceAndRevisionBlock(id, count)
+        (id, count) => this.roomRepo.allocateSequenceAndRevisionBlock(id, count)
       );
       const entity: Record<string, unknown> = {
         roomId: params.roomId,
@@ -2364,7 +2363,7 @@ export class CommunityMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
+    const { bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -2376,7 +2375,6 @@ export class CommunityMessageService {
       query: params.query,
       limit: params.limit,
       userId: params.userId,
-      viewerIsActiveMember: isActiveMember(member),
       cursor: params.cursor,
       readCutoff: bannedAtCutoff,
     });
@@ -2408,7 +2406,7 @@ export class CommunityMessageService {
     query: string,
     userId: string
   ): Promise<number> {
-    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
+    const { bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       roomId,
@@ -2419,7 +2417,6 @@ export class CommunityMessageService {
       roomId,
       query,
       userId,
-      isActiveMember(member),
       bannedAtCutoff
     );
   }
@@ -3249,7 +3246,9 @@ export class CommunityMessageService {
       // Recount at the message the pointer actually landed on, NOT at wall-clock `now`. Thresholding on `now` means "everything sent before I clicked is read", so acknowledging a message in the MIDDLE of the backlog reported 0 unread while every message after it was still unread. Harmless while rooms only ever opened at the tail (the two dates coincide there); reachable the moment a client opens on the unread divider.
       const counts = await this.messageRepo.countUnreadBulk({
         userId: params.readerId,
-        thresholds: [{ roomId: params.communityId, afterDate: effectiveReadAt }],
+        thresholds: [
+          { roomId: params.communityId, afterDate: effectiveReadAt },
+        ],
       });
       unreadAfterRead = counts[params.communityId]?.count ?? 0;
     } catch (err: unknown) {

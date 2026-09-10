@@ -42,6 +42,12 @@ jest.mock("../../src/middleware/rate-limiters.js", () => ({
     next(),
   sensitiveAuthRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
     next(),
+  // Split out of `sensitiveAuthRateLimiter` so validate/login/refresh stop
+  // sharing one counter. The auth router mounts them, so this mock has to
+  // supply them or the whole app fails to build.
+  accountValidateRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
+    next(),
+  loginRateLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
   changePasswordRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
     next(),
   refreshRateLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),

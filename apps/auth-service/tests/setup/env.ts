@@ -32,6 +32,10 @@ process.env.CHANGE_PASSWORD_RATE_LIMIT_MAX = "100";
 // forgot-password — every spec in this process shares one IP, so the production
 // ceiling of 20 would 429 partway through the auth suites.
 process.env.SENSITIVE_AUTH_RATE_LIMIT_MAX = "10000";
+// Same reasoning for the two limiters split out of it — /accounts/validate and
+// /login now count separately, and the whole suite still shares one address.
+process.env.ACCOUNT_VALIDATE_RATE_LIMIT_MAX = "10000";
+process.env.LOGIN_RATE_LIMIT_MAX = "10000";
 
 // Keep OTP deterministic if any code path reaches it under test.
 process.env.OTP_DEV_FIXED_CODE = "123456";

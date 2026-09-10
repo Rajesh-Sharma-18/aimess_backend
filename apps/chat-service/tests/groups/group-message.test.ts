@@ -185,10 +185,15 @@ describe("GET /:roomId/messages (timeline, membership-gated)", () => {
   });
 });
 
+// Search is a READ, so it routes through `assertGroupReadAccess`
+// (`findByRoomAndUser`) rather than the ACTIVE-only `findActiveByRoomAndUser` —
+// the same guard the history endpoint uses, so the two can never disagree about
+// who may look at a room.
 describe("GET /:roomId/messages/search (membership-gated)", () => {
   it("POSITIVE: an active member can search", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
+      status: "ACTIVE",
     });
     mocks.groupMessageRepo.searchByText.mockResolvedValue({
       messages: [
@@ -216,8 +221,9 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
   });
 
   it("REGRESSION: forwards the keyset cursor, never a skip offset", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
+      status: "ACTIVE",
     });
     mocks.groupMessageRepo.searchByText.mockResolvedValue({
       messages: [],
@@ -243,8 +249,9 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
   });
 
   it("REGRESSION: surfaces hasMore/nextCursor so the client pages without duplicates", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
+      status: "ACTIVE",
     });
     mocks.groupMessageRepo.searchByText.mockResolvedValue({
       messages: [],
@@ -262,9 +269,43 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
     expect(res.body.data.nextCursor).toBe("1700000000000_abc");
   });
 
-  // AUDIT H2 — search must be gated on active membership (IDOR).
+  // A member who left keeps read access frozen at `leftAt`, and the history
+  // endpoint already honours that. Search used to answer 403 for a room the very
+  // same user could still open and scroll — now it answers the same window,
+  // capped at the same instant, on the results AND on the counter.
+  it("lets a LEFT member search, capped at the instant they left", async () => {
+    const leftAt = new Date(1700000000000);
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+      status: "LEFT",
+      leftAt,
+    });
+    mocks.groupMessageRepo.searchByText.mockResolvedValue({
+      messages: [],
+      scores: new Map(),
+      hasMore: false,
+      nextCursor: null,
+    });
+    mocks.groupMessageRepo.countSearchResults.mockResolvedValue(0);
+
+    const res = await request(app)
+      .get(`${BASE}/${ROOM}/messages/search?q=hello`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.groupMessageRepo.searchByText.mock.calls[0][0]).toMatchObject({
+      readCutoffBefore: leftAt,
+    });
+    // The counter is bounded by the SAME instant, or it would report matches the
+    // result list can never reach.
+    expect(mocks.groupMessageRepo.countSearchResults.mock.calls[0][4]).toEqual(
+      leftAt
+    );
+  });
+
+  // AUDIT H2 — search must be gated on membership (IDOR).
   it("SECURITY: IDOR — 403 searching a group you're not a member of", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
 
     const res = await request(app)
       .get(`${BASE}/${ROOM}/messages/search?q=hello`)

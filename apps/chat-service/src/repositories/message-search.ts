@@ -169,6 +169,29 @@ export function buildTextSearchPipeline(params: {
   return pipeline;
 }
 
+/**
+ * Count pipeline for the SAME predicate {@link buildTextSearchPipeline} pages
+ * over. Both take one caller-built `match` and apply the identical escaped,
+ * case-insensitive substring `$regex` to `field`, so the in-chat "n of TOTAL"
+ * counter cannot report a total its own result list disagrees with. Counting
+ * through a hand-rolled second `$match` is what let the two drift apart.
+ */
+export function buildTextSearchCountPipeline(params: {
+  match: Record<string, unknown>;
+  field: string;
+  query: string;
+}): Record<string, unknown>[] {
+  return [
+    {
+      $match: {
+        ...params.match,
+        [params.field]: { $regex: escapeRegex(params.query), $options: "i" },
+      },
+    },
+    { $count: "total" },
+  ];
+}
+
 export function readTextSearchPage(
   rows: RawSearchDoc[],
   limit: number

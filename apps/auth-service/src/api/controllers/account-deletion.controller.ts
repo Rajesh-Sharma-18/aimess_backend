@@ -21,6 +21,8 @@ export const deleteAccount = asyncHandler(
 
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, t("AUTH_ACCOUNT_DELETED", req.locale)));
+      .json(
+        new ApiResponse(result, t("AUTH_ACCOUNT_DELETE_SUCCESS", req.locale))
+      );
   }
 );

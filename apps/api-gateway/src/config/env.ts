@@ -179,6 +179,60 @@ const envSchema = z.object({
     .positive()
     .default(15),
   SENSITIVE_AUTH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
+  /**
+   * `POST /auth/accounts/validate`. Split out of `auth.sensitive` because the
+   * traffic shape is nothing like a credential attempt: a signup form asks
+   * "is this name free?" while the user is still typing, so a debounced field
+   * legitimately produces several calls a minute, and the login step-1
+   * Continue button adds one per press. Sharing login's 20-per-15-minutes
+   * meant a user who merely typed their name carefully could not then log in.
+   *
+   * Short window on purpose — a 429 here clears in a minute rather than
+   * locking the whole auth surface for a quarter of an hour. The ceiling still
+   * bounds enumeration at 30 handles/minute/address, which is the same order
+   * the old rule allowed once amortised.
+   */
+  ACCOUNT_VALIDATE_RATE_LIMIT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1),
+  ACCOUNT_VALIDATE_RATE_LIMIT_MAX: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30),
+  /**
+   * `POST /auth/login` alone. Brute-force defence in depth on top of
+   * auth-service's per-account lockout (AUTH_MAX_FAILED_LOGINS), which is the
+   * control that actually stops a distributed run.
+   *
+   * Only FAILED attempts are counted (`skipSuccessfulRequests`), so a shared
+   * egress address does not accumulate a ban from people signing in
+   * successfully — and the window is 5 minutes, not 15, so a genuine mistype
+   * streak costs minutes rather than a quarter hour.
+   */
+  LOGIN_RATE_LIMIT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5),
+  LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(15),
+  /**
+   * `POST /auth/refresh` and `POST /auth/token`. Background application
+   * behaviour, not a credential attempt: a browser refreshes on boot and once
+   * per access-token expiry, and every open tab does it independently.
+   *
+   * Deliberately generous. The credential on this path is a 256-bit refresh
+   * token that is not guessable at any request rate, and a wrong one is
+   * rejected outright — volume is the only thing worth bounding here.
+   */
+  REFRESH_RATE_LIMIT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5),
+  REFRESH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
   /** OTP verify/resend. Separate from login: legitimate retries are more frequent. */
   OTP_RATE_LIMIT_WINDOW_MINUTES: z.coerce.number().int().positive().default(15),
   OTP_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(15),

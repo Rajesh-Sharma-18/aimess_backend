@@ -29,6 +29,8 @@ import {
   validateAccountSchema,
 } from "../validators/auth.validator.js";
 import {
+  accountValidateRateLimiter,
+  loginRateLimiter,
   refreshRateLimiter,
   sensitiveAuthRateLimiter,
 } from "../../middleware/rate-limiters.js";
@@ -58,13 +60,18 @@ authRoutes.post("/challenge", sensitiveAuthRateLimiter, getSignupChallenge);
 // That is deliberately GONE: a signup form has to answer "is this name free?"
 // while the user is still typing, and making every keystroke fetch and solve a
 // challenge — then fail with a validation error when it had not — cost more in
-// usability than the control bought. What remains is `sensitiveAuthRateLimiter`
+// usability than the control bought. What remains is `accountValidateRateLimiter`
 // alone, which bounds one address and does nothing about a proxy pool or a
 // botnet, where the per-source rate stays low. Raise the limiter, or put the
 // proof of work back, if enumeration shows up in the logs.
+//
+// It carried `sensitiveAuthRateLimiter` until now, i.e. the SAME counter as
+// /login and /register. A signup form calls this while the user types, so
+// probing spent the login budget — exactly the collision the comment above
+// says the removed proof of work was not worth causing.
 authRoutes.post(
   "/accounts/validate",
-  sensitiveAuthRateLimiter,
+  accountValidateRateLimiter,
   validateBody(validateAccountSchema),
   validateAccount
 );
@@ -86,9 +93,13 @@ authRoutes.post(
 // The validator was commented out, so a missing `account` threw inside the
 // service (500 instead of 400) and an object `account` / non-string `password`
 // reached the repository and bcrypt.
+//
+// `loginRateLimiter`, not `sensitiveAuthRateLimiter`: login gets its own
+// counter so an account-availability probe cannot use up the budget for
+// signing in, and only failed attempts count against it.
 authRoutes.post(
   "/login",
-  sensitiveAuthRateLimiter,
+  loginRateLimiter,
   validateBody(loginSchema),
   login
 );

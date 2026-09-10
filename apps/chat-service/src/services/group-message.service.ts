@@ -467,11 +467,7 @@ export class GroupMessageService {
         }),
       unreadIncrement > 0
         ? this.memberRepo
-            .incUnreadForRoom(
-              params.roomId,
-              params.senderId,
-              unreadIncrement
-            )
+            .incUnreadForRoom(params.roomId, params.senderId, unreadIncrement)
             .catch((err: unknown) => {
               logger.warn(
                 `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
@@ -508,11 +504,13 @@ export class GroupMessageService {
           })
         );
       }
-      void deliveredPipeline.exec().catch((err: unknown) =>
-        logger.warn(
-          `GroupMessageService|publish message:delivered failed room=${params.roomId} recipients=${deliveredToOnInsert.length}: ${String(err)}`
-        )
-      );
+      void deliveredPipeline
+        .exec()
+        .catch((err: unknown) =>
+          logger.warn(
+            `GroupMessageService|publish message:delivered failed room=${params.roomId} recipients=${deliveredToOnInsert.length}: ${String(err)}`
+          )
+        );
       // ALSO direct to the SENDER's own `user:<id>` channel — one publish
       // regardless of how many members came online (the sender's list row only
       // needs one tick update). Guarantees delivery even if the sender's
@@ -1028,7 +1026,11 @@ export class GroupMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    const member = await assertGroupMember(
+    // The READ guard, not the ACTIVE-member one: a member who left or was
+    // kicked keeps read access to history up to `readCutoffBefore`, and searching
+    // is a read. Guarding this path with `assertGroupMember` answered 403 for a
+    // conversation the very same user could still open and scroll.
+    const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
       params.userId
@@ -1040,6 +1042,7 @@ export class GroupMessageService {
       userId: params.userId,
       cursor: params.cursor,
       cutoff: getGroupVisibilityCutoff(member),
+      readCutoffBefore,
     });
   }
 
@@ -1076,7 +1079,10 @@ export class GroupMessageService {
     query: string,
     userId: string
   ): Promise<number> {
-    const member = await this.memberRepo.findActiveByRoomAndUser(
+    // Same guard and same bounds as `searchMessages` above — the counter and the
+    // result list must describe one window, including for a left/kicked member.
+    const { member, readCutoffBefore } = await assertGroupReadAccess(
+      this.memberRepo,
       roomId,
       userId
     );
@@ -1084,7 +1090,8 @@ export class GroupMessageService {
       roomId,
       query,
       userId,
-      getGroupVisibilityCutoff(member)
+      getGroupVisibilityCutoff(member),
+      readCutoffBefore
     );
   }
 

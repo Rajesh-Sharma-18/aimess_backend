@@ -13,8 +13,8 @@ import {
   type QuoteRefreshPatch,
 } from "../lib/quote-refresh.js";
 import {
+  buildTextSearchCountPipeline,
   buildTextSearchPipeline,
-  escapeRegex,
   orderByIds,
   parseSearchCursor,
   readTextSearchPage,
@@ -624,6 +624,34 @@ export class PrivateMessageRepository {
     );
   }
 
+  /**
+   * The ONE predicate in-chat search both pages and counts over — see
+   * {@link countSearchResults}. Keeping the count's filter as a second
+   * hand-written copy is what let the two drift.
+   *
+   * SYSTEM rows are excluded (lifecycle lines, call rows): they are room
+   * events, and their stored English third-person text is not what a viewer is
+   * shown — the read path re-renders it per viewer and locale. Matching text
+   * nobody can see put unrelated lines in the results and inflated the total.
+   * Same rule the cross-room search already applies. `null` matches a missing
+   * field too, so legacy rows are unaffected.
+   */
+  private searchMatch(
+    roomId: string,
+    userId: string,
+    cutoff?: Date
+  ): Record<string, unknown> {
+    return {
+      roomId,
+      isDeleted: false,
+      [`deletedFor.${userId}`]: { $exists: false },
+      systemEvent: null,
+      ...(cutoff
+        ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
+        : {}),
+    };
+  }
+
   async searchByText(params: {
     roomId: string;
     query: string;
@@ -638,14 +666,7 @@ export class PrivateMessageRepository {
     nextCursor: string | null;
   }> {
     const pipeline = buildTextSearchPipeline({
-      match: {
-        roomId: params.roomId,
-        isDeleted: false,
-        [`deletedFor.${params.userId}`]: { $exists: false },
-        ...(params.cutoff
-          ? { createdAt: { $gt: { $date: params.cutoff.toISOString() } } }
-          : {}),
-      },
+      match: this.searchMatch(params.roomId, params.userId, params.cutoff),
       field: "content.text",
       query: params.query,
       cursor: parseSearchCursor(params.cursor),
@@ -906,28 +927,21 @@ export class PrivateMessageRepository {
     );
   }
 
+  /** Full match count for the in-chat "n of TOTAL" counter. Shares
+   *  {@link searchMatch} and the regex builder with `searchByText`, so the total
+   *  is exactly the number of rows a caller could page to. */
   async countSearchResults(
     roomId: string,
     query: string,
     userId: string,
     cutoff?: Date
   ): Promise<number> {
-    const escaped = escapeRegex(query);
     const result = (await this.prisma.privateMessage.aggregateRaw({
-      pipeline: [
-        {
-          $match: {
-            roomId,
-            isDeleted: false,
-            [`deletedFor.${userId}`]: { $exists: false },
-            "content.text": { $regex: escaped, $options: "i" },
-            ...(cutoff
-              ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
-              : {}),
-          },
-        },
-        { $count: "total" },
-      ],
+      pipeline: buildTextSearchCountPipeline({
+        match: this.searchMatch(roomId, userId, cutoff),
+        field: "content.text",
+        query,
+      }) as unknown as Prisma.InputJsonValue[],
     })) as unknown as Array<{ total: number }>;
     return result[0]?.total ?? 0;
   }

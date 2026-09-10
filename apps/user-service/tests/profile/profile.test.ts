@@ -145,6 +145,137 @@ describe("GET /api/v1/users/profiles/me", () => {
     expect(pending.body.data.emailVerified).toBe(false);
   });
 
+  it("reports a Google account by its provider, with an empty profile email", async () => {
+    repo.findByUserId.mockResolvedValue(profileRecord({ isGoogleLogin: true }));
+    const resolveSummary = (
+      await import("../../src/lib/resolve-auth-account.js")
+    ).resolveAuthAccountSummary as unknown as jest.Mock;
+
+    resolveSummary.mockResolvedValueOnce({
+      account: {
+        account: "google_1234",
+        // A social sign-up never writes the profile email, so it stays empty
+        // until the user links one by hand through the OTP flow.
+        email: null,
+        emailVerified: false,
+        hasPassword: false,
+        primaryAccount: "GOOGLE",
+        providers: [
+          {
+            provider: "GOOGLE",
+            connected: true,
+            providerUserId: "sub-1234",
+            providerEmail: "user@gmail.com",
+            linkedAt: "2026-01-01T00:00:00.000Z",
+          },
+          {
+            provider: "APPLE",
+            connected: false,
+            providerUserId: null,
+            providerEmail: null,
+            linkedAt: null,
+          },
+        ],
+      },
+      accountStatus: "live",
+    });
+
+    const res = await request(app).get("/api/v1/users/profiles/me").set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      email: null,
+      isGoogleLogin: true,
+      isAppleLogin: false,
+      primaryAccount: "GOOGLE",
+      googleEmail: "user@gmail.com",
+      appleEmail: null,
+    });
+  });
+
+  it("reports an Apple account by its provider, with an empty profile email", async () => {
+    repo.findByUserId.mockResolvedValue(profileRecord());
+    const resolveSummary = (
+      await import("../../src/lib/resolve-auth-account.js")
+    ).resolveAuthAccountSummary as unknown as jest.Mock;
+
+    resolveSummary.mockResolvedValueOnce({
+      account: {
+        account: "apple_5678",
+        email: null,
+        emailVerified: false,
+        hasPassword: false,
+        primaryAccount: "APPLE",
+        providers: [
+          {
+            provider: "GOOGLE",
+            connected: false,
+            providerUserId: null,
+            providerEmail: null,
+            linkedAt: null,
+          },
+          {
+            provider: "APPLE",
+            connected: true,
+            providerUserId: "sub-5678",
+            providerEmail: "user@privaterelay.appleid.com",
+            linkedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      },
+      accountStatus: "live",
+    });
+
+    const res = await request(app).get("/api/v1/users/profiles/me").set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      email: null,
+      isGoogleLogin: false,
+      isAppleLogin: true,
+      primaryAccount: "APPLE",
+      googleEmail: null,
+      appleEmail: "user@privaterelay.appleid.com",
+    });
+  });
+
+  it("keeps the hand-linked email on an account that also signs in with Google", async () => {
+    repo.findByUserId.mockResolvedValue(profileRecord({ isGoogleLogin: true }));
+    const resolveSummary = (
+      await import("../../src/lib/resolve-auth-account.js")
+    ).resolveAuthAccountSummary as unknown as jest.Mock;
+
+    resolveSummary.mockResolvedValueOnce({
+      account: {
+        account: "johndoe",
+        email: "john@example.com",
+        emailVerified: true,
+        hasPassword: true,
+        primaryAccount: "EMAIL",
+        providers: [
+          {
+            provider: "GOOGLE",
+            connected: true,
+            providerUserId: "sub-1234",
+            providerEmail: "john@example.com",
+            linkedAt: "2026-02-01T00:00:00.000Z",
+          },
+        ],
+      },
+      accountStatus: "live",
+    });
+
+    const res = await request(app).get("/api/v1/users/profiles/me").set(auth());
+
+    expect(res.body.data).toMatchObject({
+      email: "john@example.com",
+      isGoogleLogin: true,
+      isAppleLogin: false,
+      primaryAccount: "EMAIL",
+      googleEmail: "john@example.com",
+    });
+  });
+
   it("returns 404 when the profile does not exist", async () => {
     repo.findByUserId.mockResolvedValue(null);
 

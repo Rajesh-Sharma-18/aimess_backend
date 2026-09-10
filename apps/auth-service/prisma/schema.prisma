@@ -90,13 +90,24 @@ model LinkedAccount {
   user           AuthUser     @relation(fields: [userId], references: [id], onDelete: Cascade)
   provider       AuthProvider
   providerUserId String // Google `sub`, Apple `sub`, or "email"
-  email          String? // email reported by the provider (may differ from primary)
+  // Email reported by the PROVIDER. Deliberately separate from
+  // `AuthUser.email`, which is the profile email the user linked by hand: a
+  // Google/Apple sign-in stores its address here and never writes it there.
+  email          String?
+  // Was the address above asserted by the provider signed token (Google/Apple
+  // `email_verified`) rather than supplied by the client? Only a
+  // provider-verified address may resolve to an existing account, so an
+  // unverified one stays display-only and can never merge two identities.
+  emailVerified  Boolean      @default(false)
   displayName    String?
   linkedAt       DateTime     @default(now()) @db.Timestamptz(3)
 
   @@unique([provider, providerUserId])
   @@unique([userId, provider]) // one provider link per user max
   @@index([userId])
+  // "Which account already owns this provider-verified address?" — asked on
+  // every social sign-in, so it must not be a table scan.
+  @@index([email, emailVerified])
   @@map("linked_accounts")
 }
 

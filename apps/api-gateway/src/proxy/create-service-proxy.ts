@@ -41,6 +41,33 @@ export function createServiceProxy(
       return `${downstreamPrefix}${normalizedSuffix}`;
     },
     on: {
+      /**
+       * Tell the downstream service which client this request came from.
+       *
+       * It could not previously find out. nginx sets `X-Forwarded-For` and the
+       * gateway reads it (TRUST_PROXY_HOPS=1), but the gateway does not APPEND
+       * itself to that chain, and every downstream service ships with
+       * TRUST_PROXY_HOPS=0 — so `req.ip` inside auth-service was the gateway's
+       * own container address, identically, for every request from every user
+       * on the platform. Each per-IP limiter down there was therefore a single
+       * platform-wide bucket: auth-service's login limiter was not "15 failed
+       * attempts per address", it was 15 for everyone combined.
+       *
+       * `setHeader` OVERWRITES, so a client cannot forge this: whatever it
+       * sends under this name is replaced with the address the gateway
+       * resolved. Downstream services are reachable only from inside the
+       * compose network, and the gateway is the only thing that talks to them.
+       *
+       * Deliberately a header of its own rather than `xfwd: true` on the proxy:
+       * `xfwd` would append the gateway's own PEER (nginx) to X-Forwarded-For,
+       * which every downstream reader would then have to count hops through,
+       * and `X-Forwarded-For` also feeds session/device identity in
+       * auth-service. This carries one fact and changes nothing else.
+       */
+      proxyReq: (proxyReq, req) => {
+        const clientIp = (req as { ip?: string }).ip;
+        if (clientIp) proxyReq.setHeader("x-client-ip", clientIp);
+      },
       proxyRes: (proxyRes) => {
         // The gateway is the SINGLE CORS authority. Downstream services use a
         // bare `cors()` → `Access-Control-Allow-Origin: *`. If that leaks back

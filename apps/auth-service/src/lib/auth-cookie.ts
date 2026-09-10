@@ -1,4 +1,5 @@
 import type { Request, RequestHandler, Response } from "express";
+import { UnauthorizedError } from "@aimess/errors";
 
 import { authCookie, env } from "../config/env.js";
 
@@ -95,7 +96,17 @@ export const hydrateRefreshTokenFromCookie: RequestHandler = (
 
   if (!body || typeof body.refreshToken !== "string" || !body.refreshToken.trim()) {
     const cookie = readRefreshCookie(req);
-    if (cookie) req.body = { ...(body ?? {}), refreshToken: cookie };
+    if (cookie) {
+      req.body = { ...(body ?? {}), refreshToken: cookie };
+    } else {
+      // Neither source carried a token. Falling through to the body validator
+      // reported it as 400 VALIDATION_FAILED / "expected string, received
+      // undefined", which reads like a malformed request and sent every
+      // investigation of a missing cookie down the wrong path. Missing
+      // credentials are a 401, and the code names the real cause.
+      next(new UnauthorizedError("AUTH_REFRESH_TOKEN_MISSING"));
+      return;
+    }
   }
 
   next();

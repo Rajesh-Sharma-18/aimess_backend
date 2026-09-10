@@ -6,9 +6,17 @@ export function isEmailLoginIdentifier(value: string): boolean {
 
 /**
  * Normalize the `account` field from a login body (account name or email).
- * Account names are stored lowercase (case-insensitive identity), and emails
- * are always lowercased, so we lowercase both here.
+ *
+ * Emails are lowercased, because every path that STORES one lowercases it
+ * (`normalizeEmail`) and the lookup is an exact-match unique index — without
+ * this, a user who linked name@example.com and then typed Name@Example.com was
+ * told their credentials were invalid.
+ *
+ * Account names are NOT lowercased. They are stored with the case the user
+ * chose (see `accountSchema`, whose `.toLowerCase()` is commented out), so
+ * folding them here would break username login for every mixed-case handle.
  */
 export function normalizeLoginIdentifier(value: string): string {
-  return value.trim();
+  const trimmed = value.trim();
+  return isEmailLoginIdentifier(trimmed) ? trimmed.toLowerCase() : trimmed;
 }
