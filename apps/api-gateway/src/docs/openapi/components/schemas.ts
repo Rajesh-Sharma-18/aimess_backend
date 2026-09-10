@@ -4696,7 +4696,8 @@ export const openApiSchemas = {
         type: "string",
         format: "email",
         nullable: true,
-        description: "Primary account email from auth-service.",
+        description:
+          "The email address the user linked to the account BY HAND and proved by OTP. Null until they do, which includes every Google/Apple account: a social sign-in never writes its provider address here. Read that address from `googleEmail` / `appleEmail` instead.",
       },
       emailVerified: {
         type: "boolean",
