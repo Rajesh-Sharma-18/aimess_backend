@@ -193,6 +193,106 @@ describe("gateway env — production boot assertions", () => {
     expect(exited).toBe(false);
   });
 
+  // ---- ADMIN_IP_WHITELIST_ENABLED ----------------------------------------
+  //
+  // The production assertions above are correct and stay, but together they left
+  // an operator no way to run a NODE_ENV=production box that has no IP
+  // perimeter: the empty list is refused, and so is every honest spelling of
+  // allow-all. The only paths out were inventing CIDRs or weakening the
+  // assertion. This switch is the third option — and the cases below pin that it
+  // cannot be entered by accident.
+
+  it("still refuses an empty allowlist when the switch is explicitly on", async () => {
+    const { exited, errors } = await loadEnv({
+      ...VALID_PRODUCTION,
+      ADMIN_IP_WHITELIST_ENABLED: "true",
+      ADMIN_IP_WHITELIST: "",
+    });
+
+    expect(exited).toBe(true);
+    expect(errors.join("\n")).toContain("ADMIN_IP_WHITELIST");
+  });
+
+  it("boots on an empty allowlist when the switch is explicitly off", async () => {
+    // The whole point: the list is read by nothing, so requiring a populated one
+    // would force the operator to write the 0.0.0.0/0 refused above.
+    const { exited } = await loadEnv({
+      ...VALID_PRODUCTION,
+      ADMIN_IP_WHITELIST_ENABLED: "false",
+      ADMIN_IP_WHITELIST: "",
+    });
+
+    expect(exited).toBe(false);
+  });
+
+  it("defaults to enforcing when the switch is absent in production", async () => {
+    // The fail-safe. A variable dropped from a deploy must not be the thing that
+    // removes the perimeter, so "unset" resolves to the enforcing value and the
+    // empty list is still refused.
+    const { exited, errors } = await loadEnv({
+      ...VALID_PRODUCTION,
+      ADMIN_IP_WHITELIST_ENABLED: undefined,
+      ADMIN_IP_WHITELIST: "",
+    });
+
+    expect(exited).toBe(true);
+    expect(errors.join("\n")).toContain("ADMIN_IP_WHITELIST");
+  });
+
+  it("treats a blank switch as enforcing, not as off", async () => {
+    const { exited, errors } = await loadEnv({
+      ...VALID_PRODUCTION,
+      ADMIN_IP_WHITELIST_ENABLED: "",
+      ADMIN_IP_WHITELIST: "",
+    });
+
+    expect(exited).toBe(true);
+    expect(errors.join("\n")).toContain("ADMIN_IP_WHITELIST");
+  });
+
+  it.each(["abc", "0", "1", "yes", "no", "TRUE", "False", "off"])(
+    "refuses to boot on the unparseable switch value %p",
+    async (value) => {
+      // A `=== "true"` coercion would read every one of these as false and
+      // silently drop the perimeter. The schema rejects them instead, so a typo
+      // costs a failed boot rather than an open admin surface.
+      const { exited } = await loadEnv({
+        ...VALID_PRODUCTION,
+        ADMIN_IP_WHITELIST_ENABLED: value,
+        ADMIN_IP_WHITELIST: "203.0.113.10",
+      });
+
+      expect(exited).toBe(true);
+    }
+  );
+
+  it("still refuses 0.0.0.0/0 when the switch is on", async () => {
+    // The switch is the way to say "no perimeter". It does not become a licence
+    // to spell allow-all in the list while claiming enforcement.
+    const { exited, errors } = await loadEnv({
+      ...VALID_PRODUCTION,
+      ADMIN_IP_WHITELIST_ENABLED: "true",
+      ADMIN_IP_WHITELIST: "0.0.0.0/0",
+    });
+
+    expect(exited).toBe(true);
+    expect(errors.join("\n")).toContain("matches every address");
+  });
+
+  it("leaves every OTHER production assertion in force when the switch is off", async () => {
+    // Turning off the IP perimeter must not turn off anything else. Same config
+    // as the booting case above, with one unrelated control broken.
+    const { exited, errors } = await loadEnv({
+      ...VALID_PRODUCTION,
+      ADMIN_IP_WHITELIST_ENABLED: "false",
+      ADMIN_IP_WHITELIST: "",
+      JWT_ADMIN_SECRET: "",
+    });
+
+    expect(exited).toBe(true);
+    expect(errors.join("\n")).toContain("JWT_ADMIN_SECRET");
+  });
+
   it("applies none of these assertions outside production", async () => {
     // Local development must stay frictionless: the same configuration that is
     // refused above is fine when NODE_ENV is not production.
