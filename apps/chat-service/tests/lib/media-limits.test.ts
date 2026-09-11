@@ -86,6 +86,22 @@ describe("media-limits — per-type byte caps", () => {
       "CHAT_IMAGE_TOO_LARGE"
     );
   });
+
+  it("VIDEO: count capped at 10 like IMAGE, size capped at 100 MB", () => {
+    const tenVideos = Array.from({ length: 10 }, () => ({
+      size: 1 * MB,
+      mime: "video/mp4",
+    }));
+    expect(thrownCode("VIDEO", tenVideos)).toBeNull();
+    // The gallery picker mixes photos and videos, so the album cap has to hold
+    // for an all-video batch too — VIDEO previously had no count cap at all.
+    expect(thrownCode("VIDEO", [...tenVideos, { size: 1 * MB }])).toBe(
+      "CHAT_VIDEO_COUNT_EXCEEDED"
+    );
+    expect(thrownCode("VIDEO", [{ size: 100 * MB + 1 }])).toBe(
+      "CHAT_VIDEO_TOO_LARGE"
+    );
+  });
 });
 
 describe("media-limits — detected-type validation for the generic (DOCUMENT/CUSTOM) bucket", () => {

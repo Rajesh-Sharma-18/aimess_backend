@@ -96,6 +96,17 @@ describe("community:message:send — ack surfaces the specific media-limit error
     expect(ack.message).toBe("Maximum 10 images allowed");
   });
 
+  it("CHAT_VIDEO_COUNT_EXCEEDED -> a specific, actionable ack message", () => {
+    const err = serviceError(
+      grpc.status.INVALID_ARGUMENT,
+      "CHAT_VIDEO_COUNT_EXCEEDED"
+    );
+    const ack = simulateSendCatch(err);
+    // The video half of the album cap — a client that ignores the picker's own
+    // limit must not get the generic "something went wrong" here either.
+    expect(ack.message).toBe("Maximum 10 videos allowed");
+  });
+
   it("CHAT_UNSUPPORTED_CONTENT_TYPE -> a specific, actionable ack message", () => {
     const err = serviceError(
       grpc.status.INVALID_ARGUMENT,

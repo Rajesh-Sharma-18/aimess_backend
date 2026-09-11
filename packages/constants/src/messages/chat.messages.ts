@@ -602,6 +602,11 @@ export const CHAT_MESSAGES = {
     en: "Maximum 10 images allowed",
     th: "แนบรูปภาพได้สูงสุด 10 รูป",
   },
+  CHAT_VIDEO_COUNT_EXCEEDED: {
+    vi: "Chỉ được gửi tối đa 10 video",
+    en: "Maximum 10 videos allowed",
+    th: "แนบวิดีโอได้สูงสุด 10 รายการ",
+  },
   CHAT_IMAGE_TOO_LARGE: {
     vi: "Ảnh vượt quá dung lượng cho phép (25 MB)",
     en: "Image exceeds 25 MB",

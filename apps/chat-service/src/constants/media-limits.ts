@@ -87,7 +87,12 @@ const IMAGE_MAX_BYTES = env.CHAT_IMAGE_MAX_BYTES; // 25 MB image cap
 const AUDIO_MAX_BYTES = env.CHAT_AUDIO_MAX_BYTES; // 25 MB audio cap
 const DOCUMENT_MAX_BYTES = env.CHAT_DOCUMENT_MAX_BYTES; // 25 MB document cap
 
-/** Telegram-like cap on images per message (gallery/album send). */
+/**
+ * Telegram-like cap on gallery items per message (album send). The same number
+ * applies to IMAGE and VIDEO: the Photos picker is ONE picker that mixes both,
+ * and the top-level messageType is derived from the batch, so a cap that only
+ * existed on IMAGE was simply absent for an all-video album.
+ */
 const MAX_IMAGES_PER_MESSAGE = 10;
 
 /**
@@ -96,7 +101,7 @@ const MAX_IMAGES_PER_MESSAGE = 10;
  */
 export const MEDIA_LIMITS = {
   IMAGE: { maxCount: MAX_IMAGES_PER_MESSAGE, maxBytes: IMAGE_MAX_BYTES },
-  VIDEO: { maxBytes: VIDEO_MAX_BYTES },
+  VIDEO: { maxCount: MAX_IMAGES_PER_MESSAGE, maxBytes: VIDEO_MAX_BYTES },
   VOICE: { maxBytes: GENERIC_MAX_BYTES },
   AUDIO: { maxBytes: AUDIO_MAX_BYTES },
   GIF: { maxBytes: GENERIC_MAX_BYTES },
@@ -238,6 +243,12 @@ function findMediaLimitViolations(
       break;
     }
     case "VIDEO": {
+      if (list.length > MEDIA_LIMITS.VIDEO.maxCount) {
+        violations.push({
+          code: "CHAT_VIDEO_COUNT_EXCEEDED",
+          message: `At most ${MEDIA_LIMITS.VIDEO.maxCount} videos are allowed`,
+        });
+      }
       for (const f of list) {
         // Falls back to the VIDEO cap (not DOCUMENT) when mime is empty/
         // unresolvable — matches the pre-fix behavior for a plain video send.
