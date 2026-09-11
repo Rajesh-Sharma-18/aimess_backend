@@ -72,6 +72,12 @@ async function linkProvider(
   profile: {
     sub: string;
     email: string | null;
+    /**
+     * Did the provider's signed token assert `email`? False when the address
+     * came off the request body, which the Apple path still allows. Only a true
+     * here lets the stored address resolve a later sign-in.
+     */
+    emailVerified: boolean;
     displayName: string | null;
   }
 ): Promise<SocialLinkResult> {
@@ -104,6 +110,7 @@ async function linkProvider(
       provider,
       providerUserId: profile.sub,
       email: profile.email,
+      emailVerified: profile.emailVerified,
       displayName: profile.displayName,
     });
   } catch (error) {
@@ -182,6 +189,7 @@ export const socialLinkService = {
     return linkProvider(userId, AuthProvider.GOOGLE, {
       sub: profile.sub,
       email: profile.email,
+      emailVerified: profile.emailVerified,
       displayName: profile.displayName,
     });
   },
@@ -192,12 +200,21 @@ export const socialLinkService = {
   ): Promise<SocialLinkResult> {
     const tokenProfile = await verifyAppleIdToken(input.identityToken);
 
+    // The body fallback is kept — it is the only way to show an address for an
+    // Apple sign-in after the first, where the token carries none — but it is
+    // recorded as UNVERIFIED. That distinction is load-bearing: a stored address
+    // that a client chose must never be able to resolve somebody else's account
+    // on a later Google sign-in.
     const email =
       tokenProfile.email ?? input.email?.trim().toLowerCase() ?? null;
+    const emailVerified = Boolean(
+      tokenProfile.email && tokenProfile.emailVerified
+    );
 
     return linkProvider(userId, AuthProvider.APPLE, {
       sub: tokenProfile.sub,
       email,
+      emailVerified,
       displayName: tokenProfile.displayName ?? input.fullName?.trim() ?? null,
     });
   },

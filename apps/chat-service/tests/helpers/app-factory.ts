@@ -64,6 +64,7 @@ import { GroupMessageController } from "../../src/api/controllers/group-message.
 import { GroupMemberController } from "../../src/api/controllers/group-member.controller.js";
 import { GroupInviteLinkController } from "../../src/api/controllers/group-invite-link.controller.js";
 import { NotificationController } from "../../src/api/controllers/notification.controller.js";
+import { NotificationCatalogueService } from "../../src/services/notification-catalogue.service.js";
 import { UnreadSummaryController } from "../../src/api/controllers/unread-summary.controller.js";
 import { CommunityController } from "../../src/api/controllers/community.controller.js";
 import { CommunityMessageController } from "../../src/api/controllers/community-message.controller.js";
@@ -157,6 +158,7 @@ export interface BuiltMocks {
   generalRoomMessageRepo: any;
   roomMemberRepo: any;
   notificationRepo: any;
+  notificationCategoryRepo: any;
   callRepo: any;
   messageSearchRepo: any;
   cacheRepo: any;
@@ -383,6 +385,10 @@ export function buildApp(): BuiltApp {
   const generalRoomMessageRepo = repoMock();
   const roomMemberRepo = repoMock();
   const notificationRepo = repoMock();
+  const notificationCategoryRepo = repoMock();
+  // The six seeded catalogue rows. Specs that care override `listAll`; every
+  // other spec just needs the categories endpoint not to blow up.
+  notificationCategoryRepo.listAll.mockResolvedValue([]);
   // The list endpoint reads per-tab counts alongside the rows; without a default
   // every notifications spec would 500 on an undefined counts object.
   notificationRepo.countByCategories.mockResolvedValue({
@@ -495,12 +501,6 @@ export function buildApp(): BuiltApp {
     userSnapshotService,
     redis
   );
-  const groupMemberService = new GroupMemberService(
-    groupMemberRepo,
-    groupRoomRepo,
-    groupSystemMessageService,
-    redis
-  );
   const groupRoomService = new GroupRoomService(
     groupRoomRepo,
     groupMemberRepo,
@@ -508,6 +508,16 @@ export function buildApp(): BuiltApp {
     groupSystemMessageService,
     redis,
     groupMessageRepo
+  );
+  const groupMemberService = new GroupMemberService(
+    groupMemberRepo,
+    groupRoomRepo,
+    groupSystemMessageService,
+    redis,
+    undefined,
+    undefined,
+    undefined,
+    groupRoomService
   );
   const groupMessageService = new GroupMessageService(
     groupMessageRepo,
@@ -537,6 +547,9 @@ export function buildApp(): BuiltApp {
   );
 
   const notificationService = new NotificationService(notificationRepo);
+  const notificationCatalogueService = new NotificationCatalogueService(
+    notificationCategoryRepo
+  );
   // Stubs for CallService's LiveKit + gate deps. The REST call-history tests
   // (calls.test.ts) never invoke initiateCall so these are effectively unused,
   // but they satisfy the constructor and keep future initiate-flow tests honest.
@@ -683,7 +696,10 @@ export function buildApp(): BuiltApp {
       groupInviteLinkService,
       groupMemberService
     ),
-    notificationCtrl: new NotificationController(notificationService),
+    notificationCtrl: new NotificationController(
+      notificationService,
+      notificationCatalogueService
+    ),
     unreadSummaryCtrl: new UnreadSummaryController(unreadSummaryService),
     communityCtrl: new CommunityController(communityRoomService),
     communityMessageCtrl: new CommunityMessageController(
@@ -732,6 +748,7 @@ export function buildApp(): BuiltApp {
       generalRoomMessageRepo,
       roomMemberRepo,
       notificationRepo,
+      notificationCategoryRepo,
       callRepo,
       messageSearchRepo,
       cacheRepo,

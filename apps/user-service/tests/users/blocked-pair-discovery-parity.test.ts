@@ -21,6 +21,7 @@ jest.mock("../../src/repositories/user-profile.repository.js", () => ({
   userProfileRepository: {
     findByUserIds: jest.fn(async () => []),
     findDiscoverableByUserIds: jest.fn(async () => []),
+    findDiscoverableByNormalizedUsername: jest.fn(async () => null),
     findPublicProfileByUserId: jest.fn(async () => null),
     findUsersInList: jest.fn(async () => []),
     findUsersNotInList: jest.fn(async () => []),

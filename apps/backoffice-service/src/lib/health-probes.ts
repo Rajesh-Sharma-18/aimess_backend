@@ -446,8 +446,9 @@ function tcpConnect(host: string, port: number): Promise<number> {
 
 /**
  * Mongo host/port for the probe. `MONGO_DATABASE_URL` (the same connection
- * string chat-service uses) wins when set; the first host of a seed list is
- * probed, since any one reachable member proves the cluster is addressable.
+ * string the Mongo-backed services use) wins when set; the first host of a
+ * seed list is probed, since any one reachable member proves the cluster is
+ * addressable.
  */
 function mongoTarget(): { host: string; port: number } {
   const url = env.MONGO_DATABASE_URL;
@@ -461,14 +462,14 @@ function mongoTarget(): { host: string; port: number } {
   return { host: env.MONGODB_HOST, port: env.MONGODB_PORT };
 }
 
-/** MongoDB (chat-service's store) reachability — bounded TCP connect. */
+/** MongoDB reachability — bounded TCP connect to the shared instance. */
 export async function probeMongo(): Promise<InfraHealth> {
   const { host, port } = mongoTarget();
   try {
     const latencyMs = await tcpConnect(host, port);
     return infra(
       "mongodb",
-      "Chat Database (MongoDB)",
+      "Document Database (MongoDB)",
       latencyMs > SLOW_INFRA_MS ? "degraded" : "healthy",
       { latencyMs, engine: "mongodb", host: `${host}:${String(port)}` },
       latencyMs
@@ -476,7 +477,7 @@ export async function probeMongo(): Promise<InfraHealth> {
   } catch (err) {
     return infra(
       "mongodb",
-      "Chat Database (MongoDB)",
+      "Document Database (MongoDB)",
       "down",
       { latencyMs: null, engine: "mongodb", host: `${host}:${String(port)}` },
       null,

@@ -22,10 +22,16 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
     recordFailedLogin: jest.fn(),
     mergeFcmTokens: jest.fn(),
     getProfileCompleted: jest.fn(),
+    setPrimaryAccountIfUnset: jest.fn(),
+    createUserWithLinkedAccount: jest.fn(),
   },
 }));
 jest.mock("../../src/repositories/linked-account.repository.js", () => ({
-  linkedAccountRepository: { findByProvider: jest.fn(), create: jest.fn() },
+  linkedAccountRepository: {
+    findByProvider: jest.fn(),
+    findUserByVerifiedProviderEmail: jest.fn(),
+    create: jest.fn(),
+  },
 }));
 jest.mock("../../src/lib/google-id-token.js", () => ({
   verifyGoogleIdToken: jest.fn(),

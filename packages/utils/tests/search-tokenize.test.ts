@@ -1,4 +1,6 @@
 import {
+  handleRank,
+  rankByHandle,
   normalizeForSearch,
   tokenizeAndNormalize,
   tokenizeSearchQuery,
@@ -71,5 +73,58 @@ describe("tokenizeAndNormalize", () => {
     expect(tokenizeAndNormalize("... john")).toEqual([
       { raw: "john", normalized: "john" },
     ]);
+  });
+});
+
+describe("handleRank", () => {
+  it("tiers exact over prefix over substring over no-match", () => {
+    expect(handleRank("cat", "cat")).toBe(0);
+    expect(handleRank("catloversonly", "cat")).toBe(1);
+    expect(handleRank("thecatlover", "cat")).toBe(2);
+    expect(handleRank("dogperson", "cat")).toBe(3);
+  });
+
+  it("treats @Handle, handle and hand le as one query", () => {
+    for (const q of [
+      "@Smiley_Creatures",
+      "smiley creatures",
+      "smileycreatures",
+    ]) {
+      expect(handleRank("Smiley_Creatures", normalizeForSearch(q))).toBe(0);
+    }
+  });
+
+  it("ranks nothing when the query normalizes away", () => {
+    expect(handleRank("cat", "")).toBe(3);
+  });
+});
+
+describe("rankByHandle", () => {
+  const rows = [
+    { handle: "dogperson" }, // name-only match, tier 3
+    { handle: "thecatlover" }, // substring, tier 2
+    { handle: "cat" }, // exact, tier 0
+    { handle: "catloversonly" }, // prefix, tier 1
+  ];
+
+  it("puts the exact handle first and keeps every row", () => {
+    expect(
+      rankByHandle(rows, "@CAT", (r) => r.handle).map((r) => r.handle)
+    ).toEqual(["cat", "catloversonly", "thecatlover", "dogperson"]);
+  });
+
+  it("holds the page order within a tier", () => {
+    const sameTier = [
+      { handle: "catz" },
+      { handle: "cataz" },
+      { handle: "catbz" },
+    ];
+    expect(
+      rankByHandle(sameTier, "cat", (r) => r.handle).map((r) => r.handle)
+    ).toEqual(["catz", "cataz", "catbz"]);
+  });
+
+  it("leaves the page untouched when there is no query", () => {
+    expect(rankByHandle(rows, undefined, (r) => r.handle)).toBe(rows);
   });
 });

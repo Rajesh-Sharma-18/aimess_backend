@@ -85,21 +85,45 @@ export class CallRepository {
   }
 
   /**
-   * IN_PROGRESS rows past the max-duration ceiling, plus rows with a null
-   * `answeredAt` (already inconsistent). Both are unreachable by any normal end
-   * path once the client is gone, so they must be swept or the participants stay
-   * permanently busy.
-   * Sweep candidates for calls stranded in IN_PROGRESS: answered longer ago
-   * than any plausible call could run. These are rows whose LiveKit room has
-   * already closed but whose `room_finished` webhook never landed — without
-   * this they stay IN_PROGRESS forever and keep the participants "busy".
-   * Keyed on `answeredAt` (when the call actually started), not `initiatedAt`.
+   * Sweep candidates for calls stranded in IN_PROGRESS: rows whose LiveKit room
+   * has already closed but whose `room_finished` webhook never landed. Without
+   * this they stay IN_PROGRESS forever and keep both participants "busy".
+   *
+   * TWO shapes qualify, and the second used to be claimed by this docstring
+   * without being implemented:
+   *
+   *  1. Answered longer ago than any plausible call could run — keyed on
+   *     `answeredAt`, the moment the call actually started.
+   *  2. IN_PROGRESS with NO `answeredAt` at all, which is already inconsistent.
+   *     `activeWhere` deliberately excludes these from the busy predicate on the
+   *     understanding that this method reaps them. It did not: MongoDB's `lt` is
+   *     type-bracketed, so a comparison against a Date never matches a row whose
+   *     field is null or absent. Verified against the dev database — of 413 rows
+   *     with no `answeredAt`, exactly zero matched `{ answeredAt: { lt: now } }`.
+   *     Such a row was therefore invisible to every gate AND unreachable by
+   *     every sweep, i.e. immortal, and rendered as permanently "in progress".
+   *
+   * The null branches are bounded by `initiatedAt` rather than `answeredAt` —
+   * there is no other clock on such a row, and unbounded they would reap a call
+   * the instant it was answered.
+   *
+   * Both null spellings are listed on purpose. `create` omits `answeredAt`
+   * entirely, so these rows carry the field ABSENT rather than null, and
+   * `isSet: false` is the only filter that reaches those (same reasoning as
+   * `PENDING_LOGIN` in notification.repository.ts). Writing the comparison out
+   * rather than leaning on any null-ordering quirk is the rule this codebase
+   * already set for sweepers — see auto-delete-claim.ts, which spells its own OR
+   * for exactly this reason.
    */
   async findStuckInProgress(cutoff: Date, limit: number): Promise<Call[]> {
     return this.prisma.call.findMany({
       where: {
         status: CallStatus.IN_PROGRESS,
-        answeredAt: { lt: cutoff },
+        OR: [
+          { answeredAt: { lt: cutoff } },
+          { answeredAt: null, initiatedAt: { lt: cutoff } },
+          { answeredAt: { isSet: false }, initiatedAt: { lt: cutoff } },
+        ],
       },
       take: limit,
     });

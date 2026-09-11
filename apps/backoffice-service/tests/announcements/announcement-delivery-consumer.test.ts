@@ -201,6 +201,23 @@ describe("handleAnnouncementDeliverMessage", () => {
     ]);
   });
 
+  it("deviceType=WEB: covers DESKTOP sessions, not mobile browsers only", async () => {
+    auth.adminListUserIdsByDeviceType.mockResolvedValue({
+      userIds: ["laptop-user"],
+      total: 1,
+    });
+
+    await handleAnnouncementDeliverMessage(baseMessage({ deviceType: "WEB" }));
+
+    // A desktop browser lands in Session.deviceType DESKTOP, so asking for
+    // "WEB" alone reached mobile browsers only.
+    expect(auth.adminListUserIdsByDeviceType).toHaveBeenCalledWith({
+      deviceTypes: ["WEB", "DESKTOP"],
+      limit: 100,
+      offset: 0,
+    });
+  });
+
   it("deviceType=ALL: still uses the full active-user listing", async () => {
     auth.adminListUsers.mockResolvedValue({ users: [{ id: "u1" }], total: 1 });
 

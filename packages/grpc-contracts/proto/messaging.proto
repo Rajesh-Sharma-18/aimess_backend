@@ -99,6 +99,13 @@ service MessagingService {
   rpc AdminGetCallingEnabled  (AdminGetCallingEnabledRequest)  returns (AdminCallingEnabled);
   rpc AdminSetCallingEnabled  (AdminSetCallingEnabledRequest)  returns (AdminCallingEnabled);
 
+  // Super Admin notification-category catalogue. Read + configure ONLY: there
+  // is no create and no delete rpc, because the six categories are seeded and
+  // their ids are a persisted client contract. Only `priority` and the
+  // per-platform enable set are writable.
+  rpc AdminListNotificationCategories (AdminListNotificationCategoriesRequest) returns (AdminNotificationCategoryList);
+  rpc AdminUpdateNotificationCategory (AdminUpdateNotificationCategoryRequest) returns (AdminNotificationCategoryMutation);
+
   // Authorize a media download against resource membership. media-service calls
   // this for chat-scoped attachments because the object key encodes the uploader,
   // not the room/group/community the file belongs to. Reuses chat-service's
@@ -902,4 +909,42 @@ message GetGroupMutedMemberIdsResponse {
   // which is also the fail-open answer, since a mute-oracle failure must never
   // suppress a push.
   repeated string user_ids = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Super Admin: notification-category catalogue
+// -----------------------------------------------------------------------------
+message AdminNotificationCategory {
+  string          id                = 1; // stable, uppercase, never renamed
+  int32           priority          = 2; // ascending render order
+  string          default_label     = 3; // English fallback label
+  string          icon_key          = 4; // client maps this to a local asset
+  repeated string enabled_platforms = 5; // ANDROID | IOS | WEB
+  int64           updated_at        = 6; // epoch ms
+}
+
+message AdminListNotificationCategoriesRequest {}
+
+message AdminNotificationCategoryList {
+  repeated AdminNotificationCategory categories = 1;
+}
+
+message AdminUpdateNotificationCategoryRequest {
+  string          category_id           = 1;
+  int32           priority              = 2; // ignored unless has_priority
+  bool            has_priority          = 3;
+  repeated string enabled_platforms     = 4; // ignored unless has_enabled_platforms
+  // A repeated field cannot distinguish "not sent" from "sent empty", and
+  // "empty" is a legitimate value here (a category disabled everywhere), so
+  // presence needs its own flag — same convention as community.proto's
+  // AdminUpdateCategoryRequest.
+  bool            has_enabled_platforms = 5;
+  string          actor_id              = 6;
+}
+
+// "" on success, else NOTIFICATION_CATEGORY_NOT_FOUND
+message AdminNotificationCategoryMutation {
+  bool                      ok         = 1;
+  AdminNotificationCategory category   = 2;
+  string                    error_code = 3;
 }

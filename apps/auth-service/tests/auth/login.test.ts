@@ -52,6 +52,9 @@ function activeUser(overrides: Record<string, unknown> = {}) {
     status: "ACTIVE",
     isProfileCompleted: true,
     role: "USER",
+    // Selected by loginUserSelect and read only when passwordHash is null.
+    primaryAccount: null,
+    linkedAccounts: [],
     ...overrides,
   };
 }
@@ -109,7 +112,10 @@ describe("POST /api/auth/login", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 401 when the account is not ACTIVE", async () => {
+  // A DISABLED account keeps the sentence it always had. The deleted-account
+  // code added alongside it (see login-extra.test.ts) must not swallow this
+  // one: disabled and deleted are different states with different advice.
+  it("returns 401 AUTH_ACCOUNT_NOT_ACTIVE when the account is not ACTIVE", async () => {
     repo.findByAccountForLogin.mockResolvedValue(
       activeUser({ status: "SUSPENDED" })
     );
@@ -119,5 +125,24 @@ describe("POST /api/auth/login", () => {
       .send({ account: "johndoe", password: PASSWORD });
 
     expect(res.status).toBe(401);
+    expect(res.body.code).toBe("AUTH_ACCOUNT_NOT_ACTIVE");
+    expect(res.body.message).toBe(
+      "Your account has been disabled. Please contact support."
+    );
+  });
+
+  // 403, not 401: a ban is permanent, so the client must stop retrying rather
+  // than read it as "sign in again".
+  it("returns 403 ACCOUNT_BANNED for a permanently banned account", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      activeUser({ status: "BANNED" })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "johndoe", password: PASSWORD });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("ACCOUNT_BANNED");
   });
 });

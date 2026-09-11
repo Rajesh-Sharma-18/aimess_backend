@@ -53,10 +53,44 @@ export const AUTH_MESSAGES = {
     en: "Your account has been banned by a Super Admin. You cannot access AIMess unless the ban is removed.",
     th: "บัญชีของคุณถูกแบนโดยผู้ดูแลระบบระดับสูง คุณจะไม่สามารถเข้าใช้ AIMess ได้จนกว่าจะมีการปลดแบน",
   },
+  // A soft-deleted account (auth_users.deletedAt set, status PENDING_DELETION).
+  // Deliberately NOT AUTH_ACCOUNT_NOT_ACTIVE above: "disabled, contact support"
+  // sends a user who deleted their own account to support for a state they
+  // chose, and hides the one fact that explains it. Deletion is reversible only
+  // by a Super Admin re-activate within the 30-day grace window, so the copy
+  // says what happened and nothing more.
+  //
+  // Returned by every authentication surface that loads a deleted account
+  // AFTER the caller has proven a credential — Google/Apple sign-in (signed
+  // provider token), refresh, and password login on a CORRECT password. A wrong
+  // password on a deleted account still answers AUTH_INVALID_CREDENTIALS, which
+  // is what keeps this from becoming an account-existence oracle.
+  AUTH_ACCOUNT_DELETED: {
+    vi: "Tài khoản này đã bị xóa",
+    en: "This account has been deleted.",
+    th: "บัญชีนี้ถูกลบไปแล้ว",
+  },
   AUTH_PASSWORD_NOT_SET: {
     vi: "Tài khoản này không hỗ trợ đăng nhập bằng mật khẩu",
     en: "This account does not support password login.",
     th: "บัญชีนี้ไม่รองรับการเข้าสู่ระบบด้วยรหัสผ่าน",
+  },
+  // The two provider-specific refinements of AUTH_PASSWORD_NOT_SET above.
+  // Password login returns one of these ONLY when the account has no password
+  // hash at all. An account that legitimately supports BOTH a password and a
+  // linked Google/Apple identity still gets the ordinary credential check —
+  // being linked is not the same as being password-less. Naming the provider is
+  // what lets a client point the user at the right button instead of showing
+  // "Incorrect account or password" for a credential that was never set.
+  AUTH_GOOGLE_LOGIN_REQUIRED: {
+    vi: "Tài khoản của bạn được liên kết với Google. Vui lòng tiếp tục bằng Google để đăng nhập",
+    en: "Your account is linked to Google. Please continue with Google to log in.",
+    th: "บัญชีของคุณเชื่อมกับ Google กรุณาดำเนินการต่อด้วย Google เพื่อเข้าสู่ระบบ",
+  },
+  AUTH_APPLE_LOGIN_REQUIRED: {
+    vi: "Tài khoản của bạn được liên kết với Apple. Vui lòng tiếp tục bằng Apple để đăng nhập",
+    en: "Your account is linked to Apple. Please continue with Apple to log in.",
+    th: "บัญชีของคุณเชื่อมกับ Apple กรุณาดำเนินการต่อด้วย Apple เพื่อเข้าสู่ระบบ",
   },
   AUTH_UNAUTHORIZED: {
     vi: "Yêu cầu xác thực",
@@ -87,6 +121,16 @@ export const AUTH_MESSAGES = {
     vi: "Phiên đăng nhập không hợp lệ, vui lòng đăng nhập lại",
     en: "Your session is invalid or has been revoked. Please sign in again.",
     th: "เซสชันของคุณไม่ถูกต้องหรือถูกเพิกถอนแล้ว กรุณาเข้าสู่ระบบอีกครั้ง",
+  },
+  // Distinct from AUTH_REFRESH_TOKEN_INVALID on purpose: this one means no
+  // token arrived at all - no `refreshToken` in the body and no `aimess_rt`
+  // cookie - which almost always means the browser is not sending the cookie
+  // (cross-site SameSite, a wrong cookie path, or a request made without
+  // credentials), not that the session was revoked.
+  AUTH_REFRESH_TOKEN_MISSING: {
+    vi: "Không tìm thấy phiên đăng nhập, vui lòng đăng nhập lại",
+    en: "No session credentials were sent. Please sign in again.",
+    th: "ไม่พบข้อมูลเซสชัน กรุณาเข้าสู่ระบบอีกครั้ง",
   },
   AUTH_REFRESH_TOKEN_EXPIRED: {
     vi: "Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại",
@@ -420,7 +464,11 @@ export const AUTH_MESSAGES = {
     en: "A verification code to confirm account deletion has been sent to your email.",
     th: "ส่งรหัสยืนยันการลบบัญชีไปยังอีเมลของคุณแล้ว",
   },
-  AUTH_ACCOUNT_DELETED: {
+  // The 200 body of DELETE /api/auth/account. Renamed off AUTH_ACCOUNT_DELETED
+  // so that key can be the ERROR state above: a success sentence read
+  // "deleted successfully" on a login screen, which is the wrong tone for a
+  // refusal and the wrong sentence for the user.
+  AUTH_ACCOUNT_DELETE_SUCCESS: {
     vi: "Tài khoản đã được xóa",
     en: "Your account has been deleted successfully.",
     th: "ลบบัญชีของคุณเรียบร้อยแล้ว",

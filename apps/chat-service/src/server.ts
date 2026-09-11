@@ -27,6 +27,7 @@ import { GeneralRoomRepository } from "./repositories/general-room.repository.js
 import { GeneralRoomMessageRepository } from "./repositories/general-room-message.repository.js";
 import { RoomMemberRepository } from "./repositories/room-member.repository.js";
 import { NotificationRepository } from "./repositories/notification.repository.js";
+import { NotificationCategoryRepository } from "./repositories/notification-category.repository.js";
 import { CacheRepository } from "./repositories/cache.repository.js";
 import { CallRepository } from "./repositories/call.repository.js";
 import { PrivateMessageReportRepository } from "./repositories/private-message-report.repository.js";
@@ -53,6 +54,7 @@ import { GroupInviteLinkService } from "./services/group-invite-link.service.js"
 import { GroupPinService } from "./services/group-pin.service.js";
 import { CommunityPinService } from "./services/community-pin.service.js";
 import { NotificationService } from "./services/notification.service.js";
+import { NotificationCatalogueService } from "./services/notification-catalogue.service.js";
 import { CommunityRoomService } from "./services/community-room.service.js";
 import { CommunityMessageService } from "./services/community-message.service.js";
 import { CommunitySystemMessageService } from "./services/community-system-message.service.js";
@@ -529,6 +531,7 @@ const startServer = async () => {
     const generalRoomMessageRepo = new GeneralRoomMessageRepository(prisma);
     const roomMemberRepo = new RoomMemberRepository(prisma);
     const notificationRepo = new NotificationRepository(prisma);
+    const notificationCategoryRepo = new NotificationCategoryRepository(prisma);
     const callRepo = new CallRepository(prisma);
     const privateMessageReportRepo = new PrivateMessageReportRepository(prisma);
     // Whole-account message-body search. Separate from the three per-room
@@ -608,15 +611,6 @@ const startServer = async () => {
       userSnapshotService,
       redis
     );
-    const groupMemberService = new GroupMemberService(
-      groupMemberRepo,
-      groupRoomRepo,
-      groupSystemMessageService,
-      redis,
-      userServiceClient,
-      userSnapshotService,
-      cacheRepo
-    );
     const groupRoomService = new GroupRoomService(
       groupRoomRepo,
       groupMemberRepo,
@@ -626,6 +620,16 @@ const startServer = async () => {
       groupMessageRepo,
       userSnapshotService,
       cacheRepo
+    );
+    const groupMemberService = new GroupMemberService(
+      groupMemberRepo,
+      groupRoomRepo,
+      groupSystemMessageService,
+      redis,
+      userServiceClient,
+      userSnapshotService,
+      cacheRepo,
+      groupRoomService
     );
     // Admin Group Management (backoffice gRPC): reads plus the two moderation
     // writes, which delegate to the group services above so disband/remove keep
@@ -678,6 +682,9 @@ const startServer = async () => {
     const notificationService = new NotificationService(
       notificationRepo,
       redis
+    );
+    const notificationCatalogueService = new NotificationCatalogueService(
+      notificationCategoryRepo
     );
     const liveKitService = new LiveKitService();
     const friendshipRepo = new FriendshipRepository();
@@ -961,6 +968,7 @@ const startServer = async () => {
       callService,
       callAnalyticsRepo,
       callFlagService,
+      notificationCatalogueService,
       presenceService,
       communityMessageService,
       communityPinService,
@@ -1001,7 +1009,10 @@ const startServer = async () => {
         groupInviteLinkService,
         groupMemberService
       ),
-      notificationCtrl: new NotificationController(notificationService),
+      notificationCtrl: new NotificationController(
+        notificationService,
+        notificationCatalogueService
+      ),
       unreadSummaryCtrl: new UnreadSummaryController(unreadSummaryService),
       communityCtrl: new CommunityController(communityRoomService),
       communityMessageCtrl: new CommunityMessageController(

@@ -58,6 +58,9 @@ function activeUser(overrides: Record<string, unknown> = {}) {
     status: "ACTIVE",
     isProfileCompleted: true,
     role: "USER",
+    // Selected by loginUserSelect and read only when passwordHash is null.
+    primaryAccount: null,
+    linkedAccounts: [],
     ...overrides,
   };
 }
@@ -81,6 +84,29 @@ describe("POST /api/auth/login (extra branches)", () => {
     expect(res.body.success).toBe(true);
     expect(repo.findByEmailForLogin).toHaveBeenCalledWith("john@example.com");
     expect(repo.findByAccountForLogin).not.toHaveBeenCalled();
+  });
+
+  // Every path that STORES an email lowercases it, and the lookup is an exact
+  // -match unique index — so a user who linked name@example.com and typed it back
+  // with the capitals their keyboard offered was told the credentials were wrong.
+  it("matches a linked email case-insensitively", async () => {
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "  John@Example.COM ", password: PASSWORD });
+
+    expect(res.status).toBe(200);
+    expect(repo.findByEmailForLogin).toHaveBeenCalledWith("john@example.com");
+  });
+
+  // The counterpart: account names are stored with the case the user chose, so
+  // folding them here would break username login for every mixed-case handle.
+  it("preserves the case of an account-name identifier", async () => {
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "  JohnDoe ", password: PASSWORD });
+
+    expect(res.status).toBe(200);
+    expect(repo.findByAccountForLogin).toHaveBeenCalledWith("JohnDoe");
   });
 
   it("returns 401 when logging in by email that is not yet verified", async () => {
@@ -109,9 +135,13 @@ describe("POST /api/auth/login (extra branches)", () => {
     expect(issue).not.toHaveBeenCalled();
   });
 
-  it("returns 401 when the account was soft-deleted (deletedAt set)", async () => {
+  // A soft delete sets deletedAt AND status PENDING_DELETION, so before this
+  // the account fell into the generic non-ACTIVE branch on every surface that
+  // reached it — "Your account has been disabled. Please contact support." for
+  // an account the user deleted themselves.
+  it("names a soft-deleted account as DELETED, not disabled, on a correct password", async () => {
     repo.findByAccountForLogin.mockResolvedValue(
-      activeUser({ deletedAt: new Date() })
+      activeUser({ deletedAt: new Date(), status: "PENDING_DELETION" })
     );
 
     const res = await request(app)
@@ -119,6 +149,50 @@ describe("POST /api/auth/login (extra branches)", () => {
       .send({ account: "johndoe", password: PASSWORD });
 
     expect(res.status).toBe(401);
+    expect(res.body.code).toBe("AUTH_ACCOUNT_DELETED");
+    expect(res.body.message).toBe("This account has been deleted.");
+    expect(issue).not.toHaveBeenCalled();
+    expect(repo.recordSuccessfulLogin).not.toHaveBeenCalled();
+  });
+
+  // The other half of that answer, and the reason it is safe: the deleted state
+  // is named only to someone who already typed the password. A wrong one is
+  // answered exactly as an unknown account is, so nothing here can be used to
+  // ask "did this person delete their account?".
+  it("keeps the generic credential answer for a deleted account + wrong password", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      activeUser({ deletedAt: new Date(), status: "PENDING_DELETION" })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "johndoe", password: "WrongPassword999" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe("AUTH_INVALID_CREDENTIALS");
+    // A deleted account has no lockout state left to move, and moving one would
+    // itself be an oracle (a locked answer means the account exists).
+    expect(repo.recordFailedLogin).not.toHaveBeenCalled();
+  });
+
+  // A social-only account has no password to verify, so there is nothing to
+  // prove ownership with here — it stays indistinguishable from an unknown
+  // account. Its Google/Apple sign-in is the surface that names the deletion.
+  it("keeps the generic credential answer for a deleted password-less account", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      activeUser({
+        deletedAt: new Date(),
+        status: "PENDING_DELETION",
+        passwordHash: null,
+      })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "johndoe", password: PASSWORD });
+
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe("AUTH_INVALID_CREDENTIALS");
   });
 
   it("returns isProfileCompleted + role in the success envelope and passes rememberMe", async () => {
@@ -205,5 +279,19 @@ describe("POST /api/auth/login (extra branches)", () => {
       .send({ account: "johndoe", password: "short" });
 
     expect(res.status).not.toBe(400);
+  });
+
+  // The sign-in form renders `message` verbatim, so an over-long password used
+  // to reach the user as zod's own "Too big: expected string to have <=128
+  // characters". Every other field on this schema already carries its own
+  // sentence; this one now does too.
+  it("400s on an over-long password with a sentence, not zod's default", async () => {
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "johndoe", password: "a".repeat(129) });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("VALIDATION_FAILED");
+    expect(res.body.message).toBe("Password is too long");
   });
 });

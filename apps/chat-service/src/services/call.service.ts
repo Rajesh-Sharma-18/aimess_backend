@@ -31,6 +31,7 @@ import {
   assertFriendshipStillValid,
   type CallPeerSnapshot,
 } from "../lib/call-authorization.js";
+import { toCallDTO, type CallDTO } from "../lib/call.serializer.js";
 import {
   publishCallIncomingSafe,
   publishCallMissedSafe,
@@ -518,8 +519,8 @@ export class CallService {
     // account), so the outgoing-mirror reuses it instead of a second lookup.
     // roomName == callId — generalizes cleanly to group later.
     const [callerCreds, calleeCreds, callerSnapshot] = await Promise.all([
-      this.livekit.mintToken(callId, params.callerId),
-      this.livekit.mintToken(callId, params.calleeId),
+      this.livekit.mintToken(callId, params.callerId, params.type),
+      this.livekit.mintToken(callId, params.calleeId, params.type),
       this.getUserSnapshot(params.callerId).catch(() => ({
         displayName: "",
         avatarUrl: "",
@@ -722,9 +723,13 @@ export class CallService {
     // then fan out the ring. Same self:<id> channel/shape 1:1 uses, just
     // looped over the roster.
     const calleeCredsList = await Promise.all(
-      calleeIds.map((id) => this.livekit.mintToken(callId, id))
+      calleeIds.map((id) => this.livekit.mintToken(callId, id, params.type))
     );
-    const callerCreds = await this.livekit.mintToken(callId, params.callerId);
+    const callerCreds = await this.livekit.mintToken(
+      callId,
+      params.callerId,
+      params.type
+    );
 
     await Promise.all(
       calleeIds.map((calleeId, i) =>
@@ -867,7 +872,8 @@ export class CallService {
   ): Promise<Call & { livekit: LiveKitCredentials }> {
     const livekit = await this.livekit.mintToken(
       params.callId,
-      params.calleeId
+      params.calleeId,
+      call.type
     );
     // Answering is what earns a seat in `call:<id>` — record it before any
     // early return below, so a retried/duplicate answer is still allowed to
@@ -1639,24 +1645,35 @@ export class CallService {
     }
   }
 
+  /**
+   * Both read paths return {@link CallDTO}, never the Prisma row — see
+   * lib/call.serializer.ts for which columns are withheld and why. Mapped HERE
+   * rather than in the controller so the projection is a property of the
+   * service, and a second transport cannot reintroduce the leak by forgetting
+   * to apply it.
+   *
+   * The gRPC admin path in grpc/service-impl.ts is deliberately NOT routed
+   * through this: backoffice analytics wants the distinct `SYSTEM_*` reasons
+   * that the DTO collapses.
+   */
   async getCallByCallId(
     callId: string,
     requesterId: string
-  ): Promise<Call | null> {
+  ): Promise<CallDTO | null> {
     const call = await this.callRepo.findByCallId(callId);
     if (!call) return null;
     // IDOR guard: only the caller or callee may read a call's details (AUDIT H8).
     if (call.callerId !== requesterId && !this.isCallee(call, requesterId)) {
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
     }
-    return call;
+    return toCallDTO(call);
   }
 
   async getCallHistory(params: {
     userId: string;
     cursor?: string | null;
     limit: number;
-  }): Promise<{ calls: Call[]; nextCursor: string | null; hasMore: boolean }> {
+  }): Promise<{ calls: CallDTO[]; nextCursor: string | null; hasMore: boolean }> {
     const calls = await this.callRepo.findByParticipant(
       params.userId,
       params.limit + 1,
@@ -1664,11 +1681,13 @@ export class CallService {
     );
     const hasMore = calls.length > params.limit;
     const page = calls.slice(0, params.limit);
+    // Cursor is still derived from the STORED row, before mapping — it is
+    // server state, not part of the client shape.
     const nextCursor =
       hasMore && page.length > 0
         ? page[page.length - 1]!.initiatedAt.toISOString()
         : null;
-    return { calls: page, nextCursor, hasMore };
+    return { calls: page.map(toCallDTO), nextCursor, hasMore };
   }
 
   async getActiveIncoming(calleeId: string): Promise<
@@ -1699,7 +1718,7 @@ export class CallService {
             displayName: "",
             avatarUrl: "",
           })),
-          this.livekit.mintToken(call.callId, calleeId),
+          this.livekit.mintToken(call.callId, calleeId, call.type),
         ]);
         return {
           callId: call.callId,
@@ -1912,15 +1931,29 @@ export class CallService {
     );
     let flipped = 0;
     for (const call of candidates) {
-      const durationSec = Math.min(
-        maxDurationSec,
-        call.answeredAt
-          ? Math.max(
+      // A stranded row with NO `answeredAt` never connected — nothing ever
+      // stamped the moment the callee picked up. It reaches this sweep only
+      // because `findStuckInProgress` now reaps that shape at all; before, it
+      // was immortal.
+      //
+      // It must NOT settle like an answered call. The old expression fell
+      // through to `maxDurationSec` for a null `answeredAt`, so the first such
+      // row to be swept would have recorded a FULL-CEILING call — three hours by
+      // default — in both participants' history, for a call that never happened.
+      // Every other terminal path in this service already reads
+      // `IN_PROGRESS` + no `answeredAt` as a cancelled ring with no duration
+      // (see endCall's `wasPreMedia` branch, declineCall, and the LiveKit
+      // reconcile). This is the same reading, applied to the same condition.
+      const neverConnected = !call.answeredAt;
+      const durationSec = neverConnected
+        ? 0
+        : Math.min(
+            maxDurationSec,
+            Math.max(
               0,
-              Math.floor((now.getTime() - call.answeredAt.getTime()) / 1000)
+              Math.floor((now.getTime() - call.answeredAt!.getTime()) / 1000)
             )
-          : maxDurationSec
-      );
+          );
       const { won } = await this.callRepo.claimStatusTransition(
         call.callId,
         CallStatus.IN_PROGRESS,
@@ -1947,9 +1980,14 @@ export class CallService {
         "sweepStale"
       );
 
+      // CANCELLED, not ENDED, for a call that never connected — the card the
+      // two of them see has to match the duration it carries, and an "ENDED"
+      // card reading 0s is a call that looks answered and instantly dropped.
+      // `endedBy` stays SYSTEM_TIMEOUT either way so analytics and support can
+      // still tell a swept row from a real hangup.
       await this.postCallChatMessageSafe(
         call,
-        "ENDED",
+        neverConnected ? "CANCELLED" : "ENDED",
         now,
         durationSec,
         "SYSTEM_TIMEOUT"

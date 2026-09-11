@@ -1,7 +1,11 @@
 import dotenv from "dotenv";
 import { z } from "zod";
 
-import { assertNoPlaceholderCredentials, expandFileSecrets } from "@aimess/utils";
+import {
+  adminIpWhitelistFailures,
+  assertNoPlaceholderCredentials,
+  expandFileSecrets,
+} from "@aimess/utils";
 
 dotenv.config();
 
@@ -43,22 +47,38 @@ const envSchema = z.object({
   // ---- System Health probe targets (reachability only; backoffice never
   // queries these stores/servers — the owning service does). ----
   /**
-   * MongoDB (chat-service's store). Host/port are read from this URL when set,
-   * otherwise from MONGODB_HOST/MONGODB_PORT.
+   * MongoDB instance shared by chat, notifications, media and community.
+   * Host/port are read from this URL when set, otherwise from
+   * MONGODB_HOST/MONGODB_PORT.
    */
   MONGO_DATABASE_URL: z.string().min(1).optional(),
   MONGODB_HOST: z.string().default("127.0.0.1"),
   MONGODB_PORT: z.coerce.number().positive().default(27017),
+  /**
+   * Mirrors media-service's flag (same string-then-transform shape so the two
+   * never disagree). False means antivirus is deliberately not part of this
+   * environment, so System Health skips the probe instead of reporting a
+   * component nobody runs as Down.
+   */
+  CLAMAV_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
   /** ClamAV daemon (media-service owns the scanning; this is the clamd socket). */
   CLAMAV_HOST: z.string().default("127.0.0.1"),
   CLAMAV_PORT: z.coerce.number().positive().default(3310),
   /** SRS (OSSRS) media server HTTP API — same base stream-service uses. */
   SRS_API_URL: z.string().url().default("http://localhost:1985"),
   /**
-   * LiveKit signaling base — the same value chat-service uses (a ws:// URL).
-   * The probe swaps the scheme for http(s) and hits LiveKit's root health path.
+   * LiveKit signaling base — the same value chat-service uses (a wss:// URL).
+   * The probe swaps the scheme for http(s) and hits LiveKit's root health path,
+   * which LiveKit Cloud answers 200 on, unauthenticated, same as self-hosted.
+   *
+   * Required, with no default. The old ws://localhost:7880 default outlived the
+   * self-hosted container, so the dashboard reported LiveKit DOWN while calls
+   * were fine — a false alarm that costs someone an afternoon.
    */
-  LIVEKIT_URL: z.string().min(1).default("ws://localhost:7880"),
+  LIVEKIT_URL: z.string().min(1),
 
   // gRPC endpoints of the services the dashboard aggregates (live, read-only).
   AUTH_GRPC_URL: z.string().default("0.0.0.0:4001"),
@@ -231,11 +251,7 @@ function assertProductionInvariants(): void {
 
   const failures: string[] = [];
 
-  if (getAdminIpWhitelist().length === 0) {
-    failures.push(
-      "ADMIN_IP_WHITELIST is empty — an empty list means allow-all, so the admin API (including the unauthenticated login and password-reset endpoints) would be reachable from any address."
-    );
-  }
+  failures.push(...adminIpWhitelistFailures(getAdminIpWhitelist()));
 
   if (env.JWT_ADMIN_SECRET.length < 32) {
     failures.push(

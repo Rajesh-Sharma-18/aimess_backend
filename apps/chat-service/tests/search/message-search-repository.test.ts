@@ -15,9 +15,8 @@
  * so a hand-rolled Prisma stub is enough) to lock in: substring matching with
  * the query escaped, keyset pagination (never `$skip`), the stable sort +
  * tiebreaker, compound `nextCursor`/`hasMore`, the per-user delete filter,
- * community's ObjectId `roomId`, and — for community rooms — that a page
- * shrunk by the in-memory visibility filter is refilled rather than silently
- * returned short.
+ * community's ObjectId `roomId`, and — for all three room types — that the
+ * counter matches on the very same object the result page is drawn from.
  */
 
 import { PrivateMessageRepository } from "../../src/repositories/private-message.repository.js";
@@ -130,7 +129,9 @@ describe("PrivateMessageRepository.searchByText", () => {
     expect(JSON.stringify(pipeline)).not.toContain("$skip");
     const keyset = pipeline[1].$match.$or;
     expect(keyset).toHaveLength(2);
-    expect(keyset[1]._id).toEqual({ $lt: { $oid: "507f1f77bcf86cd799439011" } });
+    expect(keyset[1]._id).toEqual({
+      $lt: { $oid: "507f1f77bcf86cd799439011" },
+    });
   });
 
   it("hands back a compound nextCursor and hasMore only when the page overflows", async () => {
@@ -307,31 +308,20 @@ describe("GeneralRoomMessageRepository.searchByText (community)", () => {
     expect(match.roomId).toEqual({ $oid: ROOM });
   });
 
-  it("refills a page that the in-memory visibility filter shrinks", async () => {
+  it("filters delete-for-me in the DB, so one page is one query", async () => {
+    // The per-viewer hide used to run in memory AFTER the DB `$limit`, which
+    // needed a refill loop and let the page and the counter disagree about what
+    // "visible" means. It is a `$match` clause now: one round, exact page.
     const { repo, findMany, aggregateRaw } = makeRepo();
     const t0 = Date.parse("2024-01-01T00:00:00.000Z");
-    aggregateRaw
-      .mockResolvedValueOnce([
-        rawDoc("m5", t0 + 5),
-        rawDoc("m4", t0 + 4),
-        rawDoc("m3", t0 + 3),
-      ])
-      .mockResolvedValueOnce([rawDoc("m2", t0 + 2), rawDoc("m1", t0 + 1)]);
-    findMany
-      .mockResolvedValueOnce([
-        doc("m5", "hello 5", {
-          deletedBy: [USER],
-          createdAt: new Date(t0 + 5),
-        }),
-        doc("m4", "hello 4", {
-          deletedBy: [USER],
-          createdAt: new Date(t0 + 4),
-        }),
-      ])
-      .mockResolvedValueOnce([
-        doc("m2", "hello 2", { deletedBy: [], createdAt: new Date(t0 + 2) }),
-        doc("m1", "hello 1", { deletedBy: [], createdAt: new Date(t0 + 1) }),
-      ]);
+    aggregateRaw.mockResolvedValue([
+      rawDoc("m2", t0 + 2),
+      rawDoc("m1", t0 + 1),
+    ]);
+    findMany.mockResolvedValue([
+      doc("m2", "hello 2", { deletedBy: [], createdAt: new Date(t0 + 2) }),
+      doc("m1", "hello 1", { deletedBy: [], createdAt: new Date(t0 + 1) }),
+    ]);
 
     const page = await repo.searchByText({
       roomId: ROOM,
@@ -341,40 +331,60 @@ describe("GeneralRoomMessageRepository.searchByText (community)", () => {
     });
 
     expect(page.messages.map((m) => m.id)).toEqual(["m2", "m1"]);
-    expect(aggregateRaw).toHaveBeenCalledTimes(2);
+    expect(aggregateRaw).toHaveBeenCalledTimes(1);
+    expect(aggregateRaw.mock.calls[0][0].pipeline[0].$match).toMatchObject({
+      deletedForAll: false,
+      deletedBy: { $ne: USER },
+    });
   });
 
-  it("countSearchResults matches the same visibility filter as searchByText", async () => {
-    const { repo, findMany } = makeRepo();
-    findMany.mockResolvedValue([
-      doc("m3", "hello 3", { deletedBy: [] }),
-      doc("m2", "hello 2", { deletedBy: [USER] }),
-      doc("m1", "hello 1", { deletedBy: [] }),
-    ]);
-
-    const total = await repo.countSearchResults(ROOM, "hello", USER);
-
-    expect(total).toBe(2);
-  });
-
-  it("hides PERSONAL system messages targeted at another user from both search and count", async () => {
+  it("countSearchResults matches on the SAME object searchByText pages over", async () => {
+    // Not "an equivalent filter" — literally the same match. A hand-written
+    // second copy is what let the counter drift: its Prisma `systemMessageType:
+    // null` matched no real row (Prisma does not treat a MISSING field as null),
+    // so every community search reported totalCount 0 beside a full page.
     const { repo, findMany, aggregateRaw } = makeRepo();
-    const rows = [
-      doc("m2", "hello", { visibleToUserId: OTHER }),
-      doc("m1", "hello", { visibleToUserId: null }),
-    ];
-    aggregateRaw.mockResolvedValue([rawDoc("m2", 2), rawDoc("m1", 1)]);
-    findMany.mockResolvedValue(rows);
-    const results = await repo.searchByText({
+    aggregateRaw.mockResolvedValue([]);
+    findMany.mockResolvedValue([]);
+    await repo.searchByText({
       roomId: ROOM,
       query: "hello",
       limit: 20,
       userId: USER,
     });
-    findMany.mockResolvedValue(rows);
-    const total = await repo.countSearchResults(ROOM, "hello", USER);
+    const searchMatch = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
 
-    expect(results.messages.map((m) => m.id)).toEqual(["m1"]);
-    expect(total).toBe(1);
+    aggregateRaw.mockResolvedValue([{ total: 7 }]);
+    const total = await repo.countSearchResults(ROOM, "hello", USER);
+    const countMatch = aggregateRaw.mock.calls[1][0].pipeline[0].$match;
+
+    expect(countMatch).toEqual(searchMatch);
+    expect(total).toBe(7);
+  });
+
+  it("hides PERSONAL rows targeted at another user from both search and count", async () => {
+    const { repo, findMany, aggregateRaw } = makeRepo();
+    aggregateRaw.mockResolvedValue([]);
+    findMany.mockResolvedValue([]);
+    await repo.searchByText({
+      roomId: ROOM,
+      query: "hello",
+      limit: 20,
+      userId: USER,
+    });
+    aggregateRaw.mockResolvedValue([{ total: 0 }]);
+    await repo.countSearchResults(ROOM, "hello", USER);
+
+    // `$in: [null, USER]` keeps ordinary rows (no such field) and the viewer's
+    // own personal rows, and drops anything addressed to OTHER.
+    for (const call of aggregateRaw.mock.calls) {
+      expect(call[0].pipeline[0].$match).toMatchObject({
+        visibleToUserId: { $in: [null, USER] },
+        systemMessageType: null,
+      });
+      expect(call[0].pipeline[0].$match.visibleToUserId.$in).not.toContain(
+        OTHER
+      );
+    }
   });
 });

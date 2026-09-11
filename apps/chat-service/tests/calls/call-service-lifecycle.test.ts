@@ -646,6 +646,46 @@ describe("CallService.sweepStaleInProgressCalls", () => {
     expect(stubs.callChatMessages.post).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * A stranded row with NO `answeredAt` never connected — nothing ever stamped
+   * the moment the callee picked up. It only reaches this sweep at all because
+   * `findStuckInProgress` now reaps that shape; before, such a row was
+   * invisible to every gate AND unreachable by every sweep, i.e. immortal.
+   *
+   * The trap on the way out is that the old duration expression fell through to
+   * `maxDurationSec` for a null `answeredAt`, so the FIRST such row ever swept
+   * would have recorded a full-ceiling call — four hours here, three in prod —
+   * for a call that never happened, in both participants' history. Fixing the
+   * query without this would have swapped an invisible row for a visible lie.
+   */
+  it("settles a never-connected row as CANCELLED with no duration, not a ceiling-length ENDED", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findStuckInProgress.mockResolvedValue([
+      { ...staleCall("c1", MAX + 600), answeredAt: null },
+    ]);
+
+    const flipped = await service.sweepStaleInProgressCalls(NOW, MAX, 50);
+
+    expect(flipped).toBe(1);
+    const update = stubs.callRepo.claimStatusTransition.mock.calls[0][2] as {
+      durationSec: number;
+      endedBy: string;
+    };
+    expect(update.durationSec).toBe(0);
+    expect(update.durationSec).not.toBe(MAX);
+    // Still distinguishable from a real hangup for analytics and support.
+    expect(update.endedBy).toBe("SYSTEM_TIMEOUT");
+
+    // The card must agree with the duration it carries. An "ENDED" card reading
+    // 0s is a call that looks answered and instantly dropped.
+    const card = stubs.callChatMessages.post.mock.calls[0][0] as {
+      outcome: string;
+      durationSec: number;
+    };
+    expect(card.outcome).toBe("CANCELLED");
+    expect(card.durationSec).toBe(0);
+  });
+
   it("CAPS durationSec at maxDurationSec — an 8-day stranded call must not record 8 days", async () => {
     const { service, stubs } = buildService();
     const eightDaysSec = 8 * 24 * 60 * 60;

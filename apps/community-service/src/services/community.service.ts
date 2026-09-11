@@ -48,6 +48,7 @@ import { redis } from "../config/redis.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { communityRepository } from "../repositories/community.repository.js";
 import { communityCache } from "../lib/community-cache.js";
+import { rankCommunitiesByHandle } from "../lib/community-search.util.js";
 import {
   assertCommunityRole,
   assertNotBanned,
@@ -3114,7 +3115,11 @@ export const communityService = {
 
     // Trim BEFORE enrichment so the probe row never costs a presigned avatar.
     const hasMore = params.cursor != null && rows.length > params.limit;
-    const pageRows = hasMore ? rows.slice(0, params.limit) : rows;
+    // Handle-first WITHIN the page. Trimming happens first and the keyset
+    // boundary below still reads `pageRows`, so this reorders what the caller
+    // sees without moving where the next page starts.
+    const trimmed = hasMore ? rows.slice(0, params.limit) : rows;
+    const pageRows = rankCommunitiesByHandle(trimmed, params.q);
 
     const communityIds = pageRows.map((row) => row.id);
 
@@ -3173,8 +3178,12 @@ export const communityService = {
 
     // Keyset page: the cursor is the last row's community id (`id desc`), and
     // `total` is -1 here — the count query is deliberately not run.
+    //
+    // Read from `trimmed`, NOT `pageRows`: the handle ranking above reorders the
+    // page for display, and paging from a re-sorted last row would jump the
+    // `id desc` walk to the wrong boundary and skip everything between.
     if (params.cursor) {
-      const lastRow = pageRows[pageRows.length - 1];
+      const lastRow = trimmed[trimmed.length - 1];
       return buildCursorPaginatedResponse(
         communities,
         params.limit,
@@ -4724,23 +4733,20 @@ export const communityService = {
     // trapped holding a dead room in their list forever. Let them leave like a
     // plain member; the community stays CLOSED and readable for the rest.
     if (isAdmin && !communityAccessPolicy.isOwnerClosed(community)) {
-      if (community.memberCount === 1) {
-        // Admin is the only member → delete the community (members first, then
-        // community in a transaction). No audit needed since the community
-        // ceases to exist; member rows are removed by the transaction.
-        await communityRepository.deleteCommunityHard(communityId);
-        logger.info(
-          `Community deleted as last member left: community=${communityId} by=${callerId}`
-        );
-        // Member row is gone — synthesise the return value from the snapshot
-        // fetched before deletion.
-        return toMemberData({
-          ...membership,
-          status: CommunityMemberStatus.LEFT,
-        });
+      const activeMembers =
+        await communityRepository.countActiveMembers(communityId);
+      if (activeMembers !== 1) {
+        throw new BadRequestError("COMMUNITY_ADMIN_CANNOT_LEAVE");
       }
 
-      throw new BadRequestError("COMMUNITY_ADMIN_CANNOT_LEAVE");
+      await this.deleteCommunity(communityId, callerId);
+      logger.info(
+        `Community deleted as last member left: community=${communityId} by=${callerId}`
+      );
+      return toMemberData({
+        ...membership,
+        status: CommunityMemberStatus.LEFT,
+      });
     }
 
     // Non-admin leave: status → LEFT + recompute. Single-document update +
@@ -5160,24 +5166,24 @@ export const communityService = {
       // admin block is void — let them leave like a member (mirrors single
       // leaveCommunity). Falls through to the non-admin LEFT path below.
       if (isAdmin && !communityAccessPolicy.isOwnerClosed(bulkCommunity)) {
-        if (bulkCommunity.memberCount === 1) {
-          // Admin is the only member — auto-delete the community.
-          await communityRepository.deleteCommunityHard(communityId);
-          logger.info(
-            `Community auto-deleted (last member left via bulk): community=${communityId} by=${callerId}`
-          );
-          results.push({ communityId, status: "DELETED" });
-          leftCount++;
+        const activeMembers =
+          await communityRepository.countActiveMembers(communityId);
+        if (activeMembers !== 1) {
+          results.push({
+            communityId,
+            status: "FAILED",
+            errorCode: "ADMIN_CANNOT_LEAVE",
+          });
+          failedCount++;
           continue;
         }
 
-        // Admin with other members present — block.
-        results.push({
-          communityId,
-          status: "FAILED",
-          errorCode: "ADMIN_CANNOT_LEAVE",
-        });
-        failedCount++;
+        await this.deleteCommunity(communityId, callerId);
+        logger.info(
+          `Community auto-deleted (last member left via bulk): community=${communityId} by=${callerId}`
+        );
+        results.push({ communityId, status: "DELETED" });
+        leftCount++;
         continue;
       }
 

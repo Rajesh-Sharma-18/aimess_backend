@@ -22,6 +22,17 @@ const loginUserSelect = {
   deletedAt: true,
   isProfileCompleted: true,
   role: true,
+  // Read ONLY when `passwordHash` is null, to name the provider a
+  // password-less account must sign in with. Selected here rather than fetched
+  // in a second query because the login path is hot and this costs one join on
+  // a row that is already being read. Ordered oldest-first so an account that
+  // linked both providers falls back to the one that founded it when
+  // `primaryAccount` cannot decide. See lib/sign-in-methods.ts.
+  primaryAccount: true,
+  linkedAccounts: {
+    select: { provider: true },
+    orderBy: { linkedAt: "asc" },
+  },
 } as const;
 
 export const authRepository = {
@@ -543,14 +554,30 @@ export const authRepository = {
     });
   },
 
+  /**
+   * Creates a social account and its provider link together.
+   *
+   * `email`/`emailVerified` are the PROFILE email — the address the user links
+   * by hand — and social sign-in passes null/false for them: a Google or Apple
+   * address belongs to `providerEmail` on the link row, never to the profile
+   * field the Settings screen renders. They stay in the signature because the
+   * column is real and a future flow may legitimately seed it.
+   *
+   * `primaryAccount` is stamped here rather than through
+   * {@link setPrimaryAccountIfUnset} because the row is brand new: the provider
+   * that created the account IS its first sign-in method, and writing it inside
+   * the same transaction means no reader can ever see the account without one.
+   */
   createUserWithLinkedAccount(params: {
     account: string;
     email: string | null;
     emailVerified: boolean;
     provider: AuthProvider;
     providerUserId: string;
+    primaryAccount?: AuthProvider | null;
     displayName?: string | null;
     providerEmail?: string | null;
+    providerEmailVerified?: boolean;
   }) {
     return prisma.$transaction(async (tx) => {
       const user = await tx.authUser.create({
@@ -558,12 +585,14 @@ export const authRepository = {
           account: params.account,
           email: params.email,
           emailVerified: params.emailVerified,
+          primaryAccount: params.primaryAccount ?? undefined,
           passwordHash: null,
         },
         select: {
           id: true,
           account: true,
           email: true,
+          primaryAccount: true,
           createdAt: true,
         },
       });
@@ -574,6 +603,7 @@ export const authRepository = {
           provider: params.provider,
           providerUserId: params.providerUserId,
           email: params.providerEmail ?? params.email ?? undefined,
+          emailVerified: params.providerEmailVerified ?? false,
           displayName: params.displayName ?? undefined,
         },
       });

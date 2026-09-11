@@ -144,6 +144,13 @@ type LimiterSpec = {
   max: number;
   scope: LimitScope;
   skip?: Options["skip"];
+  /**
+   * Refund the hit when the response is a 2xx/3xx. Only meaningful for
+   * limiters whose whole purpose is bounding FAILURES (login): it keeps a
+   * shared egress address from accumulating a ban out of people signing in
+   * successfully, while an attacker's misses still count in full.
+   */
+  skipSuccessfulRequests?: boolean;
 };
 
 /**
@@ -158,10 +165,18 @@ type LimiterSpec = {
  * with that limiter's own window, and sharing one would give them all whichever
  * window initialised last.
  */
-function createLimiter({ rule, windowMs, max, scope, skip }: LimiterSpec) {
+function createLimiter({
+  rule,
+  windowMs,
+  max,
+  scope,
+  skip,
+  skipSuccessfulRequests,
+}: LimiterSpec) {
   return rateLimit({
     windowMs,
     max,
+    skipSuccessfulRequests,
     // `undefined` leaves express-rate-limit on its own in-process store, which
     // is what the test harness and a single-process local run want. Production
     // cannot select it — see the boot assertion in config/env.ts.
@@ -212,7 +227,23 @@ function skipRateLimit(req: Request): boolean {
     // collapse into a single IP bucket, and `on_play` fires once per VIEWER —
     // a busy stream would exhaust the 100/window global cap in seconds and get
     // its on_publish denied.
-    path.startsWith("/internal/srs")
+    path.startsWith("/internal/srs") ||
+    // Same shape, same reason — metered by `livekitWebhookRateLimiter`, not
+    // exempted. LiveKit Cloud sends `Authorization: <jwt>` with NO `Bearer `
+    // prefix, so `credentialKey` sees no credential and every webhook falls
+    // back to ONE IP bucket for LiveKit's egress address, capped at
+    // GLOBAL_RATE_LIMIT_MAX. LiveKit emits ~10-14 events per call and the Cloud
+    // project subscribes to all of them, so ~8 concurrent calls exhausted the
+    // window — and a dropped `room_finished` / `participant_left` is not a
+    // retryable inconvenience: nothing else reconciles the Call row, so BOTH
+    // participants stay "busy" and cannot place or receive a call until the 3h
+    // stale-IN_PROGRESS sweep, while the LiveKit room bills for its own timeout.
+    //
+    // EXACT match, not `startsWith("/livekit")`: as a prefix test `/livekitfoo`
+    // would escape the global limiter too, which is the same bypass class the
+    // `/app-version/check` comment above exists to avoid. There is one route
+    // under this mount; a second one adds a line here.
+    path === "/livekit/webhook"
   );
 }
 
@@ -256,15 +287,65 @@ export const rateLimiter = createLimiter({
 });
 
 /**
- * Sensitive auth endpoints (login, password reset, social sign-in).
- * Deliberately IP-scoped: the caller has no credential yet, and per-IP is
- * exactly the axis a credential-stuffing run varies least. Defence-in-depth on
- * top of the account-level lockout in auth-service.
+ * Sensitive auth endpoints (registration, password reset, social sign-in,
+ * signup challenge). Deliberately IP-scoped: the caller has no credential yet,
+ * and per-IP is exactly the axis a credential-stuffing run varies least.
+ * Defence-in-depth on top of the account-level lockout in auth-service.
+ *
+ * Login, account-validate and refresh USED to share this bucket. They no
+ * longer do, and the split is the point — see the three limiters below. One
+ * `rule` is one Redis counter (`rl:gw:<rule>:<key>`), so mounting a single
+ * limiter object on nine paths made those nine paths one quota no matter how
+ * carefully each path's limit was reasoned about. Typing a name into a signup
+ * form spent the budget the user then needed to log in, and the session
+ * refreshes that followed spent whatever was left.
  */
 export const sensitiveAuthRateLimiter = createLimiter({
   rule: "auth.sensitive",
   windowMs: env.SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
   max: env.SENSITIVE_AUTH_RATE_LIMIT_MAX,
+  scope: "ip",
+});
+
+/**
+ * Account-availability probe (`POST /auth/accounts/validate`). Own bucket,
+ * short window: this is UI-rate traffic, not credential-attempt traffic.
+ * See ACCOUNT_VALIDATE_RATE_LIMIT_* in config/env.ts for the trade.
+ */
+export const accountValidateRateLimiter = createLimiter({
+  rule: "auth.account-validate",
+  windowMs: env.ACCOUNT_VALIDATE_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
+  max: env.ACCOUNT_VALIDATE_RATE_LIMIT_MAX,
+  scope: "ip",
+});
+
+/**
+ * Password login (`POST /auth/login`). Own bucket, and only failures count —
+ * the per-account lockout in auth-service is the real brute-force control, and
+ * this is the per-address ceiling on top of it.
+ */
+export const loginRateLimiter = createLimiter({
+  rule: "auth.login",
+  windowMs: env.LOGIN_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
+  max: env.LOGIN_RATE_LIMIT_MAX,
+  scope: "ip",
+  skipSuccessfulRequests: true,
+});
+
+/**
+ * Session refresh (`POST /auth/refresh`, `POST /auth/token`). Own bucket and
+ * deliberately lenient — this is background behaviour every open tab performs,
+ * and throttling it logs people out of a session that was perfectly valid.
+ *
+ * Still IP-scoped: the request carries no Authorization header (the httpOnly
+ * `aimess_rt` cookie is the credential), so there is no session key to bucket
+ * on, and keying on the refresh token itself would hand an attacker a fresh
+ * bucket per guess.
+ */
+export const refreshRateLimiter = createLimiter({
+  rule: "auth.refresh",
+  windowMs: env.REFRESH_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
+  max: env.REFRESH_RATE_LIMIT_MAX,
   scope: "ip",
 });
 
@@ -315,6 +396,33 @@ export const adminLoginRateLimiter = createLimiter({
  */
 export const srsHookRateLimiter = createLimiter({
   rule: "srs.hooks",
+  windowMs: 60 * 1000,
+  max: 3000,
+  scope: "ip",
+});
+
+/**
+ * LiveKit Cloud signed webhooks (POST /livekit/webhook).
+ *
+ * Structurally the twin of `srsHookRateLimiter`: unauthenticated at the edge by
+ * necessity (LiveKit's signature rides `Authorization` with no `Bearer ` prefix,
+ * so the session key generator cannot see it), a 1 MB raw body, and it cannot
+ * share the global bucket — see `skipRateLimit` for what that cost.
+ *
+ * IP-scoped and deliberately generous, for two reasons that both point the same
+ * way. LiveKit Cloud egresses from rotating addresses, which SPREADS legitimate
+ * traffic across buckets rather than concentrating it, so a tight ceiling buys
+ * little; and the real gate is `WebhookReceiver.receive`, which rejects an
+ * unsigned flood for the price of one HMAC. Meanwhile the cost of a ceiling that
+ * DOES bind is two users wedged out of calling for three hours. Asymmetric, so
+ * this is sized to bound a flood, never to shape normal volume: ~15 events per
+ * call puts 3000/min at roughly 200 calls of churn per minute per source.
+ *
+ * Note this is a ceiling, not a guarantee — `RedisRateLimitStore` fails OPEN, so
+ * during a Redis outage it meters nothing at all.
+ */
+export const livekitWebhookRateLimiter = createLimiter({
+  rule: "livekit.webhook",
   windowMs: 60 * 1000,
   max: 3000,
   scope: "ip",

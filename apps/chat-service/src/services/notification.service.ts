@@ -155,18 +155,16 @@ export class NotificationService {
     return { notifications, nextSince, hasMore };
   }
 
-  /** Per-tab totals shown in the Notification Center header. */
+  /**
+   * Per-category unread totals shown in the Notification Center header.
+   * Derived from the stored rows alone — never from the catalogue — so a
+   * category an administrator hid on this platform still counts, and its rows
+   * still list under ALL.
+   */
   async getCounts(
     userId: string,
     viewerSessionId?: string | null
-  ): Promise<{
-    all: number;
-    friends: number;
-    communities: number;
-    mentions: number;
-    calls: number;
-    system: number;
-  }> {
+  ): Promise<Awaited<ReturnType<NotificationRepository["countByCategories"]>>> {
     return this.notificationRepo.countByCategories(userId, viewerSessionId);
   }
 

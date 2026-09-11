@@ -18,7 +18,7 @@ import {
   normalizeEmail,
   verifyAndConsumeOtp,
 } from "../lib/otp.js";
-import { assertNotBanned } from "../lib/account-guard.js";
+import { assertNotBanned, assertNotDeleted } from "../lib/account-guard.js";
 import { assertEmailAvailable } from "../lib/email-availability.js";
 import { assertOtpRequestAllowed } from "../lib/otp-rate-limit.js";
 import { rethrowAsEmailConflict } from "../lib/email-conflict.js";
@@ -42,10 +42,11 @@ export type RequestLinkEmailOtpResult = {
 async function loadActiveUser(userId: string) {
   const user = await authRepository.findByIdForEmailLink(userId);
 
-  if (!user || user.deletedAt) {
+  if (!user) {
     throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
   }
 
+  assertNotDeleted(user.deletedAt);
   assertNotBanned(user.status);
 
   if (user.status !== AccountStatus.ACTIVE) {

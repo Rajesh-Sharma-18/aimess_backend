@@ -78,4 +78,7 @@ process.env.MINIO_BUCKET_AVATARS = "aimess-avatars";
 process.env.MINIO_REGION = "us-east-1";
 process.env.MINIO_AVATAR_VIEW_EXPIRES_IN = "3600";
 
+// LiveKit — read only by the infra health probe, which is mocked in tests.
+process.env.LIVEKIT_URL = "wss://test.livekit.cloud";
+
 export {};

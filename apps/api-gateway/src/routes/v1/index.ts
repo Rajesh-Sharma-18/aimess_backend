@@ -4,6 +4,9 @@ import { createServiceProxy } from "../../proxy/create-service-proxy.js";
 import { createChatBanGate } from "../../middleware/ban-gate.js";
 import {
   sensitiveAuthRateLimiter,
+  accountValidateRateLimiter,
+  loginRateLimiter,
+  refreshRateLimiter,
   otpRateLimiter,
   inviteLinkPreviewRateLimiter,
   deviceTokenRateLimiter,
@@ -17,7 +20,10 @@ import { getServicesForVersion } from "../../versioning/registry.js";
 import { env } from "../../config/env.js";
 import { appVersionRouter } from "./app-version.routes.js";
 import { createLegacyUploadsRouter } from "./legacy-uploads.routes.js";
-import { createNotificationsAliasRouter } from "./notifications.routes.js";
+import {
+  createNotificationCategoriesAliasRouter,
+  createNotificationsAliasRouter,
+} from "./notifications.routes.js";
 import { createLinkedDevicesAliasRouter } from "./linked-devices.routes.js";
 import { invitesRouter } from "./invites.routes.js";
 import { searchRouter } from "./search.routes.js";
@@ -74,11 +80,20 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
     v1Router.use(createNotificationsAliasRouter(env.NOTIFICATION_SERVICE_URL));
   }
 
+  // Stable alias: GET /api/v1/notifications/categories is forwarded to
+  // chat-service, which owns the catalogue. The path is the shared
+  // Android/iOS/Web contract; the canonical route
+  // (/api/v1/chat/notifications/categories) keeps working unchanged.
+  if (env.CHAT_SERVICE_URL) {
+    v1Router.use(
+      createNotificationCategoriesAliasRouter(env.CHAT_SERVICE_URL)
+    );
+  }
+
   // Stricter throttle on sensitive auth endpoints, applied before the generic
   // service proxy below. Must be registered ahead of the proxy mount so it runs
   // first on these paths.
   for (const sensitivePath of [
-    "/auth/login",
     "/auth/google",
     "/auth/apple",
     // Previously unthrottled at the edge: password reset accepts an OTP and
@@ -86,18 +101,6 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
     // Both were covered only by the global backstop.
     "/auth/reset-password",
     "/auth/register",
-    // Refresh mints a fresh access token from a bearer-equivalent credential
-    // and carries no Authorization header, so the global limiter fell back to
-    // the IP bucket and allowed ~144k guesses a day per address with no
-    // account lockout on the path. The admin router has always treated its
-    // identical endpoint as sensitive; this mirrors that. `/auth/token` is the
-    // same primitive under auth-service's own path name.
-    "/auth/refresh",
-    "/auth/token",
-    // Unauthenticated availability oracle: 409 for a taken account, 200
-    // otherwise, over the whole 3-32 character handle namespace. Enumerated
-    // handles feed targeted credential stuffing against /auth/login.
-    "/auth/accounts",
     // Issues the proof of work that /auth/register and /auth/accounts/validate
     // require. Unauthenticated by necessity — it is the first call a new user
     // makes — so it is throttled like the endpoints it guards, or it becomes a
@@ -106,6 +109,29 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   ]) {
     v1Router.use(sensitivePath, sensitiveAuthRateLimiter);
   }
+
+  // The three endpoints a normal session touches most, each on its OWN counter.
+  //
+  // All three were in the loop above, sharing `auth.sensitive` — one limiter
+  // object is one Redis key prefix, so validate/login/refresh spent a single
+  // 20-per-15-minutes budget between them. Typing a name into the signup form
+  // (debounced validate), pressing Continue on the login screen (another
+  // validate), signing in, and then letting the access token expire twice was
+  // enough to exhaust it, and the 429 then lasted a quarter of an hour and
+  // applied to signing in as much as to the probe that caused it.
+  //
+  // Unauthenticated availability oracle: 409 for a taken account, 200
+  // otherwise, over the whole 3-32 character handle namespace. Enumerated
+  // handles feed targeted credential stuffing against /auth/login — hence its
+  // own ceiling rather than none, just a ceiling sized for a form field.
+  v1Router.use("/auth/accounts", accountValidateRateLimiter);
+  v1Router.use("/auth/login", loginRateLimiter);
+  // Refresh mints a fresh access token from a bearer-equivalent credential and
+  // carries no Authorization header, so the global limiter falls back to the IP
+  // bucket. `/auth/token` is the same primitive under auth-service's own path
+  // name and shares the bucket with it, deliberately — they are one operation.
+  v1Router.use("/auth/refresh", refreshRateLimiter);
+  v1Router.use("/auth/token", refreshRateLimiter);
 
   // OTP endpoints get their own, looser bucket. Sharing `auth.sensitive` with
   // login meant a user legitimately re-requesting a code burned the login
@@ -151,7 +177,32 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   // Presigned upload-URL minting is a write-shaped operation that grants an
   // object-store write, so it is sized like the device-token limiter rather
   // than like a read. It previously had none at all.
-  v1Router.use("/media", mediaRateLimiter);
+  // Media is mounted PER PATH, not as one `/media` segment.
+  //
+  // The whole segment used to share `mediaRateLimiter` — a write bucket sized
+  // for presigned-URL minting (30/min) — so the read-shaped calls spent the
+  // write budget. Sending one attachment costs 1 upload-url + 1 confirm + up to
+  // 20 scan-status polls, and opening a media-heavy room mints a download URL
+  // per attachment: a normal user hit 429 on `POST /media/download-url` while
+  // doing nothing abusive. The two shapes get their own buckets.
+  //
+  // media-service already exempts `/download-url` from its OWN limiter for this
+  // reason; the gateway mount was the one still charging it as a write.
+  for (const mediaWritePath of [
+    "/media/upload-url",
+    "/media/confirm",
+    // DELETE /media/uploads/:objectKey — cancels an upload and deletes bytes.
+    "/media/uploads",
+  ]) {
+    v1Router.use(mediaWritePath, mediaRateLimiter);
+  }
+  for (const mediaReadPath of [
+    "/media/download-url",
+    "/media/scan-status",
+    "/media/usage",
+  ]) {
+    v1Router.use(mediaReadPath, readRateLimiter);
+  }
 
   // Livestream REST had no limiter of its own — only the global backstop. Must
   // be registered BEFORE the generic service-proxy loop below: the proxy

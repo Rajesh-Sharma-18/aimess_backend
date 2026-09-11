@@ -99,6 +99,31 @@ describe("POST /api/v1/media/download-url", () => {
     expect(res.body.success).toBe(false);
   });
 
+  it("400: an object key under an unknown prefix is rejected, whatever the declared category", async () => {
+    // The key's own prefix decides which category (and therefore which bucket and
+    // which authorization policy) the object belongs to, so a prefix this service
+    // does not know is not addressable at all — it must not fall through to the
+    // client's declared category and be signed under the wrong one.
+    //
+    // `e2ee-chat-uploads/` is the live example: the encrypted-attachment category
+    // exists on the end-to-end-encryption branch and NOT here, so a client that
+    // learned such a key while running that branch sends it with the fallback
+    // category CHAT_ATTACHMENT. The correct answer on this branch is this 400 —
+    // the object is genuinely unaddressable — not a presigned URL minted under a
+    // category whose prefix, bucket and scan policy do not match the key.
+    const res = await request(app)
+      .post("/api/v1/media/download-url")
+      .set(auth())
+      .send({
+        objectKey: `e2ee-chat-uploads/${TEST_USER_ID}/blob.bin`,
+        category: "CHAT_ATTACHMENT",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe("MEDIA_INVALID_OBJECT_KEY");
+  });
+
   it("200: declared category mismatch self-heals from the objectKey prefix", async () => {
     // The reported bug: client sent category CHAT_ATTACHMENT for a
     // community-chat-uploads/* key. The objectKey's own prefix is authoritative,

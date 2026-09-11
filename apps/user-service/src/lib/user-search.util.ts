@@ -1,4 +1,8 @@
-import { normalizeForSearch, tokenizeAndNormalize } from "@aimess/utils";
+import {
+  normalizeForSearch,
+  rankByHandle,
+  tokenizeAndNormalize,
+} from "@aimess/utils";
 
 import type { Prisma } from "../generated/prisma/client.js";
 
@@ -54,6 +58,14 @@ export function decodePeopleCursor(
     .toString("utf8")
     .split("\u0000");
   return userId ? { firstName: firstName ?? "", userId } : undefined;
+}
+
+/** People's handle IS their `username` — the shared ranker just needs the field. */
+export function rankByUsername<T extends { username: string }>(
+  rows: T[],
+  q: string | undefined
+): T[] {
+  return rankByHandle(rows, q, (row) => row.username);
 }
 
 export function buildUserSearchFilter(

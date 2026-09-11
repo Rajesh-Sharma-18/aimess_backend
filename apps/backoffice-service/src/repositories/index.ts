@@ -51,3 +51,4 @@ export {
 export { reportDetailRepository } from "./report-detail.repository.js";
 export { announcementRepository } from "./announcement.repository.js";
 export { categoryRepository } from "./category.repository.js";
+export { notificationCategoryRepository } from "./notification-category.repository.js";

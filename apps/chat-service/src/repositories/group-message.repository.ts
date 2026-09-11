@@ -7,8 +7,8 @@ import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import type { GroupRoomRepository } from "./group-room.repository.js";
 import {
+  buildTextSearchCountPipeline,
   buildTextSearchPipeline,
-  escapeRegex,
   orderByIds,
   parseSearchCursor,
   readTextSearchPage,
@@ -873,6 +873,50 @@ export class GroupMessageRepository {
     return result[0]?.total ?? 0;
   }
 
+  /**
+   * The ONE predicate in-chat search both pages and counts over — see
+   * {@link countSearchResults}. A second hand-written copy is what let the
+   * counter say "1 of 2 results" for a room holding one real match.
+   *
+   * SYSTEM rows are excluded. They are room events, not anybody's message, and
+   * their stored English third-person line ("Asha joined the group") is not even
+   * what a viewer is shown: the read path re-renders it per viewer and locale
+   * ("You joined the group"). Searching text nobody can see meant a member whose
+   * NAME contained the query dragged every lifecycle line they appear in into
+   * the results. Same rule the cross-room search already applies — see
+   * `message-search.repository.ts`. `null` matches a missing field too, so rows
+   * written before the column existed are unaffected.
+   *
+   * The two `createdAt` bounds are the SAME pair {@link timelineMatch} applies,
+   * so a search window can never be wider than the history window: `cutoff` is
+   * the lower one (join / clear-chat), `readCutoffBefore` the upper one a
+   * LEFT/KICKED member's read access froze at.
+   */
+  private searchMatch(
+    roomId: string,
+    userId: string,
+    cutoff?: Date,
+    readCutoffBefore?: Date
+  ): Record<string, unknown> {
+    const core = {
+      roomId,
+      isDeleted: false,
+      deletedForUserIds: { $ne: userId },
+      systemEvent: null,
+    };
+    const bounds: Record<string, unknown>[] = [];
+    if (cutoff) {
+      bounds.push({ createdAt: { $gt: { $date: cutoff.toISOString() } } });
+    }
+    if (readCutoffBefore) {
+      bounds.push({
+        createdAt: { $lte: { $date: readCutoffBefore.toISOString() } },
+      });
+    }
+    if (bounds.length === 0) return core;
+    return { $and: [core, ...bounds] };
+  }
+
   async searchByText(params: {
     roomId: string;
     query: string;
@@ -880,6 +924,8 @@ export class GroupMessageRepository {
     userId: string;
     cursor?: string | null;
     cutoff?: Date;
+    /** A member who left/was kicked searches only up to this instant. */
+    readCutoffBefore?: Date;
   }): Promise<{
     messages: GroupMessage[];
     scores: Map<string, number>;
@@ -887,14 +933,12 @@ export class GroupMessageRepository {
     nextCursor: string | null;
   }> {
     const pipeline = buildTextSearchPipeline({
-      match: {
-        roomId: params.roomId,
-        isDeleted: false,
-        deletedForUserIds: { $ne: params.userId },
-        ...(params.cutoff
-          ? { createdAt: { $gt: { $date: params.cutoff.toISOString() } } }
-          : {}),
-      },
+      match: this.searchMatch(
+        params.roomId,
+        params.userId,
+        params.cutoff,
+        params.readCutoffBefore
+      ),
       field: "content.text",
       query: params.query,
       cursor: parseSearchCursor(params.cursor),
@@ -1058,28 +1102,23 @@ export class GroupMessageRepository {
     });
   }
 
+  /** Full match count for the in-chat "n of TOTAL" counter. Shares
+   *  {@link searchMatch} and the regex builder with `searchByText`, so the total
+   *  is exactly the number of rows a caller could page to. */
   async countSearchResults(
     roomId: string,
     query: string,
     userId: string,
-    cutoff?: Date
+    cutoff?: Date,
+    /** A member who left/was kicked counts only up to this instant. */
+    readCutoffBefore?: Date
   ): Promise<number> {
-    const escaped = escapeRegex(query);
     const result = (await this.prisma.groupMessage.aggregateRaw({
-      pipeline: [
-        {
-          $match: {
-            roomId,
-            isDeleted: false,
-            deletedForUserIds: { $ne: userId },
-            "content.text": { $regex: escaped, $options: "i" },
-            ...(cutoff
-              ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
-              : {}),
-          },
-        },
-        { $count: "total" },
-      ],
+      pipeline: buildTextSearchCountPipeline({
+        match: this.searchMatch(roomId, userId, cutoff, readCutoffBefore),
+        field: "content.text",
+        query,
+      }) as unknown as Prisma.InputJsonValue[],
     })) as unknown as Array<{ total: number }>;
     return result[0]?.total ?? 0;
   }

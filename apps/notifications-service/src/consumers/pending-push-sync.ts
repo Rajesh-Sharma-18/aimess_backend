@@ -1,7 +1,5 @@
 import { logger } from "@aimess/logger";
-import { connectRedis, createSubscriber } from "@aimess/redis";
-
-import { env } from "../config/env.js";
+import { redis } from "../config/redis.js";
 import {
   dropPendingChatMessage,
   updatePendingChatMessage,
@@ -27,14 +25,15 @@ export function startPendingPushSync(): void {
   // shared client into subscriber mode, after which ioredis rejected every
   // ordinary command on it — which killed cacheGetJson/cacheSetJson for the
   // whole service (measured: 114 failures/hour, every notification-settings
-  // read and write). Ensure the singleton exists, then take a separate
-  // connection for the subscription.
-  connectRedis({
-    host: env.REDIS_HOST,
-    port: env.REDIS_PORT,
-    password: env.REDIS_PASSWORD,
-  });
-  const sub = createSubscriber();
+  // read and write), so this takes a separate connection for the subscription.
+  //
+  // Duplicated from the service's configured client rather than by calling
+  // connectRedis again: the options passed here were a PARTIAL copy of
+  // `config/redis.ts`, missing `tls`. connectRedis keeps whichever options
+  // built the singleton FIRST, so a consumer starting before the first cache
+  // read decided the whole process's connection — and dropped TLS from it.
+  // One config, one call site; `duplicate()` inherits host/port/auth/TLS.
+  const sub = redis.duplicate();
 
   void (async () => {
     if (sub.status === "wait") await sub.connect();

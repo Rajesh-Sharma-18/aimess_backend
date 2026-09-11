@@ -3,6 +3,7 @@ import {
   currentLocale,
   DATA_REF_KEY,
   DELETED_ACCOUNT_DISPLAY_NAME,
+  describeCopyTicket,
   renderNotificationCopy,
   renderNotificationData,
   t,
@@ -12,8 +13,10 @@ import {
 import type { Notification } from "../generated/prisma/index.js";
 
 import {
+  categorizeId,
   LOGIN_DETECTED_TYPE,
   rowCategory,
+  type NotificationCategoryId,
   type NotificationRowCategory,
 } from "./notification-category.js";
 import {
@@ -43,6 +46,30 @@ export interface NotificationDTO {
    * and counts under SYSTEM.
    */
   category: NotificationRowCategory;
+  /**
+   * Catalogue id this row belongs to — the shared Android/iOS/Web contract, and
+   * the id the category chips are keyed on. Derived from `type`, never stored,
+   * so retagging a type is a code change and not a data migration.
+   *
+   * Separate from `category` above, which is frozen at the pre-catalogue tab
+   * names released clients already read. The two agree on every row except a
+   * livestream announcement, which is `LIVE_NOW` here and still `COMMUNITIES`
+   * there.
+   */
+  categoryId: NotificationCategoryId;
+  /**
+   * WHICH sentence this row says, with no language in it. Clients render
+   * `t(templateId, params)` from their own catalogue, which is what lets a
+   * cached row re-render in a new language with no network at all.
+   *
+   * Absent for AUTHORED content — an admin announcement, a ban notice, a
+   * moderator's warning note — which is text a human wrote, not product copy,
+   * and for rows written before replay tickets existed. In both cases the
+   * client falls back to `title` / `body` below, exactly as it always has.
+   */
+  templateId?: string;
+  /** The values `templateId` interpolates (names, community names, counts). */
+  params?: Record<string, unknown>;
   /** Null when the body already carries the subject — the client renders no heading. */
   title: string | null;
   body: string;
@@ -388,12 +415,13 @@ export async function serializeNotification(
   // payload blob before either reaches the client. The structured `actor` above
   // is already anonymized (its values come from the fresh snapshot); this
   // catches the copies frozen into the row at publish time.
+  const publishedActorNames = [
+    actorSnapshot?.displayName ?? "",
+    data.actorDisplayName ?? "",
+    data.requesterDisplayName ?? "",
+  ];
   const scrubbed = freshActor?.isDeleted
-    ? scrubDeletedActor(payloadObj, data, [
-        actorSnapshot?.displayName ?? "",
-        data.actorDisplayName ?? "",
-        data.requesterDisplayName ?? "",
-      ])
+    ? scrubDeletedActor(payloadObj, data, publishedActorNames)
     : null;
 
   // Stale actor name refresh: the actor snapshot at publish time may have been
@@ -476,10 +504,41 @@ export async function serializeNotification(
 
   const resolution = nonEmpty(refreshName(data.resolution));
 
+  // Language-neutral half of the row, read back out of the same replay ticket
+  // the localized title/body above were rendered from.
+  //
+  // The params carry NAMES, so they get the same two rewrites the prose above
+  // did — otherwise a card would read "Deleted Account sent you a request"
+  // while its own params still named the person who deleted their account, and
+  // a client rendering from the template would print the old name back.
+  const template = describeCopyTicket(storedData[COPY_REF_KEY]);
+  const rewriteParam = (value: unknown): unknown => {
+    if (typeof value !== "string" || !value) return value;
+    if (!scrubbed) return refreshName(value) ?? value;
+    let out = value;
+    for (const stale of publishedActorNames) {
+      const trimmed = stale.trim();
+      if (trimmed) out = out.split(trimmed).join(DELETED_ACCOUNT_DISPLAY_NAME);
+    }
+    return out;
+  };
+  const templateParams = template
+    ? Object.fromEntries(
+        Object.entries(template.params).map(([key, value]) => [
+          key,
+          rewriteParam(value),
+        ])
+      )
+    : null;
+
   return {
     id: row.id,
     type: row.type,
     category: rowCategory(row.type),
+    categoryId: categorizeId(row.type),
+    ...(template && templateParams
+      ? { templateId: template.templateId, params: templateParams }
+      : {}),
     title,
     body,
     isRead: row.isRead,

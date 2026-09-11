@@ -156,6 +156,42 @@ export const userProfileRepository = {
     });
   },
 
+  /**
+   * The exact-`@handle` head of people search: ONE row, or none.
+   *
+   * The page below it is a keyset walk ordered `firstName asc, userId asc`, so
+   * a handle-exact hit has no way to reach the top on its own — search
+   * `cat` on a platform with 200 handles containing "cat" and `@cat` itself
+   * lands wherever its owner's first name falls. That is the single most
+   * visible way a handle search feels broken, and it is not fixable by sorting
+   * a page: the row is not IN the first page.
+   *
+   * Same `whoCanFindMe` gate and the same `alwaysVisibleIds` widening as the
+   * page query — an exact handle is a better query, not a permission. A user
+   * who hid themselves from discovery stays hidden here too.
+   */
+  findDiscoverableByNormalizedUsername(
+    normalizedUsername: string,
+    viewer: ViewerGraph,
+    alwaysVisibleIds?: string[]
+  ) {
+    return prisma.userProfile.findFirst({
+      where: {
+        normalizedUsername,
+        deletedAt: null,
+        ...(alwaysVisibleIds?.length
+          ? {
+              OR: [
+                discoverableWhere(viewer),
+                { userId: { in: alwaysVisibleIds } },
+              ],
+            }
+          : discoverableWhere(viewer)),
+      },
+      select: DISCOVERY_SELECT,
+    });
+  },
+
   /** Case-insensitive — canonical storage is lowercase; legacy rows may differ in casing. */
   findByUsername(username: string) {
     const normalized = normalizeUsername(username);

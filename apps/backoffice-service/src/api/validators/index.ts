@@ -227,3 +227,10 @@ export {
   setCallingEnabledSchema,
   type SetCallingEnabledInput,
 } from "./system-maintenance.validator.js";
+
+export {
+  notificationCategoryIdParamSchema,
+  updateNotificationCategorySchema,
+  type NotificationCategoryIdParam,
+  type UpdateNotificationCategoryInput,
+} from "./notification-category.validator.js";
