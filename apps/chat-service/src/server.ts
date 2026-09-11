@@ -734,7 +734,12 @@ const startServer = async () => {
       // GROUP call membership authorization + roster resolution.
       groupMemberRepo,
       // GROUP call timeline audit rows (VOICE_CALL / VIDEO_CALL).
-      groupSystemMessageService
+      groupSystemMessageService,
+      // Liveness for the orphan sweep. The UNGATED batch read on purpose:
+      // `getPresenceManyFor` applies the whoCanSeeOnlineStatus privacy gate and
+      // fails closed to `false`, which for a viewer is right and for a sweep
+      // deciding whether to hang up a call would be catastrophic.
+      (userIds) => presenceService.getPresenceMany(userIds)
     );
     // An unfriend/block must end the pair's live calls, and the AMQP consumer
     // that hears about it has no CallService — see events/call-teardown-bridge.ts.
@@ -1117,6 +1122,22 @@ const startServer = async () => {
         )
         .catch((err: unknown) => {
           logger.warn(`callStaleInProgressSweep failed: ${String(err)}`);
+        });
+      //   3. IN_PROGRESS → ENDED as soon as NO participant is connected, rather
+      //      than waiting out the 3h ceiling above. This is what covers a
+      //      gateway redeploy or crash: the disconnect cleanup is an in-process
+      //      timer that dies with its node, and on a crash is never armed at
+      //      all. Skips itself entirely if liveness cannot be read — see
+      //      sweepOrphanedCalls.
+      void callService
+        .sweepOrphanedCalls(
+          now,
+          env.CALL_ORPHAN_GRACE_SEC,
+          env.CALL_MAX_DURATION_SEC,
+          env.CALL_TIMEOUT_SWEEP_BATCH
+        )
+        .catch((err: unknown) => {
+          logger.warn(`callOrphanSweep failed: ${String(err)}`);
         });
     }, env.CALL_TIMEOUT_SWEEP_INTERVAL_SEC * 1000);
     // Don't hold the event loop open on shutdown.

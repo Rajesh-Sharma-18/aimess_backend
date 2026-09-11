@@ -325,14 +325,32 @@ export class CacheRepository {
     return this.redis.get(presenceStatusKey(userId));
   }
 
-  /** Batch presence lookup — same keys as {@link getUserPresence}, one round trip. */
+  /**
+   * Batch presence lookup — same keys as {@link getUserPresence}, one round trip.
+   *
+   * A pipeline rather than MGET. Every `presence:user:{userId}` key carries its
+   * OWN hash tag, so the keys land on different cluster slots and a multi-key
+   * MGET is a cross-slot command that ioredis rejects the moment
+   * REDIS_CLUSTER_NODES is set. A pipeline is split per node and works in both
+   * modes. It matters more than it looks: the orphan-call sweep treats a short
+   * result as a failed read and skips itself, so under MGET turning cluster on
+   * would have silently disabled that sweep forever rather than erroring
+   * anywhere visible.
+   */
   async getUserPresences(
     userIds: string[]
   ): Promise<Map<string, string | null>> {
     const map = new Map<string, string | null>();
     if (!userIds.length) return map;
-    const values = await this.redis.mget(...userIds.map(presenceStatusKey));
-    userIds.forEach((id, i) => map.set(id, values[i] ?? null));
+    const pipeline = this.redis.pipeline();
+    for (const id of userIds) pipeline.get(presenceStatusKey(id));
+    const results = await pipeline.exec();
+    userIds.forEach((id, i) => {
+      const entry = results?.[i];
+      // `exec()` yields [err, value] per command and does NOT throw on a
+      // per-key failure. A key that errored reads as unknown, not as offline.
+      map.set(id, entry && !entry[0] ? ((entry[1] as string) ?? null) : null);
+    });
     return map;
   }
 

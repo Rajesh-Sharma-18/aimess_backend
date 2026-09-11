@@ -34,6 +34,11 @@ const COMMENT_RATE_WINDOW_SEC = 5; // …per this window
 // storm cannot fan a flood of identical counts out to a whole room.
 const VIEWER_COUNT_DEBOUNCE_MS = 1000;
 
+// Floor on how often one socket's `stream:heartbeat` is acted on. Clients emit
+// every ~30 s, so this is 3x headroom while still bounding a client that loops
+// the event — each accepted beat costs three Redis round trips.
+const HEARTBEAT_MIN_INTERVAL_MS = 10_000;
+
 const roomKey = (streamId: string): string => `stream:${streamId}`;
 // Presence hash: userId -> refcount of currently-open sockets for that user.
 // HINCRBY +1 on every socket join, HINCRBY -1 on leave, HDEL when the count
@@ -506,23 +511,60 @@ export function registerStreamNamespace(
     (socket.data as { streamIncremented?: Set<string> }).streamIncremented =
       streamIncremented;
 
+    // Last accepted `stream:heartbeat` per stream, for THIS socket. Per-socket
+    // and declared here so it dies with the connection — deliberately not the
+    // namespace-scoped shape `viewerCountTimers` uses, since a throttle shared
+    // across sockets would let one client's beat suppress another's.
+    const lastHeartbeatAt = new Map<string, number>();
+
     // Per-socket increment: bumps the user's refcount, keeps join-time
     // hash + TTLs fresh, and remembers the streamId locally so the leave path
     // can decrement exactly once. Returns the current HLEN, or null on error.
+    //
+    // ONE transaction, not five awaits. `HINCRBY` CREATES the presence hash and
+    // the `EXPIRE` right after is the only thing that ever gives it a lifetime —
+    // so as five separate round trips, a process death in between left a hash
+    // with NO expiry at all, which Redis then keeps forever and nothing deletes.
+    // The heartbeat re-EXPIREs and so looks like it self-heals, but only while
+    // somebody is still watching: if the crash happened when that viewer was the
+    // last one, the key is never touched again and leaks permanently.
+    //
+    // MULTI rather than a pipeline on purpose — a pipeline only batches, while
+    // MULTI/EXEC is all-or-nothing, which is exactly the invariant being bought:
+    // the hash cannot exist without its TTL.
+    //
+    // Cluster note: the two keys carry no hash tag, so under Redis Cluster this
+    // MULTI would need `{<streamId>}` tags to keep them in one slot. The gateway
+    // builds a plain client (see sockets/redis.ts), not Redis.Cluster, and the
+    // deployment is a single instance.
     const incrementPresence = async (
       streamId: string
     ): Promise<number | null> => {
       try {
-        await redisPub.hincrby(sessionKey(streamId), userId, 1);
-        await redisPub.expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC);
-        await redisPub.hsetnx(
-          sessionJoinedKey(streamId),
-          userId,
-          String(Date.now())
-        );
-        await redisPub.expire(sessionJoinedKey(streamId), VIEWER_KEY_TTL_SEC);
+        const replies = await redisPub
+          .multi()
+          .hincrby(sessionKey(streamId), userId, 1)
+          .expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC)
+          .hsetnx(sessionJoinedKey(streamId), userId, String(Date.now()))
+          .expire(sessionJoinedKey(streamId), VIEWER_KEY_TTL_SEC)
+          .hlen(sessionKey(streamId))
+          .exec();
+
+        // `exec()` resolves to [Error | null, Result][] and does NOT reject on a
+        // per-command failure, so slot [0] has to be checked before slot [1] is
+        // trusted. Reading the value blind is the bug chat-service wrote up in
+        // middleware/rate-limit.ts: an undefined count compared false against its
+        // ceiling and the limiter passed everything while looking healthy.
+        const hlenReply = replies?.[4];
+        if (!replies || hlenReply?.[0] || typeof hlenReply?.[1] !== "number") {
+          logger.warn(
+            `/stream presence increment incomplete for ${streamId}: ${String(hlenReply?.[0] ?? "no reply")}`
+          );
+          return null;
+        }
+
         streamIncremented.add(streamId);
-        return await redisPub.hlen(sessionKey(streamId));
+        return hlenReply[1];
       } catch (err) {
         logger.warn(
           `/stream presence increment error for ${streamId}: ${String(err)}`
@@ -1072,6 +1114,16 @@ export function registerStreamNamespace(
       if (!r.success) return;
       const { streamId } = r.data;
       if (!streamIncremented.has(streamId)) return;
+      // The guard above answers "may you heartbeat" (are you really in this
+      // room), not "how often" — so a joined viewer could loop the event and
+      // spend three Redis round trips per iteration. Clients emit every ~30 s,
+      // so a 10 s floor is 3x headroom and never rejects a real tick, a
+      // reconnect burst included. Dropped silently: the handler takes no ack
+      // callback today and adding one would change the wire contract.
+      const now = Date.now();
+      if (now - (lastHeartbeatAt.get(streamId) ?? 0) < HEARTBEAT_MIN_INTERVAL_MS)
+        return;
+      lastHeartbeatAt.set(streamId, now);
       void redisPub
         .expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC)
         .then(() =>

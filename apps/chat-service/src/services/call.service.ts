@@ -100,6 +100,18 @@ const CALL_MEMBER_TTL_SEC = 4 * 60 * 60;
  */
 export type GetUserSnapshotFn = (userId: string) => Promise<CallPeerSnapshot>;
 
+/**
+ * Batched online-status lookup, keyed by user id.
+ *
+ * MUST return an entry for every id it was asked about. A caller cannot tell a
+ * missing entry from a genuine "offline", and the one consumer of this decides
+ * whether to hang up a call — so a short map is treated as a failed read, never
+ * as a roomful of offline users. See {@link CallService.sweepOrphanedCalls}.
+ */
+export type GetOnlineManyFn = (
+  userIds: string[]
+) => Promise<Map<string, boolean>>;
+
 export class CallService {
   constructor(
     private readonly callRepo: CallRepository,
@@ -129,7 +141,18 @@ export class CallService {
     private readonly groupSystemMessages?: Pick<
       GroupSystemMessageService,
       "postOrUpdateCall"
-    >
+    >,
+    /**
+     * Batched "is this user connected right now" for {@link sweepOrphanedCalls}.
+     *
+     * An injected function rather than the PresenceService itself, for the same
+     * reason `getCallPrivacy` and `getUserSnapshot` are: a test can stub it
+     * without standing up Redis. Optional so every existing construction site
+     * and test compiles unchanged — when absent the orphan sweep no-ops and the
+     * max-duration ceiling remains the only backstop, which is the behaviour
+     * that predates it.
+     */
+    private readonly getOnlineMany?: GetOnlineManyFn
   ) {}
 
   /**
@@ -1902,6 +1925,179 @@ export class CallService {
   }
 
   /**
+   * Settle ONE stranded IN_PROGRESS call. Shared by both sweeps so the two can
+   * never drift into recording the same situation two different ways.
+   *
+   * Returns true only if this writer won the atomic claim, so the caller can
+   * count flips without double-counting a row another node settled.
+   *
+   * `endedBy` distinguishes WHY it was swept — `SYSTEM_TIMEOUT` for the
+   * max-duration ceiling, `SYSTEM_ORPHANED` for "no participant is connected
+   * any more" — which support and analytics read to tell a stranded call from a
+   * real hangup. Clients never see either: the REST DTO collapses anything
+   * beginning with `SYSTEM`.
+   */
+  private async settleStrandedCall(
+    call: Call,
+    now: Date,
+    maxDurationSec: number,
+    endedBy: "SYSTEM_TIMEOUT" | "SYSTEM_ORPHANED"
+  ): Promise<boolean> {
+    // A stranded row with NO `answeredAt` never connected — nothing ever
+    // stamped the moment the callee picked up.
+    //
+    // It must NOT settle like an answered call. The expression this replaced
+    // fell through to `maxDurationSec` for a null `answeredAt`, so the first
+    // such row ever swept would have recorded a FULL-CEILING call — three hours
+    // by default — in both participants' history, for a call that never
+    // happened. Every other terminal path in this service already reads
+    // `IN_PROGRESS` + no `answeredAt` as a cancelled ring with no duration (see
+    // endCall's `wasPreMedia` branch, declineCall, and the LiveKit reconcile).
+    // This is the same reading, applied to the same condition.
+    const neverConnected = !call.answeredAt;
+    // The real end time is unknowable: the media session ended whenever the
+    // clients vanished and we never heard. Capping rather than recording true
+    // elapsed time is what stops an 8-day row destroying duration analytics.
+    const durationSec = neverConnected
+      ? 0
+      : Math.min(
+          maxDurationSec,
+          Math.max(
+            0,
+            Math.floor((now.getTime() - call.answeredAt!.getTime()) / 1000)
+          )
+        );
+
+    const { won } = await this.callRepo.claimStatusTransition(
+      call.callId,
+      CallStatus.IN_PROGRESS,
+      {
+        status: CallStatus.ENDED,
+        endedAt: now,
+        durationSec,
+        endedBy,
+      }
+    );
+    // Lost the claim — another node (or a real hangup) settled this row first,
+    // and only the winner publishes.
+    if (!won) return false;
+
+    await this.publishToCallAndParticipants(
+      call,
+      JSON.stringify({
+        event: "call:ended",
+        data: { callId: call.callId, endedBy, durationSec },
+      }),
+      "settleStranded"
+    );
+
+    // CANCELLED, not ENDED, for a call that never connected — the card has to
+    // match the duration it carries, and an "ENDED" card reading 0s looks like
+    // a call that was answered and instantly dropped.
+    await this.postCallChatMessageSafe(
+      call,
+      neverConnected ? "CANCELLED" : "ENDED",
+      now,
+      durationSec,
+      endedBy
+    );
+    return true;
+  }
+
+  /**
+   * Sweep calls whose participants are ALL gone, without waiting for the
+   * max-duration ceiling.
+   *
+   * The gateway arms an in-process `setTimeout` when a participant's socket
+   * drops, and that timer is the only thing that ends a call nobody hung up.
+   * It lives in one node's memory and is `unref`ed, and the gateway installs no
+   * SIGTERM handler — so a redeploy or a crash loses it silently, and on a crash
+   * the `disconnecting` handler never runs to arm it in the first place. The row
+   * then sits IN_PROGRESS until `sweepStaleInProgressCalls` reaps it at
+   * CALL_MAX_DURATION_SEC, three hours by default, during which BOTH
+   * participants are "busy" and can neither place nor receive a call.
+   *
+   * A replacement cannot be timer-based for that reason; it has to be driven by
+   * liveness. The signal is simply whether anyone is still online, and that is
+   * the right signal because a call only becomes stranded when nobody is left to
+   * hang it up — if a participant were still connected, their client would end
+   * the call normally and none of this would run. "Stranded" and "everybody is
+   * gone" are the same condition.
+   *
+   * Residual gap, deliberately accepted: both parties gone but one still has an
+   * unrelated device online reads as present, and that call waits for the
+   * ceiling as it does today. Closing it would need a call-scoped heartbeat from
+   * the gateway; this costs nothing and covers the case that actually strands
+   * calls.
+   */
+  async sweepOrphanedCalls(
+    now: Date,
+    graceSec: number,
+    maxDurationSec: number,
+    batchLimit: number
+  ): Promise<number> {
+    if (!this.getOnlineMany) return 0;
+
+    const cutoff = new Date(now.getTime() - graceSec * 1000);
+    const candidates = await this.callRepo.findStuckInProgress(
+      cutoff,
+      batchLimit
+    );
+    if (candidates.length === 0) return 0;
+
+    const participantIds = [
+      ...new Set(
+        candidates.flatMap((call) => [
+          call.callerId,
+          ...this.ringTargets(call),
+        ])
+      ),
+    ].filter(Boolean);
+    if (participantIds.length === 0) return 0;
+
+    let online: Map<string, boolean>;
+    try {
+      online = await this.getOnlineMany(participantIds);
+    } catch (err) {
+      logger.warn(`CallService|sweepOrphaned|liveness read threw: ${String(err)}`);
+      return 0;
+    }
+
+    // FAIL CLOSED, and this is the single most important line here. The presence
+    // lookup swallows its own Redis errors and returns an EMPTY map, which read
+    // literally means "nobody is online" — and would end every live call on the
+    // platform at once. A short answer is indistinguishable from that, so the
+    // only safe reading of an incomplete result is to do nothing this pass and
+    // let the ceiling remain the backstop. A delayed cleanup is recoverable; a
+    // mass disconnect is not.
+    if (online.size < participantIds.length) {
+      logger.warn(
+        `CallService|sweepOrphaned|liveness incomplete (${online.size}/${participantIds.length}) — skipping this pass`
+      );
+      return 0;
+    }
+
+    let flipped = 0;
+    for (const call of candidates) {
+      const participants = [call.callerId, ...this.ringTargets(call)];
+      if (participants.some((id) => online.get(id) === true)) continue;
+      const settled = await this.settleStrandedCall(
+        call,
+        now,
+        maxDurationSec,
+        "SYSTEM_ORPHANED"
+      );
+      if (settled) flipped++;
+    }
+    if (flipped > 0) {
+      logger.info(
+        `CallService|sweepOrphaned|ended ${flipped} call(s) with no connected participant`
+      );
+    }
+    return flipped;
+  }
+
+  /**
    * Sweep calls stranded in IN_PROGRESS → ENDED.
    *
    * `sweepMissedCalls` only reaps RINGING, so a call that was answered and then
@@ -1931,67 +2127,13 @@ export class CallService {
     );
     let flipped = 0;
     for (const call of candidates) {
-      // A stranded row with NO `answeredAt` never connected — nothing ever
-      // stamped the moment the callee picked up. It reaches this sweep only
-      // because `findStuckInProgress` now reaps that shape at all; before, it
-      // was immortal.
-      //
-      // It must NOT settle like an answered call. The old expression fell
-      // through to `maxDurationSec` for a null `answeredAt`, so the first such
-      // row to be swept would have recorded a FULL-CEILING call — three hours by
-      // default — in both participants' history, for a call that never happened.
-      // Every other terminal path in this service already reads
-      // `IN_PROGRESS` + no `answeredAt` as a cancelled ring with no duration
-      // (see endCall's `wasPreMedia` branch, declineCall, and the LiveKit
-      // reconcile). This is the same reading, applied to the same condition.
-      const neverConnected = !call.answeredAt;
-      const durationSec = neverConnected
-        ? 0
-        : Math.min(
-            maxDurationSec,
-            Math.max(
-              0,
-              Math.floor((now.getTime() - call.answeredAt!.getTime()) / 1000)
-            )
-          );
-      const { won } = await this.callRepo.claimStatusTransition(
-        call.callId,
-        CallStatus.IN_PROGRESS,
-        {
-          status: CallStatus.ENDED,
-          endedAt: now,
-          durationSec,
-          endedBy: "SYSTEM_TIMEOUT",
-        }
-      );
-      if (!won) continue;
-      flipped++;
-
-      await this.publishToCallAndParticipants(
+      const settled = await this.settleStrandedCall(
         call,
-        JSON.stringify({
-          event: "call:ended",
-          data: {
-            callId: call.callId,
-            endedBy: "SYSTEM_TIMEOUT",
-            durationSec,
-          },
-        }),
-        "sweepStale"
-      );
-
-      // CANCELLED, not ENDED, for a call that never connected — the card the
-      // two of them see has to match the duration it carries, and an "ENDED"
-      // card reading 0s is a call that looks answered and instantly dropped.
-      // `endedBy` stays SYSTEM_TIMEOUT either way so analytics and support can
-      // still tell a swept row from a real hangup.
-      await this.postCallChatMessageSafe(
-        call,
-        neverConnected ? "CANCELLED" : "ENDED",
         now,
-        durationSec,
+        maxDurationSec,
         "SYSTEM_TIMEOUT"
       );
+      if (settled) flipped++;
     }
     if (flipped > 0) {
       logger.info(
