@@ -172,7 +172,19 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(1),
-  GLOBAL_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
+  /**
+   * Outermost per-session backstop, per window. NOT an operation limit — every
+   * per-operation bucket below sits inside this one.
+   *
+   * The default is 200 rather than 100 because 100 is below a single ordinary
+   * user action. Sending one 10-item album costs 20 requests in the media write
+   * bucket and, whenever ClamAV is on, roughly a dozen scan-status polls per
+   * item on top — so a backstop of 100 rejected the album itself, not a flood.
+   * Every deployment config in the repo already sets 200 explicitly; the
+   * default now agrees with them instead of tripping only where nobody set it
+   * (local runs and CI), which is exactly where it looked like a client bug.
+   */
+  GLOBAL_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(200),
   SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES: z.coerce
     .number()
     .int()
@@ -238,6 +250,24 @@ const envSchema = z.object({
   OTP_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(15),
   /** Per-session ceiling for read/poll endpoints. Generous by design. */
   READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
+  /**
+   * Per-session ceiling for presigned upload-URL minting and the calls that
+   * complete an upload (`/media/upload-url`, `/media/confirm`,
+   * `DELETE /media/uploads/:objectKey`).
+   *
+   * Sized from the product limit rather than from a round number. The app
+   * allows 10 media per message (`CHAT_MEDIA_MAX_PER_MESSAGE` on the web
+   * composer, `MEDIA_LIMITS.IMAGE.maxCount` in chat-service), and EVERY item
+   * costs two requests in this bucket: one to mint the presigned URL and one
+   * to confirm the bytes after the PUT. A cancelled item costs a third.
+   *
+   * At the previous hard-coded 30/minute that worked out to 15 items per
+   * minute — one full album plus a few — after which a user doing nothing
+   * unusual got RATE_LIMITED partway through their second album. 90 covers
+   * four full albums a minute with room for the cancel DELETEs, and still
+   * caps how fast one session can be handed object-store write grants.
+   */
+  MEDIA_UPLOAD_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(90),
   /** Per-session ceiling for free-text search (each call fans out downstream). */
   SEARCH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
   /**

@@ -2,7 +2,10 @@ import { Router, type IRouter } from "express";
 
 import { mediaController } from "../controllers/media.controller.js";
 import { authenticateAccessToken } from "../../middleware/authenticate.js";
-import { mediaRateLimiter } from "../../middleware/rate-limiter.js";
+import {
+  mediaRateLimiter,
+  mediaScanStatusRateLimiter,
+} from "../../middleware/rate-limiter.js";
 
 export function createMediaRoutes(): IRouter {
   const router = Router();
@@ -27,7 +30,7 @@ export function createMediaRoutes(): IRouter {
 
   // No rate limiter: download-url issuance must never fail a legitimate
   // client with 429 (a chat/media-heavy view can fire many of these in a
-  // burst). Upload/confirm/scan-status keep mediaRateLimiter unchanged.
+  // burst). Upload and confirm keep mediaRateLimiter; scan-status has its own.
   router.post(
     "/download-url",
     authenticateAccessToken,
@@ -35,10 +38,16 @@ export function createMediaRoutes(): IRouter {
   );
 
   // Poll async AV scan status. GET /media/scan-status?objectKey=...&category=...
+  //
+  // Its OWN bucket, not the write one. Poll volume is a property of how long
+  // the scan takes, not of what the user did: confirm answers PENDING and the
+  // client then polls that object repeatedly, for every item in a batch. A
+  // single album could spend the whole write budget on scans and get the NEXT
+  // upload thrown out with 429. See mediaScanStatusRateLimiter.
   router.get(
     "/scan-status",
     authenticateAccessToken,
-    mediaRateLimiter,
+    mediaScanStatusRateLimiter,
     mediaController.getScanStatus
   );
 
