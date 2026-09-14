@@ -21,7 +21,6 @@ import {
 } from "@aimess/errors";
 import { formatStreamDuration } from "@aimess/constants";
 
-import { NON_SRS_SOURCE_TYPES } from "../constants/index.js";
 import { env } from "../config/env.js";
 import type { Livestream } from "../generated/prisma/index.js";
 import type {
@@ -318,21 +317,6 @@ export class LivestreamService {
     // for tests. Best-effort — a failure degrades to an empty host name.
     private readonly userClient: typeof userGrpcClient = userGrpcClient
   ) {}
-
-  /**
-   * Epoch ms of the last SRS publisher scan that came back complete; 0 = never.
-   *
-   * The heartbeat sweeper ends streams on the ABSENCE of a recent stamp, and
-   * since those stamps now come from `reconcileWithSrs`, an unreachable SRS
-   * means no stamps — which would read as "every broadcast died" and end them
-   * all one timeout later. This records that SRS actually answered, so the
-   * sweeper can tell "the publisher stopped" apart from "we stopped looking".
-   *
-   * ponytail: per-process, like the sweeper that reads it. A second instance
-   * keeps its own clock and its own sweep, so they cannot disagree about a
-   * stream — only about when to check it.
-   */
-  private lastPublisherScanAt = 0;
 
   /**
    * Go-live: authorize the creator (membership gate, optional), enforce the
@@ -672,19 +656,6 @@ export class LivestreamService {
       status: "LIVE",
       disconnectedAt: null,
       publisherClientId: clientId ?? null,
-      // Seed the liveness clock at the moment the stream becomes LIVE.
-      //
-      // `findStaleLiveStreams` can only match a row whose `lastHeartbeatAt` is
-      // PRESENT — Prisma omits an unset optional field, and `{field: null}`
-      // does not match an absent one. Only iOS calls POST /heartbeat; web and
-      // Android emit a socket event that never reaches this service. So a
-      // browser or Android broadcast used to carry no `lastHeartbeatAt` at all
-      // and could never be swept: a host who force-quit stayed LIVE forever,
-      // locking themselves out of going live anywhere via countLiveByCreator.
-      // Stamping here makes the field always present on a LIVE row, so the
-      // existing sweeper works with no query change; reconcileWithSrs then
-      // keeps it fresh for as long as SRS actually has the publisher.
-      lastHeartbeatAt: new Date(),
       // Resume: keep the original livedAt so duration/history stay continuous
       // across the blip. Fresh publish: stamp it for the first time.
       ...(isResume ? {} : { livedAt: new Date() }),
@@ -764,11 +735,6 @@ export class LivestreamService {
    * flapping connection that keeps failing to fully republish must not
    * indefinitely extend its own grace window.
    *
-   * NOTE: heartbeats are intentionally ignored while RECONNECTING (see
-   * {@link recordHeartbeat}) so a still-open companion app cannot keep
-   * `lastHeartbeatAt` fresh and prevent the heartbeat sweeper from acting as
-   * a backstop if the reconnect sweep misses a stale stream.
-   *
    * STALE HOOKS: a WHIP or RTMP reconnect closes the old publisher and opens
    * a new one. SRS dispatches both hooks on background coroutines and Express
    * serves them concurrently, so the OLD connection's on_unpublish can land
@@ -844,8 +810,7 @@ export class LivestreamService {
    * Common tail for any transition INTO ENDED: flips status, best-effort kicks
    * the SRS publisher, broadcasts the ENDED status, closes out open viewer
    * sessions, and emits `stream.ended`. Shared by {@link stopStream},
-   * {@link adminForceEnd}, {@link sweepStaleLiveStreams}, and
-   * {@link sweepStaleReconnectingStreams} — each arrives at "this stream is
+   * {@link adminForceEnd}, and {@link sweepStaleReconnectingStreams} — each arrives at "this stream is
    * over" from a different trigger but must finish the same way. `kickStream`
    * is always safe to call even if the stream never had (or no longer has) an
    * active SRS publisher: it's a no-op lookup-then-DELETE, bounded and
@@ -1011,9 +976,6 @@ export class LivestreamService {
     const updated = await this.streamRepo.updateById(id, {
       status: "LIVE",
       disconnectedAt: null,
-      // Seed the liveness clock — see the same stamp in handlePublish for why
-      // an absent `lastHeartbeatAt` makes a stream unsweepable.
-      lastHeartbeatAt: new Date(),
       ...(isResume ? {} : { livedAt: new Date() }),
       hlsUrl: playback.hlsUrl,
       flvUrl: playback.flvUrl,
@@ -1430,26 +1392,6 @@ export class LivestreamService {
   }
 
   /**
-   * Record a keep-alive heartbeat from the stream host. Updates `lastHeartbeatAt`
-   * so the sweeper knows the host is still connected. Called every ~30 s from the
-   * client while the stream is LIVE — also accepted during RECONNECTING, since
-   * the heartbeat signals "the owner's client is alive", which remains true
-   * during a brief publisher blip and keeps `lastHeartbeatAt` fresh for when
-   * the stream resumes LIVE.
-   */
-  async recordHeartbeat(id: string, requesterId: string): Promise<void> {
-    const stream = await this.streamRepo.findById(id);
-    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
-    if (stream.creatorId !== requesterId) {
-      throw new ForbiddenError("STREAM_NOT_OWNER");
-    }
-    if (stream.status !== "LIVE") {
-      throw new BadRequestError("STREAM_NOT_LIVE");
-    }
-    await this.streamRepo.updateById(id, { lastHeartbeatAt: new Date() });
-  }
-
-  /**
    * Browser publisher reported its camera MediaStreamTrack ended (device
    * unplug, permission revoked). Persist `videoLostAt` so late-joining
    * viewers see the overlay from their join ack, and fan the event to the
@@ -1457,9 +1399,8 @@ export class LivestreamService {
    * `stream:video_lost` straight to every socket in the stream room.
    *
    * The 60s grace-timer that ends the stream on no recovery lives on the
-   * publisher client. A dead publisher client (tab close, crash) is picked
-   * up by the existing heartbeat sweeper, so no new server-side timeout
-   * job is needed.
+   * publisher client. A dead publisher client (tab close, crash) drops its
+   * SRS connection, so on_unpublish + the reconnect grace end the stream.
    */
   async markVideoLost(id: string, requesterId: string): Promise<void> {
     const stream = await this.streamRepo.findById(id);
@@ -1523,8 +1464,7 @@ export class LivestreamService {
    * gateway change is needed for a new event name).
    *
    * Two callers, one method: the browser (WHIP) self-reports via
-   * `POST /streams/:id/quality` (`requesterId` set, owner-checked like
-   * {@link recordHeartbeat}); the OBS sweeper poll (see
+   * `POST /streams/:id/quality` (`requesterId` set, owner-checked); the OBS sweeper poll (see
    * {@link pollObsStreamQuality}) calls it system-side with no requester.
    */
   async reportQuality(
@@ -1584,15 +1524,6 @@ export class LivestreamService {
           resolution: `${stats.width}x${stats.height}`,
           bitrateKbps: stats.bitrateKbps,
         });
-        // SRS is still receiving frames, which is the ONLY trustworthy liveness
-        // signal an OBS stream has: the host is broadcasting from OBS, not from
-        // the app, so the client-driven heartbeat may stop the moment they
-        // switch windows or the phone backgrounds the app. Treat "the publisher
-        // is demonstrably still sending" as the heartbeat, or the sweeper ends
-        // a perfectly healthy broadcast at STREAM_HEARTBEAT_TIMEOUT_MS.
-        await this.streamRepo.updateById(stream.id, {
-          lastHeartbeatAt: new Date(),
-        });
       } catch (error) {
         logger.warn(
           `pollObsStreamQuality failed for stream=${stream.id}: ${String(error)}`
@@ -1602,8 +1533,7 @@ export class LivestreamService {
   }
 
   /**
-   * Background sweeper: auto-end LIVE streams whose host hasn't heartbeated in
-   * `STREAM_HEARTBEAT_TIMEOUT_MS`, auto-end RECONNECTING streams whose
+   * Background sweeper: reconcile DB↔SRS, auto-end RECONNECTING streams whose
    * reconnect-grace window (`STREAM_RECONNECT_GRACE_MS`) expired without a
    * republish, and auto-cancel PENDING streams that sat unpublished past
    * `STREAM_PENDING_TIMEOUT_MS` (abandoned setup, crashed client, failed
@@ -1612,15 +1542,15 @@ export class LivestreamService {
    * subsequent create attempt 409s with STREAM_ALREADY_ACTIVE, even though
    * nothing is actually live. Called periodically from server.ts.
    * Intentionally silent — a single stale stream failure does not block the rest.
+   *
+   * LIVE streams are never ended here: YOUTUBE/URL embeds end only on an
+   * explicit stop or force-end, and SRS-ingested streams leave LIVE only via
+   * on_unpublish, which starts the reconnect grace swept below.
    */
   async sweepStaleStreams(): Promise<void> {
-    // Reconcile FIRST. It is what refreshes `lastHeartbeatAt` from the live SRS
-    // publisher list and what records that SRS answered at all, and both sweeps
-    // below decide whether to end a stream on exactly that evidence. Running it
-    // last meant every sweep judged a stream on data up to a full tick old, and
-    // the first tick after a restart judged it on no data whatsoever.
+    // Reconcile first so a publisher SRS is carrying resumes its RECONNECTING
+    // row before the grace sweep could end it.
     await this.reconcileWithSrs();
-    await this.sweepStaleLiveStreams();
     await this.sweepStaleReconnectingStreams();
     await this.sweepStalePendingStreams();
   }
@@ -1646,24 +1576,20 @@ export class LivestreamService {
    *
    * ponytail: the kick path is deliberately ONE-DIRECTIONAL — it only ends SRS sessions the DB
    * says are already over. The mirror case (DB says LIVE, SRS has no publisher)
-   * is left to the heartbeat + reconnect-grace sweepers above, because acting on
+   * is left to on_unpublish + the reconnect-grace sweeper, because acting on
    * it here would mean ending live streams based on an *absence* in the SRS
    * response — and a partial/degraded API reply is indistinguishable from a
    * genuinely empty one. `listPublishers()` returning null on any instance
    * failure is the guard that keeps this pass from acting on bad data at all.
-   * Upgrade path: if the webhook-loss case ever needs faster recovery than the
-   * 5-minute heartbeat timeout, require N consecutive absent observations
-   * before ending, rather than trusting a single scan.
+   * Upgrade path: if a lost on_unpublish ever needs recovery, require N
+   * consecutive absent observations before ending, rather than trusting a
+   * single scan.
    */
   private async reconcileWithSrs(): Promise<void> {
     const publishers = await this.srsService.listPublishers();
     // null = at least one SRS instance was unreachable; skip rather than act on
     // an incomplete picture.
     if (publishers === null) return;
-    // A complete answer, even an empty one, means SRS is reachable and the
-    // heartbeat refreshes below are trustworthy. `sweepStaleLiveStreams` reads
-    // this to decide whether ending streams is safe — see its guard.
-    this.lastPublisherScanAt = Date.now();
     if (publishers.length === 0) return;
 
     let streams: Livestream[];
@@ -1734,30 +1660,8 @@ export class LivestreamService {
         continue;
       }
 
-      // ── SRS has the publisher and we agree it is LIVE ─────────────────────
-      // Refresh the liveness clock. This is the ONLY liveness signal a browser
-      // or Android broadcast has: neither calls POST /heartbeat (their
-      // `stream:heartbeat` is a socket event that only touches Redis TTLs and
-      // never reaches this service), so without this the stamp seeded at
-      // go-live would age out and the sweeper would end a perfectly healthy
-      // stream at STREAM_HEARTBEAT_TIMEOUT_MS.
-      //
-      // Deliberately reuses the publisher list this pass already fetched
-      // rather than polling per stream: one write per actually-publishing
-      // stream per tick, no extra SRS round trips, and it covers every
-      // SRS-ingested source type instead of just OBS_RTMP.
-      if (stream.status === "LIVE") {
-        try {
-          await this.streamRepo.updateById(stream.id, {
-            lastHeartbeatAt: new Date(),
-          });
-        } catch (err) {
-          logger.warn(
-            `reconcileWithSrs: heartbeat refresh failed for stream=${stream.id} — ${String(err)}`
-          );
-        }
-        continue;
-      }
+      // SRS has the publisher and we agree it is LIVE — nothing to repair.
+      if (stream.status === "LIVE") continue;
 
       if (stream.status !== "ENDED" && stream.status !== "CANCELLED") continue;
 
@@ -1768,60 +1672,6 @@ export class LivestreamService {
       logger.info(
         `reconcileWithSrs: re-kicked orphaned publisher stream=${stream.id} status=${stream.status} name=${streamKeyRef(publisher.streamKey)} success=${String(kicked)}`
       );
-    }
-  }
-
-  private async sweepStaleLiveStreams(): Promise<void> {
-    // Refuse to act on stamps we may simply have stopped writing.
-    //
-    // `lastHeartbeatAt` is now refreshed from the SRS publisher scan, so an
-    // unreachable SRS produces exactly the same evidence as a room full of
-    // dead broadcasts: no recent stamps. Ending on that would turn one SRS
-    // outage into every live stream on the platform being killed a timeout
-    // later. A cold start reads 0 and so also skips, which is the safe
-    // direction — nothing is ended until we have seen SRS answer once.
-    //
-    // The skip is SRS-shaped, so it must not cover sources SRS never sees.
-    // A URL/YOUTUBE broadcast is a remote embed with no publisher at all, and
-    // its `lastHeartbeatAt` comes from one place only: the owner's
-    // authenticated POST /heartbeat. SRS being unreachable says nothing about
-    // it, but blanket-skipping meant one flaky instance stopped EVERY stream
-    // on the platform from ever auto-ending — which is what let an embed
-    // broadcast outlive its host's session indefinitely, viewers still
-    // watching, after the host was logged out and could not stop it.
-    const scanAge = Date.now() - this.lastPublisherScanAt;
-    const srsScanStale = scanAge > env.STREAM_HEARTBEAT_TIMEOUT_MS;
-    if (srsScanStale) {
-      logger.warn(
-        `sweepStaleLiveStreams: no complete SRS publisher scan in ${String(Math.round(scanAge / 1000))}s; limiting this sweep to ${NON_SRS_SOURCE_TYPES.join("/")} streams, whose liveness does not depend on SRS`
-      );
-    }
-
-    const cutoff = new Date(Date.now() - env.STREAM_HEARTBEAT_TIMEOUT_MS);
-    let stale: Awaited<ReturnType<typeof this.streamRepo.findStaleLiveStreams>>;
-    try {
-      stale = await this.streamRepo.findStaleLiveStreams(
-        cutoff,
-        srsScanStale ? NON_SRS_SOURCE_TYPES : undefined
-      );
-    } catch (err) {
-      logger.warn(`sweepStaleStreams: DB query failed — ${String(err)}`);
-      return;
-    }
-    if (!stale.length) return;
-
-    logger.info(`sweepStaleStreams: ending ${stale.length} stale stream(s)`);
-    for (const stream of stale) {
-      try {
-        await this.finalizeAsEnded(stream);
-        logger.info(
-          `sweepStaleStreams: ended stream=${stream.id} community=${stream.communityId}`
-        );
-      } catch (err) {
-        logger.warn(
-          `sweepStaleStreams: failed to end stream=${stream.id} — ${String(err)}`
-        );
-      }
     }
   }
 

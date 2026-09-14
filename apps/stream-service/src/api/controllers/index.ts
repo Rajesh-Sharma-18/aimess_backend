@@ -186,11 +186,8 @@ export class StreamController {
       );
   });
 
-  heartbeat = asyncHandler(async (req: Request, res: Response) => {
-    const id = typeof req.params.id === "string" ? req.params.id : "";
-    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
-
-    await this.livestreamService.recordHeartbeat(id, req.auth.userId);
+  // Already-shipped iOS builds still call this; liveness no longer depends on it.
+  heartbeat = asyncHandler(async (_req: Request, res: Response) => {
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true }));
   });
 
