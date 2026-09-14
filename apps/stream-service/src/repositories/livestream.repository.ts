@@ -308,58 +308,6 @@ export class LivestreamRepository {
   }
 
   /**
-   * Heartbeat sweeper input: LIVE streams whose host hasn't sent a heartbeat
-   * since `cutoff`. Covers two cases:
-   *  - `lastHeartbeatAt < cutoff` (host was sending, then stopped), and
-   *  - `lastHeartbeatAt == null && livedAt < cutoff` (stream went LIVE before
-   *    heartbeats were implemented, or the client never started sending them).
-   *
-   * Deliberately scoped to `status: "LIVE"` only — a RECONNECTING stream is
-   * governed by the separate, shorter reconnect-grace window (see
-   * {@link findStaleReconnectingStreams}), not this heartbeat timeout.
-   *
-   * `sourceTypes` narrows the sweep to those ingest modes. The caller uses it
-   * to keep sweeping the sources SRS has no opinion about while SRS itself is
-   * unreachable — see `sweepStaleLiveStreams`.
-   */
-  async findStaleLiveStreams(
-    cutoff: Date,
-    sourceTypes?: readonly string[]
-  ): Promise<Livestream[]> {
-    return this.prisma.livestream.findMany({
-      where: {
-        status: "LIVE",
-        ...(sourceTypes ? { sourceType: { in: [...sourceTypes] } } : {}),
-        OR: [
-          // Guard only. A bare `lt` also matches an EXPLICIT null, which would
-          // end a stream on the first tick after go-live rather than after the
-          // timeout it is owed — and that poisons the key, since on_publish
-          // denies an ENDED stream. Nothing writes an explicit null today
-          // (recordHeartbeat and pollObsStreamQuality only ever write a Date),
-          // so this is defence against a future writer, not a live fault.
-          { lastHeartbeatAt: { not: null, lt: cutoff } },
-          // KNOWN GAP — this branch does not fire in production. Prisma omits
-          // an unset optional field rather than storing null, so a stream that
-          // has never heartbeated has NO `lastHeartbeatAt` key at all, and
-          // `{ lastHeartbeatAt: null }` does not match an absent field. Such a
-          // stream is therefore never swept. Measured: a LIVE stream 15 min
-          // past cutoff with the field absent was still LIVE; an otherwise
-          // identical one with an explicit null was ended.
-          //
-          // Deliberately NOT widened to match absent. Clients are not sending
-          // heartbeats at all right now — every live PHONE_CAMERA stream on
-          // this deployment has no `lastHeartbeatAt` — so widening it would
-          // end every healthy camera broadcast at STREAM_HEARTBEAT_TIMEOUT_MS.
-          // Fix the client, or move liveness onto SRS (see
-          // pollObsStreamQuality, which does exactly that for OBS), before
-          // touching this.
-          { lastHeartbeatAt: null, livedAt: { lt: cutoff } },
-        ],
-      },
-    } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
-  }
-
-  /**
    * Reconnect-grace sweeper input: RECONNECTING streams whose publisher
    * dropped (`disconnectedAt`) more than `cutoff` ago without republishing.
    * These are finalized ENDED by the caller — see
