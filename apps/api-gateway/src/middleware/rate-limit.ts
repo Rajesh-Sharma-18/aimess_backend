@@ -478,15 +478,23 @@ export const readRateLimiter = createLimiter({
 
 /**
  * Presigned upload-URL minting (`POST /api/v1/media/upload-url` and the
- * `/users/uploads/url` alias). Session-scoped and write-shaped: each call hands
- * out an object-store write grant, so it is sized like device-token
- * registration rather than like a read. It had no dedicated limiter at all,
- * which combined badly with the presigned PUT not binding a content length.
+ * `/users/uploads/url` alias), plus the two calls that finish or abandon the
+ * same upload (`/media/confirm`, `DELETE /media/uploads/:objectKey`).
+ * Session-scoped and write-shaped: each mint hands out an object-store write
+ * grant, so it is sized like device-token registration rather than like a read.
+ * It had no dedicated limiter at all, which combined badly with the presigned
+ * PUT not binding a content length.
+ *
+ * The ceiling is NOT a round number — see MEDIA_UPLOAD_RATE_LIMIT_MAX in
+ * config/env.ts for how it is derived from the 10-media-per-message product
+ * limit and the two requests every item spends here. The previously hard-coded
+ * 30 allowed 15 items a minute, which a user hit by sending two ordinary photo
+ * albums, and the 429 that followed was indistinguishable from abuse.
  */
 export const mediaRateLimiter = createLimiter({
   rule: "media.upload-url",
   windowMs: 60 * 1000,
-  max: 30,
+  max: env.MEDIA_UPLOAD_RATE_LIMIT_MAX,
   scope: "session",
 });
 

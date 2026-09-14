@@ -17,12 +17,30 @@ import { createApp } from "../../src/app.js";
 import type { MessagingClient } from "../../src/grpc/clients/messaging.client.js";
 import type { MediaClient } from "../../src/grpc/clients/media.client.js";
 import { makeAccessToken } from "../helpers/auth.js";
+import { env } from "../../src/config/env.js";
 
 const UPLOAD_PATH = "/api/v1/media/upload-url";
 const DOWNLOAD_PATH = "/api/v1/media/download-url";
 
-/** The write bucket's ceiling (`mediaRateLimiter`, 30 per minute). */
-const MEDIA_WRITE_MAX = 30;
+/** The write bucket's ceiling (`mediaRateLimiter`), read rather than copied. */
+const MEDIA_WRITE_MAX = env.MEDIA_UPLOAD_RATE_LIMIT_MAX;
+
+/**
+ * Media items allowed in one composer send. Mirrors CHAT_MEDIA_MAX_PER_MESSAGE on the web client
+ * and MEDIA_LIMITS.IMAGE.maxCount in chat-service; the point of pinning it here is that the write
+ * ceiling above has to be derived from it, not chosen independently.
+ */
+const MEDIA_PER_MESSAGE = 10;
+
+/** Requests one item spends in the write bucket: mint the presigned URL, then confirm the bytes. */
+const REQUESTS_PER_ITEM = 2;
+
+/**
+ * The outer backstop every bucket below sits inside. Read, not copied: the write ceiling is now
+ * high enough that a spec firing "write ceiling + headroom" would cross THIS limiter instead and
+ * report a pass or failure that has nothing to do with the bucket under test.
+ */
+const GLOBAL_MAX = env.GLOBAL_RATE_LIMIT_MAX;
 
 function buildApp() {
   return createApp(
@@ -59,10 +77,15 @@ describe("media rate limiting", () => {
   const app = buildApp();
 
   it("does not throttle download-url at the write bucket's ceiling", async () => {
+    // Past the write ceiling, but still inside the global backstop — otherwise this measures the
+    // wrong limiter.
+    const count = Math.min(MEDIA_WRITE_MAX + 20, GLOBAL_MAX - 5);
+    expect(count).toBeGreaterThan(MEDIA_WRITE_MAX);
+
     const { throttledAt } = await fire(
       app,
       DOWNLOAD_PATH,
-      MEDIA_WRITE_MAX + 20,
+      count,
       "44444444-4444-4444-8444-444444444401"
     );
 
@@ -87,6 +110,24 @@ describe("media rate limiting", () => {
     await fire(app, UPLOAD_PATH, MEDIA_WRITE_MAX + 5, userId);
     // …then the same user's reads must still be served.
     const { throttledAt } = await fire(app, DOWNLOAD_PATH, 5, userId);
+
+    expect(throttledAt).toBeNull();
+  });
+
+  /**
+   * The regression this file now guards, and the reason the ceiling moved.
+   *
+   * At 30/min the bucket allowed 15 items a minute, so a user who sent one full album and started
+   * a second got RATE_LIMITED partway through it — indistinguishable, from the composer, from
+   * abuse. Two consecutive full albums is the smallest sequence that reproduced it.
+   */
+  it("serves two back-to-back full albums without throttling", async () => {
+    const { throttledAt } = await fire(
+      app,
+      UPLOAD_PATH,
+      MEDIA_PER_MESSAGE * REQUESTS_PER_ITEM * 2,
+      "44444444-4444-4444-8444-444444444405"
+    );
 
     expect(throttledAt).toBeNull();
   });

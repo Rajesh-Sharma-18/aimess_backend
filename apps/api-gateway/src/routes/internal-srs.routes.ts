@@ -8,6 +8,15 @@ import { env } from "../config/env.js";
 import { srsHookRateLimiter } from "../middleware/rate-limit.js";
 
 /**
+ * How long to wait on stream-service before answering SRS with a 503.
+ *
+ * Deliberately looser than the 3 s srs.service.ts uses for its own SRS API
+ * calls: those are read-only lookups, this proxies to a handler that does a DB
+ * read, a secret check, a concurrency count and a write first.
+ */
+const SRS_HOOK_TIMEOUT_MS = 5000;
+
+/**
  * Upstream URL, with `secret` STRIPPED from the forwarded query.
  *
  * SRS can only carry the shared secret in the hook URL's query string, so it
@@ -136,12 +145,28 @@ export function createInternalSrsRouter(): IRouter {
           "x-srs-secret": secret,
         };
 
+        // Bounded, because SRS is waiting on the answer.
+        //
+        // `on_publish` is what tells SRS whether to accept a broadcast, so an
+        // unbounded fetch holds open BOTH this handler and SRS's own hook
+        // connection for as long as stream-service is wedged — and these pile
+        // up under load. Same AbortController shape srs.service.ts uses on
+        // every one of its outbound calls.
+        //
+        // 5 s rather than that file's usual 3 s: those are read-only queries
+        // against SRS's API, while this proxies to a handler that does a DB
+        // lookup, a secret comparison, a concurrency count and a write before
+        // it answers. Matches `kickStream`, the existing 5 s outlier.
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), SRS_HOOK_TIMEOUT_MS);
         try {
           const upstream = await fetch(srsHookUrl(req), {
             method: "POST",
             headers,
             body: bodyText,
+            signal: controller.signal,
           });
+          // Inside the same try, so a stalled body read shares the deadline.
           const text = await upstream.text();
           logGatewayHookBanner(
             `FORWARDED_TO_STREAM_SERVICE status=${upstream.status} body=${text}`
@@ -157,6 +182,8 @@ export function createInternalSrsRouter(): IRouter {
             messageKey: "SERVICE_UNAVAILABLE",
             retryAfterSec: 5,
           });
+        } finally {
+          clearTimeout(timeout);
         }
       })();
     }
