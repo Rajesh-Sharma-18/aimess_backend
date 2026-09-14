@@ -5,7 +5,7 @@
  *  - recordViewerJoin / recordViewerLeave delegate to the repo and never throw
  *    (fire-and-forget from the gateway).
  *  - every ENDED transition (owner stop, SRS unpublish, admin force-end, the
- *    stale-stream sweeper) closes out open viewer sessions.
+ *    reconnect-grace sweeper) closes out open viewer sessions.
  *  - adminListStreams / adminGetStream overlay the LIVE Redis viewer count
  *    instead of the stale on_play/on_stop DB counter (the reported bug).
  *  - adminListViewerSessions surfaces the persisted session history.
@@ -28,7 +28,6 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     // returned: the drift-repair leg was silently untested.
     findBySrsNames: jest.fn().mockResolvedValue([]),
     updateById: jest.fn(),
-    findStaleLiveStreams: jest.fn().mockResolvedValue([]),
     findStaleReconnectingStreams: jest.fn().mockResolvedValue([]),
     countActiveByCommunityAndCreator: jest.fn().mockResolvedValue(0),
     // The community-wide go-live cap. A repo method absent from this fake
@@ -267,78 +266,9 @@ describe("LivestreamService â€” viewer sessions close out on every ENDED tr
     expect(result).toEqual({ success: false, status: "ENDED" });
     expect(viewerSessionRepo.closeAllOpenForStream).not.toHaveBeenCalled();
   });
-
-  it("sweepStaleStreams (heartbeat timeout) closes open viewer sessions for each swept stream", async () => {
-    const stream = makeStream();
-    const { service, viewerSessionRepo } = makeDeps({
-      streamRepo: {
-        findStaleLiveStreams: jest.fn().mockResolvedValue([stream]),
-        updateById: jest.fn().mockResolvedValue({
-          ...stream,
-          status: "ENDED",
-          endedAt: new Date(),
-        }),
-      },
-      srsService: {
-        // `[]` — a COMPLETE answer that happens to be empty, i.e. "SRS is
-        // reachable and holds no publishers". The default mock is `null`
-        // ("an instance was unreachable"), which now makes the heartbeat
-        // sweeper stand down rather than end streams it cannot vouch for.
-        listPublishers: jest.fn().mockResolvedValue([]),
-      },
-    });
-
-    await service.sweepStaleStreams();
-    await flushMicrotasks();
-
-    expect(viewerSessionRepo.closeAllOpenForStream).toHaveBeenCalledWith(
-      "stream-1",
-      expect.any(Date)
-    );
-  });
-
-  it("sweepStaleStreams does NOT end a stale SRS-ingested stream when SRS is unreachable", async () => {
-    // The interlock. `lastHeartbeatAt` is refreshed from the SRS publisher
-    // scan, so an unreachable SRS produces the same evidence as a room full of
-    // dead broadcasts — no recent stamps. Acting on it would turn one SRS
-    // outage into every live stream on the platform being killed a timeout
-    // later, which is strictly worse than the leak it is meant to fix.
-    //
-    // The stand-down is now expressed as a source-type narrowing rather than a
-    // blanket skip: it withholds judgement on the streams SRS ingests, and only
-    // those. A URL/YOUTUBE embed has no publisher for SRS to have an opinion
-    // about, and blanket-skipping meant one flaky instance kept those alive
-    // forever after their host's session was gone — see
-    // tests/publish/stale-live-sweep.test.ts.
-    const stream = makeStream(); // PHONE_CAMERA — ingested by SRS
-    const { service, streamRepo, viewerSessionRepo } = makeDeps({
-      streamRepo: {
-        // Honour the filter the way the real query does, so this asserts the
-        // camera stream survives rather than that the sweep never ran.
-        findStaleLiveStreams: jest.fn(
-          async (_cutoff: Date, sourceTypes?: readonly string[]) =>
-            sourceTypes && !sourceTypes.includes(stream.sourceType)
-              ? []
-              : [stream]
-        ),
-      },
-      srsService: {
-        listPublishers: jest.fn().mockResolvedValue(null), // instance unreachable
-      },
-    });
-
-    await service.sweepStaleStreams();
-    await flushMicrotasks();
-
-    expect(streamRepo.findStaleLiveStreams).toHaveBeenCalledWith(
-      expect.any(Date),
-      ["URL", "YOUTUBE"]
-    );
-    expect(viewerSessionRepo.closeAllOpenForStream).not.toHaveBeenCalled();
-  });
 });
 
-describe("LivestreamService â€” liveness clock seeded at go-live", () => {
+describe("LivestreamService â€” community go-live cap", () => {
   // env default cap is 5 (STREAM_MAX_CONCURRENT_PER_COMMUNITY). The cap was
   // only ever checked in createStream, where the new row is PENDING — and
   // PENDING never occupies a slot by design. So N different creators could each
@@ -455,64 +385,6 @@ describe("LivestreamService â€” liveness clock seeded at go-live", () => {
       service.handlePublish("key-1", undefined, { secret: "key-1" })
     ).resolves.toBe(true);
     expect(streamRepo.countActiveByCommunity).not.toHaveBeenCalled();
-  });
-
-  // Why this matters: findStaleLiveStreams can only match a row whose
-  // `lastHeartbeatAt` is PRESENT. Prisma omits an unset optional field and
-  // `{field: null}` does not match an absent one, so a stream that went LIVE
-  // without this stamp was permanently unsweepable — a host who force-quit
-  // stayed LIVE forever and locked themselves out of going live anywhere.
-  it.each([
-    ["handlePublish", "PENDING"],
-    ["handlePublish", "RECONNECTING"],
-  ])("%s stamps lastHeartbeatAt on a %s â†’ LIVE transition", async (_fn, from) => {
-    const stream = makeStream({
-      status: from,
-      livedAt: from === "RECONNECTING" ? new Date() : null,
-      disconnectedAt: from === "RECONNECTING" ? new Date() : null,
-    });
-    const { service, streamRepo } = makeDeps({
-      streamRepo: {
-        findBySrsName: jest.fn().mockResolvedValue(stream),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({ ...stream, status: "LIVE", livedAt: new Date() }),
-      },
-    });
-
-    await service.handlePublish("key-1", undefined, { secret: "key-1" });
-    await flushMicrotasks();
-
-    expect(streamRepo.updateById).toHaveBeenCalledWith(
-      "stream-1",
-      expect.objectContaining({
-        status: "LIVE",
-        lastHeartbeatAt: expect.any(Date),
-      })
-    );
-  });
-
-  it("markLive stamps lastHeartbeatAt on a PENDING â†’ LIVE transition", async () => {
-    const stream = makeStream({ status: "PENDING", livedAt: null });
-    const { service, streamRepo } = makeDeps({
-      streamRepo: {
-        findById: jest.fn().mockResolvedValue(stream),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({ ...stream, status: "LIVE", livedAt: new Date() }),
-      },
-    });
-
-    await service.markLive("stream-1", "creator-1");
-    await flushMicrotasks();
-
-    expect(streamRepo.updateById).toHaveBeenCalledWith(
-      "stream-1",
-      expect.objectContaining({
-        status: "LIVE",
-        lastHeartbeatAt: expect.any(Date),
-      })
-    );
   });
 });
 
@@ -872,11 +744,7 @@ describe("LivestreamService â€” publisher reconnect-grace (RECONNECTING)", 
     );
   });
 
-  it("reconcileWithSrs refreshes the liveness clock for a LIVE stream SRS is carrying", async () => {
-    // The signal that keeps a browser/Android broadcast alive. Neither client
-    // calls POST /heartbeat — their `stream:heartbeat` is a socket event that
-    // only touches Redis TTLs — so without this refresh the stamp seeded at
-    // go-live ages out and the sweeper ends a healthy stream at the timeout.
+  it("reconcileWithSrs leaves a LIVE stream SRS is carrying untouched", async () => {
     const stream = makeStream({ status: "LIVE" });
     const { service, streamRepo, srsService } = makeDeps({
       streamRepo: {
@@ -896,9 +764,7 @@ describe("LivestreamService â€” publisher reconnect-grace (RECONNECTING)", 
     await service.sweepStaleStreams();
     await flushMicrotasks();
 
-    expect(streamRepo.updateById).toHaveBeenCalledWith("stream-1", {
-      lastHeartbeatAt: expect.any(Date),
-    });
+    expect(streamRepo.updateById).not.toHaveBeenCalled();
     // A LIVE stream SRS is carrying must never be kicked.
     expect(srsService.kickClientById).not.toHaveBeenCalled();
   });

@@ -88,17 +88,11 @@ const envSchema = z.object({
     .default("true")
     .transform((value) => value === "true"),
   /**
-   * How long (ms) a LIVE stream may go without a heartbeat before the sweeper
-   * auto-ends it. Client should call POST /streams/:id/heartbeat every 30 s.
-   * Default: 5 minutes (300 000 ms).
-   */
-  STREAM_HEARTBEAT_TIMEOUT_MS: z.coerce.number().positive().default(300_000),
-  /**
    * How long (ms) a RECONNECTING stream (publisher dropped — refresh, mobile
    * blip, network hiccup) may sit before the sweeper finalizes it ENDED. A
    * republish on the same streamKey within this window resumes LIVE instead.
-   * Kept well under STREAM_HEARTBEAT_TIMEOUT_MS so a resume never immediately
-   * re-trips the heartbeat-timeout sweep. Default: 45 seconds.
+   * Long enough to cover OBS's built-in reconnect and a browser remount.
+   * Default: 45 seconds.
    */
   STREAM_RECONNECT_GRACE_MS: z.coerce.number().positive().default(45_000),
   /**

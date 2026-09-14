@@ -1,8 +1,7 @@
 /**
  * SRS's clients/streams list endpoints return only 10 entries unless `count`
- * is given. Viewers and ABR rendition publishers fill that page, so an unpaged
- * scan misses the camera publisher, reconcileWithSrs never refreshes its
- * lastHeartbeatAt, and the sweeper ends a healthy broadcast after 5 minutes.
+ * is given. Viewers and ABR rendition clients fill that page, so an unpaged
+ * scan misses the camera publisher and reconcile/kick never see it.
  */
 import { SrsService } from "../../src/services/srs.service.js";
 

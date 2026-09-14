@@ -250,14 +250,12 @@ function skipRateLimit(req: Request): boolean {
 /**
  * Keep the broadcaster's own keep-alive traffic out of the `/streams` bucket.
  *
- * Neither endpoint is itself a flood risk — the heartbeat is ~2 req/min. The
- * risk is the bucket being SESSION-scoped and shared with everything else the
- * same client sends to `/streams`: comment paging, viewer polling, moderation.
- * A viewer-heavy session could exhaust it and starve the host's heartbeat, and
- * a dropped heartbeat is not a retried read — `STREAM_HEARTBEAT_TIMEOUT_MS`
- * elapses and the sweeper ENDS THE BROADCAST. That is a worse outcome than the
- * abuse the limiter exists to bound, so these two sit outside it entirely and
- * fall back to the global backstop, which is where they already were.
+ * Neither endpoint is itself a flood risk — the heartbeat is ~2 req/min and a
+ * no-op kept only for already-shipped iOS builds; quality reports are periodic
+ * host telemetry. The bucket is SESSION-scoped and shared with everything else
+ * the same client sends to `/streams` (comment paging, viewer polling,
+ * moderation), so counting this background traffic would eat into the host's
+ * real requests. Both sit outside it and fall back to the global backstop.
  *
  * `req.path` here is MOUNT-RELATIVE: under `v1Router.use("/streams", …)` a
  * heartbeat arrives as `/<streamId>/heartbeat`, not the full request path. The
