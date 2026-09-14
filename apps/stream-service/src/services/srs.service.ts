@@ -39,6 +39,11 @@ export type HlsQuality = (typeof HLS_QUALITY_LADDER)[number];
 export const FLV_QUALITY_LADDER = ["1080p", "720p", "480p", "360p"] as const;
 export type FlvQuality = (typeof FLV_QUALITY_LADDER)[number];
 
+// SRS's /api/v1/clients and /api/v1/streams return only 10 entries without `count`,
+// and viewers and ABR rendition publishers fill that page before a publisher is reached.
+// ponytail: one oversized page, switch to start/count paging if an instance ever holds more.
+const SRS_API_LIST_QUERY = "?count=10000";
+
 /**
  * SRS (OSSRS) integration helper. Mints the publish/playback URLs handed to a
  * creator/viewer and best-effort terminates a publisher on a manual stop.
@@ -127,7 +132,7 @@ export class SrsService {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
     try {
-      const listRes = await fetch(`${env.SRS_API_URL}/api/v1/streams/`, {
+      const listRes = await fetch(`${env.SRS_API_URL}/api/v1/streams/${SRS_API_LIST_QUERY}`, {
         method: "GET",
         headers: this.apiAuthHeaders,
         signal: controller.signal,
@@ -162,7 +167,7 @@ export class SrsService {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 3000);
       try {
-        const res = await fetch(`${apiBase}/api/v1/streams/`, {
+        const res = await fetch(`${apiBase}/api/v1/streams/${SRS_API_LIST_QUERY}`, {
           method: "GET",
           headers: this.apiAuthHeaders,
           signal: controller.signal,
@@ -228,7 +233,7 @@ export class SrsService {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
       try {
-        const res = await fetch(`${apiBase}/api/v1/clients/`, {
+        const res = await fetch(`${apiBase}/api/v1/clients/${SRS_API_LIST_QUERY}`, {
           method: "GET",
           headers: this.apiAuthHeaders,
           signal: controller.signal,
@@ -316,7 +321,7 @@ export class SrsService {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
-      const listRes = await fetch(`${apiBase}/api/v1/clients/`, {
+      const listRes = await fetch(`${apiBase}/api/v1/clients/${SRS_API_LIST_QUERY}`, {
         method: "GET",
         headers: this.apiAuthHeaders,
         signal: controller.signal,
