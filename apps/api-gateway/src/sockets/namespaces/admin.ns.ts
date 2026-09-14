@@ -152,6 +152,24 @@ const GROUPS_MODERATE = "groups.moderate";
  */
 const LIVESTREAMS_READ = "livestreams.read";
 
+/**
+ * Admin System Health page: watch/stop watching the live snapshot
+ * backoffice-service publishes every tick (lib/system-health-ticker.ts). The
+ * room shares its name with the Redis channel, which the `admin:*` PSUBSCRIBE
+ * below already receives, so a join is the whole subscription.
+ */
+const ADMIN_SYSTEM_HEALTH_SUBSCRIBE = "admin:system-health:subscribe";
+const ADMIN_SYSTEM_HEALTH_UNSUBSCRIBE = "admin:system-health:unsubscribe";
+const SYSTEM_HEALTH_ROOM = "admin:system-health";
+
+/**
+ * Permission required to receive System Health snapshots. Matches the REST
+ * guard on GET /admin/v1/system-health — each snapshot IS that response,
+ * internal hosts and bucket names included, so the socket must not be a
+ * cheaper door.
+ */
+const SYSTEMHEALTH_READ = "systemhealth.read";
+
 /** Mirrors backoffice-service's lib/admin-perms-cache.ts key format. */
 const ADMIN_PERMS_PREFIX = "aimess:admin:perms:";
 
@@ -274,6 +292,23 @@ export function registerAdminNamespace(
           if (ADMIN_VIEWABLE_STREAM_EVENTS.has(parsed.event)) {
             admin.local.to(channel).emit(parsed.event, parsed.data);
           }
+        } catch (err) {
+          logger.warn(
+            `/admin Redis message parse error on ${channel}: ${String(err)}`
+          );
+        }
+        return;
+      }
+
+      // System Health snapshots. Checked before the generic `admin:` branch
+      // below because this is a mirror, not an account push: every node
+      // receives it every tick, so delivery is LOCAL for the same reason as the
+      // branches above, and a tick nobody is watching costs nothing.
+      if (channel === SYSTEM_HEALTH_ROOM) {
+        if (!admin.adapter.rooms.has(channel)) return;
+        try {
+          const parsed = JSON.parse(message) as RedisSocketEvent;
+          admin.local.to(channel).emit(parsed.event, parsed.data);
         } catch (err) {
           logger.warn(
             `/admin Redis message parse error on ${channel}: ${String(err)}`
@@ -511,6 +546,46 @@ export function registerAdminNamespace(
     socket.on(ADMIN_STREAM_UNSUBSCRIBE, (payload: unknown) => {
       const parsed = StreamSubscribeSchema.safeParse(payload);
       if (parsed.success) void socket.leave(`stream:${parsed.data.streamId}`);
+    });
+
+    // Whether this socket currently WANTS System Health. Same race guard as the
+    // community set above: an unsubscribe issued while the permission check is
+    // in flight must not be overtaken by the join. No payload to validate — the
+    // room is fixed, and the handler never reads its first argument.
+    let wantsSystemHealth = false;
+
+    socket.on(
+      ADMIN_SYSTEM_HEALTH_SUBSCRIBE,
+      (_payload: unknown, callback?: (res: unknown) => void) => {
+        wantsSystemHealth = true;
+        void (async () => {
+          if (
+            !(await adminHasPermission(
+              redisPub,
+              String(adminId),
+              SYSTEMHEALTH_READ
+            ))
+          ) {
+            wantsSystemHealth = false;
+            logger.warn(
+              `/admin system-health subscribe denied adminId=${String(adminId)}`
+            );
+            callback?.({ success: false, error: "FORBIDDEN" });
+            return;
+          }
+          if (!wantsSystemHealth) {
+            callback?.({ success: false, error: "UNSUBSCRIBED" });
+            return;
+          }
+          await socket.join(SYSTEM_HEALTH_ROOM);
+          callback?.({ success: true });
+        })();
+      }
+    );
+
+    socket.on(ADMIN_SYSTEM_HEALTH_UNSUBSCRIBE, () => {
+      wantsSystemHealth = false;
+      void socket.leave(SYSTEM_HEALTH_ROOM);
     });
 
     socket.on("disconnect", (reason: string) => {
