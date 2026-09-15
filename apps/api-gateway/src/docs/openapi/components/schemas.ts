@@ -11620,6 +11620,11 @@ export const openApiSchemas = {
             description:
               "Authoritative answer instant, epoch MILLISECONDS (0 when unknown). Render the in-call timer as `now - answeredAt` so every leg counts the same call; timing from local media arrival is what makes two devices disagree.",
           },
+          serverNow: {
+            type: "integer",
+            description:
+              "Server clock at send time, epoch MILLISECONDS. Compute `offset = serverNow - Date.now()` on receipt and use `Date.now() + offset` when measuring against `answeredAt`, so a skewed device clock does not freeze or jump the timer.",
+          },
         },
       },
     ],
