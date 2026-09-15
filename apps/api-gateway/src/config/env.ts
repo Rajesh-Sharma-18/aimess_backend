@@ -140,7 +140,24 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(15),
-  ADMIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
+  /**
+   * Per-admin Backoffice READS per minute (GET/HEAD), keyed on the verified
+   * admin id. Replaces the old ADMIN_RATE_LIMIT_MAX (100 per 15 min for reads
+   * and writes together), which normal use exceeded. Sizing: a page load is
+   * 1-5 reads, the Dashboard polls service-status twice a minute, and a fast
+   * operator clicking through pages, search and pagination stays under ~60 a
+   * minute even with a few tabs open. 150 leaves headroom for that and still
+   * sits below the per-user READ_RATE_LIMIT_MAX (300); a runaway loop blows
+   * through it in seconds.
+   */
+  ADMIN_READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(150),
+  /**
+   * Per-admin Backoffice MUTATIONS per minute (POST/PUT/PATCH/DELETE). Every
+   * sensitive action sits behind a confirm dialog, so a human manages a few a
+   * minute; 20 covers a busy moderation burst while capping how fast one
+   * session can ban, delete or re-permission accounts.
+   */
+  ADMIN_WRITE_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   ADMIN_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
   REDIS_URL: z.string(),
   CORS_ALLOWED_ORIGINS: z.string(),

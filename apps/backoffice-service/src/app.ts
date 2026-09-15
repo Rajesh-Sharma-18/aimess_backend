@@ -11,7 +11,8 @@ import {
   ADMIN_CREDENTIAL_PATHS,
   adminCredentialRateLimiter,
   adminIpAllowlist,
-  adminSurfaceRateLimiter,
+  adminReadRateLimiter,
+  adminWriteRateLimiter,
 } from "./middleware/edge-guards.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { notFound } from "./middleware/not-found.js";
@@ -71,7 +72,8 @@ export function createApp(): Express {
   // middleware/edge-guards.ts. Ordering mirrors the gateway: whole-surface
   // limiter, then the source allowlist, then the tighter credential limiter on
   // the unauthenticated login and password-reset endpoints.
-  app.use("/v1", adminSurfaceRateLimiter);
+  app.use("/v1", adminReadRateLimiter);
+  app.use("/v1", adminWriteRateLimiter);
   app.use("/v1", adminIpAllowlist);
   for (const credentialPath of ADMIN_CREDENTIAL_PATHS) {
     app.use(`/v1${credentialPath}`, adminCredentialRateLimiter);

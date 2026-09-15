@@ -164,7 +164,10 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(15),
-  ADMIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
+  /** Per-admin reads per minute. Must match the gateway — see its env.ts for sizing. */
+  ADMIN_READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(150),
+  /** Per-admin mutations per minute. Must match the gateway. */
+  ADMIN_WRITE_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   ADMIN_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
 
   /**

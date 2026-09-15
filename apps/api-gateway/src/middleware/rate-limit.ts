@@ -8,7 +8,7 @@ import rateLimit, {
 import type { Request, Response } from "express";
 
 import { logger } from "@aimess/logger";
-import { verifyAccessToken } from "@aimess/auth-jwt";
+import { verifyAccessToken, verifyAdminAccessToken } from "@aimess/auth-jwt";
 import { sendApiError, getRequestId } from "@aimess/utils";
 
 import { env, accessTokenVerifyConfig } from "../config/env.js";
@@ -31,8 +31,14 @@ import { RedisRateLimitStore } from "./redis-rate-limit-store.js";
  *
  * Anonymous requests under `session` scope fall back to the IP bucket, so an
  * unauthenticated caller can never escape limiting by omitting the header.
+ *
+ * `admin` — the Backoffice surface. Keyed on the admin id from a token that
+ * verifies against JWT_ADMIN_SECRET, so every tab and session of one operator
+ * shares one allowance and no two operators share one. Anything that does not
+ * verify as an admin token — none, forged, expired, a user token — lands in the
+ * IP bucket, so it can never draw on an admin's allowance.
  */
-export type LimitScope = "ip" | "session";
+export type LimitScope = "ip" | "session" | "admin";
 
 /**
  * Bucket key for an authenticated caller.
@@ -76,12 +82,39 @@ function credentialKey(req: Request): string | undefined {
   }
 }
 
+/**
+ * Bucket key for a Backoffice caller: the VERIFIED admin id, or undefined.
+ *
+ * Unlike `credentialKey` there is no digest fallback: the edge rejects an
+ * unverifiable admin token with a 401 anyway, and a digest bucket would let a
+ * caller open a fresh one per garbage token.
+ */
+function adminKey(req: Request): string | undefined {
+  const header = req.headers.authorization;
+  if (!env.JWT_ADMIN_SECRET || typeof header !== "string") return undefined;
+  if (!header.startsWith("Bearer ")) return undefined;
+
+  try {
+    const { adminId } = verifyAdminAccessToken(
+      header.slice(7).trim(),
+      env.JWT_ADMIN_SECRET
+    );
+    return `a:${adminId}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function scopeKey(req: Request, scope: LimitScope): string | undefined {
+  if (scope === "session") return credentialKey(req);
+  if (scope === "admin") return adminKey(req);
+  return undefined;
+}
+
 function makeKeyGenerator(scope: LimitScope) {
   return (req: Request): string => {
-    if (scope === "session") {
-      const key = credentialKey(req);
-      if (key) return key;
-    }
+    const key = scopeKey(req, scope);
+    if (key) return key;
     // `ipKeyGenerator` normalizes IPv6 to a /56 so a single client cannot walk
     // its own prefix to get a fresh bucket per request.
     return ipKeyGenerator(req.ip ?? "unknown");
@@ -117,7 +150,7 @@ function makeHandler(rule: string, scope: LimitScope) {
     logger.warn("rate_limit_exceeded", {
       rule,
       scope,
-      scopeKey: scope === "session" ? credentialKey(req) : undefined,
+      scopeKey: scopeKey(req, scope),
       ip: req.ip,
       method: req.method,
       endpoint: req.originalUrl.split("?")[0],
@@ -360,12 +393,39 @@ export const otpRateLimiter = createLimiter({
   scope: "ip",
 });
 
-/** Whole admin surface — low volume, high privilege, isolated from user traffic. */
-export const adminRateLimiter = createLimiter({
-  rule: "admin.global",
-  windowMs: env.ADMIN_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
-  max: env.ADMIN_RATE_LIMIT_MAX,
-  scope: "session",
+const isReadMethod = (req: Request): boolean =>
+  req.method === "GET" || req.method === "HEAD";
+
+/**
+ * Backoffice reads (navigation, lists, search, dashboard and health polling).
+ *
+ * This used to be one `admin.global` bucket of 100 requests per 15 minutes for
+ * reads AND writes — ~6.7 a minute, while the Dashboard's service-status card
+ * alone polls 4 a minute. Operators were throttled for leaving the Dashboard
+ * open and then clicking through a few pages. Reads now have their own
+ * per-admin allowance sized for real navigation; see ADMIN_READ_RATE_LIMIT_MAX.
+ */
+export const adminReadRateLimiter = createLimiter({
+  rule: "admin.read",
+  windowMs: 60 * 1000,
+  max: env.ADMIN_READ_RATE_LIMIT_MAX,
+  scope: "admin",
+  skip: (req) => !isReadMethod(req),
+});
+
+/**
+ * Backoffice mutations (ban, suspend, delete, role/permission changes, admin
+ * accounts, notification configuration, announcements). Deliberately far
+ * tighter than reads: a human clicking confirm dialogs never approaches it,
+ * while a runaway loop or a compromised session doing mass actions hits it in
+ * seconds. See ADMIN_WRITE_RATE_LIMIT_MAX.
+ */
+export const adminWriteRateLimiter = createLimiter({
+  rule: "admin.write",
+  windowMs: 60 * 1000,
+  max: env.ADMIN_WRITE_RATE_LIMIT_MAX,
+  scope: "admin",
+  skip: (req) => isReadMethod(req) || req.method === "OPTIONS",
 });
 
 /** Admin login/refresh. IP-scoped — credential-stuffing guard, pre-authentication. */

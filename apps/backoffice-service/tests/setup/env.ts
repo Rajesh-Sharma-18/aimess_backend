@@ -45,7 +45,8 @@ process.env.TRUST_PROXY_HOPS = "0";
 // actually tests the limiter (tests/auth/edge-guards.test.ts), which re-imports
 // the app with its own values.
 process.env.ADMIN_RATE_LIMIT_WINDOW_MINUTES = "15";
-process.env.ADMIN_RATE_LIMIT_MAX = "100000";
+process.env.ADMIN_READ_RATE_LIMIT_MAX = "100000";
+process.env.ADMIN_WRITE_RATE_LIMIT_MAX = "100000";
 process.env.ADMIN_LOGIN_RATE_LIMIT_MAX = "100000";
 
 // SMTP — defaults are MailHog-style; mailer seam is mocked anyway.

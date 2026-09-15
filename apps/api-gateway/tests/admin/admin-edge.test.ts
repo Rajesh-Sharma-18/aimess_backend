@@ -2,7 +2,7 @@
  * /admin/* edge router. The gateway proxies admin traffic to backoffice-service,
  * but the EDGE controls run on the gateway itself and are what we assert here:
  *
- *   adminRateLimiter → adminIpAllowlist → (sensitive: adminLoginRateLimiter)
+ *   admin read/write limiters → adminIpAllowlist → (sensitive: adminLoginRateLimiter)
  *     → adminJwt (skips PUBLIC_ADMIN_PATHS) → proxy → backoffice-service
  *
  * In the test env: ADMIN_IP_WHITELIST is empty (allow-all), BACKOFFICE_SERVICE_URL
