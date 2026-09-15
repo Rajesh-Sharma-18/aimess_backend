@@ -89,6 +89,10 @@ export class StreamController {
       sourceType: parsed.data.sourceType,
       sourceUrl: parsed.data.sourceUrl,
     });
+    void this.livestreamService.rememberHostSession(
+      result.id,
+      req.auth.sessionId
+    );
 
     res
       .status(HTTP_STATUS.CREATED)
@@ -163,6 +167,7 @@ export class StreamController {
     if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
 
     const result = await this.livestreamService.markLive(id, req.auth.userId);
+    void this.livestreamService.rememberHostSession(id, req.auth.sessionId);
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("STREAM_WENT_LIVE", req.locale)));

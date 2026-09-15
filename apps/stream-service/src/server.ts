@@ -40,6 +40,7 @@ import { StreamController } from "./api/controllers/index.js";
 
 // -- Jobs --
 import { startStreamSweeper } from "./jobs/stream-sweeper.js";
+import { startSessionRevokeListener } from "./jobs/session-revoke-listener.js";
 
 async function start() {
   try {
@@ -142,6 +143,11 @@ async function start() {
 
     // 6. Background jobs
     startStreamSweeper(livestreamService);
+    await startSessionRevokeListener(livestreamService).catch(
+      (err: unknown) => {
+        logger.warn(`Session revoke listener failed to start: ${String(err)}`);
+      }
+    );
   } catch (error) {
     logger.error(error);
     process.exit(1);

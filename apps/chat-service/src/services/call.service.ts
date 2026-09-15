@@ -1291,6 +1291,21 @@ export class CallService {
       });
   }
 
+  /**
+   * Cut the media of a call that just settled. Fire-and-forget: the row is
+   * already terminal, and a room that is already gone (every leg left first)
+   * answers with an error that means nothing here.
+   */
+  private closeMediaRoom(callId: string): void {
+    void Promise.resolve()
+      .then(() => this.livekit.deleteRoom(callId))
+      .catch((err: unknown) => {
+        logger.debug(
+          `CallService|deleteRoom skipped callId=${callId}: ${String(err)}`
+        );
+      });
+  }
+
   async endCall(params: {
     callId: string;
     userId: string;
@@ -1407,6 +1422,7 @@ export class CallService {
       }
       throw new BadRequestError("CALL_ALREADY_ENDED");
     }
+    this.closeMediaRoom(params.callId);
     const updated: Call = {
       ...call,
       status: noAnswer ? CallStatus.MISSED : CallStatus.ENDED,
@@ -1519,10 +1535,8 @@ export class CallService {
    * event, a concurrent hangup and this sweep can all race safely: only the
    * winner publishes. Returns how many rows it actually ended.
    *
-   * ponytail: the media session is torn down by the clients reacting to
-   * `call:ended` — LiveKitService mints tokens only, it has no room-delete. A
-   * client that ignores the event keeps its leg until LiveKit's own timeout.
-   * Add a RoomServiceClient `deleteRoom` here if that ever needs to be forced.
+   * The LiveKit room is deleted as each row is claimed, so a client that
+   * ignores `call:ended` cannot keep its media leg.
    */
   async endCallsBetween(userA: string, userB: string): Promise<number> {
     if (!userA || !userB || userA === userB) return 0;
@@ -1570,6 +1584,7 @@ export class CallService {
       );
       if (!won) continue;
       ended++;
+      this.closeMediaRoom(call.callId);
 
       if (missed) {
         await this.fanOutUnansweredRing(
@@ -1981,6 +1996,7 @@ export class CallService {
     // Lost the claim — another node (or a real hangup) settled this row first,
     // and only the winner publishes.
     if (!won) return false;
+    this.closeMediaRoom(call.callId);
 
     await this.publishToCallAndParticipants(
       call,
