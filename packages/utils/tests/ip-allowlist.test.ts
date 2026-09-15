@@ -114,10 +114,23 @@ describe("isAllowAllIpRule", () => {
     expect(isAllowAllIpRule("::/0")).toBe(true);
   });
 
+  it("recognises the halves an allow-all is split into", () => {
+    // The bypass this floor exists for: none of these is /0, and together they
+    // match every address on both stacks.
+    expect(isAllowAllIpRule("0.0.0.0/1")).toBe(true);
+    expect(isAllowAllIpRule("128.0.0.0/1")).toBe(true);
+    expect(isAllowAllIpRule("::/1")).toBe(true);
+    expect(isAllowAllIpRule("8000::/1")).toBe(true);
+  });
+
   it("does not fire on ordinary rules or on a bare address", () => {
     expect(isAllowAllIpRule("198.51.100.0/24")).toBe(false);
     expect(isAllowAllIpRule("203.0.113.10")).toBe(false);
     expect(isAllowAllIpRule("0.0.0.0")).toBe(false);
+    // The floor itself stays usable: a /8 office range and a v6 /32 allocation
+    // are the widest an operator may legitimately list.
+    expect(isAllowAllIpRule("10.0.0.0/8")).toBe(false);
+    expect(isAllowAllIpRule("2001:db8::/32")).toBe(false);
   });
 });
 
@@ -154,6 +167,20 @@ describe("adminIpWhitelistFailures — the production boot invariant", () => {
     expect(adminIpWhitelistFailures(["::/0"])[0]).toContain(
       "matches every address"
     );
+  });
+
+  it("refuses an allow-all split across four short prefixes", () => {
+    // Exactly the value proposed as a "deploy unblock": four entries, no /0,
+    // full v4 and v6 coverage. The boot must refuse it like a bare /0.
+    const failures = adminIpWhitelistFailures([
+      "0.0.0.0/1",
+      "128.0.0.0/1",
+      "::/1",
+      "8000::/1",
+    ]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("0.0.0.0/1");
+    expect(failures[0]).toContain("8000::/1");
   });
 
   it("refuses allow-all even when real ranges are listed alongside it", () => {
