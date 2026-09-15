@@ -359,6 +359,16 @@ export const ADMIN_MESSAGES = {
     en: "Notification category updated",
     th: "อัปเดตหมวดหมู่การแจ้งเตือนแล้ว",
   },
+  ADMIN_NOTIFICATION_CATEGORIES_UPDATED: {
+    vi: "Đã cập nhật danh mục thông báo",
+    en: "Notification categories updated",
+    th: "อัปเดตหมวดหมู่การแจ้งเตือนแล้ว",
+  },
+  NOTIFICATION_CATEGORY_PRIORITY_CONFLICT: {
+    vi: "Thứ tự ưu tiên này đã được gán cho danh mục khác. Vui lòng chọn một giá trị duy nhất.",
+    en: "That priority is already assigned to another category. Please choose a unique priority.",
+    th: "ลำดับความสำคัญนี้ถูกกำหนดให้หมวดหมู่อื่นแล้ว กรุณาเลือกค่าที่ไม่ซ้ำกัน",
+  },
   NOTIFICATION_CATEGORY_PRIORITY_INVALID: {
     vi: "Thứ tự ưu tiên phải là số nguyên từ 1 đến số danh mục hiện có",
     en: "Priority must be a whole number within the category count",

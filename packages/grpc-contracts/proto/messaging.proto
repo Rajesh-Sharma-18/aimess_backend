@@ -105,6 +105,12 @@ service MessagingService {
   // per-platform enable set are writable.
   rpc AdminListNotificationCategories (AdminListNotificationCategoriesRequest) returns (AdminNotificationCategoryList);
   rpc AdminUpdateNotificationCategory (AdminUpdateNotificationCategoryRequest) returns (AdminNotificationCategoryMutation);
+  // The Super Admin grid's Save: the admin's whole draft in ONE call, applied
+  // in ONE transaction. Separate from the single-row rpc above because the
+  // catalogue-wide rules (priorities must be unique across the FINAL state)
+  // can only be decided when every edited row is known at once — row by row, a
+  // valid 1<->2 swap looks like a conflict at its halfway point.
+  rpc AdminUpdateNotificationCategories (AdminUpdateNotificationCategoriesRequest) returns (AdminNotificationCategoryBulkMutation);
 
   // Authorize a media download against resource membership. media-service calls
   // this for chat-scoped attachments because the object key encodes the uploader,
@@ -947,4 +953,29 @@ message AdminNotificationCategoryMutation {
   bool                      ok         = 1;
   AdminNotificationCategory category   = 2;
   string                    error_code = 3;
+}
+
+// One edited row inside a bulk save. Same presence convention as the single-row
+// request — an untouched field is not sent, and "not sent" is not "set to zero".
+message AdminNotificationCategoryUpdate {
+  string          category_id           = 1;
+  int32           priority              = 2; // ignored unless has_priority
+  bool            has_priority          = 3;
+  repeated string enabled_platforms     = 4; // ignored unless has_enabled_platforms
+  bool            has_enabled_platforms = 5;
+}
+
+message AdminUpdateNotificationCategoriesRequest {
+  repeated AdminNotificationCategoryUpdate updates = 1;
+  string                                   actor_id = 2;
+}
+
+// "" on success, else NOTIFICATION_CATEGORY_NOT_FOUND /
+// NOTIFICATION_CATEGORY_PRIORITY_INVALID / NOTIFICATION_CATEGORY_PRIORITY_CONFLICT.
+// `categories` carries the WHOLE catalogue after the save, not just the edited
+// rows, so the panel reconciles against the persisted truth in one round trip.
+message AdminNotificationCategoryBulkMutation {
+  bool                               ok         = 1;
+  repeated AdminNotificationCategory categories = 2;
+  string                             error_code = 3;
 }

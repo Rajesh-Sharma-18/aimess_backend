@@ -230,7 +230,9 @@ export {
 
 export {
   notificationCategoryIdParamSchema,
+  updateNotificationCategoriesSchema,
   updateNotificationCategorySchema,
   type NotificationCategoryIdParam,
+  type UpdateNotificationCategoriesInput,
   type UpdateNotificationCategoryInput,
 } from "./notification-category.validator.js";

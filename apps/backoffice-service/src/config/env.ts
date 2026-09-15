@@ -105,7 +105,40 @@ const envSchema = z.object({
    */
   CORS_ALLOWED_ORIGINS: z.string().default(""),
 
-  /** Comma-separated allowlist; empty = allow all (dev). Enforced at gateway too. */
+  /**
+   * Master switch for the admin source-address allowlist.
+   *
+   * Enforcement used to be implied by "ADMIN_IP_WHITELIST is non-empty", which
+   * left an operator no way to say "this deployment has no IP perimeter":
+   * production refuses an empty list, and the explicit spellings of allow-all
+   * (`0.0.0.0/0`, `::/0`, internet-scale prefixes) are refused too — correctly,
+   * since on a real production edge those are the control being removed under
+   * another name. A NODE_ENV=production dev or staging box therefore could not
+   * boot at all without inventing operator CIDRs it does not have.
+   *
+   * The enum is deliberately strict rather than a `=== "true"` coercion: a
+   * typo'd `ADMIN_IP_WHITELIST_ENABLED=abc` fails the schema and kills the boot
+   * instead of reading as falsy and silently dropping the perimeter. Only the
+   * two exact spellings parse — "1", "yes", "TRUE" and "off" are all refused.
+   *
+   * Absent, or present-but-blank, resolves to `true`: disabling the perimeter
+   * has to be something an operator wrote on purpose, never something a dropped
+   * or half-edited variable did for them.
+   *
+   * Switching it off skips ONLY the source-address check. Admin JWT auth, RBAC,
+   * the edge rate limiters and every other control still run. Must be set the
+   * same way here and at the gateway — the two perimeters guard the same
+   * surface by different routes.
+   */
+  ADMIN_IP_WHITELIST_ENABLED: z.preprocess(
+    (v) => (v === undefined || v === "" ? "true" : v),
+    z.enum(["true", "false"]).transform((v) => v === "true")
+  ),
+  /**
+   * Comma-separated allowlist; empty = allow all (dev). Enforced at gateway too.
+   * Read by nothing when ADMIN_IP_WHITELIST_ENABLED is `false`, which is the
+   * only way an empty list is accepted in production.
+   */
   ADMIN_IP_WHITELIST: z.string().default(""),
   /** Proxy hops to trust when deriving the client IP (0 = direct clients). */
   TRUST_PROXY_HOPS: z.coerce.number().int().nonnegative().default(0),
@@ -251,7 +284,14 @@ function assertProductionInvariants(): void {
 
   const failures: string[] = [];
 
-  failures.push(...adminIpWhitelistFailures(getAdminIpWhitelist()));
+  // Only when the perimeter is switched on. With it off the list is read by
+  // nothing, so demanding a populated one would force operators to invent
+  // CIDRs — which is what pushed them toward `0.0.0.0/0` in the first place.
+  // Turning it off is an explicit, logged decision; see
+  // middleware/edge-guards.ts.
+  if (env.ADMIN_IP_WHITELIST_ENABLED) {
+    failures.push(...adminIpWhitelistFailures(getAdminIpWhitelist()));
+  }
 
   if (env.JWT_ADMIN_SECRET.length < 32) {
     failures.push(

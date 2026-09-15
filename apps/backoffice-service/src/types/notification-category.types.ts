@@ -32,3 +32,20 @@ export interface UpdateNotificationCategoryInput {
   priority?: number;
   enabledPlatforms?: NotificationPlatform[];
 }
+
+/**
+ * A whole administrator draft — the Save button's payload.
+ *
+ * Only the rows the admin actually changed are listed, and within a row only
+ * the changed fields: an omitted `priority` or `enabledPlatforms` is left as it
+ * is rather than reset. The catalogue-wide priority rules are decided on the
+ * FINAL state this produces, never row by row, which is what lets a 1<->2 swap
+ * through while still rejecting two rows landing on the same number.
+ */
+export interface UpdateNotificationCategoriesInput {
+  categories: {
+    id: string;
+    priority?: number;
+    enabledPlatforms?: NotificationPlatform[];
+  }[];
+}

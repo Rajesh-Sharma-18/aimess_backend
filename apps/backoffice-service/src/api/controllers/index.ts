@@ -89,6 +89,7 @@ export {
 } from "./category.controller.js";
 export {
   listNotificationCategories,
+  updateNotificationCategories,
   updateNotificationCategory,
 } from "./notification-category.controller.js";
 export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";

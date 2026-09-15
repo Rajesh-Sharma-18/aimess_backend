@@ -77,9 +77,26 @@ export const ADMIN_CREDENTIAL_PATHS = [
   "/auth/reset-password",
 ] as const;
 
-const allowlist = buildIpAllowList(getAdminIpWhitelist(), (entry, reason) => {
-  logger.warn(`ADMIN_IP_WHITELIST: ignoring "${entry}" — ${reason}`);
-});
+/**
+ * Null when enforcement is switched off, so the guard below takes the same
+ * `next()` path an unconfigured list already took — no source-address check,
+ * and crucially no `admin_ip_denied` audit line, which would otherwise claim a
+ * perimeter that is not running.
+ */
+const allowlist = env.ADMIN_IP_WHITELIST_ENABLED
+  ? buildIpAllowList(getAdminIpWhitelist(), (entry, reason) => {
+      logger.warn(`ADMIN_IP_WHITELIST: ignoring "${entry}" — ${reason}`);
+    })
+  : null;
+
+// Once, at import — not per request. Which of the two states a deployment is in
+// is the first thing anyone asks when an admin call 403s, or when one does not.
+logger.info(
+  `Admin IP whitelist enforcement: ${
+    env.ADMIN_IP_WHITELIST_ENABLED ? "enabled" : "disabled"
+  }`,
+  { service: "backoffice-service" }
+);
 
 /**
  * Source-address allowlist for the whole admin surface.
@@ -89,6 +106,12 @@ const allowlist = buildIpAllowList(getAdminIpWhitelist(), (entry, reason) => {
  * false. An empty list still means allow-all for local development, but
  * `config/env.ts` refuses to boot a production instance with an empty list, so
  * production cannot silently be in that state.
+ *
+ * `ADMIN_IP_WHITELIST_ENABLED=false` is how a deployment says it has no IP
+ * perimeter — the one state an operator could not previously express without
+ * spelling allow-all as a CIDR the production assertion (rightly) refuses. It
+ * skips ONLY this check: the surface keeps its rate limiters, admin JWT
+ * verification, RBAC, lockout and audit logging.
  *
  * The address comes from `req.ip`, which honours the configured proxy hop
  * count — never a hand-parsed `X-Forwarded-For`, whose leftmost entry is

@@ -270,6 +270,28 @@ export interface RawAdminNotificationCategoryMutation {
   errorCode: string;
 }
 
+/**
+ * The grid's Save: every row the administrator actually changed, in one call.
+ * Per-row presence flags carry the same meaning as the single-row request — an
+ * untouched field is left alone rather than written as its zero value.
+ */
+export interface AdminUpdateNotificationCategoriesReq {
+  updates: {
+    categoryId: string;
+    priority: number;
+    hasPriority: boolean;
+    enabledPlatforms: string[];
+    hasEnabledPlatforms: boolean;
+  }[];
+  actorId: string;
+}
+
+export interface RawAdminNotificationCategoryBulkMutation {
+  ok: boolean;
+  categories?: RawAdminNotificationCategory[];
+  errorCode: string;
+}
+
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
   keepCase: false,
   longs: String,
@@ -525,6 +547,18 @@ export const adminUpdateNotificationCategoryBreaker: Breaker<
     >("adminUpdateNotificationCategory", req)
 );
 
+export const adminUpdateNotificationCategoriesBreaker: Breaker<
+  AdminUpdateNotificationCategoriesReq,
+  RawAdminNotificationCategoryBulkMutation
+> = makeBreaker(
+  "chat.adminUpdateNotificationCategories",
+  (req: AdminUpdateNotificationCategoriesReq) =>
+    call<
+      AdminUpdateNotificationCategoriesReq,
+      RawAdminNotificationCategoryBulkMutation
+    >("adminUpdateNotificationCategories", req)
+);
+
 /** int64-as-string → number. */
 const int = (v: string | number | undefined): number => Number(v ?? 0) || 0;
 
@@ -683,6 +717,23 @@ export const chatClient = {
     return {
       ok: Boolean(r.ok),
       category: r.category ? toNotificationCategory(r.category) : null,
+      errorCode: r.errorCode || "",
+    };
+  },
+
+  async adminUpdateNotificationCategories(
+    req: AdminUpdateNotificationCategoriesReq
+  ): Promise<{
+    ok: boolean;
+    categories: AdminNotificationCategory[];
+    errorCode: string;
+  }> {
+    const r = await adminUpdateNotificationCategoriesBreaker.fire(req);
+    return {
+      ok: Boolean(r.ok),
+      // The WHOLE catalogue on success, so the panel reconciles its draft
+      // against the persisted rows rather than against what it hoped it wrote.
+      categories: (r.categories ?? []).map(toNotificationCategory),
       errorCode: r.errorCode || "",
     };
   },
