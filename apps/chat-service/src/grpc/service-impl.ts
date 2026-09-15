@@ -2707,6 +2707,83 @@ export function createMessagingImpl(
       })();
     },
 
+    // Super Admin: apply the whole grid draft in one transaction. A rejected
+    // priority (out of range, or a final state with two rows on one number)
+    // comes back on the {ok:false, errorCode} channel, same as an unknown id,
+    // so the panel renders it as a 400 instead of a dead gRPC call.
+    adminUpdateNotificationCategories: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            updates?: {
+              categoryId?: string;
+              priority?: number;
+              hasPriority?: boolean;
+              enabledPlatforms?: string[];
+              hasEnabledPlatforms?: boolean;
+            }[];
+            actorId?: string;
+          };
+          const updated =
+            await deps.notificationCatalogueService.updateCategories(
+              (req.updates ?? []).map((change) => ({
+                id: change.categoryId ?? "",
+                ...(change.hasPriority
+                  ? { priority: Number(change.priority) }
+                  : {}),
+                ...(change.hasEnabledPlatforms
+                  ? {
+                      enabledPlatforms: (change.enabledPlatforms ?? []).flatMap(
+                        (p) => {
+                          const parsed = parsePlatform(p);
+                          return parsed ? [parsed] : [];
+                        }
+                      ),
+                    }
+                  : {}),
+              })),
+              req.actorId || null
+            );
+          if (!updated) {
+            callback(null, {
+              ok: false,
+              errorCode: "NOTIFICATION_CATEGORY_NOT_FOUND",
+              categories: [],
+            });
+            return;
+          }
+          callback(null, {
+            ok: true,
+            errorCode: "",
+            categories: updated.map((c) => ({
+              id: c.id,
+              priority: c.priority,
+              defaultLabel: c.defaultLabel,
+              iconKey: c.iconKey,
+              enabledPlatforms: c.enabledPlatforms,
+              updatedAt: new Date(c.updatedAt).getTime(),
+            })),
+          });
+        } catch (err) {
+          if (isAppError(err) && err.statusCode === 400) {
+            callback(null, {
+              ok: false,
+              errorCode: err.messageKey ?? "BAD_REQUEST",
+              categories: [],
+            });
+            return;
+          }
+          logger.error(
+            `gRPC adminUpdateNotificationCategories error: ${String(err)}`
+          );
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
     // Authorize a media download against chat-resource HISTORICAL membership.
     // media-service calls this because an object key encodes the uploader, not
     // the room the attachment belongs to. Deliberately looser than the guards

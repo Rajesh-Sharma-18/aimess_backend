@@ -200,3 +200,173 @@ describe("notification category priority", () => {
     });
   });
 });
+
+/**
+ * The Super Admin grid's Save: the administrator's whole draft in one call.
+ *
+ * The rule the single-row path cannot express lives here — priorities are
+ * judged on the FINAL state of the catalogue, so a swap and a collision stop
+ * looking the same. Every rejection below must also leave the stored rows
+ * untouched: a refused draft is not a partially applied one.
+ */
+describe("notification category bulk save", () => {
+  function service(rows: Row[]) {
+    const { prisma, store, transactions } = fakePrisma(rows);
+    return {
+      store,
+      transactions,
+      service: new NotificationCatalogueService(
+        new NotificationCategoryRepository(prisma as never)
+      ),
+    };
+  }
+
+  const SEEDED = NOTIFICATION_CATEGORY_SEED.map(
+    (c) => [c.id, c.priority] as [string, number]
+  );
+
+  it("saves a 1<->2 swap atomically instead of calling it a conflict", async () => {
+    const { service: svc, store, transactions } = service(seededRows());
+
+    const saved = await svc.updateCategories(
+      [
+        { id: "FRIEND_REQUEST", priority: 2 },
+        { id: "COMMUNITY", priority: 1 },
+      ],
+      "admin-1"
+    );
+
+    expect(priorities(store)).toEqual([
+      ["COMMUNITY", 1],
+      ["FRIEND_REQUEST", 2],
+      ["MENTION", 3],
+      ["CALLS", 4],
+      ["SYSTEM", 5],
+      ["LIVE_NOW", 6],
+    ]);
+    // Both rows in ONE transaction: the duplicate that exists between the two
+    // writes is never a state anyone can read.
+    expect(transactions).toEqual([2]);
+    expect(saved?.map((c) => c.id)).toEqual([
+      "COMMUNITY",
+      "FRIEND_REQUEST",
+      "MENTION",
+      "CALLS",
+      "SYSTEM",
+      "LIVE_NOW",
+    ]);
+  });
+
+  it("rejects a half-swap that would leave two categories on priority 1", async () => {
+    const { service: svc, store, transactions } = service(seededRows());
+
+    await expect(
+      svc.updateCategories([{ id: "COMMUNITY", priority: 1 }], "admin-1")
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      messageKey: "NOTIFICATION_CATEGORY_PRIORITY_CONFLICT",
+    });
+    // Nothing written, and — unlike the single-row path — no other row was
+    // pushed aside to make the requested number fit.
+    expect(priorities(store)).toEqual(SEEDED);
+    expect(transactions).toEqual([]);
+  });
+
+  it("rejects two rows in the same draft asking for the same priority", async () => {
+    const { service: svc, store } = service(seededRows());
+
+    await expect(
+      svc.updateCategories(
+        [
+          { id: "CALLS", priority: 3 },
+          { id: "MENTION", priority: 3 },
+        ],
+        "admin-1"
+      )
+    ).rejects.toMatchObject({
+      messageKey: "NOTIFICATION_CATEGORY_PRIORITY_CONFLICT",
+    });
+    expect(priorities(store)).toEqual(SEEDED);
+  });
+
+  it.each([0, -1, 7, 1.5, Number.NaN])(
+    "rejects priority %p and writes nothing, even when another row in the draft is valid",
+    async (priority) => {
+      const { service: svc, store, transactions } = service(seededRows());
+
+      await expect(
+        svc.updateCategories(
+          [
+            { id: "CALLS", enabledPlatforms: ["ANDROID"] },
+            { id: "MENTION", priority },
+          ],
+          "admin-1"
+        )
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        messageKey: "NOTIFICATION_CATEGORY_PRIORITY_INVALID",
+      });
+      expect(priorities(store)).toEqual(SEEDED);
+      expect(store.find((r) => r.id === "CALLS")?.enabledPlatforms).toEqual([
+        "ANDROID",
+        "IOS",
+        "WEB",
+      ]);
+      expect(transactions).toEqual([]);
+    }
+  );
+
+  it("never creates a row, and writes nothing, for an id outside the catalogue", async () => {
+    const { service: svc, store, transactions } = service(seededRows());
+
+    await expect(
+      svc.updateCategories(
+        [
+          { id: "CALLS", priority: 1 },
+          { id: "NOPE", priority: 2 },
+        ],
+        "admin-1"
+      )
+    ).resolves.toBeNull();
+    expect(store).toHaveLength(6);
+    expect(priorities(store)).toEqual(SEEDED);
+    expect(transactions).toEqual([]);
+  });
+
+  it("persists several platform changes together and leaves the order alone", async () => {
+    const { service: svc, store } = service(seededRows());
+
+    await svc.updateCategories(
+      [
+        { id: "CALLS", enabledPlatforms: ["ANDROID", "IOS"] },
+        { id: "SYSTEM", enabledPlatforms: [] },
+      ],
+      "admin-1"
+    );
+
+    // Dropping WEB from one category touches neither the other platforms of
+    // that row nor any other row.
+    expect(store.find((r) => r.id === "CALLS")?.enabledPlatforms).toEqual([
+      "ANDROID",
+      "IOS",
+    ]);
+    expect(store.find((r) => r.id === "SYSTEM")?.enabledPlatforms).toEqual([]);
+    expect(store.find((r) => r.id === "MENTION")?.enabledPlatforms).toEqual([
+      "ANDROID",
+      "IOS",
+      "WEB",
+    ]);
+    expect(priorities(store)).toEqual(SEEDED);
+  });
+
+  it("leaves a row's priority alone when only its platforms are submitted", async () => {
+    const { service: svc, store } = service(seededRows());
+
+    await svc.updateCategories(
+      [{ id: "FRIEND_REQUEST", enabledPlatforms: ["WEB"] }],
+      "admin-1"
+    );
+
+    expect(priorities(store)).toEqual(SEEDED);
+  });
+});

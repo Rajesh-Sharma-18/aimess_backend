@@ -7,6 +7,7 @@ import {
 import type {
   NotificationCategoryRow,
   NotificationPlatform,
+  UpdateNotificationCategoriesInput,
   UpdateNotificationCategoryInput,
 } from "../types/notification-category.types.js";
 
@@ -60,5 +61,41 @@ export const notificationCategoryRepository = {
       throw new NotFoundError(res.errorCode || "NOTIFICATION_CATEGORY_NOT_FOUND");
     }
     return toRow(res.category);
+  },
+
+  /**
+   * The grid's Save — every changed row in one atomic call. Returns the whole
+   * catalogue as it now stands, not just the rows that moved.
+   */
+  async updateMany(
+    updates: UpdateNotificationCategoriesInput["categories"],
+    actorId: string
+  ): Promise<NotificationCategoryRow[]> {
+    const res = await chatClient.adminUpdateNotificationCategories({
+      updates: updates.map((change) => ({
+        categoryId: change.id,
+        // Presence spelled out per row for the same reason as the single-row
+        // call: proto3 sends 0 / [] for an omitted field, which would blank a
+        // field the admin never touched.
+        priority: change.priority ?? 0,
+        hasPriority: change.priority !== undefined,
+        enabledPlatforms: change.enabledPlatforms ?? [],
+        hasEnabledPlatforms: change.enabledPlatforms !== undefined,
+      })),
+      actorId,
+    });
+    if (!res.ok) {
+      // A priority chat-service refused — out of range, or a final state with
+      // two rows on one number — is a 400: the request was understood and
+      // rejected. Anything else is an id outside the seeded catalogue, a 404.
+      if (
+        res.errorCode === "NOTIFICATION_CATEGORY_PRIORITY_INVALID" ||
+        res.errorCode === "NOTIFICATION_CATEGORY_PRIORITY_CONFLICT"
+      ) {
+        throw new BadRequestError(res.errorCode);
+      }
+      throw new NotFoundError(res.errorCode || "NOTIFICATION_CATEGORY_NOT_FOUND");
+    }
+    return res.categories.map(toRow);
   },
 };

@@ -3,7 +3,10 @@ import { ApiResponse } from "@aimess/utils";
 import type { RequestHandler } from "express";
 
 import { notificationCategoryService } from "../../services/index.js";
-import type { UpdateNotificationCategoryInput } from "../validators/notification-category.validator.js";
+import type {
+  UpdateNotificationCategoriesInput,
+  UpdateNotificationCategoryInput,
+} from "../validators/notification-category.validator.js";
 
 /**
  * GET /v1/notification-categories — the whole fixed catalogue, every platform.
@@ -50,6 +53,40 @@ export const updateNotificationCategory: RequestHandler = (req, res, next) => {
           new ApiResponse(
             result,
             t("ADMIN_NOTIFICATION_CATEGORY_UPDATED", req.locale)
+          )
+        );
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * PATCH /v1/notification-categories — the grid's Save.
+ *
+ * Takes the administrator's whole draft, applies it in ONE transaction and
+ * answers with the WHOLE catalogue afterwards, so the panel reconciles against
+ * the persisted rows instead of the state it hoped it wrote.
+ *
+ * A draft that would leave two categories on the same priority is a 400 with
+ * `NOTIFICATION_CATEGORY_PRIORITY_CONFLICT` and nothing is written — the panel
+ * keeps the admin's edits on screen and reports the conflict, rather than
+ * showing a success toast for a change the database refused.
+ */
+export const updateNotificationCategories: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const body = req.body as UpdateNotificationCategoriesInput;
+      const result = await notificationCategoryService.updateCategories(
+        body,
+        req.admin!.id
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_NOTIFICATION_CATEGORIES_UPDATED", req.locale)
           )
         );
     } catch (error) {

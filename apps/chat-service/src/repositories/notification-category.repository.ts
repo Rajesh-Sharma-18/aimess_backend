@@ -101,4 +101,47 @@ export class NotificationCategoryRepository {
     const results = await this.prisma.$transaction(writes);
     return results[results.length - 1] ?? null;
   }
+
+  /**
+   * Apply a whole admin draft — several rows at once — in ONE transaction.
+   *
+   * Unlike `updateConfig` this does NOT reorder anything: the caller has already
+   * decided the final priority of every row it names and the service has
+   * already checked that the resulting catalogue is a clean permutation of
+   * 1..N, so each row is written exactly as asked. That is what lets a 1<->2
+   * swap save: both rows are in the same transaction, so the duplicate that
+   * exists between the two writes is never observable and never stored.
+   *
+   * All-or-nothing: if any write fails the transaction rolls back and the
+   * catalogue keeps the state it had. Returns the full catalogue afterwards.
+   */
+  async updateManyConfigs(
+    updates: {
+      id: string;
+      priority?: number;
+      enabledPlatforms?: NotificationPlatform[];
+    }[],
+    updatedBy: string | null
+  ): Promise<NotificationCategoryConfig[]> {
+    if (updates.length === 0) return this.listAll();
+
+    await this.prisma.$transaction(
+      updates.map((change) =>
+        this.prisma.notificationCategoryConfig.update({
+          where: { id: change.id },
+          data: {
+            ...(change.priority !== undefined
+              ? { priority: change.priority }
+              : {}),
+            ...(change.enabledPlatforms !== undefined
+              ? { enabledPlatforms: change.enabledPlatforms }
+              : {}),
+            updatedBy,
+          },
+        })
+      )
+    );
+
+    return this.listAll();
+  }
 }
