@@ -997,6 +997,11 @@ export class CallService {
             callId: params.callId,
             answeredByUserId: params.calleeId,
             answeredAt: transitionedAt.getTime(),
+            // This server's clock at send time. A device clock can be seconds
+            // off (Windows with w32time stopped), and `Date.now() - answeredAt`
+            // then froze the timer at 00:00 or jumped it ahead. Clients derive
+            // `serverNow - Date.now()` on receipt and correct by it.
+            serverNow: Date.now(),
           },
         }),
         "answerCall"

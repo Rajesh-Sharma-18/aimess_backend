@@ -488,7 +488,11 @@ describe("CallService — call leg ownership", () => {
     const answered = stubs.redis.publish.mock.calls.find((c: unknown[]) =>
       String(c[1]).includes("call:answered")
     );
-    const { answeredAt } = JSON.parse(String(answered?.[1])).data;
+    const { answeredAt, serverNow } = JSON.parse(String(answered?.[1])).data;
+
+    // Lets a client with a skewed clock correct `now - answeredAt`.
+    expect(serverNow).toBeGreaterThanOrEqual(answeredAt);
+    expect(serverNow).toBeLessThanOrEqual(after);
 
     // A NUMBER, not an ISO string — every other timestamp on this bus is epoch
     // ms and the clients parse it as such.

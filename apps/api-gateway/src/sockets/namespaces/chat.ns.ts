@@ -2319,6 +2319,9 @@ export function registerChatNamespace(
               // media usually comes up before that broadcast loops back, and
               // without it the answering leg times the call from its own clock.
               answeredAt: result.answeredAt,
+              // Server clock at send time, so the client can correct for its
+              // own clock skew before measuring `now - answeredAt`.
+              serverNow: Date.now(),
             });
           })
           .catch((err: unknown) => {
