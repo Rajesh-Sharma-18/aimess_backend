@@ -1,4 +1,8 @@
-import { AccessToken, TrackSource } from "livekit-server-sdk";
+import {
+  AccessToken,
+  RoomServiceClient,
+  TrackSource,
+} from "livekit-server-sdk";
 import { env } from "../config/env.js";
 import { CallType } from "../types/enums.js";
 
@@ -40,6 +44,8 @@ const VIDEO_SOURCES = [
 ];
 
 export class LiveKitService {
+  private rooms: RoomServiceClient | null = null;
+
   /**
    * Mint a room-scoped JWT for one participant.
    * roomName == callId (1-to-1 today; the same shape generalizes to group later).
@@ -81,5 +87,20 @@ export class LiveKitService {
     });
     const token = await at.toJwt();
     return { url: env.LIVEKIT_URL, token };
+  }
+
+  /**
+   * Disconnect every participant still in a finished call's room. A leg's token
+   * outlives the call (LIVEKIT_TOKEN_TTL), so a client that never hears
+   * `call:ended` — signed out, session revoked, socket gone — otherwise keeps
+   * streaming media into the room.
+   */
+  async deleteRoom(roomName: string): Promise<void> {
+    this.rooms ??= new RoomServiceClient(
+      env.LIVEKIT_URL.replace(/^ws/, "http"),
+      env.LIVEKIT_API_KEY,
+      env.LIVEKIT_API_SECRET
+    );
+    await this.rooms.deleteRoom(roomName);
   }
 }

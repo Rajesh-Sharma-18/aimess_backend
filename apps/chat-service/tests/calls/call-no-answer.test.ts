@@ -118,6 +118,46 @@ beforeEach(() => {
   activityPush.mockClear();
 });
 
+describe("media room teardown on a settled call", () => {
+  it("deletes the LiveKit room once the hangup wins the transition", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...ringingCall,
+      status: CallStatus.IN_PROGRESS,
+      answeredAt: new Date(Date.now() - 30_000),
+    });
+
+    await service.endCall({ callId: "call-1", userId: CALLER });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(stubs.livekit.deleteRoom).toHaveBeenCalledTimes(1);
+    expect(stubs.livekit.deleteRoom).toHaveBeenCalledWith("call-1");
+  });
+
+  it("leaves the room alone when the call is already terminal", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...ringingCall,
+      status: CallStatus.ENDED,
+    });
+
+    await service.endCall({ callId: "call-1", userId: CALLER });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(stubs.livekit.deleteRoom).not.toHaveBeenCalled();
+  });
+
+  it("a LiveKit failure never fails the hangup", async () => {
+    const { service, stubs } = buildService();
+    stubs.livekit.deleteRoom.mockRejectedValue(new Error("room not found"));
+    stubs.callRepo.findByCallId.mockResolvedValue(ringingCall);
+
+    await expect(
+      service.endCall({ callId: "call-1", userId: CALLER })
+    ).resolves.toBeDefined();
+  });
+});
+
 describe("caller's ring window elapses (NO_ANSWER)", () => {
   it("settles the call as MISSED and writes exactly one MISSED card", async () => {
     const { service, stubs } = buildService();
