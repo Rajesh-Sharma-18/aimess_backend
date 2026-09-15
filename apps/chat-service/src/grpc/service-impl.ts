@@ -14,7 +14,11 @@ import { randomUUID } from "node:crypto";
 import { once } from "../lib/once.js";
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
-import { isAppError, ForbiddenError } from "@aimess/errors";
+import {
+  isAppError,
+  ForbiddenError,
+  TooManyRequestsError,
+} from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
 import { buildReactionActivityText, copyTickets } from "@aimess/constants";
 import { redis } from "../config/redis.js";
@@ -81,6 +85,7 @@ import {
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
+import { mentionedUserIdsOf } from "../lib/group-mentions.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
@@ -189,11 +194,19 @@ export interface GrpcDeps {
   privateRoomService: PrivateRoomService;
 }
 
-function parseMessageContent(req: {
-  contentJson?: string;
-  contentText?: string;
-  mediaKey?: string;
-}): {
+/**
+ * `allowMentions` is set only for GROUP rooms: the raw `mentions` array is passed
+ * through for GroupMessageService to validate (lib/group-mentions.ts). Private
+ * sends/edits never carry it, whatever the client put in `contentJson`.
+ */
+function parseMessageContent(
+  req: {
+    contentJson?: string;
+    contentText?: string;
+    mediaKey?: string;
+  },
+  opts?: { allowMentions?: boolean }
+): {
   text: string;
   urls: string[];
   files: Array<Record<string, unknown>>;
@@ -220,6 +233,9 @@ function parseMessageContent(req: {
       // STICKER media lives outside files[]; dropping it here persisted an
       // empty content blob, so the sticker vanished on the next history read.
       ...(parsed.sticker ? { sticker: parsed.sticker } : {}),
+      ...(opts?.allowMentions && Array.isArray(parsed.mentions)
+        ? { mentions: parsed.mentions }
+        : {}),
     };
   } catch {
     return fallback;
@@ -354,7 +370,9 @@ export function createMessagingImpl(
             req.conversationId,
             req.conversationType
           );
-          const content = parseMessageContent(req);
+          const content = parseMessageContent(req, {
+            allowMentions: conversationType === "GROUP",
+          });
           // Takes this send's place in the (room, sender) order — synchronously,
           // before the first `await`, or the arrival order is already lost. Only
           // the sequence allocation waits on it; the reads below still overlap
@@ -610,6 +628,10 @@ export function createMessagingImpl(
               publishMessageSentSafe({
                 ...pushBase,
                 fetchRecipients: groupRecipients,
+                mentionedUserIds: mentionedUserIdsOf(
+                  getAlbumMessages(msg).map((r) => r.content),
+                  req.senderId
+                ),
               });
             } else {
               publishMessageSentSafe({
@@ -647,7 +669,14 @@ export function createMessagingImpl(
             req.conversationType
           );
 
-          const content = parseMessageContent(req);
+          const content = parseMessageContent(req, {
+            allowMentions: conversationType === "GROUP",
+          });
+          // A group edit can add mentions (a push), so the socket path draws on
+          // the same `gm:send` bucket as a send instead of being unmetered.
+          if (conversationType === "GROUP") {
+            await assertSendAllowed("gm", req.editorId);
+          }
           const updated =
             conversationType === "GROUP"
               ? await deps.groupMessageService.editMessage({
@@ -741,7 +770,13 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC editMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          // Rate limit maps like sendMessage (RESOURCE_EXHAUSTED → RATE_LIMITED
+          // ack); every other edit error keeps its existing mapping.
+          callback(
+            err instanceof TooManyRequestsError
+              ? toGrpcCallbackError(err)
+              : { code: grpc.status.INTERNAL, message: String(err) }
+          );
         }
       })();
     },

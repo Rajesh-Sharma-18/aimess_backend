@@ -909,3 +909,166 @@ describe("startChatConsumer — group room mute suppression", () => {
     expect(pushMany).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * Group @mentions: a mention bypasses the recipient's GroupMember mute (the
+ * shipped mute copy promises it), is flagged through to the coalescer, and is
+ * ignored entirely for PRIVATE/COMMUNITY.
+ */
+describe("startChatConsumer — group @mentions", () => {
+  let consume: ConsumeCallback;
+
+  type PushShape = {
+    userId: string;
+    collapseKey?: string;
+    data: Record<string, string>;
+  };
+  const flushed = (): PushShape[] => {
+    if (pushMany.mock.calls.length === 0) return [];
+    const [ids, builderFn] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => PushShape,
+    ];
+    return ids.map((id) => builderFn(id));
+  };
+
+  beforeAll(async () => {
+    consume = await setupConsumer();
+  });
+
+  beforeEach(() => {
+    pushMany.mockClear();
+    pushOne.mockClear();
+    channelMock.ack.mockClear();
+    isMutedMock.mockReset();
+    isMutedMock.mockResolvedValue(false);
+    filterNotifiableMock.mockReset();
+    filterNotifiableMock.mockImplementation(
+      async (_communityId: string, userIds: string[]) => userIds
+    );
+    isPrivateMutedMock.mockReset();
+    isPrivateMutedMock.mockResolvedValue(false);
+    groupMuteFilterMock.mockReset();
+    // Everyone handed to the gate has muted the group.
+    groupMuteFilterMock.mockResolvedValue([]);
+  });
+
+  it("muted + mentioned → still pushed, flagged as a mention; muted + not mentioned → dropped", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        groupName: "Weekend Trip",
+        recipientIds: ["mentioned-user", "plain-user"],
+        mentionedUserIds: ["mentioned-user"],
+      })
+    );
+    await flush();
+
+    // The gate only ever sees the NON-mentioned recipients.
+    expect(groupMuteFilterMock).toHaveBeenCalledTimes(1);
+    expect(groupMuteFilterMock).toHaveBeenCalledWith(BASE.conversationId, [
+      "plain-user",
+    ]);
+    const pushes = flushed();
+    expect(pushes.map((p) => p.userId)).toEqual(["mentioned-user"]);
+    expect(pushes[0]!.data.notificationType).toBe("MENTION");
+    expect(pushes[0]!.data.mentioned).toBe("true");
+    expect(pushes[0]!.collapseKey).toBe(`mention:${BASE.conversationId}`);
+  });
+
+  it("every recipient mentioned → the mute gate is not called at all", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["a", "b"],
+        mentionedUserIds: ["a", "b"],
+      })
+    );
+    await flush();
+
+    expect(groupMuteFilterMock).not.toHaveBeenCalled();
+    expect(flushed().map((p) => p.userId)).toEqual(["a", "b"]);
+  });
+
+  it("a mentioned id that is not in recipientIds is never added", async () => {
+    groupMuteFilterMock.mockImplementation(
+      async (_roomId: string, userIds: string[]) => userIds
+    );
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["recipient-uuid"],
+        mentionedUserIds: ["outsider", BASE.senderId],
+      })
+    );
+    await flush();
+
+    const pushes = flushed();
+    expect(pushes.map((p) => p.userId)).toEqual(["recipient-uuid"]);
+    expect(pushes[0]!.data.notificationType).toBeUndefined();
+    expect(pushes[0]!.collapseKey).toBe(`conv:${BASE.conversationId}`);
+  });
+
+  it("the sender is never notified even when listed as mentioned", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: [BASE.senderId],
+        mentionedUserIds: [BASE.senderId],
+      })
+    );
+    await flush();
+
+    expect(pushMany).not.toHaveBeenCalled();
+  });
+
+  it("PRIVATE → mentionedUserIds ignored: the private mute still suppresses, no mention flag", async () => {
+    isPrivateMutedMock.mockResolvedValue(true);
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "PRIVATE",
+        mentionedUserIds: ["recipient-uuid"],
+      })
+    );
+    await flush();
+    expect(pushMany).not.toHaveBeenCalled();
+
+    isPrivateMutedMock.mockResolvedValue(false);
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "PRIVATE",
+        messageId: "msg2",
+        mentionedUserIds: ["recipient-uuid"],
+      })
+    );
+    await flush();
+    const pushes = flushed();
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]!.data.notificationType).toBeUndefined();
+    expect(pushes[0]!.data.mentioned).toBeUndefined();
+  });
+
+  it("COMMUNITY → mentionedUserIds ignored (no mention flag, group gate untouched)", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "COMMUNITY",
+        communityId: "comm1",
+        mentionedUserIds: ["recipient-uuid"],
+      })
+    );
+    await flush();
+
+    expect(groupMuteFilterMock).not.toHaveBeenCalled();
+    const pushes = flushed();
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]!.data.notificationType).toBeUndefined();
+    expect(pushes[0]!.collapseKey).toBe(`conv:${BASE.conversationId}`);
+  });
+});

@@ -50,6 +50,11 @@ export interface MessageSentPayload {
   sentAt: number;
   /** Recipients to notify — the publisher excludes the sender. */
   recipientIds: string[];
+  /**
+   * GROUP only: recipients @mentioned by this message (a subset of
+   * `recipientIds`, filtered at publish). Omitted from the wire when empty.
+   */
+  mentionedUserIds?: string[];
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;
@@ -127,6 +132,13 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
         (id) => id && id !== p.senderId
       );
       if (targets.length === 0) return;
+      // A mention can only notify someone this push already targets (active
+      // member, not the sender) — never widen the audience.
+      const targetSet = new Set(targets);
+      const mentionedUserIds =
+        p.conversationType === "GROUP" && p.mentionedUserIds?.length
+          ? [...new Set(p.mentionedUserIds)].filter((id) => targetSet.has(id))
+          : [];
 
       // Resolve-on-read at the publish boundary: the push (FCM data map) must
       // carry a full, usable avatar URL, never a raw object key. Best-effort and
@@ -185,6 +197,7 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
         messageType: p.messageType,
         sentAt: p.sentAt,
         recipientIds: targets,
+        ...(mentionedUserIds.length > 0 ? { mentionedUserIds } : {}),
       };
       const payload = JSON.stringify({ type: CHAT_MESSAGE_SENT_EVENT, data });
       channel.sendToQueue(CHAT_MESSAGE_QUEUE, Buffer.from(payload), {

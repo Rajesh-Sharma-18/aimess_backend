@@ -9897,8 +9897,8 @@ export const openApiSchemas = {
       "call.activity (1:1 call history — one row per call per participant, with " +
       "the canonical call status in `data.callStatus`, `data.callType`, " +
       "`data.callDirection` and `data.durationSec`; CALL_MISSED is its legacy " +
-      "predecessor) — the rest are push-only. MENTIONS has no producer yet; " +
-      "reserved for chat/community mentions.",
+      "predecessor) — the rest are push-only. MENTIONS has no inbox producer " +
+      "yet (group @mentions are push-only); reserved for chat/community mentions.",
     example: "friend.requested",
   },
   NotificationCategory: {

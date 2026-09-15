@@ -55,6 +55,10 @@ const MAX_URLS = 20; // link previews per message
 const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 const MAX_NAME_LEN = 120; // denormalized senderName fanned out to the room
 const MAX_URL_LEN = 3000; // a single URL / objectKey / avatar
+// Coarse transport cap only: chat-service enforces the authoritative 50-per-message
+// limit (CHAT_MENTION_LIMIT_EXCEEDED), so 51..200 must pass here to surface that
+// specific error instead of a generic INVALID_PAYLOAD.
+const MAX_MENTIONS = 200;
 
 /**
  * How often a live socket refreshes its presence device session. Must be
@@ -100,6 +104,17 @@ const withCommunityAliases = <T extends z.ZodTypeAny>(schema: T) =>
       !Array.isArray(v.content)
     ) {
       aliased.contentText = (v.content as Record<string, unknown>).text;
+    }
+    // Group @mentions: canonical is the flat top-level `mentions` (like files/urls);
+    // `content.mentions` (the REST/community body spelling) is accepted as an alias.
+    if (
+      aliased.mentions === undefined &&
+      v.content !== null &&
+      typeof v.content === "object" &&
+      !Array.isArray(v.content) &&
+      Array.isArray((v.content as Record<string, unknown>).mentions)
+    ) {
+      aliased.mentions = (v.content as Record<string, unknown>).mentions;
     }
     if (aliased.repliedToId === undefined && v.parentMessageId !== undefined) {
       aliased.repliedToId = v.parentMessageId;
@@ -199,6 +214,15 @@ const StickerSchema = z
   .refine((d) => d.objectKey || d.url, {
     message: "sticker requires objectKey or url",
   });
+// Group @mention entity: `offset`/`length` are UTF-16 code units into the text and
+// cover the literal "@handle" token. Shape-only here — chat-service re-validates
+// every entry against the text + active membership and silently drops bad ones.
+const MentionSchema = z.object({
+  userId: z.string().min(1).max(100),
+  username: z.string().max(64).optional(),
+  offset: z.number().int().nonnegative(),
+  length: z.number().int().min(1).max(64),
+});
 const MessageSendSchemaBase = z.object({
   conversationId: z.string().min(1),
   clientMessageId: z.string().optional(),
@@ -215,6 +239,8 @@ const MessageSendSchemaBase = z.object({
   location: LocationSchema.optional(),
   contact: ContactSchema.optional(),
   sticker: StickerSchema.optional(),
+  // GROUP only — chat-service strips it for private sends.
+  mentions: z.array(MentionSchema).max(MAX_MENTIONS).optional(),
   repliedToId: z.string().optional(),
   conversationType: z.preprocess(
     (value) =>
@@ -269,10 +295,38 @@ const MessagesFetchSchemaBase = z.object({
 // Each `*Base` above defines the canonical /chat field names; the exported
 // schema additionally accepts the equivalent /community spellings (roomId,
 // message, content.text, parentMessageId). See withCommunityAliases.
-const MessageSendSchema = withCommunityAliases(MessageSendSchemaBase);
+export const MessageSendSchema = withCommunityAliases(MessageSendSchemaBase);
 const MessageReadSchema = withCommunityAliases(MessageReadSchemaBase);
 const MessageReactSchema = withCommunityAliases(MessageReactSchemaBase);
 const MessagesFetchSchema = withCommunityAliases(MessagesFetchSchemaBase);
+
+/**
+ * The `contentJson` body `message:send` forwards to chat-service. Optional keys
+ * are added only when present, so a client that sends none of them produces the
+ * exact same JSON it always did.
+ */
+export function buildSendMessageContent(
+  data: z.infer<typeof MessageSendSchemaBase>
+) {
+  const files = [...(data.files ?? [])];
+  if (data.mediaKey && !files.some((f) => f.objectKey)) {
+    files.push({
+      objectKey: data.mediaKey,
+      name: "",
+      size: 0,
+      mime: "",
+    });
+  }
+  return {
+    text: data.contentText ?? "",
+    urls: data.urls ?? [],
+    files,
+    ...(data.location ? { location: data.location } : {}),
+    ...(data.contact ? { contact: data.contact } : {}),
+    ...(data.sticker ? { sticker: data.sticker } : {}),
+    ...(data.mentions?.length ? { mentions: data.mentions } : {}),
+  };
+}
 
 const CatchupSchema = z.object({
   rooms: z
@@ -1444,23 +1498,7 @@ export function registerChatNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
-        const files = [...(r.data.files ?? [])];
-        if (r.data.mediaKey && !files.some((f) => f.objectKey)) {
-          files.push({
-            objectKey: r.data.mediaKey,
-            name: "",
-            size: 0,
-            mime: "",
-          });
-        }
-        const content = {
-          text: r.data.contentText ?? "",
-          urls: r.data.urls ?? [],
-          files,
-          ...(r.data.location ? { location: r.data.location } : {}),
-          ...(r.data.contact ? { contact: r.data.contact } : {}),
-          ...(r.data.sticker ? { sticker: r.data.sticker } : {}),
-        };
+        const content = buildSendMessageContent(r.data);
         messagingClient
           .sendMessage({
             ...r.data,

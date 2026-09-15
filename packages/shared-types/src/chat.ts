@@ -62,6 +62,13 @@ export interface StickerDto {
   stickerId: string;
 }
 
+/**
+ * A group @mention entity inside `MessageContentDto.text` (GROUP rooms only).
+ * `offset`/`length` are UTF-16 code units into `text`; the entity covers the
+ * literal "@" + handle token (`text[offset] === "@"`, `length = 1 + handle.length`).
+ * `username` is the handle the SERVER resolved at send/edit time — the text is
+ * never rewritten after a rename, so identity always goes through `userId`.
+ */
 export interface MentionDto {
   userId: string;
   username: string;

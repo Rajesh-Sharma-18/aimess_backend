@@ -227,3 +227,53 @@ describe("publishMessageSentSafe — conversation identity", () => {
     expect(data).not.toHaveProperty("groupName");
   });
 });
+
+/**
+ * `mentionedUserIds` (group @mentions): GROUP only, never wider than the final
+ * recipient list (sender excluded), omitted from the wire when empty.
+ */
+describe("publishMessageSentSafe — mentionedUserIds", () => {
+  const base = {
+    conversationId: "grp_1",
+    messageId: "m-10",
+    clientMessageId: "c-10",
+    senderId: "u-sender",
+    senderName: "Alice",
+    senderAvatar: "",
+    preview: "hi",
+    messageType: "TEXT",
+    sentAt: 1_700_000_000_003,
+    recipientIds: ["u-a", "u-b", "u-sender"],
+  };
+
+  it("GROUP: filtered to the final recipients and deduped", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationType: "GROUP",
+      mentionedUserIds: ["u-a", "u-a", "u-sender", "u-outsider"],
+    });
+    await flush();
+
+    const data = lastQueuedPayload().data as Record<string, unknown>;
+    expect(data.mentionedUserIds).toEqual(["u-a"]);
+  });
+
+  it("GROUP with no mentions: the key is absent", async () => {
+    publishMessageSentSafe({ ...base, conversationType: "GROUP" });
+    await flush();
+
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionedUserIds");
+  });
+
+  it("PRIVATE never carries mentionedUserIds", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationId: "prv_1",
+      conversationType: "PRIVATE",
+      mentionedUserIds: ["u-a"],
+    });
+    await flush();
+
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionedUserIds");
+  });
+});

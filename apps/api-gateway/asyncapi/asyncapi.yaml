@@ -5789,6 +5789,32 @@ components:
           maxItems: 2048
           items: { type: number }
           description: "§3.5: voice-note amplitude samples (render bars pre-download)."
+    MessageMention:
+      type: object
+      description: |
+        Group @mention entity. GROUP conversations only — private and community
+        messages never persist mentions (chat-service strips the key).
+        `offset`/`length` are UTF-16 code units into `content.text` and cover the
+        literal `@handle` token: `text[offset] === "@"`, `length = 1 + handle.length`.
+        `userId` is the stable identity (tap-to-profile); `username` is the handle
+        the server resolved at send/edit time — text is immutable, so after a
+        rename it may still read `@oldhandle`.
+
+        Server validation: every entry is re-checked (in-bounds, `@` +
+        `[A-Za-z0-9_]{1,32}` on a word boundary, no overlap, mentioned user is an
+        ACTIVE group member with a non-deleted account, token matches the current
+        handle case-insensitively). Invalid entries are silently DROPPED; the
+        message is never rejected for them. More than 50 entries → ack
+        `INVALID_PAYLOAD` with `detail: "CHAT_MENTION_LIMIT_EXCEEDED"`.
+      properties:
+        userId: { type: string, minLength: 1, maxLength: 100 }
+        username:
+          type: string
+          maxLength: 64
+          description: "Handle without `@`. Optional on send (the server overwrites it); always present on receive."
+        offset: { type: integer, minimum: 0, description: "UTF-16 index of the `@`." }
+        length: { type: integer, minimum: 1, maximum: 64, description: "UTF-16 length of `@handle`." }
+      required: [userId, offset, length]
     Location:
       type: object
       properties:
@@ -5854,6 +5880,17 @@ components:
             packId: { type: string, maxLength: 100 }
             stickerId: { type: string, maxLength: 100 }
           required: [packId, stickerId]
+        mentions:
+          type: array
+          maxItems: 200
+          description: |
+            GROUP only (chat-service ignores it on private sends). Flat top-level
+            like `files`/`urls`; `content.mentions` is also accepted as an alias
+            (the flat field wins when both are sent). Forwarded as
+            `content.mentions`. The gateway only shape-checks (>200 entries or a
+            malformed entry → `INVALID_PAYLOAD`); chat-service enforces the 50
+            limit and drops invalid entries — see MessageMention.
+          items: { $ref: "#/components/schemas/MessageMention" }
         repliedToId: { type: string, maxLength: 200 }
         conversationType: { $ref: "#/components/schemas/ConversationType" }
         receiverId: { type: string, maxLength: 200 }
@@ -5901,7 +5938,15 @@ components:
         messageId: { type: string, minLength: 1, maxLength: 200 }
         conversationId: { type: string, minLength: 1, maxLength: 200 }
         contentText: { type: string, maxLength: 4000 }
-        contentJson: { type: string, maxLength: 16384 }
+        contentJson:
+          type: string
+          maxLength: 16384
+          description: |
+            JSON-encoded new body (`{ text, urls? }`). GROUP edits may also carry
+            `mentions` (MessageMention[]), re-validated against the NEW text:
+            omit the key to keep the previous message's still-valid mentions,
+            send `[]` to clear them. Only members newly mentioned by the edit are
+            notified. Ignored for private edits.
         conversationType: { $ref: "#/components/schemas/ConversationType" }
       required: [messageId, conversationId]
     MessageForwardPayload:
@@ -6061,6 +6106,10 @@ components:
             url: { type: string, format: uri }
             packId: { type: string }
             stickerId: { type: string }
+        mentions:
+          type: array
+          description: "GROUP-only: server-validated @mention entities into `text` (UTF-16 offsets). Absent when none; never present on private or community messages."
+          items: { $ref: "#/components/schemas/MessageMention" }
     MessageNewPayload:
       type: object
       description: |

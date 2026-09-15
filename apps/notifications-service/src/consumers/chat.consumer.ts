@@ -45,6 +45,11 @@ interface MessageSentPayload {
   messageType: string;
   sentAt: number;
   recipientIds: string[];
+  /**
+   * GROUP only: recipients @mentioned in this message (already server-validated
+   * and sender-excluded by chat-service). Ignored for PRIVATE/COMMUNITY.
+   */
+  mentionedUserIds?: string[];
 }
 
 async function handleMessageSent(data: MessageSentPayload): Promise<void> {
@@ -103,19 +108,38 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     if (recipients.length === 0) return;
   }
 
+  // @mentioned recipients (GROUP only). Mentions on any other conversation type
+  // are ignored outright — chat-service never persists them there anyway.
+  const mentioned = new Set(
+    data.conversationType === "GROUP" && Array.isArray(data.mentionedUserIds)
+      ? data.mentionedUserIds
+      : []
+  );
+
   // Group-room mute gate: mirror of the private-room gate above, but the mute
   // setting lives on the GroupMember row (per-membership) rather than the room.
   if (data.conversationType === "GROUP") {
     const before = recipients.length;
+    // A mention bypasses the member's group mute — the shipped mute copy
+    // promises "You will still be notified if you are mentioned". Only the
+    // NON-mentioned recipients go through the gate; mentioned ones are only
+    // ever taken from recipientIds, never added. Account-level Chat toggle,
+    // quiet hours and room-open/foreground suppression still apply downstream.
+    //
     // ONE call for the whole fan-out. This was `Promise.all` over
     // `isGroupMemberMuted` — one gRPC round trip per recipient into
     // chat-service, the same process serving message sends, so a 256-member
     // group message opened 256 concurrent calls against it. Community was
     // given the batched treatment after exactly this saturated
     // community-service and tripped its breaker; group had never had it.
-    recipients = await filterOutMutedGroupMembers(
-      data.conversationId,
-      recipients
+    const others = recipients.filter((id) => !mentioned.has(id));
+    const unmuted = new Set(
+      others.length > 0
+        ? await filterOutMutedGroupMembers(data.conversationId, others)
+        : []
+    );
+    recipients = [...new Set(recipients)].filter(
+      (id) => mentioned.has(id) || unmuted.has(id)
     );
     if (recipients.length < before) {
       logger.info(
@@ -204,6 +228,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
           : {}),
         messageType: data.messageType ?? "",
         sentAt: data.sentAt,
+        ...(mentioned.has(userId) ? { mentioned: true } : {}),
       }
     );
   }

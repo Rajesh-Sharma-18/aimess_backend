@@ -44,6 +44,7 @@ import {
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
+import { mentionedUserIdsOf } from "../lib/group-mentions.js";
 import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
 
 import type { PrivateMessageService } from "./private-message.service.js";
@@ -568,6 +569,10 @@ export class ChatMessageOrchestrator {
         publishMessageSentSafe({
           ...pushBase,
           fetchRecipients: groupRecipients,
+          mentionedUserIds: mentionedUserIdsOf(
+            albumRows.map((r) => r.content),
+            params.senderId
+          ),
         });
       } else {
         publishMessageSentSafe({

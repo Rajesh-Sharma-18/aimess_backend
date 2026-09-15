@@ -91,6 +91,19 @@ export class GroupMemberRepository {
     });
   }
 
+  /** Which of `userIds` are ACTIVE members of `roomId`, in ONE query (mention resolution). */
+  async findActiveUserIds(
+    roomId: string,
+    userIds: string[]
+  ): Promise<string[]> {
+    if (userIds.length === 0) return [];
+    const rows = await this.prisma.groupMember.findMany({
+      where: { roomId, status: "ACTIVE", userId: { in: userIds } },
+      select: { userId: true },
+    });
+    return rows.map((row) => row.userId);
+  }
+
   async findActiveMembers(
     roomId: string,
     params?: { limit?: number; cursor?: string | null }

@@ -35,9 +35,15 @@ import {
 } from "../lib/deleted-identity.js";
 import {
   buildMessagePreview,
+  buildPushPreview,
   buildReactionTargetPreview,
 } from "./message-preview.service.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
+import { publishMessageSentSafe } from "../events/publish-message-sent.js";
+import {
+  mentionedUserIdsOf,
+  resolveGroupMentions,
+} from "../lib/group-mentions.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -125,6 +131,7 @@ import {
 } from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
+import type { MentionDto } from "@aimess/shared-types";
 import type { GroupMember, GroupMessage } from "../generated/prisma/index.js";
 
 export class GroupMessageService {
@@ -149,7 +156,13 @@ export class GroupMessageService {
     senderId: string;
     senderName: string;
     senderAvatar: string;
-    content: { text: string; urls?: string[]; files?: unknown[] };
+    content: {
+      text: string;
+      urls?: string[];
+      files?: unknown[];
+      /** Client-claimed @mentions — resolved (and stripped when invalid) below. */
+      mentions?: unknown;
+    };
     messageType: string;
     parentMessageId?: string | null;
     clientMessageId?: string | null;
@@ -255,9 +268,20 @@ export class GroupMessageService {
       }
     }
 
+    // Resolved only for a FRESH send (a replay returned above with the row it
+    // stored the first time). Invalid entries are dropped; only the limit throws.
+    const mentions = await this.resolveMentions(
+      params.content?.mentions,
+      params.content?.text ?? "",
+      params.roomId
+    );
+    const content: typeof params.content = { ...params.content };
+    if (mentions.length > 0) content.mentions = mentions;
+    else delete content.mentions;
+
     const parts = splitDirectMediaAlbum(
       params.messageType,
-      params.content,
+      content,
       params.clientMessageId ?? null
     );
 
@@ -428,6 +452,15 @@ export class GroupMessageService {
     if (params.clientMessageId) {
       const idemKey = `${params.roomId}:${params.senderId}:${params.clientMessageId}`;
       this.cacheRepo.setMessageIdempotency(idemKey, message.id).catch(() => {});
+    }
+
+    // Record who this send notifies, so an edit that removes and re-adds a
+    // mention never pushes them again. Never throws.
+    for (const row of created) {
+      const mentioned = mentionedUserIdsOf([row.content], params.senderId);
+      if (mentioned.length > 0) {
+        await this.claimMentionNotifications(row.id, mentioned);
+      }
     }
 
     const messageContent = (message.content ?? {}) as Record<string, unknown>;
@@ -1478,6 +1511,8 @@ export class GroupMessageService {
       text: string;
       urls?: string[];
       files?: unknown[];
+      /** Omitted = keep the previous mentions still valid for the new text. */
+      mentions?: unknown;
     };
   }): Promise<GroupMessage> {
     const message = await this.messageRepo.findById(params.messageId);
@@ -1504,11 +1539,64 @@ export class GroupMessageService {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
+
+    // An edit re-resolves mentions against the NEW text. A client that omits
+    // `mentions` (older build) keeps the previous ones — each still has to line
+    // up with the new text, so a moved or rewritten token drops out. A lookup
+    // outage keeps them instead of erasing what the row already stored.
+    const previousContent = (message.content ?? {}) as Record<string, unknown>;
+    const mentions = await this.resolveMentions(
+      params.content.mentions !== undefined
+        ? params.content.mentions
+        : previousContent.mentions,
+      params.content.text,
+      message.roomId,
+      params.content.mentions === undefined &&
+        Array.isArray(previousContent.mentions)
+        ? (previousContent.mentions as MentionDto[])
+        : undefined
+    );
+    // Text, urls and mentions ONLY — never `files`. The REST validator already
+    // strips them, but the socket/gRPC edit path parses contentJson wholesale;
+    // see editGroupMessageSchema for why an edit must not write attachments.
+    const nextContent = {
+      text: params.content.text,
+      urls: params.content.urls ?? [],
+      ...(mentions.length > 0 ? { mentions } : {}),
+    };
     const updated = await this.messageRepo.editMessage(
       params.messageId,
       message.roomId,
-      params.content
+      nextContent
     );
+
+    // Push ONLY people newly mentioned by this edit. Keeping or removing
+    // mentions notifies nobody. Forward/replay paths never reach here.
+    const alreadyMentioned = new Set(
+      mentionedUserIdsOf([previousContent], params.userId)
+    );
+    const added = mentionedUserIdsOf([nextContent], params.userId).filter(
+      (id) => !alreadyMentioned.has(id)
+    );
+    // …and at most once per user per message: toggling a mention off and on
+    // must not re-push (a mention push bypasses group mute).
+    const fresh = await this.claimMentionNotifications(message.id, added);
+    if (fresh.length > 0) {
+      publishMessageSentSafe({
+        conversationId: message.roomId,
+        conversationType: "GROUP",
+        messageId: message.id,
+        clientMessageId: message.clientMessageId ?? "",
+        senderId: params.userId,
+        senderName: message.senderName ?? "",
+        senderAvatar: message.senderAvatar ?? "",
+        preview: buildPushPreview("TEXT", params.content.text),
+        messageType: "TEXT",
+        sentAt: Date.now(),
+        recipientIds: fresh,
+        mentionedUserIds: fresh,
+      });
+    }
     // Best-effort: keep every existing reply's `quoteData.preview` in sync with
     // the new text (edits are TEXT-only, so preview === the new text verbatim).
     this.messageRepo
@@ -1943,6 +2031,61 @@ export class GroupMessageService {
     return member;
   }
 
+  /** `resolveGroupMentions` bound to this service's roster + snapshot deps. */
+  private resolveMentions(
+    raw: unknown,
+    text: string,
+    roomId: string,
+    previous?: MentionDto[]
+  ) {
+    return resolveGroupMentions({
+      raw,
+      text,
+      roomId,
+      previous,
+      memberRepo: this.memberRepo,
+      userSnapshotService: this.userSnapshotService,
+      cacheRepo: this.cacheRepo,
+    });
+  }
+
+  /**
+   * Claim "notified of a mention in `messageId`" per user (SET NX, outlives the
+   * edit window). Returns only the ids claimed now. Fails open on a Redis
+   * error: push is best-effort, and a blip must not swallow a mention.
+   */
+  private async claimMentionNotifications(
+    messageId: string,
+    userIds: string[]
+  ): Promise<string[]> {
+    if (!this.redis || userIds.length === 0) return userIds;
+    try {
+      const pipeline = this.redis.pipeline();
+      for (const userId of userIds) {
+        // `{messageId}` hash tag keeps every key on one cluster slot.
+        pipeline.set(
+          `gm:mention-notified:{${messageId}}:${userId}`,
+          "1",
+          "PX",
+          CHAT_EDIT_WINDOW_MS + 5 * 60_000,
+          "NX"
+        );
+      }
+      const results = await pipeline.exec();
+      // Only a clean "already claimed" (nil reply) suppresses; a per-command
+      // error fails open like a thrown one.
+      return userIds.filter((_, i) => {
+        const r = results?.[i];
+        return !r || r[0] != null || r[1] === "OK";
+      });
+    } catch (err) {
+      logger.warn(
+        `GroupMessageService|claimMentionNotifications|message=${messageId}: ${String(err)}`
+      );
+      return userIds;
+    }
+  }
+
   async forwardMessage(params: {
     sourceMessageId: string;
     /** SOURCE room the message is being forwarded FROM (REST path param). When
@@ -2003,6 +2146,23 @@ export class GroupMessageService {
       originalContentType: source.messageType,
     };
 
+    // Mentions were resolved against the SOURCE room's roster. Re-resolve them
+    // against the target (same text) so a forward never carries a mention of
+    // someone who isn't in the room it lands in. A forward publishes no push,
+    // so this never notifies anyone.
+    const forwardContent = {
+      ...((source.content ?? {}) as Record<string, unknown>),
+    };
+    if (forwardContent.mentions !== undefined) {
+      const mentions = await this.resolveMentions(
+        forwardContent.mentions,
+        typeof forwardContent.text === "string" ? forwardContent.text : "",
+        params.targetRoomId
+      );
+      if (mentions.length > 0) forwardContent.mentions = mentions;
+      else delete forwardContent.mentions;
+    }
+
     // A forward is a brand-new message in the TARGET room, so it follows THAT
     // room's timer — never the source room's.
     const targetSlot = await this.roomRepo.allocateSequenceWithRoom(
@@ -2015,7 +2175,7 @@ export class GroupMessageService {
       senderId: params.senderId,
       senderName: params.senderName,
       senderAvatar: params.senderAvatar,
-      content: source.content as object,
+      content: forwardContent,
       messageType: source.messageType,
       forwardData,
       clientMessageId: params.clientMessageId ?? null,

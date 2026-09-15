@@ -690,6 +690,36 @@ export const chatCopy = register("chat", {
             }),
       };
     },
+  /**
+   * A GROUP message that @mentions the recipient. Titled on the group like
+   * {@link chatCopy.message}; the body says who mentioned the reader and quotes
+   * the line. Push-only, like every chat copy (no inbox row).
+   *
+   * A mention bypasses the recipient's group mute, so this is often the only
+   * notification a muted member gets from that group — it must read on its own.
+   */
+  mention:
+    (params: {
+      groupName?: string;
+      senderName?: string;
+      /** Built in `STORED_TEXT_LOCALE`, re-rendered per recipient like `message`. */
+      preview?: string;
+      messageType?: string;
+    }): LocalizedCopy =>
+    (locale) => {
+      const preview = localizeMessagePreview(
+        params.preview,
+        params.messageType,
+        locale
+      );
+      const name = person(params.senderName, locale);
+      return {
+        title: params.groupName || t("NOTIF_CHAT_NEW_MESSAGE", locale),
+        body: preview
+          ? t("NOTIF_CHAT_MENTION_BODY", locale, { name, preview })
+          : t("NOTIF_CHAT_MENTION_BODY_NO_PREVIEW", locale, { name }),
+      };
+    },
 });
 
 /**
@@ -704,6 +734,18 @@ export const chatPreviewHiddenBody = (
   roomName
     ? t("NOTIF_CHAT_NEW_MESSAGE_IN", locale, { community: roomName })
     : t("NOTIF_CHAT_NEW_MESSAGE", locale);
+
+/**
+ * Preview-off body for a mention push. Still says it was a MENTION — that is
+ * the one fact a muted member needs — but never quotes the line.
+ */
+export const chatMentionPreviewHiddenBody = (
+  groupName: string | undefined,
+  locale: SupportedLocale
+): string =>
+  groupName
+    ? t("NOTIF_CHAT_MENTION_HIDDEN_IN", locale, { group: groupName })
+    : t("NOTIF_CHAT_MENTION_HIDDEN", locale);
 
 export const groupCopy = register("group", {
   memberAdded:
@@ -902,6 +944,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   // messages are push-only), so nothing renders these from a ticket.
   "chat.message": ["params"],
   "chat.messageBurst": ["params"],
+  "chat.mention": ["params"],
 
   "group.memberAdded": ["groupName"],
   "group.memberMuted": ["groupName", "mutedUntil"],

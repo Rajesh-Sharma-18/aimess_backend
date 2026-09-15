@@ -252,6 +252,28 @@ export const NOTIFICATION_MESSAGES = {
     en: "{{count}} new messages · {{name}}: {{preview}}",
     th: "{{count}} ข้อความใหม่ · {{name}}: {{preview}}",
   },
+  // Group @mention: titled on the group, body names who mentioned the reader.
+  NOTIF_CHAT_MENTION_BODY: {
+    vi: "{{name}} đã nhắc đến bạn: {{preview}}",
+    en: "{{name}} mentioned you: {{preview}}",
+    th: "{{name}} กล่าวถึงคุณ: {{preview}}",
+  },
+  NOTIF_CHAT_MENTION_BODY_NO_PREVIEW: {
+    vi: "{{name}} đã nhắc đến bạn",
+    en: "{{name}} mentioned you",
+    th: "{{name}} กล่าวถึงคุณ",
+  },
+  // Preview-off variants of the mention push (see chatMentionPreviewHiddenBody).
+  NOTIF_CHAT_MENTION_HIDDEN_IN: {
+    vi: "Bạn được nhắc đến trong {{group}}",
+    en: "You were mentioned in {{group}}",
+    th: "มีคนกล่าวถึงคุณใน{{group}}",
+  },
+  NOTIF_CHAT_MENTION_HIDDEN: {
+    vi: "Bạn được nhắc đến",
+    en: "You were mentioned",
+    th: "มีคนกล่าวถึงคุณ",
+  },
 
   // ── Group ───────────────────────────────────────────────────────────────
   NOTIF_GROUP_UNNAMED: {

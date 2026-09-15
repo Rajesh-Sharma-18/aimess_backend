@@ -74,20 +74,25 @@ export function splitDirectMediaAlbum<
     return [{ content, messageType, clientMessageId: baseClientMessageId }];
   }
 
-  return files.map((file, index) => ({
-    content: {
+  return files.map((file, index) => {
+    const part: Record<string, unknown> = {
       ...content,
       text: index === 0 ? (content.text ?? "") : "",
       files: [file],
-    } as T,
-    messageType: inferMediaMessageType(
-      file as Record<string, unknown>,
-      messageType
-    ),
-    clientMessageId: baseClientMessageId
-      ? albumSiblingClientMessageId(baseClientMessageId, index)
-      : null,
-  }));
+    };
+    // Mention offsets point into the caption, which only row 0 carries.
+    if (index !== 0) delete part.mentions;
+    return {
+      content: part as T,
+      messageType: inferMediaMessageType(
+        file as Record<string, unknown>,
+        messageType
+      ),
+      clientMessageId: baseClientMessageId
+        ? albumSiblingClientMessageId(baseClientMessageId, index)
+        : null,
+    };
+  });
 }
 
 export interface CommunityAlbumPart {
