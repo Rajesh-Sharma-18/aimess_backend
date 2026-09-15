@@ -241,6 +241,21 @@ const envSchema = z.object({
   // forever and BOTH participants are permanently "busy" — no future call can
   // be placed. Defaults to LIVEKIT_TOKEN_TTL: media cannot outlive its token.
   CALL_MAX_DURATION_SEC: z.coerce.number().positive().default(10800),
+
+  // How long an IN_PROGRESS call with NO connected participant is left alone
+  // before the orphan sweep ends it.
+  //
+  // This is the fast path to what CALL_MAX_DURATION_SEC above only fixes after
+  // three hours. The gateway's disconnect cleanup is an in-process timer that a
+  // redeploy or a crash loses silently, and on a crash it is never even armed —
+  // so without this, a call nobody hung up keeps BOTH participants "busy" for
+  // the full ceiling.
+  //
+  // MUST comfortably exceed the presence lag, or a perfectly healthy call gets
+  // cut while presence is still catching up: PRESENCE_SESSION_TTL_SEC (150) +
+  // PRESENCE_SWEEP_INTERVAL_SEC (30) is ~180s worst case, so 300 leaves two
+  // minutes of headroom. Raising the presence values means raising this too.
+  CALL_ORPHAN_GRACE_SEC: z.coerce.number().positive().default(300),
 });
 
 // `FOO_FILE=/run/secrets/foo` supplies `FOO`, so a secret can be a mounted

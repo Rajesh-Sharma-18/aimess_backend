@@ -31,7 +31,7 @@ import { join, resolve } from "node:path";
 const GROUPS = {
   jwt: "Access-token signing keypair + admin token secrets",
   grpc: "Internal service-to-service gRPC token",
-  media: "SRS hook secret, LiveKit API pair, SRS API password",
+  media: "SRS hook secret, SRS API password",
   infra: "Database, Redis, RabbitMQ and MinIO passwords",
   storage:
     "Per-service MinIO account secrets (each service holds its own, scoped to its own buckets)",
@@ -53,8 +53,8 @@ const SECRETS = [
   { name: "GRPC_SERVICE_TOKEN", group: "grpc", kind: "bytes", bytes: 32 },
   { name: "SRS_HOOK_SECRET", group: "media", kind: "bytes", bytes: 32 },
   { name: "SRS_API_PASSWORD", group: "media", kind: "bytes", bytes: 24 },
-  { name: "LIVEKIT_API_KEY", group: "media", kind: "bytes", bytes: 12 },
-  { name: "LIVEKIT_API_SECRET", group: "media", kind: "bytes", bytes: 48 },
+  // No LIVEKIT_API_KEY/SECRET: LiveKit Cloud issues that pair (dashboard ->
+  // API keys), so a locally generated one authenticates nothing.
   { name: "POSTGRES_PASSWORD", group: "infra", kind: "bytes", bytes: 24 },
   { name: "MONGO_ROOT_PASSWORD", group: "infra", kind: "bytes", bytes: 24 },
   { name: "REDIS_PASSWORD", group: "infra", kind: "bytes", bytes: 24 },

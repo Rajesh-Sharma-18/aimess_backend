@@ -1,23 +1,20 @@
 import { logger } from "@aimess/logger";
 
-import { env } from "../config/env.js";
 import type { LivestreamService } from "../services/livestream.service.js";
 
 const SWEEP_INTERVAL_MS = 30_000; // check every 30 s
 
 /**
- * Start the stale-stream sweeper. Every 30 s it finds LIVE streams whose host
- * hasn't sent a heartbeat in `STREAM_HEARTBEAT_TIMEOUT_MS` and auto-ends them,
- * firing all the normal ENDED broadcasts (socket, system message, push).
+ * Start the stream sweeper. Every 30 s it reconciles the DB with SRS,
+ * finalizes RECONNECTING streams past the reconnect grace, expires stale
+ * PENDING streams, and polls OBS stream quality. It never ends a LIVE stream.
  *
  * Returns a cleanup function that stops the interval (useful for graceful shutdown).
  */
 export function startStreamSweeper(
   livestreamService: LivestreamService
 ): () => void {
-  logger.info(
-    `Stream sweeper started (interval=${SWEEP_INTERVAL_MS}ms timeout=${env.STREAM_HEARTBEAT_TIMEOUT_MS}ms)`
-  );
+  logger.info(`Stream sweeper started (interval=${SWEEP_INTERVAL_MS}ms)`);
 
   const handle = setInterval(() => {
     void livestreamService.sweepStaleStreams().catch((err: unknown) => {

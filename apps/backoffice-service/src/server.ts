@@ -9,6 +9,7 @@ import { prisma } from "./config/prisma.js";
 import { connectBackofficeRedis, redis } from "./config/redis.js";
 import { startAnnouncementScheduler } from "./lib/announcement-scheduler.js";
 import { startLoginFailureSweeper } from "./lib/login-failure-sweeper.js";
+import { startSystemHealthTicker } from "./lib/system-health-ticker.js";
 import { reconcileDisposableAdmins } from "./lib/disposable-admin-reconciler.js";
 import { startBackofficeGrpcServer } from "./grpc/server.js";
 import { startAdminActivityIngestConsumer } from "./messaging/consume-admin-activity-ingest.js";
@@ -137,6 +138,8 @@ const startServer = async (): Promise<void> => {
       startAnnouncementScheduler();
       // Admin login-failure rows are durable now, so nothing expires them.
       startLoginFailureSweeper();
+      // Live System Health for open panels, which no longer poll the endpoint.
+      startSystemHealthTicker();
       // Environments that ran the old seed still hold a super-admin on a
       // publicly readable inbox. Refusing new ones does nothing for those.
       void reconcileDisposableAdmins().catch((error: unknown) => {

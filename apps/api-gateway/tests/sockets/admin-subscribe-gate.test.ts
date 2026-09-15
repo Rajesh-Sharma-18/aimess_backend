@@ -53,11 +53,12 @@ function harness(permissions: string[] = ["groups.moderate"]) {
     disconnect: jest.fn(),
   };
 
+  const localEmit = jest.fn();
   const ns = {
     use: jest.fn(),
     on: jest.fn(),
     adapter: { rooms: new Map() },
-    local: { to: () => ({ emit: jest.fn() }) },
+    local: { to: jest.fn(() => ({ emit: localEmit })) },
     to: () => ({ emit: jest.fn() }),
     in: () => ({ fetchSockets: async () => [] }),
   };
@@ -93,7 +94,7 @@ function harness(permissions: string[] = ["groups.moderate"]) {
     return acks[0] as { success: boolean; error?: string } | undefined;
   };
 
-  return { emit, rooms, socket };
+  return { emit, rooms, socket, ns, redis, localEmit };
 }
 
 describe("admin:group:subscribe", () => {
@@ -210,5 +211,78 @@ describe("unsubscribe handlers", () => {
 
     await h.emit("admin:group:unsubscribe", { groupId: GROUP_ID });
     expect(h.rooms.has(`conv:${GROUP_ID}`)).toBe(false);
+  });
+});
+
+describe("admin:system-health:subscribe", () => {
+  it("joins the snapshot room with systemhealth.read, and unsubscribe leaves it", async () => {
+    const h = harness(["systemhealth.read"]);
+
+    expect(await h.emit("admin:system-health:subscribe", {})).toEqual({
+      success: true,
+    });
+    expect(h.rooms.has("admin:system-health")).toBe(true);
+
+    await h.emit("admin:system-health:unsubscribe", {});
+    expect(h.rooms.has("admin:system-health")).toBe(false);
+  });
+
+  it("refuses without systemhealth.read — a snapshot carries internal hosts", async () => {
+    const h = harness(["livestreams.read"]);
+
+    const ack = await h.emit("admin:system-health:subscribe", {});
+
+    expect(ack).toEqual({ success: false, error: "FORBIDDEN" });
+    expect(h.socket.join).not.toHaveBeenCalled();
+  });
+
+  it("does not join when unsubscribed while the permission check is in flight", async () => {
+    const h = harness(["systemhealth.read"]);
+
+    // Not awaited in between: the unsubscribe lands before the async
+    // permission check resolves.
+    const subscribed = h.emit("admin:system-health:subscribe", {});
+    const unsubscribed = h.emit("admin:system-health:unsubscribe", {});
+    const [ack] = await Promise.all([subscribed, unsubscribed]);
+
+    expect(ack).toEqual({ success: false, error: "UNSUBSCRIBED" });
+    expect(h.socket.join).not.toHaveBeenCalled();
+  });
+});
+
+describe("admin:system-health relay", () => {
+  const snapshot = { overall: "healthy", services: [], infrastructure: [] };
+  const published = JSON.stringify({
+    event: "admin:system-health:updated",
+    data: snapshot,
+  });
+
+  const pmessage = (h: ReturnType<typeof harness>) =>
+    h.redis.on.mock.calls.find((c) => c[0] === "pmessage")![1] as (
+      pattern: string,
+      channel: string,
+      raw: string
+    ) => void;
+
+  it("delivers the snapshot to this node's watchers", () => {
+    const h = harness(["systemhealth.read"]);
+    h.ns.adapter.rooms.set("admin:system-health", new Set([h.socket.id]));
+
+    pmessage(h)("admin:*", "admin:system-health", published);
+
+    // Local, not cluster-wide: every gateway node receives the channel itself.
+    expect(h.ns.local.to).toHaveBeenCalledWith("admin:system-health");
+    expect(h.localEmit).toHaveBeenCalledWith(
+      "admin:system-health:updated",
+      snapshot
+    );
+  });
+
+  it("emits nothing when nobody on this node is watching", () => {
+    const h = harness(["systemhealth.read"]);
+
+    pmessage(h)("admin:*", "admin:system-health", published);
+
+    expect(h.localEmit).not.toHaveBeenCalled();
   });
 });
