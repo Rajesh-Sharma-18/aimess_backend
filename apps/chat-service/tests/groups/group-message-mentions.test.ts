@@ -10,6 +10,7 @@
 jest.mock("../../src/events/publish-message-sent.js", () => ({
   ...jest.requireActual("../../src/events/publish-message-sent.js"),
   publishMessageSentSafe: jest.fn(),
+  publishMentionRetractedSafe: jest.fn(),
 }));
 // The @all limiter itself is covered in tests/middleware; here only whether
 // and when it is charged matters.
@@ -133,6 +134,8 @@ describe("send", () => {
         mentionedUserIds: ["u_kristi"],
       })
     );
+    // Single send: the pushed row IS the mention row.
+    expect(pushMock.mock.calls[0]![0]).not.toHaveProperty("mentionMessageId");
   });
 
   it("no mentions (or none valid) → no mentions key on the stored content", async () => {
@@ -183,6 +186,15 @@ describe("send", () => {
     expect(first!.mentions).toEqual([stored("u_kristi", text, "@kristi")]);
     expect(second).not.toHaveProperty("mentions");
     expect(second!.text).toBe("");
+    await flush();
+    // The push stays on the last row; inbox rows key on row 0 (the caption).
+    expect(pushMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "gmsg_2",
+        mentionMessageId: "gmsg_1",
+        mentionedUserIds: ["u_kristi"],
+      })
+    );
   });
 
   it("more than 50 mentions → 400 CHAT_MENTION_LIMIT_EXCEEDED, nothing stored", async () => {
@@ -734,7 +746,7 @@ describe("edit", () => {
         content: { text, mentions },
       });
 
-    it("send claims its mentions, so a later edit re-adding them pushes nothing", async () => {
+    it("send claims its mentions, so a later edit re-adding them restores only the inbox row", async () => {
       mocks.groupMessageRepo.create.mockImplementation(
         async (entity: Record<string, unknown>) => ({
           ...entity,
@@ -758,7 +770,56 @@ describe("edit", () => {
       mocks.groupMessageRepo.findById.mockResolvedValue(row({ text: "hi" }));
       await edit(sent, [at("u_kristi", sent, "@kristi")]);
 
-      expect(pushMock).not.toHaveBeenCalled();
+      expect(pushMock).toHaveBeenCalledTimes(1);
+      expect(pushMock.mock.calls[0]![0]).toMatchObject({
+        mentionOnly: true,
+        inboxOnly: true,
+        recipientIds: ["u_kristi"],
+        mentionedUserIds: ["u_kristi"],
+      });
+    });
+
+    it("restoring '@kristi @all' re-writes rows for kristi and the @all audience: one charge, no push", async () => {
+      mocks.groupMessageRepo.create.mockImplementation(
+        async (entity: Record<string, unknown>) => ({
+          ...entity,
+          id: "g1",
+          createdAt: new Date(),
+        })
+      );
+      mocks.groupMemberRepo.findActiveMembers.mockResolvedValue(
+        roster(TEST_USER_ID, "u_kristi", "u_bob")
+      );
+      const sent = "hi @kristi @all";
+      const mentions = [at("u_kristi", sent, "@kristi"), all(sent)];
+      await service.sendMessage({
+        roomId: ROOM,
+        senderId: TEST_USER_ID,
+        senderName: "Me",
+        senderAvatar: "",
+        content: { text: sent, mentions },
+        messageType: "TEXT",
+        clientMessageId: "c-claim-both",
+      });
+      mentionAllMock.mockClear();
+
+      mocks.groupMessageRepo.findById.mockResolvedValue(row({ text: "hi" }));
+      await edit(sent, mentions);
+
+      expect(mentionAllMock).toHaveBeenCalledTimes(1);
+      expect(pushMock).toHaveBeenCalledTimes(1);
+      const push = pushMock.mock.calls[0]![0];
+      expect(push).toMatchObject({
+        mentionOnly: true,
+        inboxOnly: true,
+        mentionedUserIds: ["u_kristi"],
+      });
+      expect(push).not.toHaveProperty("recipientIds");
+      await expect(push.fetchRecipients()).resolves.toEqual([
+        "u_kristi",
+        "u_bob",
+      ]);
+      await expect(push.fetchMentionAllUserIds()).resolves.toEqual(["u_bob"]);
     });
 
     it("toggling a mention off and on pushes once; a genuinely new user still pushes", async () => {
@@ -778,7 +839,8 @@ describe("edit", () => {
         at("u_bob", both, "@bob"),
       ]);
 
-      expect(pushMock).toHaveBeenCalledTimes(2);
+      // kristi pushed once; her re-add only restores the row; bob is fresh.
+      expect(pushMock).toHaveBeenCalledTimes(3);
       expect(pushMock.mock.calls[0]![0]).toMatchObject({
         recipientIds: ["u_kristi"],
         mentionedUserIds: ["u_kristi"],
@@ -787,9 +849,15 @@ describe("edit", () => {
         recipientIds: ["u_bob"],
         mentionedUserIds: ["u_bob"],
       });
+      expect(pushMock.mock.calls[1]![0]).not.toHaveProperty("inboxOnly");
+      expect(pushMock.mock.calls[2]![0]).toMatchObject({
+        inboxOnly: true,
+        recipientIds: ["u_kristi"],
+        mentionedUserIds: ["u_kristi"],
+      });
     });
 
-    it("send claims the @all sentinel, so a later edit restoring @all pushes nothing", async () => {
+    it("send claims the @all sentinel, so a later edit restoring @all restores only the inbox rows", async () => {
       mocks.groupMessageRepo.create.mockImplementation(
         async (entity: Record<string, unknown>) => ({
           ...entity,
@@ -808,11 +876,24 @@ describe("edit", () => {
         clientMessageId: "c-claim-all",
       });
       expect(redis.keys).toEqual(["gm:mention-notified:{g1}:ALL"]);
+      mocks.groupMemberRepo.findActiveMembers.mockResolvedValue(
+        roster(TEST_USER_ID, "u_kristi", "u_bob")
+      );
 
       mocks.groupMessageRepo.findById.mockResolvedValue(row({ text: "hi" }));
       await edit(sent, [all(sent)]);
 
-      expect(pushMock).not.toHaveBeenCalled();
+      expect(pushMock).toHaveBeenCalledTimes(1);
+      const push = pushMock.mock.calls[0]![0];
+      expect(push).toMatchObject({
+        mentionOnly: true,
+        inboxOnly: true,
+        mentionedUserIds: [],
+      });
+      await expect(push.fetchMentionAllUserIds()).resolves.toEqual([
+        "u_kristi",
+        "u_bob",
+      ]);
     });
 
     it("adding @all skips a re-added user whose claim already exists; recipients are fresh ∪ audience", async () => {
@@ -846,18 +927,30 @@ describe("edit", () => {
         all(text),
       ]);
 
-      expect(pushMock).toHaveBeenCalledTimes(1);
+      expect(pushMock).toHaveBeenCalledTimes(2);
       const push = pushMock.mock.calls[0]![0];
       expect(push).toMatchObject({
         mentionOnly: true,
         mentionedUserIds: ["u_kristi"],
       });
+      expect(push).not.toHaveProperty("inboxOnly");
       expect(push).not.toHaveProperty("recipientIds");
       await expect(push.fetchRecipients()).resolves.toEqual([
         "u_kristi",
         "u_carol",
       ]);
       await expect(push.fetchMentionAllUserIds()).resolves.toEqual(["u_carol"]);
+      // bob's claim exists: row only, and never the @all audience (freshly pushed).
+      expect(pushMock.mock.calls[1]![0]).toEqual(
+        expect.objectContaining({
+          inboxOnly: true,
+          recipientIds: ["u_bob"],
+          mentionedUserIds: ["u_bob"],
+        })
+      );
+      expect(pushMock.mock.calls[1]![0]).not.toHaveProperty(
+        "fetchMentionAllUserIds"
+      );
     });
 
     it("toggling @all off and on by edit pushes once (each add is charged)", async () => {
@@ -871,7 +964,9 @@ describe("edit", () => {
       mocks.groupMessageRepo.findById.mockResolvedValue(row({ text: "hi" }));
       await edit(on, [all(on)]);
 
-      expect(pushMock).toHaveBeenCalledTimes(1);
+      expect(pushMock).toHaveBeenCalledTimes(2);
+      expect(pushMock.mock.calls[0]![0]).not.toHaveProperty("inboxOnly");
+      expect(pushMock.mock.calls[1]![0]).toMatchObject({ inboxOnly: true });
       expect(mentionAllMock).toHaveBeenCalledTimes(2);
     });
 

@@ -625,9 +625,19 @@ export function createMessagingImpl(
               sentAt: pushSentAt,
             };
             if (conversationType === "GROUP") {
-              const albumContents = getAlbumMessages(msg).map((r) => r.content);
+              const albumRows = getAlbumMessages(msg);
+              const albumContents = albumRows.map((r) => r.content);
+              // An album keeps its mentions on row 0 only; inbox rows key on it.
+              const mentionRow = albumRows.find(
+                (r) =>
+                  hasMentionAll([r.content]) ||
+                  mentionedUserIdsOf([r.content], req.senderId).length > 0
+              );
               publishMessageSentSafe({
                 ...pushBase,
+                ...(mentionRow && mentionRow.id !== msg.id
+                  ? { mentionMessageId: mentionRow.id }
+                  : {}),
                 fetchRecipients: groupRecipients,
                 mentionedUserIds: mentionedUserIdsOf(
                   albumContents,
@@ -4696,6 +4706,37 @@ export function createCommunityImpl(
   };
 }
 
+/**
+ * A group mention row is decided late: between the event being queued and this
+ * write the message may have been deleted for everyone, or edited to drop the
+ * mention — and its retraction may already have been consumed with nothing to
+ * remove. Fails open: a lookup error must not swallow a real mention.
+ */
+async function groupMentionStillStands(
+  deps: GrpcDeps,
+  userId: string,
+  data: Record<string, string>
+): Promise<boolean> {
+  try {
+    const message = await deps.groupMessageService.findMessageById(
+      data.messageId as string
+    );
+    if (!message || message.isDeleted) return false;
+    // Either kind of mention keeps either row — the rule the edit retraction
+    // applies, so a create racing an edit cannot drop a row an in-order edit
+    // would keep (e.g. "@kristi @all" edited to "@all").
+    return (
+      hasMentionAll([message.content]) ||
+      mentionedUserIdsOf([message.content], "").includes(userId)
+    );
+  } catch (err) {
+    logger.warn(
+      `createNotification|mention guard lookup failed message=${data.messageId}: ${String(err)}`
+    );
+    return true;
+  }
+}
+
 export function createNotificationImpl(
   deps: GrpcDeps
 ): grpc.UntypedServiceImplementation {
@@ -4929,6 +4970,16 @@ export function createNotificationImpl(
             return;
           }
 
+          const isGroupMention =
+            req.type === "chat.mention" && !!data.messageId;
+          if (
+            isGroupMention &&
+            !(await groupMentionStillStands(deps, req.userId, data))
+          ) {
+            callback(null, { id: "" });
+            return;
+          }
+
           const created = await deps.notificationRepo.create({
             userId: req.userId,
             actorId: rowActorId,
@@ -4951,6 +5002,23 @@ export function createNotificationImpl(
               ? { isRead: true, readAt: new Date() }
               : {}),
           });
+
+          // Re-check after the insert: a retraction whose lookup ran before
+          // this insert committed found nothing to remove, but the delete/edit
+          // behind it committed before that lookup, so this read sees it. The
+          // row goes before any client hears of it.
+          if (
+            isGroupMention &&
+            groupKey &&
+            !(await groupMentionStillStands(deps, req.userId, data))
+          ) {
+            await deps.notificationRepo.deleteActiveByGroupKey(
+              req.userId,
+              groupKey
+            );
+            callback(null, { id: "" });
+            return;
+          }
 
           await publishRow("notification:new", created);
 

@@ -35,9 +35,12 @@
  *   2. Add it to INBOX_ALLOWED_TYPES in notifications-service/push.service.ts.
  *   No changes to this file are needed for auth.* / admin.* types.
  *
- * MENTION currently has no inbox producer; `chat.mention` / `community.mention`
- * are reserved for the mention pipeline that runs push-only with skipInbox.
- * LIVE_NOW is the same shape: the livestream types below are published as push
+ * MENTION's inbox producer is group @mentions: notifications-service writes one
+ * `chat.mention` row per message per mentioned recipient (the push itself stays
+ * the coalesced MESSAGE with skipInbox), and `chat.mention_retracted` removes it
+ * on delete-for-everyone or an edit that drops the mention. `community.mention`
+ * is still reserved — community chat has no mention pipeline.
+ * LIVE_NOW is push-only: the livestream types below are published as push
  * only, so the bucket is defined and filterable but empty until a producer
  * writes one to the inbox.
  */
@@ -182,18 +185,19 @@ const CATEGORY_ALIASES: Record<string, NotificationCategoryId> = {
 };
 
 /** Catalogue id → the legacy name `categorize()` reports for it. */
-const LEGACY_NAME: Record<NotificationCategoryId, NotificationLegacyCategory> = {
-  FRIEND_REQUEST: "FRIENDS",
-  COMMUNITY: "COMMUNITIES",
-  MENTION: "MENTIONS",
-  CALLS: "CALLS",
-  SYSTEM: "SYSTEM",
-  // Livestream rows kept their legacy bucket: `resolveAvatarRefresh` reads
-  // `categorize(type) === "COMMUNITIES"` to decide whether to resolve a fresh
-  // community avatar, and a livestream row is still a community row for that
-  // purpose. Only `categoryId` — the new field — separates them.
-  LIVE_NOW: "COMMUNITIES",
-};
+const LEGACY_NAME: Record<NotificationCategoryId, NotificationLegacyCategory> =
+  {
+    FRIEND_REQUEST: "FRIENDS",
+    COMMUNITY: "COMMUNITIES",
+    MENTION: "MENTIONS",
+    CALLS: "CALLS",
+    SYSTEM: "SYSTEM",
+    // Livestream rows kept their legacy bucket: `resolveAvatarRefresh` reads
+    // `categorize(type) === "COMMUNITIES"` to decide whether to resolve a fresh
+    // community avatar, and a livestream row is still a community row for that
+    // purpose. Only `categoryId` — the new field — separates them.
+    LIVE_NOW: "COMMUNITIES",
+  };
 
 export const NOTIFICATION_CATEGORIES: readonly NotificationCategory[] = [
   "ALL",

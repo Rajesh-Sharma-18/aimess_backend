@@ -40,7 +40,15 @@ jest.mock("../../src/services/push.service.js", () => ({
 }));
 
 // The coalescer asks Redis whether the recipient is currently reading the room
-// (a pipeline of EXISTS). Nobody is, in these specs.
+// (a pipeline of EXISTS), and the mention-row writer claims each row with a
+// pipeline of SET NX. Nobody has a room open and nothing is claimed unless a
+// spec puts keys into `mockRedisState`.
+const mockRedisState = {
+  open: new Set<string>(),
+  claimed: new Set<string>(),
+  claimError: false,
+};
+const mockRedisDel = jest.fn(async (..._keys: string[]) => 0);
 jest.mock("../../src/config/redis.js", () => ({
   redis: {
     status: "ready",
@@ -49,12 +57,31 @@ jest.mock("../../src/config/redis.js", () => ({
     off: jest.fn(),
     get: jest.fn(async () => null),
     set: jest.fn(async () => "OK"),
-    del: jest.fn(async () => 0),
-    pipeline: () => ({
-      exists: jest.fn(),
-      get: jest.fn(),
-      exec: jest.fn(async () => [[null, 0]]),
-    }),
+    del: mockRedisDel,
+    pipeline: () => {
+      const replies: Array<[null, unknown]> = [];
+      let claims = false;
+      const pipeline = {
+        exists: (key: string) => {
+          replies.push([null, mockRedisState.open.has(key) ? 1 : 0]);
+          return pipeline;
+        },
+        get: jest.fn(),
+        set: (key: string) => {
+          claims = true;
+          replies.push([null, mockRedisState.claimed.has(key) ? null : "OK"]);
+          mockRedisState.claimed.add(key);
+          return pipeline;
+        },
+        exec: async () => {
+          if (claims && mockRedisState.claimError) {
+            throw new Error("redis down");
+          }
+          return replies.length > 0 ? replies : [[null, 0]];
+        },
+      };
+      return pipeline;
+    },
   },
 }));
 
@@ -108,12 +135,33 @@ const pushOne = pushToUser as jest.Mock;
  * `pushMany` presents the flushed pushes in the original shape.
  */
 const pushMany = jest.fn() as jest.Mock;
+/**
+ * Inbox-only `pushToUser` calls (`skipPush`) are the group mention ROWS, written
+ * by the consumer itself before anything reaches the coalescer. They are kept
+ * apart so the push assertions above keep seeing pushes only.
+ */
+type RowWrite = {
+  userId: string;
+  type: string;
+  category: string;
+  skipPush?: boolean;
+  bypassSettings?: boolean;
+  actorId?: string;
+  inboxTitle?: string | null;
+  copy?: (locale: string) => { title: string; body: string };
+  data: Record<string, string>;
+};
+const rowWrites: RowWrite[] = [];
 async function flushPushes(): Promise<void> {
   await flushAllChatPushes();
-  const inputs = pushOne.mock.calls.map(
+  const all = pushOne.mock.calls.map(
     (c) => c[0] as { userId: string } & Record<string, unknown>
   );
   pushOne.mockClear();
+  rowWrites.push(
+    ...(all.filter((i) => i.skipPush === true) as unknown as RowWrite[])
+  );
+  const inputs = all.filter((i) => i.skipPush !== true);
   if (inputs.length === 0) return;
   pushMany(
     inputs.map((i) => i.userId),
@@ -1276,5 +1324,472 @@ describe("startChatConsumer — group @all", () => {
     const pushes = flushed();
     expect(pushes).toHaveLength(1);
     expect(pushes[0]!.data.notificationType).toBeUndefined();
+  });
+});
+
+/**
+ * Group mention Notification-Center rows: one inbox-only `chat.mention` row per
+ * (message, mentioned recipient), written before the push is enqueued, and
+ * removed again by `chat.mention_retracted`.
+ */
+describe("startChatConsumer — group mention inbox rows", () => {
+  let consume: ConsumeCallback;
+  const settingsMock = getNotificationSettings as jest.Mock;
+  const muteAllFor = (...ids: string[]) =>
+    settingsMock.mockImplementation(async (id: string) => ({
+      mentionAllMuted: ids.includes(id),
+    }));
+  const claimKey = (userId: string, messageId = BASE.messageId) =>
+    `notif:mention-row:{${messageId}}:${userId}`;
+  const rowFor = (id: string) => rowWrites.find((r) => r.userId === id);
+  const pushedIds = (): string[] =>
+    pushMany.mock.calls.length === 0
+      ? []
+      : (pushMany.mock.calls[0] as [string[]])[0];
+
+  beforeAll(async () => {
+    consume = await setupConsumer();
+  });
+
+  beforeEach(() => {
+    rowWrites.length = 0;
+    pushMany.mockClear();
+    pushOne.mockClear();
+    pushOne.mockImplementation(async () => undefined);
+    channelMock.ack.mockClear();
+    channelMock.nack.mockClear();
+    isPrivateMutedMock.mockReset();
+    isPrivateMutedMock.mockResolvedValue(false);
+    filterNotifiableMock.mockReset();
+    filterNotifiableMock.mockImplementation(
+      async (_communityId: string, userIds: string[]) => userIds
+    );
+    groupMuteFilterMock.mockReset();
+    groupMuteFilterMock.mockImplementation(
+      async (_roomId: string, userIds: string[]) => userIds
+    );
+    settingsMock.mockReset();
+    muteAllFor();
+    mockRedisState.open.clear();
+    mockRedisState.claimed.clear();
+    mockRedisState.claimError = false;
+    mockRedisDel.mockClear();
+  });
+
+  it("individual mention → one chat.mention row per mentioned recipient, never the sender or an outsider", async () => {
+    // Everyone handed to the group mute gate has muted the group: the mention
+    // row, like the push, bypasses it.
+    groupMuteFilterMock.mockResolvedValue([]);
+    const msg = makeMsg({
+      ...BASE,
+      conversationType: "GROUP",
+      groupName: "Weekend Trip",
+      conversationAvatar: "https://cdn.example.com/group.png",
+      recipientIds: ["mentioned-user", "plain-user", BASE.senderId],
+      mentionedUserIds: ["mentioned-user", "outsider", BASE.senderId],
+    });
+    consume(msg);
+    await flush();
+
+    expect(rowWrites.map((r) => r.userId)).toEqual(["mentioned-user"]);
+    const row = rowWrites[0]!;
+    expect(row.type).toBe("chat.mention");
+    expect(row.category).toBe("chatEnabled");
+    expect(row.skipPush).toBe(true);
+    expect(row.bypassSettings).toBeUndefined();
+    expect(row.actorId).toBe(BASE.senderId);
+    expect(row.inboxTitle).toBeNull();
+    expect(row.copy!("en")).toEqual({
+      title: "Weekend Trip",
+      body: "Alice mentioned you in Weekend Trip",
+    });
+    const { actorSnapshot, navigation, ...rest } = row.data;
+    expect(rest).toEqual({
+      groupKey: `mention:${BASE.messageId}`,
+      mentionType: "USER",
+      conversationId: BASE.conversationId,
+      conversationType: "GROUP",
+      messageId: BASE.messageId,
+      groupName: "Weekend Trip",
+      groupAvatarUrl: "https://cdn.example.com/group.png",
+    });
+    expect(JSON.parse(actorSnapshot!)).toEqual({
+      userId: BASE.senderId,
+      displayName: "Alice",
+      avatarUrl: BASE.senderAvatar,
+    });
+    expect(JSON.parse(navigation!)).toEqual({
+      screen: "GROUP_CHAT",
+      roomId: BASE.conversationId,
+      conversationType: "GROUP",
+      messageId: BASE.messageId,
+    });
+    // The push itself is unchanged.
+    expect(pushedIds()).toEqual(["mentioned-user"]);
+    expect(channelMock.ack).toHaveBeenCalledWith(msg);
+  });
+
+  it("@all → rows for recipients who did not mute @all only", async () => {
+    muteAllFor("opted-out");
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        groupName: "Weekend Trip",
+        recipientIds: ["a", "opted-out"],
+        mentionAllUserIds: ["a", "opted-out"],
+      })
+    );
+    await flush();
+
+    expect(rowWrites.map((r) => r.userId)).toEqual(["a"]);
+    expect(rowFor("a")!.data.mentionType).toBe("ALL");
+    expect(rowFor("a")!.copy!("en").body).toBe(
+      "Alice mentioned you in Weekend Trip"
+    );
+    // The opted-out user still gets their ordinary message push.
+    expect(pushedIds()).toEqual(["a", "opted-out"]);
+  });
+
+  it("@all + individual for the same user → one row, mentionType USER", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["a"],
+        mentionedUserIds: ["a"],
+        mentionAllUserIds: ["a"],
+      })
+    );
+    await flush();
+
+    expect(rowWrites).toHaveLength(1);
+    expect(rowWrites[0]!.data.mentionType).toBe("USER");
+  });
+
+  it("a recipient with the room open gets the row already read", async () => {
+    mockRedisState.open.add(`chat:open:{b}:${BASE.conversationId}`);
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["a", "b"],
+        mentionedUserIds: ["a", "b"],
+      })
+    );
+    await flush();
+
+    expect(rowFor("a")!.data.markRead).toBeUndefined();
+    expect(rowFor("b")!.data.markRead).toBe("true");
+  });
+
+  it("an already-claimed row is not written again (push still enqueued)", async () => {
+    mockRedisState.claimed.add(claimKey("a"));
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["a", "b"],
+        mentionedUserIds: ["a", "b"],
+      })
+    );
+    await flush();
+
+    expect(rowWrites.map((r) => r.userId)).toEqual(["b"]);
+    expect(pushedIds()).toEqual(["a", "b"]);
+  });
+
+  it("a claim pipeline error fails open → rows still written", async () => {
+    mockRedisState.claimError = true;
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["a"],
+        mentionedUserIds: ["a"],
+      })
+    );
+    await flush();
+
+    expect(rowWrites.map((r) => r.userId)).toEqual(["a"]);
+    expect(pushedIds()).toEqual(["a"]);
+  });
+
+  it("one row write rejects → its claim is released, message requeued, nothing enqueued", async () => {
+    pushOne.mockImplementation(async (input: RowWrite) => {
+      if (input.skipPush && input.userId === "b") {
+        throw new Error("gRPC deadline exceeded");
+      }
+    });
+    const msg = makeMsg({
+      ...BASE,
+      conversationType: "GROUP",
+      recipientIds: ["a", "b"],
+      mentionedUserIds: ["a", "b"],
+    });
+    consume(msg);
+    await flush();
+
+    expect(rowWrites.map((r) => r.userId)).toEqual(["a", "b"]);
+    expect(mockRedisDel).toHaveBeenCalledTimes(1);
+    expect(mockRedisDel).toHaveBeenCalledWith(claimKey("b"));
+    expect(pushMany).not.toHaveBeenCalled();
+    expect(channelMock.nack).toHaveBeenCalledWith(msg, false, true);
+    expect(channelMock.ack).not.toHaveBeenCalled();
+  });
+
+  it("a row write that fails again on redelivery → rows lost, push still enqueued, acked", async () => {
+    pushOne.mockImplementation(async (input: RowWrite) => {
+      if (input.skipPush) throw new Error("breaker open");
+    });
+    const msg = {
+      ...makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["a", "plain"],
+        mentionedUserIds: ["a"],
+      }),
+      fields: { redelivered: true },
+    };
+    consume(msg);
+    await flush();
+
+    expect(pushedIds()).toEqual(["a", "plain"]);
+    expect(channelMock.ack).toHaveBeenCalledWith(msg);
+    expect(channelMock.nack).not.toHaveBeenCalled();
+  });
+
+  it("the push is enqueued only after the rows are written", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    pushOne.mockImplementation(async (input: RowWrite) => {
+      if (input.skipPush) await gate;
+    });
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["a"],
+        mentionedUserIds: ["a"],
+      })
+    );
+    await new Promise((r) => setImmediate(r));
+    await flushAllChatPushes();
+    expect(
+      pushOne.mock.calls.filter((c) => (c[0] as RowWrite).skipPush !== true)
+    ).toHaveLength(0);
+
+    release();
+    await flush();
+    expect(rowWrites.map((r) => r.userId)).toEqual(["a"]);
+    expect(pushedIds()).toEqual(["a"]);
+  });
+
+  it("mentionOnly edit publish → rows only for the mentioned sets", async () => {
+    muteAllFor("opted-out");
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["named", "everyone", "opted-out", "plain"],
+        mentionedUserIds: ["named"],
+        mentionAllUserIds: ["everyone", "opted-out"],
+        mentionOnly: true,
+      })
+    );
+    await flush();
+
+    expect(rowWrites.map((r) => [r.userId, r.data.mentionType])).toEqual([
+      ["named", "USER"],
+      ["everyone", "ALL"],
+    ]);
+  });
+
+  it.each(["PRIVATE", "COMMUNITY"])(
+    "%s → mention fields never produce a row",
+    async (conversationType) => {
+      consume(
+        makeMsg({
+          ...BASE,
+          conversationType,
+          communityId: conversationType === "COMMUNITY" ? "comm1" : undefined,
+          mentionedUserIds: ["recipient-uuid"],
+          mentionAllUserIds: ["recipient-uuid"],
+        })
+      );
+      await flush();
+
+      expect(rowWrites).toHaveLength(0);
+      expect(pushedIds()).toEqual(["recipient-uuid"]);
+    }
+  );
+
+  it("chat.mention_retracted → one inbox-only, settings-bypassing removal per user", async () => {
+    const msg = {
+      content: Buffer.from(
+        JSON.stringify({
+          type: "chat.mention_retracted",
+          data: {
+            messageId: "msg9",
+            conversationId: BASE.conversationId,
+            userIds: ["a", "b", "a"],
+          },
+        })
+      ),
+    };
+    consume(msg);
+    await flush();
+
+    expect(rowWrites).toHaveLength(2);
+    for (const [i, userId] of ["a", "b"].entries()) {
+      expect(rowWrites[i]).toEqual({
+        userId,
+        category: "chatEnabled",
+        type: "chat.mention_retracted",
+        skipPush: true,
+        bypassSettings: true,
+        data: {
+          groupKey: "mention:msg9",
+          conversationId: BASE.conversationId,
+          messageId: "msg9",
+        },
+      });
+    }
+    expect(pushMany).not.toHaveBeenCalled();
+    expect(channelMock.ack).toHaveBeenCalledWith(msg);
+  });
+
+  it("chat.mention_retracted with a failed removal → requeued", async () => {
+    pushOne.mockRejectedValueOnce(new Error("gRPC down"));
+    const msg = {
+      content: Buffer.from(
+        JSON.stringify({
+          type: "chat.mention_retracted",
+          data: {
+            messageId: "msg9",
+            conversationId: BASE.conversationId,
+            userIds: ["a"],
+          },
+        })
+      ),
+    };
+    consume(msg);
+    await flush();
+
+    expect(channelMock.nack).toHaveBeenCalledWith(msg, false, true);
+  });
+
+  const retractMsg = (data: object) => ({
+    content: Buffer.from(
+      JSON.stringify({
+        type: "chat.mention_retracted",
+        data: { messageId: "msg9", conversationId: BASE.conversationId, ...data },
+      })
+    ),
+  });
+
+  it("album: the row keys, claims and navigates on mentionMessageId; the push keeps messageId", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        messageId: "row2",
+        mentionMessageId: "row0",
+        conversationType: "GROUP",
+        recipientIds: ["a"],
+        mentionedUserIds: ["a"],
+      })
+    );
+    await flush();
+
+    expect(mockRedisState.claimed).toEqual(new Set([claimKey("a", "row0")]));
+    const row = rowFor("a")!;
+    expect(row.data.groupKey).toBe("mention:row0");
+    expect(row.data.messageId).toBe("row0");
+    expect(JSON.parse(row.data.navigation!).messageId).toBe("row0");
+    const [, build] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => { data: Record<string, string> },
+    ];
+    expect(build("a").data.messageId).toBe("row2");
+  });
+
+  it("a redelivery ignores an existing claim and writes every row (groupKey dedupes)", async () => {
+    mockRedisState.claimed.add(claimKey("a"));
+    const msg = {
+      ...makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["a", "b"],
+        mentionedUserIds: ["a", "b"],
+      }),
+      fields: { redelivered: true },
+    };
+    consume(msg);
+    await flush();
+
+    expect(rowWrites.map((r) => r.userId)).toEqual(["a", "b"]);
+    expect(pushedIds()).toEqual(["a", "b"]);
+    expect(channelMock.ack).toHaveBeenCalledWith(msg);
+  });
+
+  it("inboxOnly → rows written despite a stale claim, no claim taken, nothing pushed", async () => {
+    mockRedisState.claimed.add(claimKey("a"));
+    const msg = makeMsg({
+      ...BASE,
+      conversationType: "GROUP",
+      recipientIds: ["a", "b"],
+      mentionedUserIds: ["a", "b"],
+      mentionOnly: true,
+      inboxOnly: true,
+    });
+    consume(msg);
+    await flush();
+
+    expect(rowWrites.map((r) => r.userId)).toEqual(["a", "b"]);
+    expect(mockRedisState.claimed).toEqual(new Set([claimKey("a")]));
+    expect(pushMany).not.toHaveBeenCalled();
+    expect(channelMock.ack).toHaveBeenCalledWith(msg);
+  });
+
+  it("chat.mention_retracted releases the retracted users' row claims", async () => {
+    consume(retractMsg({ userIds: ["a", "b"] }));
+    await flush();
+
+    expect(mockRedisDel).toHaveBeenCalledWith(
+      claimKey("a", "msg9"),
+      claimKey("b", "msg9")
+    );
+  });
+
+  it("ifAllMutedUserIds → only @all-muted users are retracted; a settings error keeps the row", async () => {
+    settingsMock.mockImplementation(async (id: string) => {
+      if (id === "broken") throw new Error("settings down");
+      return { mentionAllMuted: id === "muted" };
+    });
+    const msg = retractMsg({
+      userIds: ["named"],
+      ifAllMutedUserIds: ["muted", "allows-all", "broken"],
+    });
+    consume(msg);
+    await flush();
+
+    expect(rowWrites.map((r) => r.userId)).toEqual(["named", "muted"]);
+    expect(mockRedisDel).toHaveBeenCalledWith(
+      claimKey("named", "msg9"),
+      claimKey("muted", "msg9")
+    );
+    expect(channelMock.ack).toHaveBeenCalledWith(msg);
+  });
+
+  it("ifAllMutedUserIds with nobody muted → no removal, no DEL, acked", async () => {
+    const msg = retractMsg({ userIds: [], ifAllMutedUserIds: ["allows-all"] });
+    consume(msg);
+    await flush();
+
+    expect(rowWrites).toHaveLength(0);
+    expect(mockRedisDel).not.toHaveBeenCalled();
+    expect(channelMock.ack).toHaveBeenCalledWith(msg);
   });
 });

@@ -29,6 +29,7 @@ import {
   type GrpcDeps,
 } from "../../src/grpc/service-impl.js";
 import { publishMessageSentSafe } from "../../src/events/publish-message-sent.js";
+import { attachAlbumMessages } from "../../src/lib/album-messages.js";
 import { assertSendAllowed } from "../../src/middleware/rate-limit.js";
 
 const rateLimitMock = assertSendAllowed as jest.Mock;
@@ -123,6 +124,40 @@ describe("gRPC sendMessage — mentions", () => {
     expect(
       (publishMessageSentSafe as jest.Mock).mock.calls[0]![0]
     ).not.toHaveProperty("fetchMentionAllUserIds");
+    expect(
+      (publishMessageSentSafe as jest.Mock).mock.calls[0]![0]
+    ).not.toHaveProperty("mentionMessageId");
+  });
+
+  it("GROUP album: push stays on the last row, mentionMessageId names row 0", async () => {
+    const row0 = {
+      ...storedRow({ text: "@bo hi", mentions: MENTIONS }),
+      id: "m0",
+    };
+    const row1 = storedRow({ text: "" });
+    const sendMessage = jest.fn(async () =>
+      attachAlbumMessages(row1, [row0, row1])
+    );
+    const deps = {
+      groupMessageService: {
+        sendMessage,
+        getActiveMemberIds: jest.fn(async () => ["u1", "u2"]),
+      },
+    } as unknown as GrpcDeps;
+
+    await invoke(
+      createMessagingImpl(deps).sendMessage as Handler,
+      sendRequest("grp_room")
+    );
+    await flush();
+
+    expect(publishMessageSentSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "m1",
+        mentionMessageId: "m0",
+        mentionedUserIds: ["u2"],
+      })
+    );
   });
 
   it("GROUP with a stored @all hands the push a thunk over the memoised roster", async () => {

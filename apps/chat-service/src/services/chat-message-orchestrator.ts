@@ -567,8 +567,17 @@ export class ChatMessageOrchestrator {
         // Group name + avatar are resolved from GroupRoom inside
         // `publishMessageSentSafe` — the one place every producer goes through.
         const albumContents = albumRows.map((r) => r.content);
+        // An album keeps its mentions on row 0 only; inbox rows key on that row.
+        const mentionRow = albumRows.find(
+          (r) =>
+            hasMentionAll([r.content]) ||
+            mentionedUserIdsOf([r.content], params.senderId).length > 0
+        );
         publishMessageSentSafe({
           ...pushBase,
+          ...(mentionRow && mentionRow.id !== msg.id
+            ? { mentionMessageId: mentionRow.id }
+            : {}),
           fetchRecipients: groupRecipients,
           mentionedUserIds: mentionedUserIdsOf(albumContents, params.senderId),
           ...(hasMentionAll(albumContents)

@@ -117,6 +117,11 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   // missed-call push (CALL_MISSED) stay push-only: they are live events, and
   // letting either write here too would put two cards on one call.
   "call.activity",
+  // Group @mention rows (consumers/chat.consumer.ts), one per message per
+  // mentioned recipient, and the terminal type that removes them again when
+  // the message is deleted or the mention is edited out.
+  "chat.mention",
+  "chat.mention_retracted",
 
   // ── System / account-level ──────────────────────────────────────────────
   // These map to the SYSTEM tab in the Notification Center (categoryWhere).
@@ -493,7 +498,13 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // two different users with two different toggles, so the DM's call card
   // existed while the Notification-Center row did not. The push side stays
   // fully gated: `skipPush` returns below, before any device is touched.
-  if (decision === "CATEGORY_OFF" && !skipPush) {
+  //
+  // Call history ONLY. A group @mention row is also inbox-only, but it is an
+  // alert, not a log — Chat OFF must not leave it in the Mentions tab.
+  if (
+    decision === "CATEGORY_OFF" &&
+    !(skipPush && type === "call.activity")
+  ) {
     logger.info(
       `Notification suppressed by category setting: user=${userId} type=${type} category=${category}`
     );

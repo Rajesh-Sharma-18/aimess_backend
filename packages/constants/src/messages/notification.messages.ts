@@ -295,6 +295,17 @@ export const NOTIFICATION_MESSAGES = {
     en: "Everyone was mentioned",
     th: "มีการกล่าวถึงทุกคน",
   },
+  // Notification-Center row for a group mention (chatCopy.mentionInbox).
+  NOTIF_CHAT_MENTION_INBOX_BODY: {
+    vi: "{{name}} đã nhắc đến bạn trong {{group}}",
+    en: "{{name}} mentioned you in {{group}}",
+    th: "{{name}} กล่าวถึงคุณใน{{group}}",
+  },
+  NOTIF_CHAT_MENTION_INBOX_BODY_NO_GROUP: {
+    vi: "{{name}} đã nhắc đến bạn",
+    en: "{{name}} mentioned you",
+    th: "{{name}} กล่าวถึงคุณ",
+  },
 
   // ── Group ───────────────────────────────────────────────────────────────
   NOTIF_GROUP_UNNAMED: {

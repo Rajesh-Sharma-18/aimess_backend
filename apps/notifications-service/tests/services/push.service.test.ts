@@ -14,6 +14,11 @@ jest.mock("../../src/repositories/device-token.repository.js", () => ({
 jest.mock("../../src/providers/firebase/sendPush.js", () => ({
   sendPush: jest.fn(async () => ({ invalidToken: false })),
 }));
+// The real module pulls in auth-session.client, which proto-loads via
+// `import.meta.url` and cannot be parsed by CJS-mode Jest.
+jest.mock("../../src/lib/session-active-cache.js", () => ({
+  isSessionActiveForRequest: jest.fn(async () => true),
+}));
 const mockChatNotificationClient = { createNotification: jest.fn() };
 const mockUserSettingsClient = { getNotificationSettings: jest.fn() };
 jest.mock("../../src/grpc/chat-notification.client.js", () => ({
@@ -151,6 +156,63 @@ describe("pushToUser — the settings gate", () => {
     });
 
     expect(chatNotificationClient.createNotification).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  const mentionRow = {
+    userId: USER_ID,
+    category: "chatEnabled" as const,
+    type: "chat.mention",
+    title: "Weekend Trip",
+    body: "Ana mentioned you in Weekend Trip",
+    inboxTitle: null,
+    skipPush: true,
+    data: { groupKey: "mention:m1", messageId: "m1", conversationId: "g1" },
+  };
+
+  it("writes a group mention row inbox-only, headless, with no push", async () => {
+    await pushToUser(mentionRow);
+
+    expect(chatNotificationClient.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "chat.mention",
+        data: expect.objectContaining({
+          groupKey: "mention:m1",
+          suppressTitle: "true",
+        }),
+      })
+    );
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("category OFF suppresses a group mention row even though it is inbox-only", async () => {
+    // The skipPush exemption is for call HISTORY; a mention is an alert.
+    withSettings({ chatEnabled: false });
+
+    await pushToUser(mentionRow);
+
+    expect(chatNotificationClient.createNotification).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("a mention retraction reaches the inbox even with Chat OFF", async () => {
+    withSettings({ chatEnabled: false });
+
+    await pushToUser({
+      userId: USER_ID,
+      category: "chatEnabled",
+      type: "chat.mention_retracted",
+      skipPush: true,
+      bypassSettings: true,
+      data: { groupKey: "mention:m1", messageId: "m1", conversationId: "g1" },
+    });
+
+    expect(chatNotificationClient.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "chat.mention_retracted",
+        data: expect.objectContaining({ groupKey: "mention:m1" }),
+      })
+    );
     expect(send).not.toHaveBeenCalled();
   });
 

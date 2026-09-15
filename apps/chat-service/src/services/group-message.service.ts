@@ -40,7 +40,10 @@ import {
   buildReactionTargetPreview,
 } from "./message-preview.service.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
-import { publishMessageSentSafe } from "../events/publish-message-sent.js";
+import {
+  publishMentionRetractedSafe,
+  publishMessageSentSafe,
+} from "../events/publish-message-sent.js";
 import {
   hasMentionAll,
   mentionedUserIdsOf,
@@ -1496,6 +1499,27 @@ export class GroupMessageService {
       userId,
       deletedType
     );
+    // Every group delete-for-everyone (REST, bulk, gRPC/socket via deleteDirect,
+    // the auto-delete sweep) lands here, so the mention inbox rows go with it.
+    if (deleted) {
+      const senderId = message.senderId ?? "";
+      const individual = mentionedUserIdsOf([message.content], senderId);
+      const all = hasMentionAll([message.content]);
+      if (individual.length > 0 || all) {
+        // @all rows reach every membership row, not just today's roster: a
+        // member who left or was removed/banned since still holds one.
+        this.retractMentionsSafe(message.id, roomId, async () =>
+          all
+            ? [
+                ...individual,
+                ...(await this.memberRepo.findAllUserIds(roomId)).filter(
+                  (id) => id !== senderId
+                ),
+              ]
+            : individual
+        );
+      }
+    }
     publishAdminActivitySafe({
       // A system-driven purge (auto-delete sweeper) has no human actor.
       actorId: bySystem ? null : userId,
@@ -1627,17 +1651,20 @@ export class GroupMessageService {
     );
     const freshAll = claimed.includes(MENTION_ALL_CLAIM);
     const fresh = claimed.filter((id) => id !== MENTION_ALL_CLAIM);
-    if (fresh.length > 0 || freshAll) {
-      // Users mentioned in the previous or new content are not pushed again by
-      // a newly added @all (a fresh one is already in `fresh`).
-      // ponytail: a user mentioned and removed by an EARLIER edit can still get
-      // the @all push. Per-user claims across the roster if that matters.
-      const allAudience = once(() =>
-        this.getMentionAllRecipients(message.roomId, params.userId).then(
-          (ids) =>
-            ids.filter((id) => !alreadyMentioned.has(id) && !added.includes(id))
-        )
-      );
+    // Users mentioned in the previous or new content are not pushed again by
+    // a newly added @all (a fresh one is already in `fresh`).
+    // ponytail: a user mentioned and removed by an EARLIER edit can still get
+    // the @all push. Per-user claims across the roster if that matters.
+    const allAudience = once(() =>
+      this.getMentionAllRecipients(message.roomId, params.userId).then((ids) =>
+        ids.filter((id) => !alreadyMentioned.has(id) && !added.includes(id))
+      )
+    );
+    const publishMention = (
+      userIds: string[],
+      withAll: boolean,
+      inboxOnly: boolean
+    ) =>
       publishMessageSentSafe({
         conversationId: message.roomId,
         conversationType: "GROUP",
@@ -1650,17 +1677,56 @@ export class GroupMessageService {
         messageType: "TEXT",
         sentAt: Date.now(),
         mentionOnly: true,
-        mentionedUserIds: fresh,
-        ...(freshAll
+        ...(inboxOnly ? { inboxOnly: true } : {}),
+        mentionedUserIds: userIds,
+        ...(withAll
           ? {
               // Never the whole roster: a consumer unaware of `mentionOnly`
               // would push every listed recipient.
               fetchRecipients: () =>
-                allAudience().then((ids) => [...fresh, ...ids]),
+                allAudience().then((ids) => [...userIds, ...ids]),
               fetchMentionAllUserIds: allAudience,
             }
-          : { recipientIds: fresh }),
+          : { recipientIds: userIds }),
       });
+    if (fresh.length > 0 || freshAll) publishMention(fresh, freshAll, false);
+    // A re-added mention whose push was already claimed (an earlier edit
+    // retracted its row) gets the inbox row back without a second push.
+    const rowOnly = added.filter((id) => !fresh.includes(id));
+    const rowOnlyAll = addedAll && !freshAll;
+    if (rowOnly.length > 0 || rowOnlyAll) {
+      publishMention(rowOnly, rowOnlyAll, true);
+    }
+    // Retract the inbox rows of mentions this edit removed. A user still named
+    // individually keeps theirs; one covered only by a kept @all keeps it
+    // unless they muted @all (decided downstream via `ifAllMutedUserIds`).
+    const nextAll = hasMentionAll([nextContent]);
+    const stillMentioned = new Set(
+      mentionedUserIdsOf([nextContent], params.userId)
+    );
+    const removed = [...alreadyMentioned].filter(
+      (id) => !stillMentioned.has(id)
+    );
+    const droppedAll = hasMentionAll([previousContent]) && !nextAll;
+    if (removed.length > 0 || droppedAll) {
+      this.retractMentionsSafe(
+        message.id,
+        message.roomId,
+        async () =>
+          droppedAll
+            ? [
+                ...removed,
+                ...(
+                  await this.memberRepo.findAllUserIds(message.roomId)
+                ).filter(
+                  (id) => id !== params.userId && !stillMentioned.has(id)
+                ),
+              ]
+            : nextAll
+              ? []
+              : removed,
+        nextAll ? removed : []
+      );
     }
     // Best-effort: keep every existing reply's `quoteData.preview` in sync with
     // the new text (edits are TEXT-only, so preview === the new text verbatim).
@@ -2112,6 +2178,32 @@ export class GroupMessageService {
       userSnapshotService: this.userSnapshotService,
       cacheRepo: this.cacheRepo,
     });
+  }
+
+  /**
+   * Fire-and-forget: resolve who lost a mention in `messageId`, then publish
+   * the retraction. Never throws — the delete/edit that triggered it stands.
+   */
+  private retractMentionsSafe(
+    messageId: string,
+    roomId: string,
+    userIds: () => Promise<string[]>,
+    ifAllMutedUserIds: string[] = []
+  ): void {
+    void userIds()
+      .then((ids) =>
+        publishMentionRetractedSafe({
+          messageId,
+          conversationId: roomId,
+          userIds: ids,
+          ifAllMutedUserIds,
+        })
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `GroupMessageService|retractMentions|message=${messageId}: ${String(err)}`
+        );
+      });
   }
 
   /**

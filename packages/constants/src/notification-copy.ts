@@ -745,6 +745,25 @@ export const chatCopy = register("chat", {
           : t("NOTIF_CHAT_MENTION_ALL_BODY_NO_PREVIEW", locale, { name }),
       };
     },
+  /**
+   * Notification-Center row for a GROUP @mention (individual or @all). The one
+   * chat builder that reaches the inbox: it quotes no preview, because the
+   * replay ticket would freeze the line as it was before any later edit.
+   */
+  mentionInbox:
+    (params: { senderName?: string; groupName?: string }): LocalizedCopy =>
+    (locale) => {
+      const name = person(params.senderName, locale);
+      return {
+        title: params.groupName || t("NOTIF_CHAT_NEW_MESSAGE", locale),
+        body: params.groupName
+          ? t("NOTIF_CHAT_MENTION_INBOX_BODY", locale, {
+              name,
+              group: params.groupName,
+            })
+          : t("NOTIF_CHAT_MENTION_INBOX_BODY_NO_GROUP", locale, { name }),
+      };
+    },
 });
 
 /**
@@ -973,13 +992,14 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "community.closed": ["communityName"],
   "community.reopened": ["communityName"],
 
-  // Both take ONE options object; it is passed through under its own name
-  // rather than flattened. Neither reaches the Notification Center (chat
-  // messages are push-only), so nothing renders these from a ticket.
+  // Each takes ONE options object; it is passed through under its own name
+  // rather than flattened. All but `mentionInbox` are push-only; that one is
+  // the group @mention Notification-Center row and IS rendered from a ticket.
   "chat.message": ["params"],
   "chat.messageBurst": ["params"],
   "chat.mention": ["params"],
   "chat.mentionAll": ["params"],
+  "chat.mentionInbox": ["params"],
 
   "group.memberAdded": ["groupName"],
   "group.memberMuted": ["groupName", "mutedUntil"],

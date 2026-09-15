@@ -626,7 +626,8 @@ export const openApiSchemas = {
             },
             restarting: {
               type: "boolean",
-              description: "A Super Admin restart of this service is in flight.",
+              description:
+                "A Super Admin restart of this service is in flight.",
             },
             checkedAt: {
               type: "integer",
@@ -3829,7 +3830,8 @@ export const openApiSchemas = {
             },
             critical: {
               type: "boolean",
-              description: "When a critical check is down, the service is down.",
+              description:
+                "When a critical check is down, the service is down.",
             },
             responseTimeMs: { type: "number", nullable: true },
             reason: { type: "string" },
@@ -4130,14 +4132,16 @@ export const openApiSchemas = {
       installerPackage: {
         type: "string",
         nullable: true,
-        description: "Store that installed the app; null when sideloaded, always null on web.",
+        description:
+          "Store that installed the app; null when sideloaded, always null on web.",
       },
       locale: { type: "string", nullable: true, example: "en-IN" },
       language: { type: "string", nullable: true, example: "en" },
       country: {
         type: "string",
         nullable: true,
-        description: "Derived from the LOCALE only — never from SIM, GPS or IP. May be null.",
+        description:
+          "Derived from the LOCALE only — never from SIM, GPS or IP. May be null.",
         example: "IN",
       },
       timezone: { type: "string", nullable: true, example: "Asia/Kolkata" },
@@ -4153,18 +4157,28 @@ export const openApiSchemas = {
       networkType: {
         type: "string",
         nullable: true,
-        enum: ["WIFI", "CELLULAR", "ETHERNET", "VPN", "OTHER", "NONE", "UNKNOWN"],
+        enum: [
+          "WIFI",
+          "CELLULAR",
+          "ETHERNET",
+          "VPN",
+          "OTHER",
+          "NONE",
+          "UNKNOWN",
+        ],
       },
       carrier: { type: "string", nullable: true },
       isEmulator: {
         type: "boolean",
         nullable: true,
-        description: "Client-asserted and spoofable. Recorded as a fraud SIGNAL; never blocks a login on its own.",
+        description:
+          "Client-asserted and spoofable. Recorded as a fraud SIGNAL; never blocks a login on its own.",
       },
       isRooted: {
         type: "boolean",
         nullable: true,
-        description: "Client-asserted and spoofable. Recorded as a fraud SIGNAL; never blocks a login on its own.",
+        description:
+          "Client-asserted and spoofable. Recorded as a fraud SIGNAL; never blocks a login on its own.",
       },
     },
     required: ["deviceId", "platform"],
@@ -6008,12 +6022,14 @@ export const openApiSchemas = {
       name: { type: "string" },
       avatar: {
         type: "string",
-        description: "Raw stored object key (`group-avatars/...`). Not loadable directly — render `avatarUrl`.",
+        description:
+          "Raw stored object key (`group-avatars/...`). Not loadable directly — render `avatarUrl`.",
       },
       avatarUrl: {
         type: "string",
         nullable: true,
-        description: "Presigned view URL for `avatar`, or null when the group has no logo.",
+        description:
+          "Presigned view URL for `avatar`, or null when the group has no logo.",
       },
       description: { type: "string" },
       memberCount: { type: "integer" },
@@ -9107,8 +9123,8 @@ export const openApiSchemas = {
     type: "object",
     description:
       "Group @mention entity. GROUP conversations only — private and community messages never persist mentions (the key is stripped server-side). " +
-      "Two kinds, told apart by `type`: USER (`type` absent or `\"USER\"`) mentions one member; ALL (`type: \"ALL\"`) is the literal `@all` token and mentions the whole group. Clients should render an entry with any other `type` as plain text. " +
-      "`offset`/`length` are UTF-16 code units into `content.text` and cover the literal token: `text[offset] === \"@\"` and `length = 1 + handle.length` (4 for `@all`). " +
+      'Two kinds, told apart by `type`: USER (`type` absent or `"USER"`) mentions one member; ALL (`type: "ALL"`) is the literal `@all` token and mentions the whole group. Clients should render an entry with any other `type` as plain text. ' +
+      '`offset`/`length` are UTF-16 code units into `content.text` and cover the literal token: `text[offset] === "@"` and `length = 1 + handle.length` (4 for `@all`). ' +
       "Server validation on send/edit: every entry is re-checked (in-bounds, token on a word boundary, no overlap with an earlier entry; USER: `@` + `[A-Za-z0-9_]{1,32}` token, mentioned user is an ACTIVE group member with a non-deleted account, token matches the user's current handle case-insensitively; ALL: token is `@all` case-insensitively; unknown `type` values are dropped) and invalid entries are silently DROPPED — the message itself is never rejected for them. " +
       "More than 50 entries in one message (ALL entries included) is rejected with 400 `CHAT_MENTION_LIMIT_EXCEEDED` (requests carrying more than 200 entries fail generic validation first). " +
       "Mentioned members receive a mention push even when they muted the group.",
@@ -9121,7 +9137,7 @@ export const openApiSchemas = {
             type: "string",
             enum: ["USER"],
             description:
-              "Optional on requests. The server writes `\"USER\"` on new entries; entries stored earlier have no `type` — treat absent as USER.",
+              'Optional on requests. The server writes `"USER"` on new entries; entries stored earlier have no `type` — treat absent as USER.',
           },
           userId: {
             type: "string",
@@ -9956,8 +9972,14 @@ export const openApiSchemas = {
       "call.activity (1:1 call history — one row per call per participant, with " +
       "the canonical call status in `data.callStatus`, `data.callType`, " +
       "`data.callDirection` and `data.durationSec`; CALL_MISSED is its legacy " +
-      "predecessor) — the rest are push-only. MENTIONS has no inbox producer " +
-      "yet (group @mentions are push-only); reserved for chat/community mentions.",
+      "predecessor), chat.mention (group @username/@all mention — one row per " +
+      "message per mentioned recipient, `data.mentionType` USER|ALL, " +
+      "`data.conversationId` + `data.messageId` to open the message; written " +
+      "already read when the recipient had the chat open) — the rest are " +
+      "push-only. A chat.mention row is removed (`notification:deleted`) when " +
+      "the message is deleted for everyone or an edit drops the mention; the " +
+      "internal chat.mention_retracted type does that and never becomes a row. " +
+      "community.mention is reserved (community chat has no mentions).",
     example: "friend.requested",
   },
   NotificationCategory: {

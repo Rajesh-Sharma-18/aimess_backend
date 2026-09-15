@@ -1,4 +1,8 @@
-const DELETE_ON_ARRIVAL = new Set<string>(["friend.cancelled"]);
+const DELETE_ON_ARRIVAL = new Set<string>([
+  "friend.cancelled",
+  // Group @mention removed (message deleted for everyone, or edited away).
+  "chat.mention_retracted",
+]);
 
 const FRIEND_TYPES = new Set<string>([
   "friend.requested",

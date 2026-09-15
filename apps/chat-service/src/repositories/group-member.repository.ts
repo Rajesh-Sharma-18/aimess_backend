@@ -104,6 +104,19 @@ export class GroupMemberRepository {
     return rows.map((row) => row.userId);
   }
 
+  /**
+   * Every userId with a membership row in `roomId`, whatever its status —
+   * retraction audiences must reach members who left or were removed/banned
+   * after a row was written for them.
+   */
+  async findAllUserIds(roomId: string): Promise<string[]> {
+    const rows = await this.prisma.groupMember.findMany({
+      where: { roomId },
+      select: { userId: true },
+    });
+    return rows.map((row) => row.userId);
+  }
+
   async findActiveMembers(
     roomId: string,
     params?: { limit?: number; cursor?: string | null }

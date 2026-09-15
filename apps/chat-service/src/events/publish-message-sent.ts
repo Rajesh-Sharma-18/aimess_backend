@@ -63,6 +63,13 @@ export interface MessageSentPayload {
   mentionAllUserIds?: string[];
   /** Edit-triggered publish: notify mentioned users only, never a plain push. */
   mentionOnly?: boolean;
+  /**
+   * GROUP only: the album row that holds `content.mentions` (row 0), when it
+   * is not `messageId`. Mention inbox rows key on it; the push keeps messageId.
+   */
+  mentionMessageId?: string;
+  /** Write mention inbox rows only, never a push. Only with `mentionOnly`. */
+  inboxOnly?: boolean;
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;
@@ -219,6 +226,14 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
         ...(mentionedUserIds.length > 0 ? { mentionedUserIds } : {}),
         ...(mentionAllUserIds.length > 0 ? { mentionAllUserIds } : {}),
         ...(p.mentionOnly === true ? { mentionOnly: true } : {}),
+        ...(p.mentionMessageId &&
+        p.mentionMessageId !== p.messageId &&
+        (mentionedUserIds.length > 0 || mentionAllUserIds.length > 0)
+          ? { mentionMessageId: p.mentionMessageId }
+          : {}),
+        ...(p.inboxOnly === true && p.mentionOnly === true
+          ? { inboxOnly: true }
+          : {}),
       };
       const payload = JSON.stringify({ type: CHAT_MESSAGE_SENT_EVENT, data });
       channel.sendToQueue(CHAT_MESSAGE_QUEUE, Buffer.from(payload), {
@@ -231,6 +246,51 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
       );
     }
   })();
+}
+
+export const CHAT_MENTION_RETRACTED_EVENT = "chat.mention_retracted";
+
+/**
+ * Removes the group mention inbox rows of `userIds` for `messageId` — the
+ * message was deleted for everyone, or an edit dropped their mention. Same
+ * queue and best-effort contract as publishMessageSentSafe; a user with no row
+ * is a no-op downstream, so over-including is harmless. `ifAllMutedUserIds`
+ * lost their name while @all stayed: only those who muted @all lose the row,
+ * a check only notifications-service can make.
+ */
+export function publishMentionRetractedSafe(p: {
+  messageId: string;
+  conversationId: string;
+  userIds: string[];
+  ifAllMutedUserIds?: string[];
+}): void {
+  const url = env.RABBITMQ_URL;
+  const userIds = [...new Set(p.userIds)].filter(Boolean);
+  const ifAllMutedUserIds = [...new Set(p.ifAllMutedUserIds ?? [])].filter(
+    Boolean
+  );
+  if (!url || (userIds.length === 0 && ifAllMutedUserIds.length === 0)) return;
+  const payload = JSON.stringify({
+    type: CHAT_MENTION_RETRACTED_EVENT,
+    data: {
+      messageId: p.messageId,
+      conversationId: p.conversationId,
+      userIds,
+      ...(ifAllMutedUserIds.length > 0 ? { ifAllMutedUserIds } : {}),
+    },
+  });
+  void getChannel(url)
+    .then((channel) => {
+      channel.sendToQueue(CHAT_MESSAGE_QUEUE, Buffer.from(payload), {
+        persistent: true,
+      });
+    })
+    .catch((error: unknown) => {
+      channelPromise = null;
+      logger.warn(
+        `Failed to publish chat.mention_retracted for ${p.messageId}: ${String(error)}`
+      );
+    });
 }
 
 /**

@@ -1,14 +1,73 @@
 /**
- * Group @mention push copy. Chat copy is push-only (no inbox row), but it is
- * still a registered builder, so it must be named in COPY_PARAM_NAMES and
- * render in every supported language.
+ * Group @mention copy. The push copy (mention / mentionAll) never reaches the
+ * inbox; mentionInbox is the Notification-Center row. All are registered
+ * builders, so each must be named in COPY_PARAM_NAMES and render in every
+ * supported language.
  */
 import { COPY_PARAM_NAMES, MESSAGES } from "@aimess/constants";
 import {
   chatCopy,
   chatMentionAllPreviewHiddenBody,
   chatMentionPreviewHiddenBody,
+  renderNotificationCopy,
 } from "../../src/lib/notification-copy.js";
+
+describe("chat mention inbox copy", () => {
+  it("is named in COPY_PARAM_NAMES", () => {
+    expect(COPY_PARAM_NAMES["chat.mentionInbox"]).toEqual(["params"]);
+  });
+
+  it("has vi/en/th for both inbox keys", () => {
+    for (const key of [
+      "NOTIF_CHAT_MENTION_INBOX_BODY",
+      "NOTIF_CHAT_MENTION_INBOX_BODY_NO_GROUP",
+    ] as const) {
+      const entry = MESSAGES[key];
+      expect(entry.vi).toBeTruthy();
+      expect(entry.en).toBeTruthy();
+      expect(entry.th).toBeTruthy();
+    }
+  });
+
+  it("renders in all three locales, titled on the group", () => {
+    const copy = chatCopy.mentionInbox({
+      senderName: "Ana",
+      groupName: "Weekend Trip",
+    });
+    expect(copy("en")).toEqual({
+      title: "Weekend Trip",
+      body: "Ana mentioned you in Weekend Trip",
+    });
+    expect(copy("vi")).toEqual({
+      title: "Weekend Trip",
+      body: "Ana đã nhắc đến bạn trong Weekend Trip",
+    });
+    expect(copy("th")).toEqual({
+      title: "Weekend Trip",
+      body: "Ana กล่าวถึงคุณในWeekend Trip",
+    });
+  });
+
+  it("falls back to 'New message' and the no-group body", () => {
+    const copy = chatCopy.mentionInbox({ senderName: "Ana" });
+    expect(copy("en")).toEqual({
+      title: "New message",
+      body: "Ana mentioned you",
+    });
+    expect(copy("vi").body).toBe("Ana đã nhắc đến bạn");
+    expect(copy("th").body).toBe("Ana กล่าวถึงคุณ");
+  });
+
+  it("replays from its stored ticket in another language", () => {
+    const copy = chatCopy.mentionInbox({
+      senderName: "Ana",
+      groupName: "Weekend Trip",
+    });
+    expect(
+      renderNotificationCopy(JSON.stringify(copy.descriptor), "vi")?.body
+    ).toBe("Ana đã nhắc đến bạn trong Weekend Trip");
+  });
+});
 
 describe("chat mention copy", () => {
   it("is named in COPY_PARAM_NAMES", () => {
