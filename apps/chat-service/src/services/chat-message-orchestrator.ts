@@ -44,7 +44,7 @@ import {
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
-import { mentionedUserIdsOf } from "../lib/group-mentions.js";
+import { hasMentionAll, mentionedUserIdsOf } from "../lib/group-mentions.js";
 import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
 
 import type { PrivateMessageService } from "./private-message.service.js";
@@ -566,13 +566,23 @@ export class ChatMessageOrchestrator {
       if (conversationType === "GROUP") {
         // Group name + avatar are resolved from GroupRoom inside
         // `publishMessageSentSafe` — the one place every producer goes through.
+        const albumContents = albumRows.map((r) => r.content);
         publishMessageSentSafe({
           ...pushBase,
           fetchRecipients: groupRecipients,
-          mentionedUserIds: mentionedUserIdsOf(
-            albumRows.map((r) => r.content),
-            params.senderId
-          ),
+          mentionedUserIds: mentionedUserIdsOf(albumContents, params.senderId),
+          ...(hasMentionAll(albumContents)
+            ? {
+                fetchMentionAllUserIds: () =>
+                  groupRecipients().then((ids) =>
+                    this.groupMessageService.getMentionAllRecipients(
+                      params.roomId,
+                      params.senderId,
+                      ids
+                    )
+                  ),
+              }
+            : {}),
         });
       } else {
         publishMessageSentSafe({

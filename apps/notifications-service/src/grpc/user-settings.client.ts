@@ -30,6 +30,11 @@ export interface NotificationSettings {
   timezone: string;
   /** ISO 639-1 app language ("en" | "vi" | "th"), "" when the user never set one. */
   language: string;
+  /**
+   * The user muted @all pushes. Inverted so a missing field (older user-service,
+   * pre-deploy cache entry) reads as "receive".
+   */
+  mentionAllMuted?: boolean;
 }
 
 export interface UserSettingsClient {

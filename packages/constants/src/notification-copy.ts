@@ -720,6 +720,31 @@ export const chatCopy = register("chat", {
           : t("NOTIF_CHAT_MENTION_BODY_NO_PREVIEW", locale, { name }),
       };
     },
+  /**
+   * A GROUP message that mentions @all. Same params and shape as
+   * {@link chatCopy.mention}; the body says the sender mentioned @all.
+   */
+  mentionAll:
+    (params: {
+      groupName?: string;
+      senderName?: string;
+      preview?: string;
+      messageType?: string;
+    }): LocalizedCopy =>
+    (locale) => {
+      const preview = localizeMessagePreview(
+        params.preview,
+        params.messageType,
+        locale
+      );
+      const name = person(params.senderName, locale);
+      return {
+        title: params.groupName || t("NOTIF_CHAT_NEW_MESSAGE", locale),
+        body: preview
+          ? t("NOTIF_CHAT_MENTION_ALL_BODY", locale, { name, preview })
+          : t("NOTIF_CHAT_MENTION_ALL_BODY_NO_PREVIEW", locale, { name }),
+      };
+    },
 });
 
 /**
@@ -746,6 +771,15 @@ export const chatMentionPreviewHiddenBody = (
   groupName
     ? t("NOTIF_CHAT_MENTION_HIDDEN_IN", locale, { group: groupName })
     : t("NOTIF_CHAT_MENTION_HIDDEN", locale);
+
+/** Preview-off body for an @all push. */
+export const chatMentionAllPreviewHiddenBody = (
+  groupName: string | undefined,
+  locale: SupportedLocale
+): string =>
+  groupName
+    ? t("NOTIF_CHAT_MENTION_ALL_HIDDEN_IN", locale, { group: groupName })
+    : t("NOTIF_CHAT_MENTION_ALL_HIDDEN", locale);
 
 export const groupCopy = register("group", {
   memberAdded:
@@ -945,6 +979,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "chat.message": ["params"],
   "chat.messageBurst": ["params"],
   "chat.mention": ["params"],
+  "chat.mentionAll": ["params"],
 
   "group.memberAdded": ["groupName"],
   "group.memberMuted": ["groupName", "mutedUntil"],

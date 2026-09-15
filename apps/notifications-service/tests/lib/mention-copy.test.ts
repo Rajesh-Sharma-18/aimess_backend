@@ -6,6 +6,7 @@
 import { COPY_PARAM_NAMES, MESSAGES } from "@aimess/constants";
 import {
   chatCopy,
+  chatMentionAllPreviewHiddenBody,
   chatMentionPreviewHiddenBody,
 } from "../../src/lib/notification-copy.js";
 
@@ -71,6 +72,57 @@ describe("chat mention copy", () => {
     );
     expect(chatMentionPreviewHiddenBody(undefined, "en")).toBe(
       "You were mentioned"
+    );
+  });
+});
+
+describe("chat @all copy", () => {
+  it("is named in COPY_PARAM_NAMES", () => {
+    expect(COPY_PARAM_NAMES["chat.mentionAll"]).toEqual(["params"]);
+  });
+
+  it("has vi/en/th for every @all key", () => {
+    for (const key of [
+      "NOTIF_CHAT_MENTION_ALL_BODY",
+      "NOTIF_CHAT_MENTION_ALL_BODY_NO_PREVIEW",
+      "NOTIF_CHAT_MENTION_ALL_HIDDEN_IN",
+      "NOTIF_CHAT_MENTION_ALL_HIDDEN",
+    ] as const) {
+      const entry = MESSAGES[key];
+      expect(entry.vi).toBeTruthy();
+      expect(entry.en).toBeTruthy();
+      expect(entry.th).toBeTruthy();
+    }
+  });
+
+  it("renders in all three locales, with the no-preview fallback", () => {
+    const copy = chatCopy.mentionAll({
+      groupName: "Weekend Trip",
+      senderName: "Ana",
+      preview: "standup @all",
+      messageType: "TEXT",
+    });
+    expect(copy("en")).toEqual({
+      title: "Weekend Trip",
+      body: "Ana mentioned @all: standup @all",
+    });
+    expect(copy("vi").body).toBe("Ana đã nhắc đến @all: standup @all");
+    expect(copy("th").body).toBe("Ana กล่าวถึง @all: standup @all");
+    expect(chatCopy.mentionAll({ senderName: "Ana" })("en")).toEqual({
+      title: "New message",
+      body: "Ana mentioned @all",
+    });
+  });
+
+  it("preview-hidden body says everyone was mentioned", () => {
+    expect(chatMentionAllPreviewHiddenBody("Weekend Trip", "en")).toBe(
+      "Everyone was mentioned in Weekend Trip"
+    );
+    expect(chatMentionAllPreviewHiddenBody(undefined, "vi")).toBe(
+      "Mọi người được nhắc đến"
+    );
+    expect(chatMentionAllPreviewHiddenBody(undefined, "th")).toBe(
+      "มีการกล่าวถึงทุกคน"
     );
   });
 });

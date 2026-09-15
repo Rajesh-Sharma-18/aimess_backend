@@ -5,6 +5,10 @@ import { buildDeepLink } from "../lib/deep-link.js";
 import { generateThreadId } from "../lib/thread-id.js";
 import { enqueueChatPush } from "../services/chat-push-coalescer.js";
 import {
+  getNotificationSettings,
+  isMentionAllMuted,
+} from "../services/notification-settings.service.js";
+import {
   filterToNotifiableCommunityMembers,
   isCommunityActorMuted,
   filterOutMutedGroupMembers,
@@ -50,6 +54,13 @@ interface MessageSentPayload {
    * and sender-excluded by chat-service). Ignored for PRIVATE/COMMUNITY.
    */
   mentionedUserIds?: string[];
+  /**
+   * GROUP only: recipients reached by @all (server-resolved active members,
+   * sender and deleted accounts excluded). Each one's own @all mute applies.
+   */
+  mentionAllUserIds?: string[];
+  /** Edit publish: push ONLY to the mentioned / @all sets, never a plain push. */
+  mentionOnly?: boolean;
 }
 
 async function handleMessageSent(data: MessageSentPayload): Promise<void> {
@@ -110,11 +121,37 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
 
   // @mentioned recipients (GROUP only). Mentions on any other conversation type
   // are ignored outright — chat-service never persists them there anyway.
-  const mentioned = new Set(
-    data.conversationType === "GROUP" && Array.isArray(data.mentionedUserIds)
-      ? data.mentionedUserIds
+  const isGroupMessage = data.conversationType === "GROUP";
+  const inRecipients = new Set(recipients);
+  const individual = new Set(
+    isGroupMessage && Array.isArray(data.mentionedUserIds)
+      ? data.mentionedUserIds.filter((id) => inRecipients.has(id))
       : []
   );
+  // @all recipients who have not muted @all. A muted-@all user falls back to an
+  // ordinary group message (group mute applies, no mention flag).
+  // ponytail: N cached settings reads per @all message; add a batch RPC if
+  // groups grow well past MAX_GROUP_MEMBERS.
+  const allCandidates =
+    isGroupMessage && Array.isArray(data.mentionAllUserIds)
+      ? [...new Set(data.mentionAllUserIds)].filter(
+          (id) => inRecipients.has(id) && !individual.has(id)
+        )
+      : [];
+  const allMuted = await Promise.all(
+    allCandidates.map((id) =>
+      getNotificationSettings(id)
+        .then(isMentionAllMuted)
+        .catch(() => false)
+    )
+  );
+  const allowedAll = new Set(allCandidates.filter((_, i) => !allMuted[i]));
+  const mentioned = new Set([...individual, ...allowedAll]);
+
+  if (isGroupMessage && data.mentionOnly === true) {
+    recipients = recipients.filter((id) => mentioned.has(id));
+    if (recipients.length === 0) return;
+  }
 
   // Group-room mute gate: mirror of the private-room gate above, but the mute
   // setting lives on the GroupMember row (per-membership) rather than the room.
@@ -228,7 +265,11 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
           : {}),
         messageType: data.messageType ?? "",
         sentAt: data.sentAt,
-        ...(mentioned.has(userId) ? { mentioned: true } : {}),
+        ...(individual.has(userId)
+          ? { mentioned: true }
+          : allowedAll.has(userId)
+            ? { mentionAll: true }
+            : {}),
       }
     );
   }

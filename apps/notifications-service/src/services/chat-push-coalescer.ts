@@ -5,6 +5,7 @@ import { type SupportedLocale } from "@aimess/constants";
 import { redis } from "../config/redis.js";
 import {
   chatCopy,
+  chatMentionAllPreviewHiddenBody,
   chatMentionPreviewHiddenBody,
   chatPreviewHiddenBody,
 } from "../lib/notification-copy.js";
@@ -62,6 +63,8 @@ export interface ChatPushMessage {
   sentAt: number;
   /** The recipient was @mentioned in this (GROUP) message. */
   mentioned?: boolean;
+  /** The recipient is notified through @all in this (GROUP) message. */
+  mentionAll?: boolean;
 }
 
 /** Everything that is a property of the CONVERSATION, not of one message. */
@@ -89,19 +92,42 @@ interface Pending {
 
 const pending = new Map<string, Pending>();
 
+/** Who a GROUP edit still mentions: USER mention ids, and whether @all stays. */
+export interface EditedMentions {
+  ids: ReadonlySet<string>;
+  hasAll: boolean;
+}
+
 /**
  * messageId → who its newest GROUP edit still mentions. A mention push that
  * lands AFTER the edit which removed it (a delayed event, e.g. two replayed
  * edits) is dropped against this instead of bypassing mute.
  * ponytail: remembered for one max hold; an event delayed longer still leaks.
  */
-const editedMentions = new Map<
-  string,
-  { ids: ReadonlySet<string>; at: number }
->();
+const editedMentions = new Map<string, EditedMentions & { at: number }>();
 
 const keyOf = (userId: string, conversationId: string): string =>
   `${userId}|${conversationId}`;
+
+/**
+ * What a GROUP edit leaves of one copy queued for `userId`. A mention or @all
+ * copy skipped the group mute, so the edit must still justify its flag or it is
+ * dropped (`undefined`), never downgraded to a plain push. `mentioned` needs the
+ * user still in `ids`: the @all mute was never read for them. `mentionAll`
+ * needs `ids` or `hasAll`. A merged copy with both flags already passed the @all
+ * mute, so losing only the individual mention downgrades it to @all.
+ */
+function afterEdit(
+  message: ChatPushMessage,
+  userId: string,
+  edit: EditedMentions
+): ChatPushMessage | undefined {
+  if ((!message.mentioned && !message.mentionAll) || edit.ids.has(userId)) {
+    return message;
+  }
+  if (!message.mentionAll || !edit.hasAll) return undefined;
+  return message.mentioned ? { ...message, mentioned: false } : message;
+}
 
 /**
  * Add one message to this recipient's pending notification for this
@@ -112,13 +138,10 @@ export function enqueueChatPush(
   message: ChatPushMessage
 ): void {
   const edited = editedMentions.get(message.messageId);
-  if (
-    message.mentioned &&
-    edited &&
-    Date.now() - edited.at < PUSH_COALESCE_MAX_HOLD_MS &&
-    !edited.ids.has(context.userId)
-  ) {
-    return;
+  if (edited && Date.now() - edited.at < PUSH_COALESCE_MAX_HOLD_MS) {
+    const kept = afterEdit(message, context.userId, edited);
+    if (!kept) return;
+    message = kept;
   }
   const key = keyOf(context.userId, context.conversationId);
   const existing = pending.get(key);
@@ -135,12 +158,14 @@ export function enqueueChatPush(
     if (index === -1) {
       existing.messages.push(message);
     } else {
-      const mentioned =
-        existing.messages[index]!.mentioned === true ||
-        message.mentioned === true;
-      existing.messages[index] = mentioned
-        ? { ...message, mentioned: true }
-        : message;
+      const previous = existing.messages[index]!;
+      existing.messages[index] = {
+        ...message,
+        ...(previous.mentioned || message.mentioned ? { mentioned: true } : {}),
+        ...(previous.mentionAll || message.mentionAll
+          ? { mentionAll: true }
+          : {}),
+      };
     }
     clearTimeout(existing.timer);
     const wait = Math.max(
@@ -181,27 +206,31 @@ export function dropPendingChatMessage(messageId: string): void {
 /**
  * A message was edited before its notification went out — push the new text.
  *
- * `mentionedUserIds` (GROUP edits) is who the edited message still mentions. A
- * recipient outside it loses that message if it was queued as a mention: the
- * mute gate was skipped for them, so it is dropped rather than downgraded.
+ * `mentions` (every GROUP edit) is who the edited message still mentions; each
+ * queued copy of it is kept, downgraded or dropped per {@link afterEdit}.
+ * `undefined` (non-GROUP edit) drops nothing and clears any earlier record.
  */
 export function updatePendingChatMessage(
   messageId: string,
   preview: string,
-  mentionedUserIds?: ReadonlySet<string>
+  mentions?: EditedMentions
 ): void {
   if (!messageId) return;
-  if (mentionedUserIds) {
+  if (mentions) {
     const now = Date.now();
     for (const [id, e] of editedMentions) {
       if (now - e.at >= PUSH_COALESCE_MAX_HOLD_MS) editedMentions.delete(id);
     }
-    editedMentions.set(messageId, { ids: mentionedUserIds, at: now });
+    editedMentions.set(messageId, { ...mentions, at: now });
+  } else {
+    editedMentions.delete(messageId);
   }
   for (const [key, entry] of pending) {
-    if (mentionedUserIds && !mentionedUserIds.has(entry.context.userId)) {
-      entry.messages = entry.messages.filter(
-        (m) => !(m.messageId === messageId && m.mentioned === true)
+    if (mentions) {
+      entry.messages = entry.messages.flatMap((m) =>
+        m.messageId === messageId
+          ? (afterEdit(m, entry.context.userId, mentions) ?? [])
+          : [m]
       );
       if (entry.messages.length === 0) {
         clearTimeout(entry.timer);
@@ -242,7 +271,11 @@ async function flush(key: string): Promise<void> {
     // A mention anywhere in the window leads the notification: the newest
     // mention is its subject (copy, ids, preview), not the newest message. With
     // no mention the subject is `latest` and the payload is exactly as before.
-    const lead = messages.filter((m) => m.mentioned).pop();
+    // An individual mention outranks @all anywhere in the window.
+    const lead =
+      messages.filter((m) => m.mentioned).pop() ??
+      messages.filter((m) => m.mentionAll).pop();
+    const leadIsAll = lead !== undefined && lead.mentioned !== true;
     const subject = lead ?? latest;
     const count = messages.length;
     const isCommunity = context.conversationType === "COMMUNITY";
@@ -258,7 +291,7 @@ async function flush(key: string): Promise<void> {
       messageType: latest.messageType,
     };
     const copy = lead
-      ? chatCopy.mention({
+      ? (leadIsAll ? chatCopy.mentionAll : chatCopy.mention)({
           ...(context.groupName ? { groupName: context.groupName } : {}),
           senderName: lead.senderName,
           preview: lead.preview,
@@ -270,7 +303,9 @@ async function flush(key: string): Promise<void> {
 
     const showPreviewOverride = (locale: SupportedLocale): string =>
       lead
-        ? chatMentionPreviewHiddenBody(context.groupName, locale)
+        ? (leadIsAll
+            ? chatMentionAllPreviewHiddenBody
+            : chatMentionPreviewHiddenBody)(context.groupName, locale)
         : chatPreviewHiddenBody(
             isCommunity
               ? context.communityName
@@ -330,7 +365,13 @@ async function flush(key: string): Promise<void> {
         // MESSAGE via MessagingStyle and switch rendering path on any other
         // type. `notificationType` is what the web / newer clients branch on.
         type: "MESSAGE",
-        ...(lead ? { notificationType: "MENTION", mentioned: "true" } : {}),
+        ...(lead
+          ? {
+              notificationType: "MENTION",
+              mentioned: "true",
+              mentionType: leadIsAll ? "ALL" : "USER",
+            }
+          : {}),
         conversationId: context.conversationId,
         conversationType: context.conversationType,
         ...(context.communityId ? { communityId: context.communityId } : {}),

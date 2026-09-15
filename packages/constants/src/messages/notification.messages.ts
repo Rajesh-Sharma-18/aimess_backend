@@ -274,6 +274,27 @@ export const NOTIFICATION_MESSAGES = {
     en: "You were mentioned",
     th: "มีคนกล่าวถึงคุณ",
   },
+  // Group @all: same shape as the mention copy, says everyone was mentioned.
+  NOTIF_CHAT_MENTION_ALL_BODY: {
+    vi: "{{name}} đã nhắc đến @all: {{preview}}",
+    en: "{{name}} mentioned @all: {{preview}}",
+    th: "{{name}} กล่าวถึง @all: {{preview}}",
+  },
+  NOTIF_CHAT_MENTION_ALL_BODY_NO_PREVIEW: {
+    vi: "{{name}} đã nhắc đến @all",
+    en: "{{name}} mentioned @all",
+    th: "{{name}} กล่าวถึง @all",
+  },
+  NOTIF_CHAT_MENTION_ALL_HIDDEN_IN: {
+    vi: "Mọi người được nhắc đến trong {{group}}",
+    en: "Everyone was mentioned in {{group}}",
+    th: "มีการกล่าวถึงทุกคนใน{{group}}",
+  },
+  NOTIF_CHAT_MENTION_ALL_HIDDEN: {
+    vi: "Mọi người được nhắc đến",
+    en: "Everyone was mentioned",
+    th: "มีการกล่าวถึงทุกคน",
+  },
 
   // ── Group ───────────────────────────────────────────────────────────────
   NOTIF_GROUP_UNNAMED: {

@@ -28,6 +28,7 @@ const ALLOW_ALL: NotificationSettings = {
   quietHoursDays: [],
   timezone: "",
   language: "",
+  mentionAllMuted: false,
 };
 
 export type NotificationCategory =
@@ -266,4 +267,9 @@ export function isInQuietHours(
  */
 export function shouldShowPreview(settings: NotificationSettings): boolean {
   return settings.showPreview !== false;
+}
+
+/** Whether the user muted @all pushes. Absent (old server / cache) = not muted. */
+export function isMentionAllMuted(settings: NotificationSettings): boolean {
+  return settings.mentionAllMuted === true;
 }

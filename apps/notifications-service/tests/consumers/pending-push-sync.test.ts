@@ -51,7 +51,29 @@ describe("pending-push-sync message:edited", () => {
       },
     });
 
-    expect(update.mock.calls).toEqual([["m1", "hi @bo", new Set(["bo-id"])]]);
+    expect(update.mock.calls).toEqual([
+      ["m1", "hi @bo", { ids: new Set(["bo-id"]), hasAll: false }],
+    ]);
+  });
+
+  it("a GROUP frame that still has @all passes USER ids only, plus hasAll", () => {
+    deliver("message:edited", {
+      id: "m1",
+      roomId: "grp_1",
+      conversationType: "GROUP",
+      content: {
+        text: "hi @bo @all",
+        urls: [],
+        mentions: [
+          { type: "USER", userId: "bo-id", username: "bo", offset: 3, length: 3 },
+          { type: "ALL", offset: 7, length: 4 },
+        ],
+      },
+    });
+
+    expect(update.mock.calls).toEqual([
+      ["m1", "hi @bo @all", { ids: new Set(["bo-id"]), hasAll: true }],
+    ]);
   });
 
   it("a GROUP frame with no mentions array means nobody, even with empty text", () => {
@@ -62,7 +84,9 @@ describe("pending-push-sync message:edited", () => {
       content: { text: "", urls: [] },
     });
 
-    expect(update.mock.calls).toEqual([["m1", "", new Set()]]);
+    expect(update.mock.calls).toEqual([
+      ["m1", "", { ids: new Set(), hasAll: false }],
+    ]);
   });
 
   it("a PRIVATE frame keeps the text-only update and skips empty text", () => {

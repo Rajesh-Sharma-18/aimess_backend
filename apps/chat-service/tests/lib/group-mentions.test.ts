@@ -5,6 +5,7 @@
  */
 import {
   MAX_MENTIONS_PER_MESSAGE,
+  hasMentionAll,
   mentionedUserIdsOf,
   resolveGroupMentions,
 } from "../../src/lib/group-mentions.js";
@@ -63,7 +64,13 @@ describe("resolveGroupMentions — valid mentions", () => {
   it("single mention, username overwritten by the server handle", async () => {
     const text = "Hello @kristi";
     expect(await resolve(text, [entity("u_kristi", text, "@kristi")])).toEqual([
-      { userId: "u_kristi", username: "kristi", offset: 6, length: 7 },
+      {
+        type: "USER",
+        userId: "u_kristi",
+        username: "kristi",
+        offset: 6,
+        length: 7,
+      },
     ]);
   });
 
@@ -105,7 +112,13 @@ describe("resolveGroupMentions — valid mentions", () => {
     const text = "Hello 👋 @kristi";
     const out = await resolve(text, [entity("u_kristi", text, "@kristi")]);
     expect(out).toEqual([
-      { userId: "u_kristi", username: "kristi", offset: 9, length: 7 },
+      {
+        type: "USER",
+        userId: "u_kristi",
+        username: "kristi",
+        offset: 9,
+        length: 7,
+      },
     ]);
   });
 
@@ -121,7 +134,13 @@ describe("resolveGroupMentions — valid mentions", () => {
   it("handle match is case-insensitive", async () => {
     const text = "hey @KRISTI";
     expect(await resolve(text, [entity("u_kristi", text, "@KRISTI")])).toEqual([
-      { userId: "u_kristi", username: "kristi", offset: 4, length: 7 },
+      {
+        type: "USER",
+        userId: "u_kristi",
+        username: "kristi",
+        offset: 4,
+        length: 7,
+      },
     ]);
   });
 
@@ -274,7 +293,13 @@ describe("resolveGroupMentions — previous (edit that omitted mentions)", () =>
         ]
       )
     ).toEqual([
-      { userId: "u_kristi", username: "kristi", offset: 3, length: 7 },
+      {
+        type: "USER",
+        userId: "u_kristi",
+        username: "kristi",
+        offset: 3,
+        length: 7,
+      },
     ]);
   });
 
@@ -307,8 +332,14 @@ describe("resolveGroupMentions — previous (edit that omitted mentions)", () =>
         ]
       )
     ).toEqual([
-      { userId: "u_kristi", username: "kristi", offset: 0, length: 7 },
-      { userId: "u_bob", username: "bob", offset: 8, length: 4 },
+      {
+        type: "USER",
+        userId: "u_kristi",
+        username: "kristi",
+        offset: 0,
+        length: 7,
+      },
+      { type: "USER", userId: "u_bob", username: "bob", offset: 8, length: 4 },
     ]);
   });
 
@@ -347,7 +378,163 @@ describe("resolveGroupMentions — limit", () => {
   });
 });
 
+describe("resolveGroupMentions — @all", () => {
+  const all = (text: string, from = 0, token = "@all") => ({
+    type: "ALL",
+    offset: text.indexOf(token, from),
+    length: token.length,
+  });
+  const ALL_AT = (offset: number) => ({ type: "ALL", offset, length: 4 });
+
+  it.each([
+    ["@all", 0],
+    ["Hi @all please", 3],
+    ["hey @ALL", 4],
+    ["สวัสดี @All", 7],
+  ])("valid token %s → ALL entity, no lookups", async (text, offset) => {
+    expect(
+      await resolve(text, [all(text, 0, text.slice(offset, offset + 4))])
+    ).toEqual([ALL_AT(offset)]);
+    expect(deps.memberRepo.findActiveUserIds).not.toHaveBeenCalled();
+    expect(deps.userSnapshotService.getUserSnapshotsMap).not.toHaveBeenCalled();
+  });
+
+  it("invalid tokens and boundaries are dropped", async () => {
+    for (const [text, token] of [
+      ["hi @allx", "@allx"],
+      ["hi @all_team", "@all_team"],
+      ["mail a@all now", "@all"],
+      ["สวัสดี@all", "@all"],
+      ["read https://medium.com/@all/post", "@all"],
+      ["hi @bob", "@bob"],
+      ["hi @al", "@al"],
+    ] as const) {
+      expect(await resolve(text, [all(text, 0, token)])).toEqual([]);
+    }
+    // Right token, wrong span ("@allx" covered as 4 chars is still glued).
+    expect(await resolve("hi @allx", [ALL_AT(3)])).toEqual([]);
+  });
+
+  it("unknown or malformed type is dropped; USER without userId is dropped", async () => {
+    const text = "hi @all @kristi";
+    expect(
+      await resolve(text, [
+        { type: "EVERYONE", offset: 3, length: 4 },
+        { type: "all", offset: 3, length: 4 },
+        { type: null, offset: 3, length: 4 },
+        { type: "USER", offset: 8, length: 7 },
+      ])
+    ).toEqual([]);
+  });
+
+  it("explicit type USER resolves like an untyped entry", async () => {
+    const text = "hi @kristi";
+    expect(
+      await resolve(text, [
+        { ...entity("u_kristi", text, "@kristi"), type: "USER" },
+      ])
+    ).toEqual([
+      {
+        type: "USER",
+        userId: "u_kristi",
+        username: "kristi",
+        offset: 3,
+        length: 7,
+      },
+    ]);
+  });
+
+  it("a USER entry on the '@all' token is never a user mention (ALL wins)", async () => {
+    const text = "hi @all";
+    expect(
+      await resolve(text, [{ userId: "u_kristi", offset: 3, length: 4 }])
+    ).toEqual([]);
+    expect(
+      await resolve(text, [
+        { userId: "u_kristi", offset: 3, length: 4 },
+        ALL_AT(3),
+      ])
+    ).toEqual([ALL_AT(3)]);
+  });
+
+  it("ALL survives a lookup failure while USER entries fail closed", async () => {
+    deps.memberRepo.findActiveUserIds.mockRejectedValueOnce(
+      new Error("pool exhausted")
+    );
+    const text = "@kristi and @all";
+    expect(
+      await resolve(text, [entity("u_kristi", text, "@kristi"), all(text)])
+    ).toEqual([ALL_AT(12)]);
+  });
+
+  it("mixed USER + ALL: sorted by offset, lookups only for users", async () => {
+    const text = "@all hi @kristi and @all";
+    const out = await resolve(text, [
+      all(text, 1),
+      entity("u_kristi", text, "@kristi"),
+      all(text),
+    ]);
+    expect(out).toEqual([
+      ALL_AT(0),
+      {
+        type: "USER",
+        userId: "u_kristi",
+        username: "kristi",
+        offset: 8,
+        length: 7,
+      },
+      ALL_AT(20),
+    ]);
+    expect(deps.memberRepo.findActiveUserIds).toHaveBeenCalledWith("grp_1", [
+      "u_kristi",
+    ]);
+  });
+
+  it("ALL entries count toward MAX_MENTIONS_PER_MESSAGE", async () => {
+    const raw = Array.from({ length: MAX_MENTIONS_PER_MESSAGE + 1 }, () =>
+      ALL_AT(0)
+    );
+    await expect(resolve("@all", raw)).rejects.toMatchObject({
+      messageKey: "CHAT_MENTION_LIMIT_EXCEEDED",
+    });
+  });
+});
+
+describe("hasMentionAll", () => {
+  it("true only when some content carries an ALL entry", () => {
+    expect(
+      hasMentionAll([{ mentions: [{ userId: "a" }] }, { mentions: [ALL()] }])
+    ).toBe(true);
+    expect(
+      hasMentionAll([
+        { mentions: [{ userId: "a" }, { type: "USER", userId: "b" }, null] },
+        { text: "@all" },
+        null,
+        "junk",
+      ])
+    ).toBe(false);
+    expect(hasMentionAll([])).toBe(false);
+  });
+
+  function ALL() {
+    return { type: "ALL", offset: 0, length: 4 };
+  }
+});
+
 describe("mentionedUserIdsOf", () => {
+  it("never yields an id for ALL entries", () => {
+    expect(
+      mentionedUserIdsOf(
+        [
+          {
+            mentions: [{ type: "ALL", offset: 0, length: 4 }, { userId: "a" }],
+          },
+        ],
+        "sender"
+      )
+    ).toEqual(["a"]);
+  });
+
   it("dedupes across contents, excludes the sender, ignores junk", () => {
     expect(
       mentionedUserIdsOf(

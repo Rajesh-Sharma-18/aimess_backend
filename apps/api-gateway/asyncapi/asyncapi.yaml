@@ -2771,6 +2771,7 @@ components:
               theme: AUTO
             notifications:
               chat: true
+              mentionAll: true
               call: true
               friendRequest: true
               system: true
@@ -5794,27 +5795,61 @@ components:
       description: |
         Group @mention entity. GROUP conversations only — private and community
         messages never persist mentions (chat-service strips the key).
+        Two kinds, told apart by `type`: USER (`type` absent or `"USER"`) mentions
+        one member; ALL (`type: "ALL"`) is the literal `@all` token. Render an
+        entry with any other `type` as plain text.
         `offset`/`length` are UTF-16 code units into `content.text` and cover the
-        literal `@handle` token: `text[offset] === "@"`, `length = 1 + handle.length`.
-        `userId` is the stable identity (tap-to-profile); `username` is the handle
-        the server resolved at send/edit time — text is immutable, so after a
-        rename it may still read `@oldhandle`.
+        literal token: `text[offset] === "@"`, `length = 1 + handle.length`
+        (4 for `@all`).
 
-        Server validation: every entry is re-checked (in-bounds, `@` +
-        `[A-Za-z0-9_]{1,32}` on a word boundary, no overlap, mentioned user is an
-        ACTIVE group member with a non-deleted account, token matches the current
-        handle case-insensitively). Invalid entries are silently DROPPED; the
-        message is never rejected for them. More than 50 entries → ack
-        `INVALID_PAYLOAD` with `detail: "CHAT_MENTION_LIMIT_EXCEEDED"`.
-      properties:
-        userId: { type: string, minLength: 1, maxLength: 100 }
-        username:
-          type: string
-          maxLength: 64
-          description: "Handle without `@`. Optional on send (the server overwrites it); always present on receive."
-        offset: { type: integer, minimum: 0, description: "UTF-16 index of the `@`." }
-        length: { type: integer, minimum: 1, maximum: 64, description: "UTF-16 length of `@handle`." }
-      required: [userId, offset, length]
+        Server validation: every entry is re-checked (in-bounds, word boundary,
+        no overlap; USER: `@` + `[A-Za-z0-9_]{1,32}`, mentioned user is an ACTIVE
+        group member with a non-deleted account, token matches the current handle
+        case-insensitively; ALL: token is `@all` case-insensitively). Invalid
+        entries are silently DROPPED; the message is never rejected for them.
+        More than 50 entries (ALL included) → ack `INVALID_PAYLOAD` with
+        `detail: "CHAT_MENTION_LIMIT_EXCEEDED"`.
+      oneOf:
+        - type: object
+          title: UserMention
+          properties:
+            type:
+              type: string
+              enum: [USER]
+              description: "Optional on send. The server writes `USER` on new entries; older stored entries have no `type` — treat absent as USER."
+            userId: { type: string, minLength: 1, maxLength: 100, description: "Stable identity (tap-to-profile)." }
+            username:
+              type: string
+              maxLength: 64
+              description: "Handle without `@` as resolved at send/edit time (text is immutable, so after a rename it may still read `@oldhandle`). Optional on send (the server overwrites it); always present on receive."
+            offset: { type: integer, minimum: 0, description: "UTF-16 index of the `@`." }
+            length: { type: integer, minimum: 1, maximum: 64, description: "UTF-16 length of `@handle`." }
+          required: [userId, offset, length]
+        - type: object
+          title: AllMention
+          description: |
+            `@all`: notifies the whole group. No `userId`/`username` (the gateway
+            strips them if sent). Recipients are resolved by the server when the
+            push is published: ACTIVE members at that moment, minus the sender and
+            deleted accounts. Like a USER mention it bypasses a group mute; members
+            who set `notifications.mentionAll: false` get no @all push. Several
+            `@all` tokens in one message render separately but notify once.
+
+            Rate limited per sender per group (default 5 per 10 minutes). Over the
+            limit the `message:send` ack is `RATE_LIMITED` with
+            `detail: "CHAT_MENTION_ALL_RATE_LIMITED"` and a localized `message`;
+            nothing is stored and no `retryAfter` is sent — do not auto-retry the
+            same payload, show `message` and let the user resend later.
+            Adding `@all` by `message:edit` is charged the same way (edit not
+            saved when over the limit) and notifies at most once per message,
+            skipping members already mentioned individually in the previous
+            version; keeping or removing it notifies nobody. Forwarding removes
+            ALL entries from the copy.
+          properties:
+            type: { type: string, enum: [ALL] }
+            offset: { type: integer, minimum: 0, description: "UTF-16 index of the `@`." }
+            length: { type: integer, minimum: 1, maximum: 64, description: "UTF-16 length of the token (4 for `@all`)." }
+          required: [type, offset, length]
     Location:
       type: object
       properties:
@@ -5887,8 +5922,9 @@ components:
             GROUP only (chat-service ignores it on private sends). Flat top-level
             like `files`/`urls`; `content.mentions` is also accepted as an alias
             (the flat field wins when both are sent). Forwarded as
-            `content.mentions`. The gateway only shape-checks (>200 entries or a
-            malformed entry → `INVALID_PAYLOAD`); chat-service enforces the 50
+            `content.mentions`. The gateway only shape-checks (>200 entries, a
+            malformed entry or an unknown `type` → `INVALID_PAYLOAD`) and forwards
+            `type` as sent; chat-service enforces the 50 limit and the `@all` rate
             limit and drops invalid entries — see MessageMention.
           items: { $ref: "#/components/schemas/MessageMention" }
         repliedToId: { type: string, maxLength: 200 }
@@ -5946,7 +5982,9 @@ components:
             `mentions` (MessageMention[]), re-validated against the NEW text:
             omit the key to keep the previous message's still-valid mentions,
             send `[]` to clear them. Only members newly mentioned by the edit are
-            notified. Ignored for private edits.
+            notified; adding `@all` is rate limited (ack `RATE_LIMITED` with
+            `detail: "CHAT_MENTION_ALL_RATE_LIMITED"`, edit not saved) and notifies
+            once per message — see MessageMention. Ignored for private edits.
         conversationType: { $ref: "#/components/schemas/ConversationType" }
       required: [messageId, conversationId]
     MessageForwardPayload:
@@ -6108,7 +6146,7 @@ components:
             stickerId: { type: string }
         mentions:
           type: array
-          description: "GROUP-only: server-validated @mention entities into `text` (UTF-16 offsets). Absent when none; never present on private or community messages."
+          description: "GROUP-only: server-validated @mention entities (USER or `@all`) into `text` (UTF-16 offsets). Absent when none; never present on private or community messages."
           items: { $ref: "#/components/schemas/MessageMention" }
     MessageNewPayload:
       type: object
@@ -6278,6 +6316,11 @@ components:
           type: object
           properties:
             chat: { type: boolean }
+            mentionAll:
+              {
+                type: boolean,
+                description: "false mutes `@all` mention pushes in groups (individual mentions still push). Defaults to true.",
+              }
             call: { type: boolean }
             friendRequest: { type: boolean }
             system: { type: boolean }

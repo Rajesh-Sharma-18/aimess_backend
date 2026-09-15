@@ -1559,6 +1559,7 @@ export const userPaths = {
                   },
                   notifications: {
                     chat: true,
+                    mentionAll: true,
                     call: true,
                     friendRequest: true,
                     system: true,
@@ -1625,6 +1626,10 @@ export const userPaths = {
                 summary: "Turn one notification category off",
                 value: { notifications: { liveStream: false } },
               },
+              mentionAllToggle: {
+                summary: "Mute @all mention pushes in groups",
+                value: { notifications: { mentionAll: false } },
+              },
               quietHoursUpdate: {
                 summary: "Configure Quiet Hours (weeknights, 0=Sunday)",
                 value: {
@@ -1681,6 +1686,7 @@ export const userPaths = {
                   app: { theme: "AUTO", language: "en" },
                   notifications: {
                     chat: true,
+                    mentionAll: true,
                     call: true,
                     friendRequest: true,
                     system: true,

@@ -74,6 +74,8 @@ export type UserNotificationSettings = {
   liveStream: boolean;
   /** false hides message content in the push banner (lock-screen privacy). */
   showPreview: boolean;
+  /** false mutes pushes for "@all" group mentions; individual @mentions still notify. */
+  mentionAll: boolean;
   quietHours: {
     enabled: boolean;
     /** "HH:mm" 24h, or null when unset. */

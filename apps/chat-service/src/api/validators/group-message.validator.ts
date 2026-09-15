@@ -20,14 +20,26 @@ import {
  * absurd payloads out, and is deliberately looser so the limit error a client
  * sees is the specific service one, not a generic validation failure.
  */
+const mentionSpan = {
+  offset: z.number().int().nonnegative(),
+  length: z.number().int().min(1).max(64),
+};
 const groupMentionsSchema = z
   .array(
-    z.object({
-      userId: z.string().min(1).max(100),
-      username: z.string().max(64).optional(),
-      offset: z.number().int().nonnegative(),
-      length: z.number().int().min(1).max(64),
-    })
+    z.union([
+      z.object({
+        type: z.literal("USER").optional(),
+        userId: z.string().min(1).max(100),
+        username: z.string().max(64).optional(),
+        ...mentionSpan,
+      }),
+      // @all: no identity; `username` is tolerated and ignored.
+      z.object({
+        type: z.literal("ALL"),
+        username: z.string().max(64).optional(),
+        ...mentionSpan,
+      }),
+    ])
   )
   .max(200);
 

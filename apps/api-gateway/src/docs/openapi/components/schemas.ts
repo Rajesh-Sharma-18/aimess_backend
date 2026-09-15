@@ -5150,6 +5150,11 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       chat: { type: "boolean" },
+      mentionAll: {
+        type: "boolean",
+        description:
+          "false mutes `@all` mention pushes in groups (individual @username mentions still push). Defaults to true; still gated by `chat`.",
+      },
       call: { type: "boolean" },
       friendRequest: { type: "boolean" },
       system: { type: "boolean" },
@@ -5169,6 +5174,7 @@ export const openApiSchemas = {
     },
     required: [
       "chat",
+      "mentionAll",
       "call",
       "friendRequest",
       "system",
@@ -5297,6 +5303,10 @@ export const openApiSchemas = {
       },
       liveStream: { type: "boolean" },
       showPreview: { type: "boolean" },
+      mentionAll: {
+        type: "boolean",
+        description: "false mutes `@all` mention pushes in groups.",
+      },
       quietHours: { $ref: "#/components/schemas/UpdateQuietHoursRequest" },
     },
   },
@@ -9097,33 +9107,82 @@ export const openApiSchemas = {
     type: "object",
     description:
       "Group @mention entity. GROUP conversations only — private and community messages never persist mentions (the key is stripped server-side). " +
-      "`offset`/`length` are UTF-16 code units into `content.text` and cover the literal `@handle` token: `text[offset] === \"@\"` and `length = 1 + handle.length`. " +
-      "`userId` is the stable identity (use it for tap-to-profile); `username` is the handle the server resolved at send/edit time. Message text is immutable, so after a rename the text may still read `@oldhandle`. " +
-      "Server validation on send/edit: every entry is re-checked (in-bounds, `@` + `[A-Za-z0-9_]{1,32}` token on a word boundary, no overlap with an earlier entry, mentioned user is an ACTIVE group member with a non-deleted account, token matches the user's current handle case-insensitively) and invalid entries are silently DROPPED — the message itself is never rejected for them. " +
-      "More than 50 entries in one message is rejected with 400 `CHAT_MENTION_LIMIT_EXCEEDED` (requests carrying more than 200 entries fail generic validation first). " +
+      "Two kinds, told apart by `type`: USER (`type` absent or `\"USER\"`) mentions one member; ALL (`type: \"ALL\"`) is the literal `@all` token and mentions the whole group. Clients should render an entry with any other `type` as plain text. " +
+      "`offset`/`length` are UTF-16 code units into `content.text` and cover the literal token: `text[offset] === \"@\"` and `length = 1 + handle.length` (4 for `@all`). " +
+      "Server validation on send/edit: every entry is re-checked (in-bounds, token on a word boundary, no overlap with an earlier entry; USER: `@` + `[A-Za-z0-9_]{1,32}` token, mentioned user is an ACTIVE group member with a non-deleted account, token matches the user's current handle case-insensitively; ALL: token is `@all` case-insensitively; unknown `type` values are dropped) and invalid entries are silently DROPPED — the message itself is never rejected for them. " +
+      "More than 50 entries in one message (ALL entries included) is rejected with 400 `CHAT_MENTION_LIMIT_EXCEEDED` (requests carrying more than 200 entries fail generic validation first). " +
       "Mentioned members receive a mention push even when they muted the group.",
-    properties: {
-      userId: { type: "string", minLength: 1, maxLength: 100 },
-      username: {
-        type: "string",
-        maxLength: 64,
+    oneOf: [
+      {
+        type: "object",
+        title: "UserMention",
+        properties: {
+          type: {
+            type: "string",
+            enum: ["USER"],
+            description:
+              "Optional on requests. The server writes `\"USER\"` on new entries; entries stored earlier have no `type` — treat absent as USER.",
+          },
+          userId: {
+            type: "string",
+            minLength: 1,
+            maxLength: 100,
+            description: "Stable identity — use it for tap-to-profile.",
+          },
+          username: {
+            type: "string",
+            maxLength: 64,
+            description:
+              "Handle without the `@`, as resolved at send/edit time (message text is immutable, so after a rename the text may still read `@oldhandle`). Optional on requests (ignored — the server fills in its own value); always present on responses.",
+          },
+          offset: {
+            type: "integer",
+            minimum: 0,
+            description: "UTF-16 index of the `@` in `content.text`.",
+          },
+          length: {
+            type: "integer",
+            minimum: 1,
+            maximum: 64,
+            description: "UTF-16 length of the `@handle` token.",
+          },
+        },
+        required: ["userId", "offset", "length"],
+        example: {
+          type: "USER",
+          userId: "usr_01j9x8vb2f",
+          username: "kristi",
+          offset: 6,
+          length: 7,
+        },
+      },
+      {
+        type: "object",
+        title: "AllMention",
         description:
-          "Handle without the `@`. Optional on requests (ignored — the server fills in its own value); always present on responses.",
+          "`@all`: notifies the whole group. No `userId`/`username` (sent ones are ignored). " +
+          "Recipients are resolved by the server when the push is published: ACTIVE members at that moment, minus the sender and deleted accounts. Like a USER mention it bypasses a group mute; members who set `notifications.mentionAll: false` get no @all push. Several `@all` tokens in one message are separate entities for rendering but notify once. " +
+          "Rate limited per sender per group (default 5 per 10 minutes): over the limit the send is rejected with 429 `CHAT_MENTION_ALL_RATE_LIMITED` (with `retryAfter`) and nothing is stored. " +
+          "Edit: adding `@all` to a message that did not have it is charged the same way (over the limit → 429, edit not saved) and notifies at most once per message, skipping members already mentioned individually in the previous version; keeping or removing it notifies nobody. " +
+          "Forward: ALL entries are removed from the forwarded copy.",
+        properties: {
+          type: { type: "string", enum: ["ALL"] },
+          offset: {
+            type: "integer",
+            minimum: 0,
+            description: "UTF-16 index of the `@` in `content.text`.",
+          },
+          length: {
+            type: "integer",
+            minimum: 1,
+            maximum: 64,
+            description: "UTF-16 length of the token (4 for `@all`).",
+          },
+        },
+        required: ["type", "offset", "length"],
+        example: { type: "ALL", offset: 0, length: 4 },
       },
-      offset: {
-        type: "integer",
-        minimum: 0,
-        description: "UTF-16 index of the `@` in `content.text`.",
-      },
-      length: {
-        type: "integer",
-        minimum: 1,
-        maximum: 64,
-        description: "UTF-16 length of the `@handle` token.",
-      },
-    },
-    required: ["userId", "offset", "length"],
-    example: { userId: "usr_01j9x8vb2f", username: "kristi", offset: 6, length: 7 },
+    ],
   },
   ChatMessage: {
     type: "object",
@@ -9189,7 +9248,7 @@ export const openApiSchemas = {
           mentions: {
             type: "array",
             description:
-              "GROUP only: server-validated @mention entities into `text` (UTF-16 offsets). Absent when there are none.",
+              "GROUP only: server-validated @mention entities (USER or `@all`) into `text` (UTF-16 offsets). Absent when there are none.",
             items: { $ref: "#/components/schemas/ChatMessageMention" },
           },
         },
@@ -9307,7 +9366,7 @@ export const openApiSchemas = {
           mentions: {
             type: "array",
             description:
-              "GROUP only: server-validated @mention entities into `text` (UTF-16 offsets). Absent when there are none.",
+              "GROUP only: server-validated @mention entities (USER or `@all`) into `text` (UTF-16 offsets). Absent when there are none.",
             items: { $ref: "#/components/schemas/ChatMessageMention" },
           },
         },
@@ -11883,7 +11942,7 @@ export const openApiSchemas = {
             type: "array",
             maxItems: 200,
             description:
-              "GROUP edits only. Re-validated against the NEW text (see ChatMessageMention). Omit to keep the previous message's still-valid mentions; send `[]` to clear them. Only members newly mentioned by the edit are notified. More than 50 → 400 `CHAT_MENTION_LIMIT_EXCEEDED`.",
+              "GROUP edits only. Re-validated against the NEW text (see ChatMessageMention). Omit to keep the previous message's still-valid mentions; send `[]` to clear them. Only members newly mentioned by the edit are notified. Adding `@all` is rate limited (429 `CHAT_MENTION_ALL_RATE_LIMITED`, edit not saved) and notifies at most once per message. More than 50 → 400 `CHAT_MENTION_LIMIT_EXCEEDED`.",
             items: { $ref: "#/components/schemas/ChatMessageMention" },
           },
         },

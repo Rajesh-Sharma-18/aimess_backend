@@ -8,6 +8,7 @@ import {
   resolveLocaleFromRequest,
 } from "@aimess/utils";
 
+import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
 
 interface RateLimitOptions {
@@ -397,4 +398,41 @@ export async function assertSendAllowed(
   });
 
   throw new TooManyRequestsError("RATE_LIMITED", retryAfterSec);
+}
+
+/**
+ * Charge one group @all against (room, sender), or throw
+ * `CHAT_MENTION_ALL_RATE_LIMITED`. Separate from the send bucket: an @all
+ * pushes the whole roster, so its ceiling is far lower. Called from
+ * GroupMessageService only for messages carrying an ALL entry, so it covers
+ * REST and socket alike and never touches USER-only mentions.
+ */
+export async function assertMentionAllAllowed(
+  userId: string,
+  roomId: string
+): Promise<void> {
+  const identifier = `${roomId}:${userId}`;
+  const { allowed, retryAfterSec } = await consumeRateLimit({
+    keyPrefix: "gm:mention-all",
+    identifier,
+    windowMs: env.GROUP_MENTION_ALL_RATE_WINDOW_SEC * 1000,
+    maxRequests: env.GROUP_MENTION_ALL_RATE_MAX,
+    onCacheError: "fallback",
+  });
+
+  if (allowed) return;
+
+  logger.warn("rate_limit_exceeded", {
+    service: "chat-service",
+    rule: "gm:mention-all",
+    scope: "room_user",
+    scopeKey: identifier,
+    limit: env.GROUP_MENTION_ALL_RATE_MAX,
+    retryAfter: retryAfterSec,
+  });
+
+  throw new TooManyRequestsError(
+    "CHAT_MENTION_ALL_RATE_LIMITED",
+    retryAfterSec
+  );
 }

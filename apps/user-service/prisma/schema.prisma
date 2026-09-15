@@ -226,6 +226,8 @@ model NotificationSettings {
   communityEnabled     Boolean     @default(true)
   liveStreamEnabled    Boolean     @default(true)
   showPreview          Boolean     @default(true)
+  // false mutes pushes for "@all" group mentions; individual @mentions still notify.
+  mentionAllEnabled    Boolean     @default(true)
   // Quiet Hours
   quietHoursEnabled    Boolean     @default(false)
   quietHoursStart      String? // "HH:mm" 24h, e.g. "22:00"

@@ -29,27 +29,44 @@ const LEFT_WORD_RE = /[\p{L}\p{N}\p{M}_@/]/u;
 // "@kristi_new" is a different handle, not "@kristi" followed by text.
 const RIGHT_WORD_RE = /[A-Za-z0-9_]/;
 
+/** The literal token of an @all entity ("@all", matched case-insensitively). */
+export const MENTION_ALL_TOKEN = "all";
+
 export interface GroupMentionDeps {
   memberRepo: Pick<GroupMemberRepository, "findActiveUserIds">;
   userSnapshotService: Pick<UserSnapshotService, "getUserSnapshotsMap">;
   cacheRepo: CacheRepository;
 }
 
-/** Entries that are well-formed against `text`, sorted, non-overlapping. */
-function structurallyValid(
-  raw: unknown[],
-  text: string
-): Array<{ userId: string; offset: number; length: number; token: string }> {
-  const valid: Array<{
-    userId: string;
-    offset: number;
-    length: number;
-    token: string;
-  }> = [];
+type UserCandidate = {
+  type: "USER";
+  userId: string;
+  offset: number;
+  length: number;
+  token: string;
+};
+type Candidate =
+  | UserCandidate
+  | { type: "ALL"; offset: number; length: number };
+
+/**
+ * Entries that are well-formed against `text`, sorted, non-overlapping.
+ * `type` absent means USER; ALL carries no identity and must cover "@all";
+ * any other `type` is dropped. "@all" is never a USER mention, so ALL wins
+ * over a real handle "all".
+ */
+function structurallyValid(raw: unknown[], text: string): Candidate[] {
+  const valid: Candidate[] = [];
   for (const entry of raw) {
     const e = (entry ?? {}) as Record<string, unknown>;
-    const { userId, offset, length } = e;
-    if (typeof userId !== "string" || !userId || userId.length > 100) continue;
+    const { type, userId, offset, length } = e;
+    const isAll = type === "ALL";
+    if (!isAll && type !== undefined && type !== "USER") continue;
+    if (
+      !isAll &&
+      (typeof userId !== "string" || !userId || userId.length > 100)
+    )
+      continue;
     if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length))
       continue;
     const start = offset as number;
@@ -57,10 +74,21 @@ function structurallyValid(
     if (start < 0 || (length as number) < 2 || end > text.length) continue;
     if (text[start] !== "@") continue;
     const token = text.slice(start + 1, end);
-    if (!HANDLE_RE.test(token)) continue;
+    const isAllToken = token.toLowerCase() === MENTION_ALL_TOKEN;
+    if (isAll ? !isAllToken : isAllToken || !HANDLE_RE.test(token)) continue;
     if (start > 0 && LEFT_WORD_RE.test(text[start - 1]!)) continue;
     if (end < text.length && RIGHT_WORD_RE.test(text[end]!)) continue;
-    valid.push({ userId, offset: start, length: end - start, token });
+    valid.push(
+      isAll
+        ? { type: "ALL", offset: start, length: end - start }
+        : {
+            type: "USER",
+            userId: userId as string,
+            offset: start,
+            length: end - start,
+            token,
+          }
+    );
   }
   valid.sort((a, b) => a.offset - b.offset);
   const kept: typeof valid = [];
@@ -100,15 +128,17 @@ export async function resolveGroupMentions(
   const candidates = structurallyValid(raw, text);
   if (candidates.length === 0) return [];
 
-  const keepPrevious = (c: (typeof candidates)[number]): MentionDto | null => {
+  const keepPrevious = (c: UserCandidate): MentionDto | null => {
     const p = params.previous?.find(
       (m) =>
+        m?.type !== "ALL" &&
         m?.userId === c.userId &&
         typeof m.username === "string" &&
         m.username.toLowerCase() === c.token.toLowerCase()
     );
-    return p
+    return p && p.type !== "ALL"
       ? {
+          type: "USER",
           userId: c.userId,
           username: p.username,
           offset: c.offset,
@@ -117,42 +147,60 @@ export async function resolveGroupMentions(
       : null;
   };
 
-  const ids = [...new Set(candidates.map((c) => c.userId))];
-  let activeIds: string[];
-  let snapshots: Map<string, Record<string, unknown>>;
-  try {
-    [activeIds, snapshots] = await Promise.all([
-      params.memberRepo.findActiveUserIds(roomId, ids),
-      params.userSnapshotService.getUserSnapshotsMap(ids, params.cacheRepo),
-    ]);
-  } catch (err) {
-    // Fail closed for the mentions only — the message itself still sends.
-    logger.warn(`resolveGroupMentions|room=${roomId}: ${String(err)}`);
-    return candidates.map(keepPrevious).filter((m) => m !== null);
+  // ALL is purely structural: no lookup, so it survives a lookup outage.
+  let resolveUser = keepPrevious;
+  const users = candidates.filter((c) => c.type === "USER");
+  if (users.length > 0) {
+    const ids = [...new Set(users.map((c) => c.userId))];
+    try {
+      const [activeIds, snapshots] = await Promise.all([
+        params.memberRepo.findActiveUserIds(roomId, ids),
+        params.userSnapshotService.getUserSnapshotsMap(ids, params.cacheRepo),
+      ]);
+      const active = new Set(activeIds);
+      resolveUser = (c) => {
+        if (!active.has(c.userId)) return null;
+        const snapshot = snapshots.get(c.userId);
+        if (snapshot?.isDeletedUser === true) return null;
+        const handle =
+          typeof snapshot?.memberId === "string" ? snapshot.memberId : "";
+        // No snapshot / placeholder `memberId: ""` = lookup degraded, not a verdict.
+        if (!handle) return keepPrevious(c);
+        if (c.token.toLowerCase() !== handle.toLowerCase()) return null;
+        return {
+          type: "USER",
+          userId: c.userId,
+          username: handle,
+          offset: c.offset,
+          length: c.length,
+        };
+      };
+    } catch (err) {
+      // Fail closed for the mentions only — the message itself still sends.
+      logger.warn(`resolveGroupMentions|room=${roomId}: ${String(err)}`);
+    }
   }
-  const active = new Set(activeIds);
   const out: MentionDto[] = [];
   for (const c of candidates) {
-    if (!active.has(c.userId)) continue;
-    const snapshot = snapshots.get(c.userId);
-    if (snapshot?.isDeletedUser === true) continue;
-    const handle =
-      typeof snapshot?.memberId === "string" ? snapshot.memberId : "";
-    if (!handle) {
-      // No snapshot / placeholder `memberId: ""` = lookup degraded, not a verdict.
-      const kept = keepPrevious(c);
-      if (kept) out.push(kept);
-      continue;
-    }
-    if (c.token.toLowerCase() !== handle.toLowerCase()) continue;
-    out.push({
-      userId: c.userId,
-      username: handle,
-      offset: c.offset,
-      length: c.length,
-    });
+    const m =
+      c.type === "ALL"
+        ? { type: "ALL" as const, offset: c.offset, length: c.length }
+        : resolveUser(c);
+    if (m) out.push(m);
   }
   return out;
+}
+
+/** True when any `contents[*].mentions` carries an @all entry. */
+export function hasMentionAll(contents: unknown[]): boolean {
+  return contents.some((content) => {
+    const mentions = (content as { mentions?: unknown } | null | undefined)
+      ?.mentions;
+    return (
+      Array.isArray(mentions) &&
+      mentions.some((m) => (m as { type?: unknown } | null)?.type === "ALL")
+    );
+  });
 }
 
 /** Distinct mentioned userIds across `contents[*].mentions`, minus `excludeUserId`. */

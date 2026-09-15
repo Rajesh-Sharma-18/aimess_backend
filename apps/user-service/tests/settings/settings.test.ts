@@ -58,6 +58,8 @@ function fullBundle(overrides: Record<string, unknown> = {}) {
       systemEnabled: true,
       communityEnabled: true,
       liveStreamEnabled: true,
+      showPreview: true,
+      mentionAllEnabled: true,
       quietHoursEnabled: false,
       quietHoursStart: null,
       quietHoursEnd: null,
@@ -82,6 +84,7 @@ describe("GET /api/v1/users/settings/me", () => {
     expect(res.body.data.chat.autoDeleteTimer).toBe("OFF");
     expect(res.body.data.app.language).toBe("en");
     expect(res.body.data.notifications.chat).toBe(true);
+    expect(res.body.data.notifications.mentionAll).toBe(true);
     expect(res.body.data.liveStream.defaultVideoQuality).toBe("AUTO");
   });
 
@@ -156,6 +159,28 @@ describe("PATCH /api/v1/users/settings/me", () => {
     expect(res.status).toBe(200);
   });
 
+  it("mutes @all mentions → persists mentionAllEnabled false and returns mentionAll false", async () => {
+    const muted = fullBundle();
+    muted.notificationSettings.mentionAllEnabled = false;
+    repo.findSettingsBundle
+      .mockResolvedValueOnce(fullBundle())
+      .mockResolvedValue(muted);
+
+    const res = await request(app)
+      .patch("/api/v1/users/settings/me")
+      .set(auth())
+      .send({ notifications: { mentionAll: false } });
+
+    expect(res.status).toBe(200);
+    expect(repo.updateSettings).toHaveBeenCalledWith(
+      TEST_USER_ID,
+      expect.objectContaining({
+        notifications: { mentionAllEnabled: false },
+      })
+    );
+    expect(res.body.data.notifications.mentionAll).toBe(false);
+  });
+
   it("updates the call allow-list", async () => {
     const res = await request(app)
       .patch("/api/v1/users/settings/me")
@@ -224,6 +249,8 @@ describe("PATCH /api/v1/users/settings/me", () => {
     ["invalid language enum", { app: { language: "xx" } }],
     ["non-boolean typingIndicators", { chat: { typingIndicators: "yes" } }],
     ["bad time format", { notifications: { quietHours: { start: "9pm" } } }],
+    ["unknown notifications key (strict)", { notifications: { wibble: true } }],
+    ["non-boolean mentionAll", { notifications: { mentionAll: "no" } }],
     [
       "non-uuid in call allow-list",
       { privacy: { callAllowedFriendIds: ["not-a-uuid"] } },

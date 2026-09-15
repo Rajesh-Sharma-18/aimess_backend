@@ -77,12 +77,18 @@ export function startPendingPushSync(): void {
         if (data.conversationType === "GROUP") {
           const mentions = (
             Array.isArray(content?.mentions) ? content.mentions : []
-          ) as Array<{ userId?: unknown } | null>;
-          updatePendingChatMessage(
-            messageId,
-            text,
-            new Set(mentions.map((m) => String(m?.userId ?? "")).filter(Boolean))
-          );
+          ) as Array<{ userId?: unknown; type?: unknown } | null>;
+          // USER ids and @all stay separate: a queued individual mention needs
+          // its user still named, even when @all remains (they may mute @all).
+          updatePendingChatMessage(messageId, text, {
+            ids: new Set(
+              mentions
+                .filter((m) => m?.type !== "ALL")
+                .map((m) => String(m?.userId ?? ""))
+                .filter(Boolean)
+            ),
+            hasAll: mentions.some((m) => m?.type === "ALL"),
+          });
           return;
         }
         // Only a TEXT edit changes what a notification would say; an edit that

@@ -153,6 +153,7 @@ const updateNotificationSettingsSchema = z
     community: z.boolean().optional(),
     liveStream: z.boolean().optional(),
     showPreview: z.boolean().optional(),
+    mentionAll: z.boolean().optional(),
     quietHours: updateQuietHoursSchema.optional(),
   })
   .strict();

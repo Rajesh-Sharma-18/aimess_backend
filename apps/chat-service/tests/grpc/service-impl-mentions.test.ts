@@ -120,6 +120,51 @@ describe("gRPC sendMessage — mentions", () => {
         mentionedUserIds: ["u2"],
       })
     );
+    expect(
+      (publishMessageSentSafe as jest.Mock).mock.calls[0]![0]
+    ).not.toHaveProperty("fetchMentionAllUserIds");
+  });
+
+  it("GROUP with a stored @all hands the push a thunk over the memoised roster", async () => {
+    const sendMessage = jest.fn(async () =>
+      storedRow({
+        text: "@all hi",
+        mentions: [{ type: "ALL", offset: 0, length: 4 }],
+      })
+    );
+    const getActiveMemberIds = jest.fn(async () => ["u1", "u2", "u3"]);
+    const getMentionAllRecipients = jest.fn(
+      async (_roomId: string, senderId: string, ids: string[]) =>
+        ids.filter((id) => id !== senderId)
+    );
+    const deps = {
+      groupMessageService: {
+        sendMessage,
+        getActiveMemberIds,
+        getMentionAllRecipients,
+      },
+    } as unknown as GrpcDeps;
+
+    await invoke(
+      createMessagingImpl(deps).sendMessage as Handler,
+      sendRequest("grp_room")
+    );
+    await flush();
+
+    const push = (publishMessageSentSafe as jest.Mock).mock.calls[0]![0] as {
+      mentionedUserIds: string[];
+      fetchRecipients: () => Promise<string[]>;
+      fetchMentionAllUserIds: () => Promise<string[]>;
+    };
+    expect(push.mentionedUserIds).toEqual([]);
+    await expect(push.fetchMentionAllUserIds()).resolves.toEqual(["u2", "u3"]);
+    await push.fetchRecipients();
+    expect(getMentionAllRecipients).toHaveBeenCalledWith("grp_room", "u1", [
+      "u1",
+      "u2",
+      "u3",
+    ]);
+    expect(getActiveMemberIds).toHaveBeenCalledTimes(1);
   });
 
   it("PRIVATE strips mentions before the service and the push", async () => {
@@ -138,9 +183,9 @@ describe("gRPC sendMessage — mentions", () => {
       sendMessage.mock.calls[0] as unknown as [{ content: object }]
     )[0].content;
     expect(content).not.toHaveProperty("mentions");
-    expect(
-      (publishMessageSentSafe as jest.Mock).mock.calls[0]?.[0]
-    ).not.toHaveProperty("mentionedUserIds");
+    const push = (publishMessageSentSafe as jest.Mock).mock.calls[0]?.[0];
+    expect(push).not.toHaveProperty("mentionedUserIds");
+    expect(push).not.toHaveProperty("fetchMentionAllUserIds");
   });
 });
 
@@ -221,6 +266,29 @@ describe("gRPC editMessage — mentions", () => {
     });
     expect(editErr).toEqual(sendErr);
     expect(editMessage).not.toHaveBeenCalled();
+  });
+
+  it("an @all rate limit from the service maps to RESOURCE_EXHAUSTED with its own key", async () => {
+    const limited = async () => {
+      throw new TooManyRequestsError("CHAT_MENTION_ALL_RATE_LIMITED", 30);
+    };
+    const impl = createMessagingImpl({
+      groupMessageService: {
+        editMessage: jest.fn(limited),
+        sendMessage: jest.fn(limited),
+      },
+    } as unknown as GrpcDeps);
+
+    const expected = {
+      code: grpc.status.RESOURCE_EXHAUSTED,
+      message: "CHAT_MENTION_ALL_RATE_LIMITED",
+    };
+    await expect(
+      rawError(impl.editMessage as Handler, editRequest("grp_room"))
+    ).resolves.toEqual(expected);
+    await expect(
+      rawError(impl.sendMessage as Handler, sendRequest("grp_room"))
+    ).resolves.toEqual(expected);
   });
 
   it("any other edit error keeps the INTERNAL mapping", async () => {

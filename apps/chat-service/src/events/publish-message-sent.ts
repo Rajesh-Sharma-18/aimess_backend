@@ -55,6 +55,14 @@ export interface MessageSentPayload {
    * `recipientIds`, filtered at publish). Omitted from the wire when empty.
    */
   mentionedUserIds?: string[];
+  /**
+   * GROUP only: recipients an @all in this message notifies (active members
+   * minus sender and deleted accounts, filtered to `recipientIds`). Omitted
+   * when empty. Each user's @all opt-out is applied by the consumer.
+   */
+  mentionAllUserIds?: string[];
+  /** Edit-triggered publish: notify mentioned users only, never a plain push. */
+  mentionOnly?: boolean;
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;
@@ -110,8 +118,13 @@ async function conversationHeader(
   return { name: room?.name ?? "", avatarKey: room?.logo ?? "" };
 }
 
-type PublishMessageSentParams = Omit<MessageSentPayload, "recipientIds"> &
-  (
+type PublishMessageSentParams = Omit<
+  MessageSentPayload,
+  "recipientIds" | "mentionAllUserIds"
+> & {
+  /** Resolved inside the async block, so a send ack never waits on it. */
+  fetchMentionAllUserIds?: () => Promise<string[]>;
+} & (
     | { recipientIds: string[]; fetchRecipients?: never }
     | { recipientIds?: never; fetchRecipients: () => Promise<string[]> }
   );
@@ -138,6 +151,12 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
       const mentionedUserIds =
         p.conversationType === "GROUP" && p.mentionedUserIds?.length
           ? [...new Set(p.mentionedUserIds)].filter((id) => targetSet.has(id))
+          : [];
+      const mentionAllUserIds =
+        p.conversationType === "GROUP" && p.fetchMentionAllUserIds
+          ? [...new Set(await p.fetchMentionAllUserIds())].filter((id) =>
+              targetSet.has(id)
+            )
           : [];
 
       // Resolve-on-read at the publish boundary: the push (FCM data map) must
@@ -198,6 +217,8 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
         sentAt: p.sentAt,
         recipientIds: targets,
         ...(mentionedUserIds.length > 0 ? { mentionedUserIds } : {}),
+        ...(mentionAllUserIds.length > 0 ? { mentionAllUserIds } : {}),
+        ...(p.mentionOnly === true ? { mentionOnly: true } : {}),
       };
       const payload = JSON.stringify({ type: CHAT_MESSAGE_SENT_EVENT, data });
       channel.sendToQueue(CHAT_MESSAGE_QUEUE, Buffer.from(payload), {

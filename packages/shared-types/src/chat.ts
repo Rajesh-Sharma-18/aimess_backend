@@ -63,18 +63,34 @@ export interface StickerDto {
 }
 
 /**
- * A group @mention entity inside `MessageContentDto.text` (GROUP rooms only).
+ * A group @mention of one user inside `MessageContentDto.text` (GROUP rooms only).
  * `offset`/`length` are UTF-16 code units into `text`; the entity covers the
  * literal "@" + handle token (`text[offset] === "@"`, `length = 1 + handle.length`).
  * `username` is the handle the SERVER resolved at send/edit time — the text is
  * never rewritten after a rename, so identity always goes through `userId`.
+ * `type` is absent on rows stored before @all existed; absent means USER.
  */
-export interface MentionDto {
+export interface UserMentionDto {
+  type?: "USER";
   userId: string;
   username: string;
   offset: number;
   length: number;
 }
+
+/**
+ * "@all" (case-insensitive, `length = 4`): notifies every active member. No
+ * userId/username — recipients are resolved by the server at publish time.
+ * Rate limited per sender per room (CHAT_MENTION_ALL_RATE_LIMITED); a forward
+ * strips it; an edit notifies only when it newly adds @all.
+ */
+export interface AllMentionDto {
+  type: "ALL";
+  offset: number;
+  length: number;
+}
+
+export type MentionDto = UserMentionDto | AllMentionDto;
 
 export interface MessageContentDto {
   text: string;

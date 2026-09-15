@@ -85,7 +85,7 @@ import {
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
-import { mentionedUserIdsOf } from "../lib/group-mentions.js";
+import { hasMentionAll, mentionedUserIdsOf } from "../lib/group-mentions.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
@@ -625,13 +625,26 @@ export function createMessagingImpl(
               sentAt: pushSentAt,
             };
             if (conversationType === "GROUP") {
+              const albumContents = getAlbumMessages(msg).map((r) => r.content);
               publishMessageSentSafe({
                 ...pushBase,
                 fetchRecipients: groupRecipients,
                 mentionedUserIds: mentionedUserIdsOf(
-                  getAlbumMessages(msg).map((r) => r.content),
+                  albumContents,
                   req.senderId
                 ),
+                ...(hasMentionAll(albumContents)
+                  ? {
+                      fetchMentionAllUserIds: () =>
+                        groupRecipients().then((ids) =>
+                          deps.groupMessageService.getMentionAllRecipients(
+                            req.conversationId,
+                            req.senderId,
+                            ids
+                          )
+                        ),
+                    }
+                  : {}),
               });
             } else {
               publishMessageSentSafe({
@@ -5244,4 +5257,3 @@ export function createNotificationImpl(
     },
   };
 }
-

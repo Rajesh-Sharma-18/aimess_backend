@@ -215,14 +215,23 @@ const StickerSchema = z
     message: "sticker requires objectKey or url",
   });
 // Group @mention entity: `offset`/`length` are UTF-16 code units into the text and
-// cover the literal "@handle" token. Shape-only here — chat-service re-validates
-// every entry against the text + active membership and silently drops bad ones.
-const MentionSchema = z.object({
-  userId: z.string().min(1).max(100),
-  username: z.string().max(64).optional(),
+// cover the literal "@handle" (USER, `type` optional) or "@all" (ALL) token.
+// Shape-only here — chat-service re-validates every entry against the text +
+// active membership and silently drops bad ones. `type` is forwarded as sent; an
+// ALL entry carries no user fields (stray `userId`/`username` are stripped).
+const mentionSpan = {
   offset: z.number().int().nonnegative(),
   length: z.number().int().min(1).max(64),
-});
+};
+const MentionSchema = z.union([
+  z.object({
+    type: z.literal("USER").optional(),
+    userId: z.string().min(1).max(100),
+    username: z.string().max(64).optional(),
+    ...mentionSpan,
+  }),
+  z.object({ type: z.literal("ALL"), ...mentionSpan }),
+]);
 const MessageSendSchemaBase = z.object({
   conversationId: z.string().min(1),
   clientMessageId: z.string().optional(),

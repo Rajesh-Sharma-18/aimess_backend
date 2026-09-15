@@ -1,7 +1,10 @@
 import dotenv from "dotenv";
 import { z } from "zod";
 
-import { assertNoPlaceholderCredentials, expandFileSecrets } from "@aimess/utils";
+import {
+  assertNoPlaceholderCredentials,
+  expandFileSecrets,
+} from "@aimess/utils";
 
 dotenv.config();
 
@@ -215,6 +218,11 @@ const envSchema = z.object({
   GROUP_MUTE_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(60),
   GROUP_MUTE_SWEEP_BATCH: z.coerce.number().positive().default(200),
 
+  // Group @all pushes the whole roster, so it has its own sliding-window
+  // ceiling per (room, sender), shared by REST and socket sends and edits.
+  GROUP_MENTION_ALL_RATE_MAX: z.coerce.number().positive().default(5),
+  GROUP_MENTION_ALL_RATE_WINDOW_SEC: z.coerce.number().positive().default(600),
+
   // Auto-delete (disappearing messages) sweeper for private chats. UNLIKE the
   // mute sweep, correctness DOES depend on this one: it is what actually
   // deletes a due message, on the server, whether or not either client is
@@ -287,7 +295,6 @@ try {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
-
 
 /**
  * Resolve the MongoDB connection URL: prefer a complete MONGO_DATABASE_URL,

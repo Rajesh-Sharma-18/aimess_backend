@@ -103,7 +103,7 @@ function sendMessageRequestBody(includeReceiverId: boolean) {
         type: "array" as const,
         maxItems: 200,
         description:
-          "GROUP only (ignored on private sends). @mention entities into `text` — see ChatMessageMention for offsets and server validation. Invalid entries are dropped; more than 50 → 400 `CHAT_MENTION_LIMIT_EXCEEDED`.",
+          "GROUP only (ignored on private sends). @mention entities (USER or `@all`) into `text` — see ChatMessageMention for offsets, server validation and @all semantics. Invalid entries are dropped; more than 50 → 400 `CHAT_MENTION_LIMIT_EXCEEDED`; `@all` over its rate limit → 429 `CHAT_MENTION_ALL_RATE_LIMITED` (message not stored).",
         items: { $ref: "#/components/schemas/ChatMessageMention" },
       },
     },

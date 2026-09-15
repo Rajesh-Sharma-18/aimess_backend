@@ -330,6 +330,11 @@ export const CHAT_MESSAGES = {
     en: "A message can mention at most 50 people",
     th: "ข้อความหนึ่งกล่าวถึงได้สูงสุด 50 คน",
   },
+  CHAT_MENTION_ALL_RATE_LIMITED: {
+    vi: "Bạn dùng @all quá thường xuyên. Vui lòng đợi vài phút rồi thử lại.",
+    en: "You're using @all too often. Please wait a few minutes and try again.",
+    th: "คุณใช้ @all บ่อยเกินไป โปรดรอสักครู่แล้วลองใหม่",
+  },
   CHAT_MESSAGE_ALREADY_DELETED: {
     vi: "Tin nhắn đã bị xóa",
     en: "Message already deleted",

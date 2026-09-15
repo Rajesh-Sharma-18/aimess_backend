@@ -89,6 +89,10 @@ message NotificationSettings {
   // IANA timezone the quiet-hours window is evaluated in ("Asia/Bangkok").
   // Empty string = evaluate in server-local time (pre-timezone behaviour).
   string timezone               = 13;
+  // true = the user muted pushes for "@all" group mentions. Inverted on purpose:
+  // proto3 decodes a missing bool as false, so an older user-service (or a
+  // settings cache entry written before this field) reads as "receive".
+  bool   mention_all_muted      = 14;
 }
 
 // Admin Panel: enrich a user list with display profile data.

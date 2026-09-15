@@ -131,6 +131,7 @@ function mapSettingsBundle(bundle: SettingsBundle): UserSettingsResponse {
       community: notifications.communityEnabled,
       liveStream: notifications.liveStreamEnabled,
       showPreview: notifications.showPreview,
+      mentionAll: notifications.mentionAllEnabled,
       quietHours: {
         enabled: notifications.quietHoursEnabled,
         start: notifications.quietHoursStart,
@@ -217,6 +218,9 @@ function toNotificationUpdate(
     update.liveStreamEnabled = input.liveStream;
   }
   if (input.showPreview !== undefined) update.showPreview = input.showPreview;
+  if (input.mentionAll !== undefined) {
+    update.mentionAllEnabled = input.mentionAll;
+  }
 
   if (input.quietHours) {
     const qh = input.quietHours;

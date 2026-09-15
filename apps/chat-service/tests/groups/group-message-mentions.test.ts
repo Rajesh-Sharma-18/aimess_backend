@@ -11,15 +11,24 @@ jest.mock("../../src/events/publish-message-sent.js", () => ({
   ...jest.requireActual("../../src/events/publish-message-sent.js"),
   publishMessageSentSafe: jest.fn(),
 }));
+// The @all limiter itself is covered in tests/middleware; here only whether
+// and when it is charged matters.
+jest.mock("../../src/middleware/rate-limit.js", () => ({
+  ...jest.requireActual("../../src/middleware/rate-limit.js"),
+  assertMentionAllAllowed: jest.fn(async () => undefined),
+}));
 
 import request from "supertest";
+import { TooManyRequestsError } from "@aimess/errors";
 
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 import { publishMessageSentSafe } from "../../src/events/publish-message-sent.js";
+import { assertMentionAllAllowed } from "../../src/middleware/rate-limit.js";
 import { GroupMessageService } from "../../src/services/group-message.service.js";
 
 const pushMock = publishMessageSentSafe as jest.Mock;
+const mentionAllMock = assertMentionAllAllowed as jest.Mock;
 
 let app: import("express").Express;
 let mocks: BuiltMocks;
@@ -39,9 +48,17 @@ const at = (userId: string, text: string, token: string) => ({
   length: token.length,
 });
 const stored = (userId: string, text: string, token: string) => ({
+  type: "USER",
   ...at(userId, text, token),
   username: HANDLES[userId],
 });
+/** An @all entity; client and stored shapes are identical. */
+const all = (text: string, from = 0) => ({
+  type: "ALL",
+  offset: text.indexOf("@all", from),
+  length: 4,
+});
+const roster = (...userIds: string[]) => userIds.map((userId) => ({ userId }));
 
 const createdContents = (): Array<Record<string, unknown>> =>
   mocks.groupMessageRepo.create.mock.calls.map(
@@ -243,6 +260,153 @@ describe("send", () => {
   });
 });
 
+describe("send — @all", () => {
+  const sendAll = (
+    content: Record<string, unknown>,
+    extra: Record<string, unknown> = {}
+  ) =>
+    request(app)
+      .post(SEND_URL)
+      .set(bearer(makeAccessToken()))
+      .send({ messageType: "TEXT", content, ...extra });
+
+  it("persists the ALL entity, charges once, and hands the push a roster thunk", async () => {
+    mocks.groupMemberRepo.findActiveMembers.mockResolvedValue(
+      roster(TEST_USER_ID, "u_kristi", "u_bob", "u_gone")
+    );
+    mocks.cacheRepo.getUserSnapshots.mockImplementation(
+      async () =>
+        new Map<string, Record<string, unknown>>([
+          ...Object.entries(HANDLES).map(
+            ([userId, memberId]) =>
+              [userId, { userId, memberId, isDeletedUser: false }] as [
+                string,
+                Record<string, unknown>,
+              ]
+          ),
+          ["u_gone", { userId: "u_gone", memberId: "", isDeletedUser: true }],
+        ])
+    );
+    const text = "hey @all and @kristi";
+    const res = await sendAll(
+      { text, mentions: [all(text), at("u_kristi", text, "@kristi")] },
+      { clientMessageId: "cmid-all-1" }
+    );
+
+    expect(res.status).toBe(201);
+    expect(createdContents()[0]!.mentions).toEqual([
+      all(text),
+      stored("u_kristi", text, "@kristi"),
+    ]);
+    expect(mentionAllMock).toHaveBeenCalledTimes(1);
+    expect(mentionAllMock).toHaveBeenCalledWith(TEST_USER_ID, ROOM);
+    await flush();
+    const push = pushMock.mock.calls[0]![0];
+    expect(push).toMatchObject({
+      conversationType: "GROUP",
+      mentionedUserIds: ["u_kristi"],
+    });
+    // ACTIVE roster (left/removed/banned are never in it) minus sender and
+    // deleted accounts.
+    await expect(push.fetchMentionAllUserIds()).resolves.toEqual([
+      "u_kristi",
+      "u_bob",
+    ]);
+    expect(mocks.groupMemberRepo.findActiveMembers).toHaveBeenCalledWith(ROOM);
+  });
+
+  it("over the @all limit → 429 CHAT_MENTION_ALL_RATE_LIMITED, nothing persisted or pushed", async () => {
+    mentionAllMock.mockRejectedValueOnce(
+      new TooManyRequestsError("CHAT_MENTION_ALL_RATE_LIMITED", 42)
+    );
+    const text = "@all";
+    const res = await sendAll({ text, mentions: [all(text)] });
+
+    expect(res.status).toBe(429);
+    expect(res.body.code).toBe("CHAT_MENTION_ALL_RATE_LIMITED");
+    expect(mocks.groupMessageRepo.create).not.toHaveBeenCalled();
+    await flush();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("USER-only mentions and a forged ALL on another token are never charged", async () => {
+    const text = "hi @kristi";
+    const res = await sendAll({
+      text,
+      mentions: [
+        at("u_kristi", text, "@kristi"),
+        { type: "ALL", offset: 3, length: 7 },
+      ],
+    });
+
+    expect(res.status).toBe(201);
+    expect(createdContents()[0]!.mentions).toEqual([
+      stored("u_kristi", text, "@kristi"),
+    ]);
+    expect(mentionAllMock).not.toHaveBeenCalled();
+    await flush();
+    expect(pushMock.mock.calls[0]![0]).not.toHaveProperty(
+      "fetchMentionAllUserIds"
+    );
+  });
+
+  it("idempotent replay of an @all send is never charged again", async () => {
+    mocks.groupMessageRepo.findByClientMessageId.mockResolvedValue({
+      id: "existing",
+      roomId: ROOM,
+      senderId: TEST_USER_ID,
+      messageType: "TEXT",
+      content: { text: "@all", mentions: [all("@all")] },
+      sequenceNumber: 3,
+      createdAt: new Date(1),
+    });
+    const res = await sendAll(
+      { text: "@all", mentions: [all("@all")] },
+      { clientMessageId: "cmid-all-replay" }
+    );
+
+    expect(res.status).toBe(200);
+    expect(mentionAllMock).not.toHaveBeenCalled();
+    expect(mocks.groupMessageRepo.create).not.toHaveBeenCalled();
+  });
+
+  it("a non-member is refused CHAT_NOT_A_MEMBER before any @all charge", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+    const res = await sendAll({ text: "@all", mentions: [all("@all")] });
+
+    expect(res.body.code).toBe("CHAT_NOT_A_MEMBER");
+    expect(mentionAllMock).not.toHaveBeenCalled();
+    expect(mocks.groupMessageRepo.create).not.toHaveBeenCalled();
+  });
+
+  it("album keeps @all on row 0 only and charges once", async () => {
+    const text = "look @all";
+    const file = (name: string) => ({
+      objectKey: `chat-uploads/${TEST_USER_ID}/${name}`,
+      mime: "image/jpeg",
+      size: 1000,
+    });
+    const res = await request(app)
+      .post(SEND_URL)
+      .set(bearer(makeAccessToken()))
+      .send({
+        messageType: "IMAGE",
+        content: {
+          text,
+          files: [file("a.jpg"), file("b.jpg")],
+          mentions: [all(text)],
+        },
+        clientMessageId: "cmid-album-all",
+      });
+
+    expect(res.status).toBe(201);
+    const [first, second] = createdContents();
+    expect(first!.mentions).toEqual([all(text)]);
+    expect(second).not.toHaveProperty("mentions");
+    expect(mentionAllMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("edit", () => {
   const row = (content: Record<string, unknown>) => ({
     id: "g1",
@@ -387,6 +551,85 @@ describe("edit", () => {
       .expect(200);
 
     expect(editedContent()).not.toHaveProperty("mentions");
+  });
+
+  describe("@all", () => {
+    const patch = (content: Record<string, unknown>) =>
+      request(app).patch(EDIT_URL).set(bearer(makeAccessToken())).send({
+        content,
+      });
+    beforeEach(() => {
+      mocks.groupMemberRepo.findActiveMembers.mockResolvedValue(
+        roster(TEST_USER_ID, "u_kristi", "u_bob")
+      );
+    });
+
+    it("adding @all charges and publishes mention-only to the @all audience, skipping users already mentioned", async () => {
+      const before = "hi @kristi";
+      mocks.groupMessageRepo.findById.mockResolvedValue(
+        row({ text: before, mentions: [stored("u_kristi", before, "@kristi")] })
+      );
+      const text = "hi @kristi @all";
+      const res = await patch({
+        text,
+        mentions: [at("u_kristi", text, "@kristi"), all(text)],
+      });
+
+      expect(res.status).toBe(200);
+      expect(editedContent().mentions).toEqual([
+        stored("u_kristi", text, "@kristi"),
+        all(text),
+      ]);
+      expect(mentionAllMock).toHaveBeenCalledWith(TEST_USER_ID, ROOM);
+      expect(pushMock).toHaveBeenCalledTimes(1);
+      const push = pushMock.mock.calls[0]![0];
+      expect(push).toMatchObject({
+        messageId: "g1",
+        mentionOnly: true,
+        mentionedUserIds: [],
+      });
+      expect(push).not.toHaveProperty("recipientIds");
+      // Never the whole roster: an older consumer pushes every recipient.
+      await expect(push.fetchRecipients()).resolves.toEqual(["u_bob"]);
+      await expect(push.fetchMentionAllUserIds()).resolves.toEqual(["u_bob"]);
+    });
+
+    it("keeping @all neither charges nor pushes", async () => {
+      const text = "hi @all";
+      mocks.groupMessageRepo.findById.mockResolvedValue(
+        row({ text, mentions: [all(text)] })
+      );
+      await patch({ text: "hi @all!", mentions: [all(text)] }).expect(200);
+
+      expect(editedContent().mentions).toEqual([all(text)]);
+      expect(mentionAllMock).not.toHaveBeenCalled();
+      expect(pushMock).not.toHaveBeenCalled();
+    });
+
+    it("removing @all strips the entity, no charge, no push", async () => {
+      const before = "hi @all";
+      mocks.groupMessageRepo.findById.mockResolvedValue(
+        row({ text: before, mentions: [all(before)] })
+      );
+      await patch({ text: "hi", mentions: [] }).expect(200);
+
+      expect(editedContent()).toEqual({ text: "hi", urls: [] });
+      expect(mentionAllMock).not.toHaveBeenCalled();
+      expect(pushMock).not.toHaveBeenCalled();
+    });
+
+    it("a rate-limited @all edit is rejected and nothing is persisted", async () => {
+      mentionAllMock.mockRejectedValueOnce(
+        new TooManyRequestsError("CHAT_MENTION_ALL_RATE_LIMITED", 42)
+      );
+      mocks.groupMessageRepo.findById.mockResolvedValue(row({ text: "hi" }));
+      const res = await patch({ text: "hi @all", mentions: [all("hi @all")] });
+
+      expect(res.status).toBe(429);
+      expect(res.body.code).toBe("CHAT_MENTION_ALL_RATE_LIMITED");
+      expect(mocks.groupMessageRepo.editMessage).not.toHaveBeenCalled();
+      expect(pushMock).not.toHaveBeenCalled();
+    });
   });
 
   describe("lookup outage on an edit that omits mentions", () => {
@@ -546,6 +789,92 @@ describe("edit", () => {
       });
     });
 
+    it("send claims the @all sentinel, so a later edit restoring @all pushes nothing", async () => {
+      mocks.groupMessageRepo.create.mockImplementation(
+        async (entity: Record<string, unknown>) => ({
+          ...entity,
+          id: "g1",
+          createdAt: new Date(),
+        })
+      );
+      const sent = "hi @all";
+      await service.sendMessage({
+        roomId: ROOM,
+        senderId: TEST_USER_ID,
+        senderName: "Me",
+        senderAvatar: "",
+        content: { text: sent, mentions: [all(sent)] },
+        messageType: "TEXT",
+        clientMessageId: "c-claim-all",
+      });
+      expect(redis.keys).toEqual(["gm:mention-notified:{g1}:ALL"]);
+
+      mocks.groupMessageRepo.findById.mockResolvedValue(row({ text: "hi" }));
+      await edit(sent, [all(sent)]);
+
+      expect(pushMock).not.toHaveBeenCalled();
+    });
+
+    it("adding @all skips a re-added user whose claim already exists; recipients are fresh ∪ audience", async () => {
+      mocks.groupMessageRepo.create.mockImplementation(
+        async (entity: Record<string, unknown>) => ({
+          ...entity,
+          id: "g1",
+          createdAt: new Date(),
+        })
+      );
+      const sent = "hi @bob";
+      await service.sendMessage({
+        roomId: ROOM,
+        senderId: TEST_USER_ID,
+        senderName: "Me",
+        senderAvatar: "",
+        content: { text: sent, mentions: [at("u_bob", sent, "@bob")] },
+        messageType: "TEXT",
+        clientMessageId: "c-claim-bob",
+      });
+      mocks.groupMemberRepo.findActiveMembers.mockResolvedValue(
+        roster(TEST_USER_ID, "u_kristi", "u_bob", "u_carol")
+      );
+
+      // An earlier edit removed @bob; this one restores him, adds @kristi and @all.
+      mocks.groupMessageRepo.findById.mockResolvedValue(row({ text: "hi" }));
+      const text = "hi @bob @kristi @all";
+      await edit(text, [
+        at("u_bob", text, "@bob"),
+        at("u_kristi", text, "@kristi"),
+        all(text),
+      ]);
+
+      expect(pushMock).toHaveBeenCalledTimes(1);
+      const push = pushMock.mock.calls[0]![0];
+      expect(push).toMatchObject({
+        mentionOnly: true,
+        mentionedUserIds: ["u_kristi"],
+      });
+      expect(push).not.toHaveProperty("recipientIds");
+      await expect(push.fetchRecipients()).resolves.toEqual([
+        "u_kristi",
+        "u_carol",
+      ]);
+      await expect(push.fetchMentionAllUserIds()).resolves.toEqual(["u_carol"]);
+    });
+
+    it("toggling @all off and on by edit pushes once (each add is charged)", async () => {
+      const on = "hi @all";
+      mocks.groupMessageRepo.findById.mockResolvedValue(row({ text: "hi" }));
+      await edit(on, [all(on)]);
+      mocks.groupMessageRepo.findById.mockResolvedValue(
+        row({ text: on, mentions: [all(on)] })
+      );
+      await edit("hi", []);
+      mocks.groupMessageRepo.findById.mockResolvedValue(row({ text: "hi" }));
+      await edit(on, [all(on)]);
+
+      expect(pushMock).toHaveBeenCalledTimes(1);
+      expect(mentionAllMock).toHaveBeenCalledTimes(2);
+    });
+
     it("a per-command Redis error fails open (the mention still pushes)", async () => {
       const failing = {
         pipeline: () => {
@@ -635,5 +964,36 @@ describe("forward", () => {
     expect(forwarded.content.mentions).toEqual([stored("u_bob", text, "@bob")]);
     await flush();
     expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("strips @all but keeps a valid USER mention, and is never charged", async () => {
+    const text = "@all hi @bob";
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: "src",
+      roomId: ROOM,
+      senderId: "u_bob",
+      isDeleted: false,
+      messageType: "TEXT",
+      content: { text, mentions: [all(text), stored("u_bob", text, "@bob")] },
+      createdAt: new Date(1),
+    });
+    mocks.groupMessageRepo.createForwardedMessage.mockImplementation(
+      async (data: Record<string, unknown>) => ({
+        ...data,
+        id: "fwd2",
+        createdAt: new Date(2),
+      })
+    );
+
+    const res = await request(app)
+      .post(`/api/chat/groups/rooms/${ROOM}/messages/src/forward`)
+      .set(bearer(makeAccessToken()))
+      .send({ targetRoomId: TARGET });
+
+    expect(res.status).toBe(201);
+    const forwarded = mocks.groupMessageRepo.createForwardedMessage.mock
+      .calls[0]![0] as { content: Record<string, unknown> };
+    expect(forwarded.content.mentions).toEqual([stored("u_bob", text, "@bob")]);
+    expect(mentionAllMock).not.toHaveBeenCalled();
   });
 });

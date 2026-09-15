@@ -28,6 +28,7 @@ import {
 import {
   anonymizeSystemData,
   anonymizeWireSender,
+  collectDeletedUserIds,
   collectSenderIdentities,
   collectRowUserIds,
   liveAvatarKeys,
@@ -41,9 +42,12 @@ import {
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import {
+  hasMentionAll,
   mentionedUserIdsOf,
   resolveGroupMentions,
 } from "../lib/group-mentions.js";
+import { assertMentionAllAllowed } from "../middleware/rate-limit.js";
+import { once } from "../lib/once.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -133,6 +137,9 @@ import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
 import type { MentionDto } from "@aimess/shared-types";
 import type { GroupMember, GroupMessage } from "../generated/prisma/index.js";
+
+/** Claim-key suffix recording that a message's @all already pushed. */
+const MENTION_ALL_CLAIM = "ALL";
 
 export class GroupMessageService {
   constructor(
@@ -278,6 +285,11 @@ export class GroupMessageService {
     const content: typeof params.content = { ...params.content };
     if (mentions.length > 0) content.mentions = mentions;
     else delete content.mentions;
+    // An @all pushes the whole roster: metered per (room, sender) before
+    // anything is persisted. Replays returned above and are never charged.
+    if (hasMentionAll([content])) {
+      await assertMentionAllAllowed(params.senderId, params.roomId);
+    }
 
     const parts = splitDirectMediaAlbum(
       params.messageType,
@@ -458,6 +470,7 @@ export class GroupMessageService {
     // mention never pushes them again. Never throws.
     for (const row of created) {
       const mentioned = mentionedUserIdsOf([row.content], params.senderId);
+      if (hasMentionAll([row.content])) mentioned.push(MENTION_ALL_CLAIM);
       if (mentioned.length > 0) {
         await this.claimMentionNotifications(row.id, mentioned);
       }
@@ -638,6 +651,27 @@ export class GroupMessageService {
   async getActiveMemberIds(roomId: string): Promise<string[]> {
     const members = await this.memberRepo.findActiveMembers(roomId);
     return members.map((m) => m.userId);
+  }
+
+  /**
+   * Who an @all in `roomId` notifies: ACTIVE members read now (left, removed
+   * and banned members are not active) minus the sender and deleted accounts.
+   * `activeIds` reuses a roster the caller already read.
+   */
+  async getMentionAllRecipients(
+    roomId: string,
+    senderId: string,
+    activeIds?: string[]
+  ): Promise<string[]> {
+    const ids = (activeIds ?? (await this.getActiveMemberIds(roomId))).filter(
+      (id) => id !== senderId
+    );
+    const deleted = await collectDeletedUserIds(
+      ids,
+      this.userSnapshotService,
+      this.cacheRepo
+    );
+    return ids.filter((id) => !deleted.has(id));
   }
 
   /**
@@ -1564,6 +1598,13 @@ export class GroupMessageService {
       urls: params.content.urls ?? [],
       ...(mentions.length > 0 ? { mentions } : {}),
     };
+    // Newly adding @all is charged like a send, BEFORE persisting, so a
+    // rate-limited edit changes nothing.
+    const addedAll =
+      hasMentionAll([nextContent]) && !hasMentionAll([previousContent]);
+    if (addedAll) {
+      await assertMentionAllAllowed(params.userId, message.roomId);
+    }
     const updated = await this.messageRepo.editMessage(
       params.messageId,
       message.roomId,
@@ -1578,10 +1619,25 @@ export class GroupMessageService {
     const added = mentionedUserIdsOf([nextContent], params.userId).filter(
       (id) => !alreadyMentioned.has(id)
     );
-    // …and at most once per user per message: toggling a mention off and on
-    // must not re-push (a mention push bypasses group mute).
-    const fresh = await this.claimMentionNotifications(message.id, added);
-    if (fresh.length > 0) {
+    // …and at most once per user (and once for @all) per message: toggling a
+    // mention off and on must not re-push (a mention push bypasses group mute).
+    const claimed = await this.claimMentionNotifications(
+      message.id,
+      addedAll ? [...added, MENTION_ALL_CLAIM] : added
+    );
+    const freshAll = claimed.includes(MENTION_ALL_CLAIM);
+    const fresh = claimed.filter((id) => id !== MENTION_ALL_CLAIM);
+    if (fresh.length > 0 || freshAll) {
+      // Users mentioned in the previous or new content are not pushed again by
+      // a newly added @all (a fresh one is already in `fresh`).
+      // ponytail: a user mentioned and removed by an EARLIER edit can still get
+      // the @all push. Per-user claims across the roster if that matters.
+      const allAudience = once(() =>
+        this.getMentionAllRecipients(message.roomId, params.userId).then(
+          (ids) =>
+            ids.filter((id) => !alreadyMentioned.has(id) && !added.includes(id))
+        )
+      );
       publishMessageSentSafe({
         conversationId: message.roomId,
         conversationType: "GROUP",
@@ -1593,8 +1649,17 @@ export class GroupMessageService {
         preview: buildPushPreview("TEXT", params.content.text),
         messageType: "TEXT",
         sentAt: Date.now(),
-        recipientIds: fresh,
+        mentionOnly: true,
         mentionedUserIds: fresh,
+        ...(freshAll
+          ? {
+              // Never the whole roster: a consumer unaware of `mentionOnly`
+              // would push every listed recipient.
+              fetchRecipients: () =>
+                allAudience().then((ids) => [...fresh, ...ids]),
+              fetchMentionAllUserIds: allAudience,
+            }
+          : { recipientIds: fresh }),
       });
     }
     // Best-effort: keep every existing reply's `quoteData.preview` in sync with
@@ -2149,16 +2214,19 @@ export class GroupMessageService {
     // Mentions were resolved against the SOURCE room's roster. Re-resolve them
     // against the target (same text) so a forward never carries a mention of
     // someone who isn't in the room it lands in. A forward publishes no push,
-    // so this never notifies anyone.
+    // so this never notifies anyone — and @all is stripped so it never renders
+    // as one.
     const forwardContent = {
       ...((source.content ?? {}) as Record<string, unknown>),
     };
     if (forwardContent.mentions !== undefined) {
-      const mentions = await this.resolveMentions(
-        forwardContent.mentions,
-        typeof forwardContent.text === "string" ? forwardContent.text : "",
-        params.targetRoomId
-      );
+      const mentions = (
+        await this.resolveMentions(
+          forwardContent.mentions,
+          typeof forwardContent.text === "string" ? forwardContent.text : "",
+          params.targetRoomId
+        )
+      ).filter((m) => m.type !== "ALL");
       if (mentions.length > 0) forwardContent.mentions = mentions;
       else delete forwardContent.mentions;
     }

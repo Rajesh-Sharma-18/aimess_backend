@@ -277,3 +277,88 @@ describe("publishMessageSentSafe — mentionedUserIds", () => {
     expect(lastQueuedPayload().data).not.toHaveProperty("mentionedUserIds");
   });
 });
+
+/**
+ * `mentionAllUserIds` (group @all): resolved lazily, GROUP only, never wider
+ * than the final recipients, omitted when empty. `mentionOnly` only when true.
+ */
+describe("publishMessageSentSafe — mentionAllUserIds / mentionOnly", () => {
+  const base = {
+    conversationId: "grp_1",
+    messageId: "m-11",
+    clientMessageId: "c-11",
+    senderId: "u-sender",
+    senderName: "Alice",
+    senderAvatar: "",
+    preview: "hi",
+    messageType: "TEXT",
+    sentAt: 1_700_000_000_004,
+    recipientIds: ["u-a", "u-b", "u-sender"],
+  };
+
+  it("GROUP: resolved ids are filtered to the final recipients and deduped", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationType: "GROUP",
+      fetchMentionAllUserIds: async () => [
+        "u-a",
+        "u-b",
+        "u-b",
+        "u-sender",
+        "u-outsider",
+      ],
+    });
+    await flush();
+
+    const data = lastQueuedPayload().data as Record<string, unknown>;
+    expect(data.mentionAllUserIds).toEqual(["u-a", "u-b"]);
+    expect(data).not.toHaveProperty("mentionOnly");
+  });
+
+  it("GROUP: nothing left after filtering → the key is absent", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationType: "GROUP",
+      fetchMentionAllUserIds: async () => ["u-outsider", "u-sender"],
+    });
+    await flush();
+
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionAllUserIds");
+  });
+
+  it("PRIVATE never resolves or carries mentionAllUserIds", async () => {
+    const fetchMentionAllUserIds = jest.fn(async () => ["u-a"]);
+    publishMessageSentSafe({
+      ...base,
+      conversationId: "prv_1",
+      conversationType: "PRIVATE",
+      fetchMentionAllUserIds,
+    });
+    await flush();
+
+    expect(fetchMentionAllUserIds).not.toHaveBeenCalled();
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionAllUserIds");
+  });
+
+  it("mentionOnly is on the wire only when true", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationType: "GROUP",
+      mentionOnly: true,
+      mentionedUserIds: ["u-a"],
+    });
+    await flush();
+    expect(lastQueuedPayload().data).toMatchObject({
+      mentionOnly: true,
+      mentionedUserIds: ["u-a"],
+    });
+
+    publishMessageSentSafe({
+      ...base,
+      conversationType: "GROUP",
+      mentionOnly: false,
+    });
+    await flush();
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionOnly");
+  });
+});

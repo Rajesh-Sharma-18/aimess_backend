@@ -80,7 +80,14 @@ jest.mock("../../src/services/notification-eligibility.service.js", () => ({
   ),
 }));
 
+// @all opt-out reads the recipient's account settings. Default: not muted.
+jest.mock("../../src/services/notification-settings.service.js", () => ({
+  ...jest.requireActual("../../src/services/notification-settings.service.js"),
+  getNotificationSettings: jest.fn(async () => ({ mentionAllMuted: false })),
+}));
+
 import { startChatConsumer } from "../../src/consumers/chat.consumer.js";
+import { getNotificationSettings } from "../../src/services/notification-settings.service.js";
 import { pushToUser } from "../../src/services/push.service.js";
 import { flushAllChatPushes } from "../../src/services/chat-push-coalescer.js";
 import {
@@ -1070,5 +1077,204 @@ describe("startChatConsumer — group @mentions", () => {
     expect(pushes).toHaveLength(1);
     expect(pushes[0]!.data.notificationType).toBeUndefined();
     expect(pushes[0]!.collapseKey).toBe(`conv:${BASE.conversationId}`);
+  });
+});
+
+/**
+ * Group @all: server-resolved `mentionAllUserIds` bypass the group mute unless
+ * the recipient muted @all account-wide; `mentionOnly` (edit publish) restricts
+ * the push to the mentioned sets.
+ */
+describe("startChatConsumer — group @all", () => {
+  let consume: ConsumeCallback;
+  const settingsMock = getNotificationSettings as jest.Mock;
+
+  type PushShape = {
+    userId: string;
+    collapseKey?: string;
+    data: Record<string, string>;
+  };
+  const flushed = (): PushShape[] => {
+    if (pushMany.mock.calls.length === 0) return [];
+    const [ids, builderFn] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => PushShape,
+    ];
+    return ids.map((id) => builderFn(id));
+  };
+  const pushTo = (id: string) => flushed().find((p) => p.userId === id);
+  const muteAllFor = (...ids: string[]) =>
+    settingsMock.mockImplementation(async (id: string) => ({
+      mentionAllMuted: ids.includes(id),
+    }));
+
+  beforeAll(async () => {
+    consume = await setupConsumer();
+  });
+
+  beforeEach(() => {
+    pushMany.mockClear();
+    pushOne.mockClear();
+    isPrivateMutedMock.mockReset();
+    isPrivateMutedMock.mockResolvedValue(false);
+    filterNotifiableMock.mockReset();
+    filterNotifiableMock.mockImplementation(
+      async (_communityId: string, userIds: string[]) => userIds
+    );
+    groupMuteFilterMock.mockReset();
+    // Everyone handed to the gate has muted the group.
+    groupMuteFilterMock.mockResolvedValue([]);
+    settingsMock.mockReset();
+    muteAllFor();
+  });
+
+  it("@all recipients who did not mute @all bypass the group mute, flagged ALL", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        groupName: "Weekend Trip",
+        recipientIds: ["a", "b"],
+        mentionAllUserIds: ["a", "b"],
+      })
+    );
+    await flush();
+
+    expect(groupMuteFilterMock).not.toHaveBeenCalled();
+    const pushes = flushed();
+    expect(pushes.map((p) => p.userId)).toEqual(["a", "b"]);
+    for (const p of pushes) {
+      expect(p.data.notificationType).toBe("MENTION");
+      expect(p.data.mentionType).toBe("ALL");
+      expect(p.collapseKey).toBe(`mention:${BASE.conversationId}`);
+    }
+  });
+
+  it("a muted-@all user goes through the group mute gate like a plain member", async () => {
+    muteAllFor("opted-out");
+    groupMuteFilterMock.mockImplementation(
+      async (_roomId: string, userIds: string[]) => userIds
+    );
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["opted-out"],
+        mentionAllUserIds: ["opted-out"],
+      })
+    );
+    await flush();
+
+    expect(groupMuteFilterMock).toHaveBeenCalledWith(BASE.conversationId, [
+      "opted-out",
+    ]);
+    const push = pushTo("opted-out")!;
+    expect(push.data.notificationType).toBeUndefined();
+    expect(push.data.mentioned).toBeUndefined();
+    expect(push.collapseKey).toBe(`conv:${BASE.conversationId}`);
+  });
+
+  it("a muted-@all user who also muted the group gets nothing", async () => {
+    muteAllFor("opted-out");
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["opted-out"],
+        mentionAllUserIds: ["opted-out"],
+      })
+    );
+    await flush();
+
+    expect(pushMany).not.toHaveBeenCalled();
+  });
+
+  it("individual + @all for the same user → one push, individual mention wins, no settings read", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["a"],
+        mentionedUserIds: ["a"],
+        mentionAllUserIds: ["a"],
+      })
+    );
+    await flush();
+
+    expect(settingsMock).not.toHaveBeenCalled();
+    const pushes = flushed();
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]!.data.mentionType).toBe("USER");
+  });
+
+  it("the sender and ids outside recipientIds are never notified or looked up", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: [BASE.senderId, "a"],
+        mentionAllUserIds: [BASE.senderId, "outsider", "a"],
+      })
+    );
+    await flush();
+
+    expect(settingsMock.mock.calls.map((c) => c[0])).toEqual(["a"]);
+    expect(flushed().map((p) => p.userId)).toEqual(["a"]);
+  });
+
+  it("mentionOnly restricts the push to the mentioned sets (opted-out user gets nothing)", async () => {
+    muteAllFor("opted-out");
+    groupMuteFilterMock.mockImplementation(
+      async (_roomId: string, userIds: string[]) => userIds
+    );
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["named", "everyone", "opted-out", "plain"],
+        mentionedUserIds: ["named"],
+        mentionAllUserIds: ["everyone", "opted-out"],
+        mentionOnly: true,
+      })
+    );
+    await flush();
+
+    expect(groupMuteFilterMock).not.toHaveBeenCalled();
+    expect(flushed().map((p) => p.userId)).toEqual(["named", "everyone"]);
+    expect(pushTo("named")!.data.mentionType).toBe("USER");
+    expect(pushTo("everyone")!.data.mentionType).toBe("ALL");
+  });
+
+  it("a settings read failure treats the user as allowed", async () => {
+    settingsMock.mockRejectedValue(new Error("settings down"));
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["a"],
+        mentionAllUserIds: ["a"],
+      })
+    );
+    await flush();
+
+    expect(groupMuteFilterMock).not.toHaveBeenCalled();
+    expect(pushTo("a")!.data.mentionType).toBe("ALL");
+  });
+
+  it("PRIVATE ignores @all fields: no settings read, no mention flag, mentionOnly ignored", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "PRIVATE",
+        mentionAllUserIds: ["recipient-uuid"],
+        mentionOnly: true,
+      })
+    );
+    await flush();
+
+    expect(settingsMock).not.toHaveBeenCalled();
+    const pushes = flushed();
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]!.data.notificationType).toBeUndefined();
   });
 });

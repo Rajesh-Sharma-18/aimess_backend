@@ -85,15 +85,66 @@ describe("message:send mentions — gateway schema + contentJson", () => {
     );
   });
 
-  it("strips unknown keys on mention entries", () => {
+  it("strips unknown keys on mention entries but keeps `type`", () => {
     const content = JSON.parse(
       contentJsonOf({
         ...base,
         contentText: "@kristi",
-        mentions: [{ userId: "u1", offset: 0, length: 7, evil: "x" }],
+        mentions: [
+          { type: "USER", userId: "u1", offset: 0, length: 7, evil: "x" },
+        ],
       })
     );
-    expect(content.mentions).toEqual([{ userId: "u1", offset: 0, length: 7 }]);
+    expect(content.mentions).toEqual([
+      { type: "USER", userId: "u1", offset: 0, length: 7 },
+    ]);
+  });
+
+  it("forwards an ALL entry (no userId) with its type, mixed with USER entries", () => {
+    const content = JSON.parse(
+      contentJsonOf({
+        ...base,
+        contentText: "@all @kristi",
+        mentions: [
+          { type: "ALL", offset: 0, length: 4 },
+          { userId: "u1", username: "kristi", offset: 5, length: 7 },
+        ],
+      })
+    );
+    expect(content.mentions).toEqual([
+      { type: "ALL", offset: 0, length: 4 },
+      { userId: "u1", username: "kristi", offset: 5, length: 7 },
+    ]);
+  });
+
+  it("strips user fields from an ALL entry instead of rejecting it", () => {
+    const content = JSON.parse(
+      contentJsonOf({
+        ...base,
+        content: {
+          text: "@all",
+          mentions: [
+            { type: "ALL", userId: "u1", username: "all", offset: 0, length: 4 },
+          ],
+        },
+      })
+    );
+    expect(content.mentions).toEqual([{ type: "ALL", offset: 0, length: 4 }]);
+  });
+
+  it("mixed USER/ALL entries share the 200 transport cap", () => {
+    const mixed = (n: number) =>
+      Array.from({ length: n }, (_, i) =>
+        i % 2 ? mention(i) : { type: "ALL", offset: i * 10, length: 4 }
+      );
+    const parse = (n: number) =>
+      MessageSendSchema.safeParse({
+        ...base,
+        contentText: "x",
+        mentions: mixed(n),
+      }).success;
+    expect(parse(200)).toBe(true);
+    expect(parse(201)).toBe(false);
   });
 
   it("51..200 entries pass the gateway (chat-service enforces 50)", () => {
@@ -131,6 +182,10 @@ describe("message:send mentions — gateway schema + contentJson", () => {
     ["length over 64", { userId: "u1", offset: 0, length: 65 }],
     ["username over 64", { userId: "u1", username: "a".repeat(65), offset: 0, length: 2 }],
     ["string offset", { userId: "u1", offset: "0", length: 2 }],
+    ["unknown type", { type: "BOGUS", userId: "u1", offset: 0, length: 2 }],
+    ["lowercase all type", { type: "all", offset: 0, length: 4 }],
+    ["ALL with negative offset", { type: "ALL", offset: -1, length: 4 }],
+    ["ALL with zero length", { type: "ALL", offset: 0, length: 0 }],
   ])("rejects a malformed entry: %s", (_label, entry) => {
     expect(
       MessageSendSchema.safeParse({
@@ -191,4 +246,30 @@ describe("message:send mentions — gateway schema + contentJson", () => {
       detail: "CHAT_MENTION_LIMIT_EXCEEDED",
     });
   });
+
+  it.each([
+    [
+      "en",
+      "You're using @all too often. Please wait a few minutes and try again.",
+    ],
+    ["vi", "Bạn dùng @all quá thường xuyên. Vui lòng đợi vài phút rồi thử lại."],
+  ] as const)(
+    "CHAT_MENTION_ALL_RATE_LIMITED from chat-service surfaces as a RATE_LIMITED ack with detail (%s)",
+    (locale, message) => {
+      const calls: unknown[] = [];
+      const { code, detailKey } = resolveGrpcAckError({
+        code: grpc.status.RESOURCE_EXHAUSTED,
+        details: "CHAT_MENTION_ALL_RATE_LIMITED",
+        message: "8 RESOURCE_EXHAUSTED: CHAT_MENTION_ALL_RATE_LIMITED",
+      });
+      ackError((res) => calls.push(res), code, locale, detailKey);
+      expect(calls[0]).toEqual({
+        success: false,
+        error: "RATE_LIMITED",
+        retryable: true,
+        message,
+        detail: "CHAT_MENTION_ALL_RATE_LIMITED",
+      });
+    }
+  );
 });
