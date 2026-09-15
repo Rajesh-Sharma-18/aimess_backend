@@ -581,7 +581,7 @@ export const adminPaths = {
       operationId: "getDashboardServiceStatus",
       summary: "Dashboard service-status panel",
       description:
-        "Service-status section. Returns `{ serviceStatus }` — per-service health derived from the backoffice opossum circuit breakers (auth/community/chat report operational/degraded/down + breaker state; media/notification/livestream have no health probe wired yet and report `degraded` with a note). Cached briefly (10s). Requires `dashboard.read`.",
+        "Service-status section. Returns `{ serviceStatus }` — a summary projection of the System Health snapshot (same statuses as GET /admin/v1/system-health, plus overall status and its reason). No separate cache. Details live on System Health. Requires `dashboard.read`.",
       security: adminSecurity,
       responses: {
         "200": okRes(
@@ -3339,12 +3339,59 @@ export const adminPaths = {
       operationId: "adminGetSystemHealth",
       summary: "Live system health snapshot",
       description:
-        "Overall status + services-up tally + per-service health (gRPC ping + circuit-breaker stats for auth/community/chat; media/notification/stream/user report status:'unknown', monitored:false — no probe wired for them yet) + infrastructure health (Postgres/Redis/RabbitMQ/MinIO). lastUpdated is the true staleness indicator (cache TTL 5s). Requires systemhealth.read.",
+        "Overall status + services-up tally + per-service health (gRPC ping for auth/community/chat/calls, HTTP /health for user/media/notification/stream, rolled up with the infrastructure each service depends on into `status`, `checks` and a sanitized `reason`) + infrastructure health. lastUpdated is the true staleness indicator (cache TTL 5s). Requires systemhealth.read.",
       security: adminSecurity,
       responses: {
         "200": okRes("System health", "#/components/schemas/AdminSystemHealth"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing systemhealth.read"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/system-health/restarts": {
+    get: {
+      tags: [adminTags.systemHealth],
+      operationId: "adminListServiceRestarts",
+      summary: "Service restart availability and operations",
+      description:
+        "Per service: `restartable` (an allowlisted service AND a restart agent deployed in this environment), `unavailableReason` (`environment` | `manual`), `advice` (`restart` only when the service's own endpoint is failing and every dependency is healthy; `investigate_dependency` with `affectedComponents` otherwise), the latest `operation` (requested → restarting → verifying → succeeded | failed, with a safe `reason`) and `cooldownUntil`. Requires systemhealth.read + settings.manage (SUPER_ADMIN).",
+      security: adminSecurity,
+      responses: {
+        "200": { description: "Restart availability" },
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing systemhealth.read or settings.manage"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/system-health/services/{serviceKey}/restart": {
+    post: {
+      tags: [adminTags.systemHealth],
+      operationId: "adminRestartService",
+      summary: "Restart one allowlisted service",
+      description:
+        "Accepts the restart and runs it in the background through the internal restart agent, then verifies health for up to 60s. 202 means ACCEPTED, not healthy — poll GET /admin/v1/system-health/restarts for the outcome. No request body is read. Audited as system.service_restart_requested / system.service_restart_completed. backoffice-service and api-gateway are never restartable from here. Requires systemhealth.read + settings.manage (SUPER_ADMIN).",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "serviceKey",
+          in: "path",
+          required: true,
+          schema: {
+            type: "string",
+            enum: ["auth", "user", "community", "chat", "media", "notification", "stream"],
+          },
+        },
+      ],
+      responses: {
+        "202": { description: "Restart accepted — `{ operation }`" },
+        "400": errRes("serviceKey is not allowlisted"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing systemhealth.read or settings.manage"),
+        "409": errRes("Already restarting, or a restart would not fix the current failure"),
+        "429": errRes("Restart cooldown (Retry-After)"),
+        "503": errRes("No restart agent in this environment"),
       },
       "x-implementation-status": "implemented",
     },

@@ -99,6 +99,22 @@ const envSchema = z.object({
   STREAM_HTTP_URL: z.string().url().default("http://0.0.0.0:3007"),
 
   /**
+   * Service restart agent (deploy/restart-agent) — the only component with
+   * container-runtime access. Backoffice sends it an allowlisted service id,
+   * authenticated with the token in this compose secret file. Both unset (the
+   * default, and local dev, where services are plain processes) = restart is
+   * unavailable. See deploy/dev02/compose.restart-agent.yml.
+   */
+  SERVICE_RESTART_AGENT_URL: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().url().optional()
+  ),
+  SERVICE_RESTART_AGENT_TOKEN_FILE: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().min(1).optional()
+  ),
+
+  /**
    * Comma-separated CORS origin allowlist (e.g. the admin-panel URL). LAN /
    * loopback origins are auto-allowed in dev via a regex, so this is mainly for
    * production hosts. Empty is fine in dev.

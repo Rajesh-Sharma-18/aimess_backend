@@ -10,6 +10,8 @@
 deploy/*/.env.dev01
 deploy/*/.env.dev02
 deploy/*/.md
+# Compose secret files (e.g. the restart-agent token) — never committed.
+deploy/*/secrets/
 
 # DEPLOYMENT — rendered from config.yaml.template; contains the Redis password.
 deploy/livekit/config.yaml

@@ -6,6 +6,13 @@ import {
   healthInfrastructureRegistry,
   healthServiceRegistry,
 } from "../lib/health-registry.js";
+import { RESTARTABLE_SERVICES, restartLockKey } from "../lib/service-restart.js";
+import { SYSTEM_HEALTH_SCHEMA_VERSION } from "../types/system-health.types.js";
+import {
+  describeOverall,
+  evaluateService,
+  sanitizeInfra,
+} from "../lib/service-status.js";
 import type {
   HealthStatus,
   InfraHealth,
@@ -25,7 +32,10 @@ import type {
  * dependency — a failed component is reported `down`, not surfaced as an error.
  */
 
-const CACHE_KEY = "backoffice:system-health";
+// Versioned: an instance on different code must never read this snapshot as its
+// own. Unversioned, an older instance sharing the Redis filled the cache every
+// tick and this one served that stale-contract snapshot instead of its own.
+const CACHE_KEY = `backoffice:system-health:v${String(SYSTEM_HEALTH_SCHEMA_VERSION)}`;
 const CACHE_TTL_SECONDS = 5;
 
 async function readCache(): Promise<SystemHealth | null> {
@@ -80,7 +90,26 @@ export function computeOverall(
   return "healthy";
 }
 
-/** Services-up tally over monitored services (a degraded service still counts as up). */
+/**
+ * Services with a Super Admin restart in flight — the restart run holds this
+ * lock from request to verified outcome. Part of the snapshot so every screen
+ * shows "Restarting" together. Best-effort: a Redis hiccup just omits the flag.
+ */
+async function restartingServices(keys: string[]): Promise<Set<string>> {
+  const restartable = keys.filter((k) => RESTARTABLE_SERVICES.has(k));
+  if (restartable.length === 0) return new Set();
+  try {
+    const locks = await redis.mget(restartable.map(restartLockKey));
+    return new Set(restartable.filter((_, i) => locks[i] !== null));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Services-up tally over monitored APPLICATION services only — infrastructure is
+ * never counted (a degraded service still counts as up).
+ */
 export function computeServicesUp(services: ServiceHealth[]): ServicesUp {
   const monitored = services.filter((s) => s.monitored);
   const up = monitored.filter((s) => s.status !== "down").length;
@@ -93,13 +122,23 @@ export const systemHealthService = {
     const cached = await readCache();
     if (cached) return cached;
 
-    const [services, infrastructure] = await Promise.all([
+    const [rawServices, rawInfrastructure] = await Promise.all([
       probeServices(healthServiceRegistry.getServices()),
       probeInfrastructure(healthInfrastructureRegistry.getInfrastructure()),
     ]);
+    // Status rules + sanitized reasons (lib/service-status.ts). Raw probe notes
+    // and location metrics never leave this service.
+    const restarting = await restartingServices(rawServices.map((s) => s.key));
+    const services = rawServices.map((s) => {
+      const evaluated = evaluateService(s, rawInfrastructure);
+      return restarting.has(s.key) ? { ...evaluated, restarting: true } : evaluated;
+    });
+    const infrastructure = rawInfrastructure.map(sanitizeInfra);
 
     const result: SystemHealth = {
+      schemaVersion: SYSTEM_HEALTH_SCHEMA_VERSION,
       overall: computeOverall(services, infrastructure),
+      overallReason: describeOverall(services, infrastructure),
       servicesUp: computeServicesUp(services),
       lastUpdated: Date.now(),
       services,

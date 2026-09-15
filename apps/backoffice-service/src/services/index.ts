@@ -12,6 +12,7 @@ export { groupService } from "./group.service.js";
 export { announcementService } from "./announcement.service.js";
 export { categoryService } from "./category.service.js";
 export { systemHealthService } from "./system-health.service.js";
+export { serviceRestartService } from "./service-restart.service.js";
 export { adminAccountService } from "./admin-account.service.js";
 export { systemMaintenanceService } from "./system-maintenance.service.js";
 export { notificationCategoryService } from "./notification-category.service.js";

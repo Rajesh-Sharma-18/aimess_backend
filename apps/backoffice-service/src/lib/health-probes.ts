@@ -13,6 +13,12 @@ import type {
   ServiceHealth,
 } from "../types/system-health.types.js";
 import type { InfraProbeDef, ServiceProbeDef } from "./health-registry.js";
+// Timeout / latency thresholds live with the status rules that explain them.
+import {
+  PROBE_TIMEOUT_MS,
+  SLOW_INFRA_MS,
+  SLOW_SERVICE_MS,
+} from "./service-status.js";
 
 /**
  * Reusable, framework-free health-probe primitives for the System Health
@@ -27,12 +33,6 @@ import type { InfraProbeDef, ServiceProbeDef } from "./health-registry.js";
  * in `src/probes/*.probe.ts`, registered once in `health.bootstrap.ts` — this
  * file never lists services/infrastructure by name.
  */
-
-/** Wall-clock ceiling for any single probe. Matches the gRPC breaker timeout. */
-const PROBE_TIMEOUT_MS = 2000;
-/** Above this, a reachable dependency is reported `degraded` rather than `healthy`. */
-const SLOW_SERVICE_MS = 1000;
-const SLOW_INFRA_MS = 500;
 
 class ProbeTimeoutError extends Error {
   constructor(ms: number) {

@@ -619,25 +619,39 @@ export const openApiSchemas = {
             label: { type: "string", example: "Chat Service" },
             status: {
               type: "string",
-              enum: ["operational", "degraded", "down"],
+              enum: ["operational", "degraded", "down", "unknown"],
               example: "operational",
-            },
-            latencyMs: { type: "integer", nullable: true, example: 21 },
-            breaker: {
-              type: "string",
-              nullable: true,
-              example: "half-open",
-              description: "opossum circuit-breaker state when not closed.",
-            },
-            note: {
-              type: "string",
               description:
-                "Optional short reason string — set on degraded/down rows (probe error, HTTP status code, slow-response warning).",
+                "The SAME status GET /admin/v1/system-health reports for this service (`healthy` → `operational`). `unknown` when no snapshot or probe result exists — never `down`.",
+            },
+            restarting: {
+              type: "boolean",
+              description: "A Super Admin restart of this service is in flight.",
+            },
+            checkedAt: {
+              type: "integer",
+              nullable: true,
+              example: 1789440000000,
+              description: "Epoch ms of the service probe.",
             },
           },
         },
       },
-      checkedAt: { type: "string", format: "date-time" },
+      overall: {
+        type: "string",
+        enum: ["operational", "degraded", "down", "unknown"],
+        description: "The System Health overall status.",
+      },
+      overallReason: {
+        type: "string",
+        example:
+          "1 infrastructure component unavailable: Document Database (MongoDB).",
+      },
+      checkedAt: {
+        type: "integer",
+        example: 1789440000000,
+        description: "Epoch ms of the System Health snapshot.",
+      },
     },
   },
   AdminQuickLinks: {
@@ -3758,6 +3772,12 @@ export const openApiSchemas = {
         type: "string",
         enum: ["healthy", "degraded", "down", "unknown"],
         example: "healthy",
+        description:
+          "From the service's OWN check (backoffice lib/service-status.ts). down: its endpoint failed (unreachable, timed out, non-2xx, breaker open). degraded: over the latency threshold or breaker half-open. unknown: no probe. Infrastructure failures never change a service's status — they affect `overall` and appear in `checks` as diagnostics.",
+      },
+      restarting: {
+        type: "boolean",
+        description: "A Super Admin restart of this service is in flight.",
       },
       monitored: {
         type: "boolean",
@@ -3782,8 +3802,41 @@ export const openApiSchemas = {
         nullable: true,
         enum: ["open", "half-open", null],
       },
-      lastChecked: { type: "string", format: "date-time" },
-      note: { type: "string" },
+      lastChecked: {
+        type: "integer",
+        example: 1789440000000,
+        description: "Epoch ms of the service probe.",
+      },
+      reason: {
+        type: "string",
+        example:
+          "Object Storage (MinIO): Response time 812ms exceeded the 500ms threshold.",
+        description:
+          "Sanitized, human-readable reason naming the responsible check(s). Present when not healthy.",
+      },
+      checks: {
+        type: "array",
+        description:
+          "The service endpoint check first, then each infrastructure dependency the service uses that is monitored in this environment.",
+        items: {
+          type: "object",
+          properties: {
+            key: { type: "string", example: "object_storage" },
+            name: { type: "string", example: "Object Storage (MinIO)" },
+            status: {
+              type: "string",
+              enum: ["healthy", "degraded", "down", "unknown"],
+            },
+            critical: {
+              type: "boolean",
+              description: "When a critical check is down, the service is down.",
+            },
+            responseTimeMs: { type: "number", nullable: true },
+            reason: { type: "string" },
+          },
+          required: ["key", "name", "status", "critical", "responseTimeMs"],
+        },
+      },
     },
     required: ["key", "name", "status", "monitored", "lastChecked"],
   },
@@ -3804,12 +3857,21 @@ export const openApiSchemas = {
       metrics: {
         type: "object",
         description:
-          "Component-specific bag (latencyMs, engine, connection, transport, bucket, ...).",
+          "Component-specific bag (latencyMs, engine, connection, transport, version, protocol). Location metrics (host, bucket) are never included.",
         additionalProperties: true,
       },
-      latencyMs: { type: "integer", nullable: true },
-      lastChecked: { type: "string", format: "date-time" },
-      note: { type: "string" },
+      latencyMs: { type: "number", nullable: true },
+      lastChecked: {
+        type: "integer",
+        example: 1789440000000,
+        description: "Epoch ms of the probe.",
+      },
+      reason: {
+        type: "string",
+        example: "Health check timed out after 2000ms.",
+        description:
+          "Sanitized, human-readable reason. Present when degraded or down; raw probe errors are never included.",
+      },
     },
     required: ["key", "name", "status", "lastChecked"],
   },
@@ -3818,11 +3880,24 @@ export const openApiSchemas = {
     description:
       "GET /admin/v1/system-health. Cannot 500 by design — a partial outage still returns 200 with the affected component(s) marked down/degraded. Redis-cached, 5s TTL; lastUpdated is the true staleness indicator.",
     properties: {
+      schemaVersion: {
+        type: "integer",
+        example: 2,
+        description:
+          "Payload contract version. Clients ignore pushed snapshots with a version they do not understand.",
+      },
       overall: { type: "string", enum: ["healthy", "degraded", "down"] },
+      overallReason: {
+        type: "string",
+        example:
+          "1 infrastructure component unavailable: Document Database (MongoDB).",
+        description:
+          "Which services and infrastructure components make `overall` non-healthy, by name. Absent when healthy.",
+      },
       servicesUp: {
         type: "object",
         description:
-          "Counts only MONITORED services; a degraded service still counts as up.",
+          "Counts only MONITORED application services (never infrastructure); a degraded service still counts as up.",
         properties: {
           up: { type: "integer", example: 3 },
           total: { type: "integer", example: 3 },
@@ -9018,6 +9093,38 @@ export const openApiSchemas = {
     },
     required: ["pagination", "data", "hasMore", "nextCursor"],
   },
+  ChatMessageMention: {
+    type: "object",
+    description:
+      "Group @mention entity. GROUP conversations only — private and community messages never persist mentions (the key is stripped server-side). " +
+      "`offset`/`length` are UTF-16 code units into `content.text` and cover the literal `@handle` token: `text[offset] === \"@\"` and `length = 1 + handle.length`. " +
+      "`userId` is the stable identity (use it for tap-to-profile); `username` is the handle the server resolved at send/edit time. Message text is immutable, so after a rename the text may still read `@oldhandle`. " +
+      "Server validation on send/edit: every entry is re-checked (in-bounds, `@` + `[A-Za-z0-9_]{1,32}` token on a word boundary, no overlap with an earlier entry, mentioned user is an ACTIVE group member with a non-deleted account, token matches the user's current handle case-insensitively) and invalid entries are silently DROPPED — the message itself is never rejected for them. " +
+      "More than 50 entries in one message is rejected with 400 `CHAT_MENTION_LIMIT_EXCEEDED` (requests carrying more than 200 entries fail generic validation first). " +
+      "Mentioned members receive a mention push even when they muted the group.",
+    properties: {
+      userId: { type: "string", minLength: 1, maxLength: 100 },
+      username: {
+        type: "string",
+        maxLength: 64,
+        description:
+          "Handle without the `@`. Optional on requests (ignored — the server fills in its own value); always present on responses.",
+      },
+      offset: {
+        type: "integer",
+        minimum: 0,
+        description: "UTF-16 index of the `@` in `content.text`.",
+      },
+      length: {
+        type: "integer",
+        minimum: 1,
+        maximum: 64,
+        description: "UTF-16 length of the `@handle` token.",
+      },
+    },
+    required: ["userId", "offset", "length"],
+    example: { userId: "usr_01j9x8vb2f", username: "kristi", offset: 6, length: 7 },
+  },
   ChatMessage: {
     type: "object",
     properties: {
@@ -9079,6 +9186,12 @@ export const openApiSchemas = {
           location: { $ref: "#/components/schemas/ChatLocationAttachment" },
           contact: { $ref: "#/components/schemas/ChatContactAttachment" },
           sticker: { $ref: "#/components/schemas/ChatSticker" },
+          mentions: {
+            type: "array",
+            description:
+              "GROUP only: server-validated @mention entities into `text` (UTF-16 offsets). Absent when there are none.",
+            items: { $ref: "#/components/schemas/ChatMessageMention" },
+          },
         },
       },
       contentType: {
@@ -9191,6 +9304,12 @@ export const openApiSchemas = {
           location: { $ref: "#/components/schemas/ChatLocationAttachment" },
           contact: { $ref: "#/components/schemas/ChatContactAttachment" },
           sticker: { $ref: "#/components/schemas/ChatSticker" },
+          mentions: {
+            type: "array",
+            description:
+              "GROUP only: server-validated @mention entities into `text` (UTF-16 offsets). Absent when there are none.",
+            items: { $ref: "#/components/schemas/ChatMessageMention" },
+          },
         },
         nullable: true,
       },
@@ -11760,6 +11879,13 @@ export const openApiSchemas = {
           text: { type: "string", minLength: 1, maxLength: 10000 },
           urls: { type: "array", items: { type: "string" } },
           files: { type: "array", items: { type: "object" } },
+          mentions: {
+            type: "array",
+            maxItems: 200,
+            description:
+              "GROUP edits only. Re-validated against the NEW text (see ChatMessageMention). Omit to keep the previous message's still-valid mentions; send `[]` to clear them. Only members newly mentioned by the edit are notified. More than 50 → 400 `CHAT_MENTION_LIMIT_EXCEEDED`.",
+            items: { $ref: "#/components/schemas/ChatMessageMention" },
+          },
         },
       },
     },

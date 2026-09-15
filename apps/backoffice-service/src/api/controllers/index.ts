@@ -95,6 +95,10 @@ export {
 export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";
 export { getSystemHealth } from "./system-health.controller.js";
 export {
+  listServiceRestarts,
+  restartService,
+} from "./service-restart.controller.js";
+export {
   disconnectAllFriendships,
   getCallingEnabled,
   setCallingEnabled,

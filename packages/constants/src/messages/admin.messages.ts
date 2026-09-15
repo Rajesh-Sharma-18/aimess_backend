@@ -666,6 +666,41 @@ export const ADMIN_MESSAGES = {
     en: "System health fetched",
     th: "ดึงข้อมูลสถานะระบบแล้ว",
   },
+  ADMIN_SERVICE_RESTARTS_FETCHED: {
+    vi: "Đã tải trạng thái khởi động lại dịch vụ",
+    en: "Service restart status fetched",
+    th: "ดึงข้อมูลสถานะการรีสตาร์ทบริการแล้ว",
+  },
+  ADMIN_SERVICE_RESTART_ACCEPTED: {
+    vi: "Đã chấp nhận yêu cầu khởi động lại dịch vụ",
+    en: "Service restart requested",
+    th: "ได้รับคำขอรีสตาร์ทบริการแล้ว",
+  },
+  ADMIN_SERVICE_RESTART_NOT_RESTARTABLE: {
+    vi: "Không thể khởi động lại dịch vụ này từ Bảng quản trị.",
+    en: "This service cannot be restarted from the Admin Panel.",
+    th: "ไม่สามารถรีสตาร์ทบริการนี้จากแผงผู้ดูแลระบบได้",
+  },
+  ADMIN_SERVICE_RESTART_UNSUPPORTED: {
+    vi: "Không thể khởi động lại dịch vụ trong môi trường này.",
+    en: "Service restart is not available in this environment.",
+    th: "ไม่สามารถรีสตาร์ทบริการในสภาพแวดล้อมนี้ได้",
+  },
+  ADMIN_SERVICE_RESTART_NOT_RECOMMENDED: {
+    vi: "Khởi động lại sẽ không khắc phục tình trạng hiện tại của dịch vụ này. Hãy kiểm tra thành phần phụ thuộc đang lỗi.",
+    en: "A restart would not fix this service's current health. Investigate the failing dependency instead.",
+    th: "การรีสตาร์ทจะไม่แก้ไขสถานะปัจจุบันของบริการนี้ กรุณาตรวจสอบส่วนประกอบที่ขัดข้อง",
+  },
+  ADMIN_SERVICE_RESTART_IN_PROGRESS: {
+    vi: "Dịch vụ này đang được khởi động lại.",
+    en: "A restart of this service is already in progress.",
+    th: "บริการนี้กำลังรีสตาร์ทอยู่",
+  },
+  ADMIN_SERVICE_RESTART_COOLDOWN: {
+    vi: "Dịch vụ này vừa được khởi động lại. Vui lòng chờ trước khi thử lại.",
+    en: "This service was restarted recently. Please wait before trying again.",
+    th: "บริการนี้เพิ่งรีสตาร์ท กรุณารอก่อนลองอีกครั้ง",
+  },
   ADMIN_FRIENDSHIPS_DISCONNECTED: {
     vi: "Đã ngắt kết nối toàn bộ quan hệ bạn bè",
     en: "All friendships disconnected",

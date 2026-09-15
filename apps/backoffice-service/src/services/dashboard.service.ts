@@ -1,20 +1,20 @@
 import { logger } from "@aimess/logger";
 
 import { redis } from "../config/redis.js";
-import {
-  authClient,
-  getUserCountsBreaker,
-  getActiveUserCountsBreaker,
-} from "../grpc/auth.client.js";
+import { authClient } from "../grpc/auth.client.js";
 import type { ActiveUserSeriesBucket } from "../grpc/auth.client.js";
-import {
-  communityClient,
-  getCommunityCountBreaker,
-} from "../grpc/community.client.js";
-import { chatClient, getGroupCountBreaker } from "../grpc/chat.client.js";
+import { communityClient } from "../grpc/community.client.js";
+import { chatClient } from "../grpc/chat.client.js";
 import { streamClient } from "../grpc/stream.client.js";
+import {
+  buildServiceStatus,
+  type ServiceStatus,
+} from "../lib/service-status.js";
 import { countOpenReports } from "../repositories/report.repository.js";
 import { countBannedUsers } from "../repositories/user-directory.repository.js";
+import { systemHealthService } from "./system-health.service.js";
+
+export type { ServiceStatus } from "../lib/service-status.js";
 
 /**
  * Dashboard aggregation — live, read-only gRPC fan-out across services, split
@@ -43,7 +43,6 @@ import { countBannedUsers } from "../repositories/user-directory.repository.js";
 
 const OVERVIEW_CACHE_KEY = "backoffice:dashboard:overview";
 const CHARTS_CACHE_PREFIX = "backoffice:dashboard:charts:";
-const SERVICE_STATUS_CACHE_KEY = "backoffice:dashboard:service-status";
 const CACHE_TTL_SECONDS = 10;
 
 export type DashboardPeriod = "daily" | "weekly" | "monthly";
@@ -78,20 +77,6 @@ export interface ActiveVsChurned {
   note: string;
 }
 
-type ServiceState = "operational" | "degraded" | "down";
-
-export interface ServiceStatus {
-  services: Array<{
-    key: string;
-    label: string;
-    status: ServiceState;
-    latencyMs?: number | null;
-    breaker?: string | null;
-    note?: string;
-  }>;
-  checkedAt: number;
-}
-
 async function readCache<T>(key: string): Promise<T | null> {
   try {
     const raw = await redis.get(key);
@@ -108,79 +93,6 @@ async function writeCache(key: string, value: unknown): Promise<void> {
   } catch (err) {
     logger.warn(`dashboard cache write failed (${key})`, err);
   }
-}
-
-/** Breaker-derived per-service health. Pure/sync — reads opossum flags only. */
-function buildServiceStatus(): ServiceStatus {
-  const breakerState = (b: {
-    opened: boolean;
-    halfOpen: boolean;
-  }): { status: ServiceState; breaker: string | null } => {
-    if (b.opened) return { status: "down", breaker: "open" };
-    if (b.halfOpen) return { status: "degraded", breaker: "half-open" };
-    return { status: "operational", breaker: null };
-  };
-
-  // auth-service surfaces two breakers; treat the worst as the service state.
-  const authStates = [getUserCountsBreaker, getActiveUserCountsBreaker].map(
-    breakerState
-  );
-  const worst: ServiceState = authStates.some((s) => s.status === "down")
-    ? "down"
-    : authStates.some((s) => s.status === "degraded")
-      ? "degraded"
-      : "operational";
-  const authBreaker =
-    authStates.find((s) => s.breaker !== null)?.breaker ?? null;
-
-  const community = breakerState(getCommunityCountBreaker);
-  const chat = breakerState(getGroupCountBreaker);
-
-  return {
-    services: [
-      {
-        key: "auth",
-        label: "API / Auth Service",
-        status: worst,
-        breaker: authBreaker,
-      },
-      {
-        key: "chat",
-        label: "Chat Service",
-        status: chat.status,
-        breaker: chat.breaker,
-      },
-      {
-        key: "community",
-        label: "Community Service",
-        status: community.status,
-        breaker: community.breaker,
-      },
-      // No backoffice gRPC client for these — status genuinely unknown.
-      {
-        key: "media",
-        label: "Media Service",
-        status: "degraded",
-        breaker: null,
-        note: "No health probe wired yet — status unknown.",
-      },
-      {
-        key: "notification",
-        label: "Notification Service",
-        status: "degraded",
-        breaker: null,
-        note: "No health probe wired yet — status unknown.",
-      },
-      {
-        key: "livestream",
-        label: "Livestream Service",
-        status: "degraded",
-        breaker: null,
-        note: "No health probe wired yet — status unknown.",
-      },
-    ],
-    checkedAt: Date.now(),
-  };
 }
 
 /**
@@ -392,17 +304,20 @@ export const dashboardService = {
   },
 
   /**
-   * Service-status panel. Pure/sync opossum-derived health, wrapped with a
-   * short-lived cache (10s) for consistency with the other sections.
+   * Service-status panel: a summary projection of the System Health snapshot —
+   * the same cached snapshot GET /system-health returns and the socket pushes —
+   * so the two screens cannot disagree. No second cache on top of it: a
+   * separately cached panel is how the dashboard could lag or diverge.
    */
   async getServiceStatus(): Promise<{ serviceStatus: ServiceStatus }> {
-    const cached = await readCache<{ serviceStatus: ServiceStatus }>(
-      SERVICE_STATUS_CACHE_KEY
-    );
-    if (cached) return cached;
-
-    const result = { serviceStatus: buildServiceStatus() };
-    await writeCache(SERVICE_STATUS_CACHE_KEY, result);
-    return result;
+    // getSystemHealth is designed never to throw; if it somehow does, report
+    // everything unknown (never down) instead of failing the dashboard.
+    const health = await systemHealthService
+      .getSystemHealth()
+      .catch((err: unknown) => {
+        logger.warn("dashboard service-status: system health unavailable", err);
+        return null;
+      });
+    return { serviceStatus: buildServiceStatus(health) };
   },
 };
