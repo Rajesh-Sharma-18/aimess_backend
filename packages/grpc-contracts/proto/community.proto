@@ -192,6 +192,8 @@ service CommunityService {
 
   // ---- Full reaction user list for a message ----
   rpc GetCommunityMessageReactions (GetCommunityMessageReactionsRequest) returns (GetCommunityMessageReactionsResponse);
+  // Keyset-paged reactor list — see messaging.proto GetMessageReactionsPage.
+  rpc GetCommunityMessageReactionsPage (GetCommunityMessageReactionsPageRequest) returns (GetCommunityMessageReactionsPageResponse);
 
   // ---- Forward a community message to another community room ----
   rpc ForwardCommunityMessage (ForwardCommunityMessageRequest) returns (ForwardCommunityMessageResponse);
@@ -1082,6 +1084,35 @@ message GetCommunityMessageReactionsResponse {
   string message_id   = 1;
   string community_id = 2;
   repeated CommunityReactionGroupDto reactions = 3;
+}
+
+// ---- Paginated reaction details ----
+message CommunityReactionDetailUserDto {
+  string user_id      = 1;
+  string display_name = 2;
+  string avatar       = 3; // resolved download URL, never a raw object key
+  string emoji        = 4;
+}
+message CommunityReactionCountDto {
+  string emoji = 1;
+  int64  count = 2;
+}
+message GetCommunityMessageReactionsPageRequest {
+  string message_id   = 1;
+  string community_id = 2;
+  string requester_id = 3;
+  string emoji        = 4; // empty = the "All" filter
+  string cursor       = 5; // empty = first page
+  int32  limit        = 6; // 0 = server default; server clamps
+}
+message GetCommunityMessageReactionsPageResponse {
+  repeated CommunityReactionDetailUserDto users = 1;
+  string   next_cursor                          = 2;
+  bool     has_more                             = 3;
+  // Aggregates over EVERY reaction on the message, not just the page above.
+  repeated CommunityReactionCountDto counts      = 4;
+  int64    total                                = 5;
+  string   self_emoji                           = 6; // empty = caller has not reacted
 }
 
 // ---- Forward a community message ----

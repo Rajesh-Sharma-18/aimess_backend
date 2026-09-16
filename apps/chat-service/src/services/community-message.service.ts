@@ -51,7 +51,10 @@ import type { GeneralRoomMessageRepository } from "../repositories/general-room-
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
-import type { UserSnapshotService } from "./user-snapshot.service.js";
+import {
+  resolveDisplayName,
+  type UserSnapshotService,
+} from "./user-snapshot.service.js";
 import type {
   GeneralRoomMessage,
   RoomMember,
@@ -123,6 +126,10 @@ import {
   EMPTY_UNREAD_STATS,
   type UnreadStats,
 } from "../lib/unread-count.js";
+import {
+  buildReactionDetailsPage,
+  type ReactionDetailsPage,
+} from "../lib/reaction-index.js";
 
 /**
  * Client-facing community message row: the raw Prisma entity with its
@@ -2700,7 +2707,9 @@ export class CommunityMessageService {
         params.messageId,
         enrichedReactions,
         message.revision,
-        revision
+        revision,
+        message.roomId,
+        { userId: params.userId, emoji: added ? params.emoji : null }
       );
       if (applied) break;
       if (attempt === MAX_ATTEMPTS - 1)
@@ -3332,6 +3341,61 @@ export class CommunityMessageService {
    * Return the full grouped reaction list for a message. Validates active
    * membership and resolves avatar object-keys to presigned URLs.
    */
+  /**
+   * ONE PAGE of a message's reactors, plus aggregate counts that do not depend
+   * on it.
+   *
+   * The unpaginated {@link getMessageReactions} stays for the existing callers,
+   * but it cannot be used by a popup on a message with a large reaction count:
+   * it returns every reactor and fans a profile lookup over all of them. This
+   * reads a keyset page off the reactor index instead, so the response, the
+   * snapshot batch and the avatar presign batch are all bounded by `limit`
+   * however many reactions the message has.
+   *
+   * `emoji` narrows to one filter chip; omit it for "All". Authorization is the
+   * same guard the unpaginated read uses — paging is not a way around it.
+   */
+  async getMessageReactionsPage(params: {
+    messageId: string;
+    communityId: string;
+    requesterId: string;
+    emoji?: string | null;
+    cursor?: string | null;
+    limit?: number | null;
+  }): Promise<ReactionDetailsPage> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const member = await this.memberRepo.findByRoomAndUser(
+      message.roomId,
+      params.requesterId
+    );
+    assertRoomMemberActive(member);
+
+    const slice = await this.messageRepo.readReactionDetails({
+      message: {
+        id: message.id,
+        roomId: message.roomId,
+        reactions: message.reactions,
+        createdAt: message.createdAt,
+        reactionsIndexedAt: message.reactionsIndexedAt,
+      },
+      requesterId: params.requesterId,
+      emoji: params.emoji,
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+
+    return buildReactionDetailsPage({
+      slice,
+      loadSnapshots: (ids) =>
+        this.userSnapshotService.getUserSnapshotsMap(ids, this.cacheRepo),
+      resolveAvatars: (keys) => resolveMediaUrlMap(keys),
+      resolveName: (snap) => resolveDisplayName(snap),
+      urlFor: (map, key) => urlFromMap(map, key),
+    });
+  }
+
   async getMessageReactions(params: {
     messageId: string;
     communityId: string;

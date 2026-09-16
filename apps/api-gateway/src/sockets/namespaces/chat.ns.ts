@@ -1121,6 +1121,22 @@ export function registerChatNamespace(
       z.enum(["private", "group"]).default("private")
     ),
   });
+  // Paginated sibling of MessageReactionsGetSchemaBase. Separate event rather
+  // than extra optional fields on the old one, so an existing client that emits
+  // the unpaginated shape keeps the contract it was written against.
+  const MessageReactionsPageSchemaBase = z.object({
+    messageId: z.string().min(1),
+    conversationId: z.string().min(1),
+    conversationType: z.preprocess(
+      (v) => (typeof v === "string" ? v.toLowerCase() : v),
+      z.enum(["private", "group"]).default("private")
+    ),
+    // Absent = the "All" filter.
+    emoji: z.string().min(1).max(64).optional(),
+    cursor: z.string().max(128).optional(),
+    // Advisory: chat-service clamps to its own page ceiling regardless.
+    limit: z.coerce.number().int().positive().max(100).optional(),
+  });
   const MessageEditSchemaBase = z.object({
     messageId: z.string().min(1),
     conversationId: z.string().min(1),
@@ -1157,6 +1173,9 @@ export function registerChatNamespace(
   const MessageForwardSchema = withCommunityAliases(MessageForwardSchemaBase);
   const MessageReactionsGetSchema = withCommunityAliases(
     MessageReactionsGetSchemaBase
+  );
+  const MessageReactionsPageSchema = withCommunityAliases(
+    MessageReactionsPageSchemaBase
   );
   const MessageEditSchema = withCommunityAliases(MessageEditSchemaBase);
   const MessageDeliveredSchema = withCommunityAliases(
@@ -2202,6 +2221,30 @@ export function registerChatNamespace(
           .catch((err: unknown) => {
             logger.warn(
               `/chat message:reactions:get gRPC error: ${String(err)}`
+            );
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
+          });
+      }
+    );
+
+    // Paginated reaction details — one page of reactors plus aggregate counts.
+    socket.on(
+      "message:reactions:page",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = MessageReactionsPageSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        messagingClient
+          .getMessageReactionsPage({ ...r.data, requesterId: userId })
+          .then((result) =>
+            ackOk(callback, "SOCKET_REACTIONS_FETCHED", locale, result)
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `/chat message:reactions:page gRPC error: ${String(err)}`
             );
             const { code, detailKey } = resolveGrpcAckError(err);
             ackError(callback, code, locale, detailKey);

@@ -269,6 +269,53 @@ export interface GetMessageReactionsResult {
   reactions: ReactionGroupDto[];
 }
 
+/**
+ * Keyset page of reactor identities for the reaction-details popup. `emoji`
+ * narrows to one filter chip; omit it for "All".
+ */
+export interface GetMessageReactionsPageParams {
+  messageId: string;
+  conversationId: string;
+  conversationType?: string;
+  requesterId: string;
+  emoji?: string;
+  cursor?: string;
+  limit?: number;
+}
+export interface ReactionDetailUserDto {
+  userId: string;
+  displayName: string;
+  avatar: string;
+  emoji: string;
+}
+export interface ReactionCountDto {
+  emoji: string;
+  count: number;
+}
+export interface GetMessageReactionsPageResult {
+  users: ReactionDetailUserDto[];
+  nextCursor: string;
+  hasMore: boolean;
+  /** Totals over EVERY reaction on the message, not just `users`. */
+  counts: ReactionCountDto[];
+  total: number;
+  selfEmoji: string;
+}
+
+const normalizeReactionPage = (
+  raw: GetMessageReactionsPageResult
+): GetMessageReactionsPageResult => ({
+  users: raw.users ?? [],
+  nextCursor: raw.nextCursor ?? "",
+  hasMore: Boolean(raw.hasMore),
+  counts: (raw.counts ?? []).map((c) => ({
+    emoji: c.emoji,
+    count: Number(c.count),
+  })),
+  total: Number(raw.total ?? 0),
+  selfEmoji: raw.selfEmoji ?? "",
+});
+
 export interface LiveKitCredentials {
   url: string;
   token: string;
@@ -370,6 +417,9 @@ export interface MessagingClient {
   getMessageReactions(
     p: GetMessageReactionsParams
   ): Promise<GetMessageReactionsResult>;
+  getMessageReactionsPage(
+    p: GetMessageReactionsPageParams
+  ): Promise<GetMessageReactionsPageResult>;
   initiateCall(p: InitiateCallParams): Promise<CallStatusResult>;
   answerCall(p: AnswerCallParams): Promise<CallStatusResult>;
   declineCall(p: DeclineCallParams): Promise<CallStatusResult>;
@@ -678,6 +728,28 @@ export function createMessagingClient(): MessagingClient {
     }
   );
 
+  const getMessageReactionsPageBreaker = makeBreaker(
+    "messaging.getMessageReactionsPage",
+    async (p: GetMessageReactionsPageParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      const raw = await call<unknown, GetMessageReactionsPageResult>(
+        "getMessageReactionsPage",
+        {
+          messageId: p.messageId,
+          conversationId: p.conversationId,
+          conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+          requesterId: p.requesterId,
+          emoji: p.emoji ?? "",
+          cursor: p.cursor ?? "",
+          limit: p.limit ?? 0,
+        }
+      );
+      return normalizeReactionPage(raw);
+    }
+  );
+
   /**
    * Every call transition is a NON-CANCELLABLE write against the canonical call
    * row, exactly like `sendMessage` above — and the same 2s default breaker
@@ -845,6 +917,7 @@ export function createMessagingClient(): MessagingClient {
     pinMessage: (p) => pinMessageBreaker.fire(p),
     unpinMessage: (p) => unpinMessageBreaker.fire(p),
     getMessageReactions: (p) => getMessageReactionsBreaker.fire(p),
+    getMessageReactionsPage: (p) => getMessageReactionsPageBreaker.fire(p),
     initiateCall: (p) => initiateCallBreaker.fire(p),
     answerCall: (p) => answerCallBreaker.fire(p),
     declineCall: (p) => declineCallBreaker.fire(p),

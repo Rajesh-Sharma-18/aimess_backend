@@ -140,6 +140,10 @@ import type {
   PrivateMessage,
   PrivateMessageReport,
 } from "../generated/prisma/index.js";
+import {
+  buildReactionDetailsPage,
+  type ReactionDetailsPage,
+} from "../lib/reaction-index.js";
 
 export class PrivateMessageService {
   constructor(
@@ -1775,7 +1779,11 @@ export class PrivateMessageService {
         messageId,
         message.roomId,
         updated,
-        message.revision
+        message.revision,
+        // One user per toggle: `toggleStoredReaction` strips them from every
+        // bucket before re-adding to at most one, so the reactor index needs a
+        // single row written, never the whole map re-projected.
+        { userId, emoji: added ? emoji : null }
       );
       if (applied) break;
       if (attempt === MAX_ATTEMPTS - 1)
@@ -2268,6 +2276,61 @@ export class PrivateMessageService {
    */
   async getRoomRevision(roomId: string): Promise<number> {
     return this.roomRepo.getRoomRevision(roomId);
+  }
+
+  /**
+   * ONE PAGE of a message's reactors, plus aggregate counts that do not depend
+   * on it.
+   *
+   * The unpaginated {@link getMessageReactions} stays for the existing callers,
+   * but it cannot be used by a popup on a message with a large reaction count:
+   * it returns every reactor and fans a profile lookup over all of them. This
+   * reads a keyset page off the reactor index instead, so the response, the
+   * snapshot batch and the avatar presign batch are all bounded by `limit`
+   * however many reactions the message has.
+   *
+   * `emoji` narrows to one filter chip; omit it for "All". Authorization is the
+   * same guard the unpaginated read uses — paging is not a way around it.
+   */
+  async getMessageReactionsPage(params: {
+    messageId: string;
+    roomId: string;
+    requesterId: string;
+    emoji?: string | null;
+    cursor?: string | null;
+    limit?: number | null;
+  }): Promise<ReactionDetailsPage> {
+    await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.requesterId
+    );
+    await this.assertMessageInRoom(params.roomId, params.messageId);
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const slice = await this.messageRepo.readReactionDetails({
+      message: {
+        id: message.id,
+        roomId: message.roomId,
+        reactions: message.reactions,
+        createdAt: message.createdAt,
+        reactionsIndexedAt: message.reactionsIndexedAt,
+      },
+      requesterId: params.requesterId,
+      emoji: params.emoji,
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+
+    return buildReactionDetailsPage({
+      slice,
+      loadSnapshots: (ids) =>
+        this.userSnapshotService.getUserSnapshotsMap(ids, this.cacheRepo),
+      resolveAvatars: (keys) => resolveMediaUrlMap(keys),
+      resolveName: (snap) => resolveDisplayName(snap),
+      urlFor: (map, key) => urlFromMap(map, key),
+    });
   }
 
   async getMessageReactions(params: {

@@ -1658,6 +1658,70 @@ export function createMessagingImpl(
       })();
     },
 
+    /**
+     * Keyset-paged reaction details.
+     *
+     * getMessageReactions above returns every reactor on the message, which the
+     * popup cannot use once a message has more reactions than fit in one frame.
+     * This returns one page plus aggregates read from the reactor index, so the
+     * response size is a function of `limit` and nothing else.
+     */
+    getMessageReactionsPage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId?: string;
+            conversationId?: string;
+            conversationType?: string;
+            requesterId?: string;
+            emoji?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          const conversationType =
+            typeof req.conversationType === "string"
+              ? req.conversationType.toUpperCase()
+              : "PRIVATE";
+
+          // Identical guard to the unpaginated read — paging must not become a
+          // second, softer door onto the same reactor identities.
+          const page =
+            conversationType === "GROUP"
+              ? await deps.groupMessageService.getMessageReactionsPage({
+                  messageId: req.messageId ?? "",
+                  roomId: req.conversationId ?? "",
+                  requesterId: req.requesterId ?? "",
+                  emoji: req.emoji || null,
+                  cursor: req.cursor || null,
+                  limit: req.limit || null,
+                })
+              : await deps.privateMessageService.getMessageReactionsPage({
+                  messageId: req.messageId ?? "",
+                  roomId: req.conversationId ?? "",
+                  requesterId: req.requesterId ?? "",
+                  emoji: req.emoji || null,
+                  cursor: req.cursor || null,
+                  limit: req.limit || null,
+                });
+
+          callback(null, {
+            users: page.users,
+            nextCursor: page.nextCursor ?? "",
+            hasMore: page.hasMore,
+            counts: page.counts,
+            total: page.total,
+            selfEmoji: page.selfEmoji,
+          });
+        } catch (err) {
+          logger.error(`gRPC getMessageReactionsPage error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     initiateCall: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -4629,6 +4693,47 @@ export function createCommunityImpl(
         } catch (err) {
           logger.error(
             `gRPC getCommunityMessageReactions error: ${String(err)}`
+          );
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    /** Keyset-paged reaction details — see getMessageReactionsPage. */
+    getCommunityMessageReactionsPage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId?: string;
+            communityId?: string;
+            requesterId?: string;
+            emoji?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          const page =
+            await deps.communityMessageService.getMessageReactionsPage({
+              messageId: req.messageId ?? "",
+              communityId: req.communityId ?? "",
+              requesterId: req.requesterId ?? "",
+              emoji: req.emoji || null,
+              cursor: req.cursor || null,
+              limit: req.limit || null,
+            });
+          callback(null, {
+            users: page.users,
+            nextCursor: page.nextCursor ?? "",
+            hasMore: page.hasMore,
+            counts: page.counts,
+            total: page.total,
+            selfEmoji: page.selfEmoji,
+          });
+        } catch (err) {
+          logger.error(
+            `gRPC getCommunityMessageReactionsPage error: ${String(err)}`
           );
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }

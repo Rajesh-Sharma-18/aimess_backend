@@ -1,0 +1,387 @@
+/**
+ * Reaction-details pagination — the contract that keeps the popup bounded.
+ *
+ * The point of these is scale without the scale: a message with a million
+ * reactions is asserted by making the INDEX report a million while the page
+ * stays at `limit`, then checking that nothing downstream — the response, the
+ * snapshot fan-out, the avatar presign batch — grew with the total. Building a
+ * million rows would prove the same thing far more slowly.
+ */
+import {
+  MessageReactionRepository,
+  clampReactionLimit,
+  REACTION_PAGE_MAX_LIMIT,
+  REACTION_PAGE_DEFAULT_LIMIT,
+} from "../../src/repositories/message-reaction.repository.js";
+import {
+  buildReactionDetailsPage,
+  ensureReactionIndex,
+  readReactionDetailsSlice,
+} from "../../src/lib/reaction-index.js";
+
+type Row = { userId: string; emoji: string; createdAt: Date };
+
+const BASE = new Date("2026-01-01T00:00:00.000Z");
+const at = (offset: number) => new Date(BASE.getTime() + offset);
+
+/** Reactors r0..rN-1, one millisecond apart, cycling through `emojis`. */
+const reactors = (count: number, emojis = ["👍"]): Row[] =>
+  Array.from({ length: count }, (_, i) => ({
+    userId: `u${i}`,
+    emoji: emojis[i % emojis.length],
+    createdAt: at(i),
+  }));
+
+/**
+ * In-memory stand-in for the `messageReaction` delegate. Honours the subset of
+ * the query surface the repository actually uses, and records every call so the
+ * tests can assert on the SHAPE of the query, not only its result — an offset
+ * page would return the right rows here too.
+ */
+const fakePrisma = (rows: Row[]) => {
+  const calls: { findMany: unknown[]; groupBy: unknown[] } = {
+    findMany: [],
+    groupBy: [],
+  };
+  const store = [...rows];
+  return {
+    calls,
+    store,
+    client: {
+      messageReaction: {
+        findMany: jest.fn(async (args: Record<string, any>) => {
+          calls.findMany.push(args);
+          const where = args.where ?? {};
+          let out = store.filter((r) => !where.emoji || r.emoji === where.emoji);
+          if (where.OR) {
+            const gt = where.OR[0].createdAt.gt as Date;
+            const tie = where.OR[1];
+            out = out.filter(
+              (r) =>
+                r.createdAt.getTime() > gt.getTime() ||
+                (r.createdAt.getTime() === tie.createdAt.getTime() &&
+                  r.userId > tie.userId.gt)
+            );
+          }
+          out.sort(
+            (a, b) =>
+              a.createdAt.getTime() - b.createdAt.getTime() ||
+              a.userId.localeCompare(b.userId)
+          );
+          return out.slice(0, args.take);
+        }),
+        groupBy: jest.fn(async (args: Record<string, any>) => {
+          calls.groupBy.push(args);
+          const byEmoji = new Map<string, number>();
+          for (const r of store)
+            byEmoji.set(r.emoji, (byEmoji.get(r.emoji) ?? 0) + 1);
+          return [...byEmoji].map(([emoji, count]) => ({
+            emoji,
+            _count: { _all: count },
+          }));
+        }),
+        findUnique: jest.fn(async (args: Record<string, any>) => {
+          const { userId } = args.where.messageId_conversationType_userId;
+          const hit = store.find((r) => r.userId === userId);
+          return hit ? { emoji: hit.emoji } : null;
+        }),
+        upsert: jest.fn(async (args: Record<string, any>) => {
+          const { userId } = args.where.messageId_conversationType_userId;
+          const hit = store.find((r) => r.userId === userId);
+          if (hit) hit.emoji = args.update.emoji;
+          else
+            store.push({
+              userId,
+              emoji: args.create.emoji,
+              createdAt: at(store.length),
+            });
+          return {};
+        }),
+        deleteMany: jest.fn(async (args: Record<string, any>) => {
+          const userId = args.where.userId;
+          for (let i = store.length - 1; i >= 0; i -= 1) {
+            if (userId === undefined || store[i].userId === userId)
+              store.splice(i, 1);
+          }
+          return { count: 0 };
+        }),
+        createMany: jest.fn(async (args: Record<string, any>) => {
+          store.push(...args.data);
+          return { count: args.data.length };
+        }),
+      },
+    } as any,
+  };
+};
+
+const repoFor = (rows: Row[]) => {
+  const fake = fakePrisma(rows);
+  return { fake, repo: new MessageReactionRepository(fake.client) };
+};
+
+const PAGE_ARGS = {
+  messageId: "m1",
+  conversationType: "COMMUNITY" as const,
+};
+
+describe("clampReactionLimit", () => {
+  it("defaults when the caller asks for nothing", () => {
+    expect(clampReactionLimit(undefined)).toBe(REACTION_PAGE_DEFAULT_LIMIT);
+    expect(clampReactionLimit(0)).toBe(REACTION_PAGE_DEFAULT_LIMIT);
+    expect(clampReactionLimit(-5)).toBe(REACTION_PAGE_DEFAULT_LIMIT);
+  });
+
+  it("caps a caller trying to page the whole message in one request", () => {
+    expect(clampReactionLimit(10)).toBe(10);
+    expect(clampReactionLimit(1_000_000)).toBe(REACTION_PAGE_MAX_LIMIT);
+  });
+});
+
+describe("MessageReactionRepository.page", () => {
+  it("returns a bounded first page and a cursor when more remain", async () => {
+    const { repo } = repoFor(reactors(100));
+    const page = await repo.page({ ...PAGE_ARGS, limit: 10 });
+
+    expect(page.rows).toHaveLength(10);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextCursor).toBe(`${at(9).getTime()}:u9`);
+  });
+
+  it("asks for exactly one row past the page instead of a second count query", async () => {
+    const { fake, repo } = repoFor(reactors(100));
+    await repo.page({ ...PAGE_ARGS, limit: 10 });
+
+    const args = fake.calls.findMany[0] as Record<string, any>;
+    expect(args.take).toBe(11);
+    expect(args.orderBy).toEqual([{ createdAt: "asc" }, { userId: "asc" }]);
+  });
+
+  it("resumes from the cursor without re-walking earlier pages", async () => {
+    const { fake, repo } = repoFor(reactors(100));
+    const first = await repo.page({ ...PAGE_ARGS, limit: 10 });
+    const second = await repo.page({
+      ...PAGE_ARGS,
+      limit: 10,
+      cursor: first.nextCursor,
+    });
+
+    expect(second.rows[0].userId).toBe("u10");
+    expect(second.rows.map((r) => r.userId)).not.toContain("u9");
+    // Keyset, not offset: the query carries a WHERE, never a skip.
+    const args = fake.calls.findMany[1] as Record<string, any>;
+    expect(args.skip).toBeUndefined();
+    expect(args.where.OR).toBeDefined();
+  });
+
+  it("closes the page when the last row is reached", async () => {
+    const { repo } = repoFor(reactors(10));
+    const page = await repo.page({ ...PAGE_ARGS, limit: 10 });
+
+    expect(page.rows).toHaveLength(10);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it("is empty and terminal for a message nobody reacted to", async () => {
+    const { repo } = repoFor([]);
+    const page = await repo.page({ ...PAGE_ARGS, limit: 10 });
+
+    expect(page.rows).toEqual([]);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it("never mixes filters: an emoji page contains only that emoji", async () => {
+    const { repo } = repoFor(reactors(60, ["❤️", "👍", "😂"]));
+    const page = await repo.page({ ...PAGE_ARGS, emoji: "👍", limit: 10 });
+
+    expect(page.rows).toHaveLength(10);
+    expect(page.rows.every((r) => r.emoji === "👍")).toBe(true);
+  });
+
+  it("clamps a caller asking for more than the page ceiling", async () => {
+    const { fake, repo } = repoFor(reactors(500));
+    const page = await repo.page({ ...PAGE_ARGS, limit: 10_000 });
+
+    expect(page.rows).toHaveLength(REACTION_PAGE_MAX_LIMIT);
+    expect((fake.calls.findMany[0] as Record<string, any>).take).toBe(
+      REACTION_PAGE_MAX_LIMIT + 1
+    );
+  });
+
+  it("walks a large reaction set page by page without skipping or repeating", async () => {
+    const { repo } = repoFor(reactors(137));
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let guard = 0;
+    for (;;) {
+      const page: Awaited<ReturnType<typeof repo.page>> = await repo.page({
+        ...PAGE_ARGS,
+        limit: 25,
+        cursor,
+      });
+      seen.push(...page.rows.map((r) => r.userId));
+      if (!page.hasMore) break;
+      cursor = page.nextCursor;
+      if ((guard += 1) > 20) throw new Error("pagination did not terminate");
+    }
+
+    expect(seen).toHaveLength(137);
+    expect(new Set(seen).size).toBe(137);
+  });
+});
+
+describe("MessageReactionRepository.countsFor", () => {
+  it("aggregates with a grouped query, highest count first", async () => {
+    const { fake, repo } = repoFor([
+      ...reactors(5, ["❤️"]),
+      ...reactors(3, ["👍"]).map((r) => ({ ...r, userId: `a${r.userId}` })),
+    ]);
+    const counts = await repo.countsFor("m1", "COMMUNITY");
+
+    expect(counts.total).toBe(8);
+    expect(counts.byEmoji[0]).toEqual({ emoji: "❤️", count: 5 });
+    expect(fake.calls.groupBy).toHaveLength(1);
+  });
+});
+
+describe("readReactionDetailsSlice + buildReactionDetailsPage", () => {
+  /** One page's worth of work, whatever the message's real total is. */
+  const runSlice = async (total: number, limit: number) => {
+    const { repo } = repoFor(reactors(total));
+    const slice = await readReactionDetailsSlice(repo, {
+      ...PAGE_ARGS,
+      requesterId: "u3",
+      limit,
+    });
+    const loadSnapshots = jest.fn(
+      async (ids: string[]) =>
+        new Map(
+          ids.map((id) => [id, { displayName: `Name ${id}`, avatar: `k/${id}` }])
+        )
+    );
+    const resolveAvatars = jest.fn(
+      async (keys: string[]) =>
+        new Map(keys.map((k) => [k, `https://media.test/${k}`]))
+    );
+    const page = await buildReactionDetailsPage({
+      slice,
+      loadSnapshots,
+      resolveAvatars,
+      resolveName: (snap) => (snap?.displayName as string) ?? "",
+      urlFor: (map, key) => map.get(key) ?? "",
+    });
+    return { page, loadSnapshots, resolveAvatars };
+  };
+
+  it.each([1, 7, 100, 10_000, 1_000_000])(
+    "reports the true total of %i while loading one page",
+    async (total) => {
+      const { page, loadSnapshots, resolveAvatars } = await runSlice(total, 25);
+
+      expect(page.total).toBe(total);
+      expect(page.users.length).toBeLessThanOrEqual(25);
+      // The two fan-outs that would otherwise scale with the message: both see
+      // the page only.
+      expect(loadSnapshots.mock.calls[0]?.[0].length ?? 0).toBeLessThanOrEqual(
+        25
+      );
+      expect(resolveAvatars.mock.calls[0][0].length).toBeLessThanOrEqual(25);
+    },
+    20_000
+  );
+
+  it("does not derive the header count from the loaded page", async () => {
+    const { page } = await runSlice(10_000, 25);
+
+    expect(page.users).toHaveLength(25);
+    expect(page.total).toBe(10_000);
+    expect(page.counts.reduce((n, c) => n + c.count, 0)).toBe(10_000);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it("names the caller's own reaction so the popup can offer to remove it", async () => {
+    const { page } = await runSlice(50, 25);
+    expect(page.selfEmoji).toBe("👍");
+  });
+
+  it("resolves avatars to URLs rather than raw object keys", async () => {
+    const { page } = await runSlice(5, 25);
+    expect(page.users[0].avatar).toBe("https://media.test/k/u0");
+    expect(page.users[0].displayName).toBe("Name u0");
+  });
+});
+
+describe("ensureReactionIndex", () => {
+  const source = (indexedAt: Date | null) => ({
+    id: "m1",
+    roomId: "r1",
+    reactions: {
+      "❤️": [{ userId: "a" }, { userId: "b" }],
+      "👍": [{ userId: "c" }],
+    },
+    createdAt: BASE,
+    reactionsIndexedAt: indexedAt,
+  });
+
+  it("materializes a legacy row's stored map on first read, then stamps it", async () => {
+    const { fake, repo } = repoFor([]);
+    const stamp = jest.fn(async () => ({}));
+    await ensureReactionIndex(repo, "PRIVATE", source(null), stamp);
+
+    expect(fake.store.map((r) => r.userId).sort()).toEqual(["a", "b", "c"]);
+    expect(stamp).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing for a row already indexed", async () => {
+    const { fake, repo } = repoFor([]);
+    const stamp = jest.fn(async () => ({}));
+    await ensureReactionIndex(repo, "PRIVATE", source(BASE), stamp);
+
+    expect(fake.store).toHaveLength(0);
+    expect(stamp).not.toHaveBeenCalled();
+  });
+
+  it("leaves the read path alive when the projection cannot be built", async () => {
+    const { fake, repo } = repoFor([]);
+    fake.client.messageReaction.createMany.mockRejectedValueOnce(
+      new Error("mongo down")
+    );
+    const stamp = jest.fn(async () => ({}));
+
+    await expect(
+      ensureReactionIndex(repo, "PRIVATE", source(null), stamp)
+    ).resolves.toBeUndefined();
+    // Not stamped, so the next read retries instead of caching the failure.
+    expect(stamp).not.toHaveBeenCalled();
+  });
+});
+
+describe("MessageReactionRepository.applyReactorChange", () => {
+  it("replaces a user's emoji in place rather than adding a second row", async () => {
+    const { fake, repo } = repoFor(reactors(3, ["👍"]));
+    await repo.applyReactorChange({
+      messageId: "m1",
+      conversationType: "GROUP",
+      roomId: "r1",
+      userId: "u1",
+      emoji: "❤️",
+    });
+
+    expect(fake.store).toHaveLength(3);
+    expect(fake.store.find((r) => r.userId === "u1")?.emoji).toBe("❤️");
+  });
+
+  it("removes only the one reactor on a null emoji", async () => {
+    const { fake, repo } = repoFor(reactors(3, ["👍"]));
+    await repo.applyReactorChange({
+      messageId: "m1",
+      conversationType: "GROUP",
+      roomId: "r1",
+      userId: "u1",
+      emoji: null,
+    });
+
+    expect(fake.store.map((r) => r.userId)).toEqual(["u0", "u2"]);
+  });
+});

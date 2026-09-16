@@ -253,6 +253,17 @@ const CommunityMsgReactionsGetSchema = z.object({
   messageId: z.string().min(1),
   communityId: z.string().min(1),
 });
+// Paginated sibling of CommunityMsgReactionsGetSchema — see chat.ns.ts.
+const CommunityMsgReactionsPageSchema = z.object({
+  messageId: z.string().min(1),
+  communityId: z.string().min(1),
+  // Absent = the "All" filter.
+  emoji: z.string().min(1).max(64).optional(),
+  cursor: z.string().max(128).optional(),
+  // Advisory: chat-service clamps to its own page ceiling regardless.
+  limit: z.coerce.number().int().positive().max(100).optional(),
+});
+
 const CommunityMsgForwardSchema = z.object({
   messageId: z.string().min(1),
   communityId: z.string().min(1),
@@ -1665,6 +1676,35 @@ export function registerCommunityNamespace(
           .catch((err: unknown) => {
             logger.warn(
               `/community message:reactions:get gRPC error: ${String(err)}`
+            );
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
+          });
+      }
+    );
+
+    // ── community:message:reactions:page ──────────────────────────────────────
+    socket.on(
+      "community:message:reactions:page",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CommunityMsgReactionsPageSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .getCommunityMessageReactionsPage({ ...r.data, requesterId: userId })
+          .then((result) =>
+            ackOk(
+              callback,
+              "SOCKET_COMMUNITY_REACTIONS_FETCHED",
+              locale,
+              result
+            )
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `/community message:reactions:page gRPC error: ${String(err)}`
             );
             const { code, detailKey } = resolveGrpcAckError(err);
             ackError(callback, code, locale, detailKey);

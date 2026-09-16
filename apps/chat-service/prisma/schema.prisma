@@ -138,6 +138,11 @@ model PrivateMessage {
   countInUnread    Boolean?
   readBy           Json      @default("[]")
   reactions        Json      @default("{}")
+  /// Set once the message's reactor map has been materialized into
+  /// MessageReaction. Null means the projection has never been built for this
+  /// row, which is how pre-existing messages self-heal on their first paginated
+  /// reaction read instead of needing a backfill pass before the feature works.
+  reactionsIndexedAt DateTime?
   inviteLinkData   Json?
   parentMessageId  String?   @db.ObjectId
   quoteData        Json?
@@ -339,6 +344,11 @@ model GroupMessage {
   parentMessageId    String?   @db.ObjectId
   quoteData          Json?
   reactions          Json      @default("{}")
+  /// Set once the message's reactor map has been materialized into
+  /// MessageReaction. Null means the projection has never been built for this
+  /// row, which is how pre-existing messages self-heal on their first paginated
+  /// reaction read instead of needing a backfill pass before the feature works.
+  reactionsIndexedAt DateTime?
   isForwarded        Boolean   @default(false)
   forwardData        Json?
   isDeleted          Boolean   @default(false)
@@ -569,6 +579,11 @@ model GeneralRoomMessage {
   senderAvatar    String?
   message         String?
   reactions       Json     @default("{}")
+  /// Set once the message's reactor map has been materialized into
+  /// MessageReaction. Null means the projection has never been built for this
+  /// row, which is how pre-existing messages self-heal on their first paginated
+  /// reaction read instead of needing a backfill pass before the feature works.
+  reactionsIndexedAt DateTime?
   parentMessageId String?  @db.ObjectId
   quoteData       Json?
   messageType     String   @default("text")
@@ -925,4 +940,44 @@ model CommunityMessagePin {
   @@index([messageId])                // delete-message hook: find pins referencing a message
   @@index([roomId, pinnedAt(sort: Desc)])
   @@map("community_message_pins")
+}
+
+// -----------------------------------------------------------------------------
+// MessageReaction
+// -----------------------------------------------------------------------------
+/// Paginated reactor INDEX for the reaction-details popup, across all three
+/// conversation kinds. The authoritative reaction state stays on the message
+/// row's `reactions` Json map — that is what every broadcast, history read and
+/// `/changes` replay serializes, and nothing about those paths changes.
+///
+/// The Json map cannot be paged: reading one reactor means loading every
+/// reactor on the message, so a message with a million reactions would pull the
+/// whole blob (and fan a snapshot lookup over every id) just to render twenty
+/// rows. This collection is the projection that makes that read bounded —
+/// keyset-paged on (createdAt, userId) with an index per filter shape, plus a
+/// grouped count for the aggregate header, so the work is proportional to the
+/// PAGE, never to the total.
+///
+/// Maintained two ways: every reaction toggle upserts/deletes exactly one row
+/// here after its CAS lands, and a message whose `reactionsIndexedAt` is still
+/// null materializes its existing map on first paginated read. One reaction per
+/// user per message is the product rule (see `toggleStoredReaction`), which is
+/// why the unique key carries no emoji.
+model MessageReaction {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  messageId        String
+  /// PRIVATE | GROUP | COMMUNITY — the id spaces are separate collections, so
+  /// this is what keeps a private and a community message id from colliding.
+  conversationType String
+  roomId           String
+  userId           String
+  emoji            String
+  /// Reaction order, and the keyset cursor's leading component. `userId` breaks
+  /// ties so the cursor is total even when two reactions land in the same ms.
+  createdAt        DateTime @default(now())
+
+  @@unique([messageId, conversationType, userId])
+  @@index([messageId, conversationType, createdAt, userId])
+  @@index([messageId, conversationType, emoji, createdAt, userId])
+  @@map("message_reactions")
 }

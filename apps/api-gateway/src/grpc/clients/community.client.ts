@@ -313,6 +313,34 @@ export interface GetCommunityMessageReactionsResult {
   reactions: CommunityReactionGroupDto[];
 }
 
+/**
+ * Keyset page of reactor identities for the reaction-details popup. `emoji`
+ * narrows to one filter chip; omit it for "All".
+ */
+export interface GetCommunityMessageReactionsPageParams {
+  messageId: string;
+  communityId: string;
+  requesterId: string;
+  emoji?: string;
+  cursor?: string;
+  limit?: number;
+}
+export interface CommunityReactionDetailUserDto {
+  userId: string;
+  displayName: string;
+  avatar: string;
+  emoji: string;
+}
+export interface GetCommunityMessageReactionsPageResult {
+  users: CommunityReactionDetailUserDto[];
+  nextCursor: string;
+  hasMore: boolean;
+  /** Totals over EVERY reaction on the message, not just `users`. */
+  counts: Array<{ emoji: string; count: number }>;
+  total: number;
+  selfEmoji: string;
+}
+
 // ---- Forward message ----
 export interface ForwardCommunityMessageParams {
   sourceMessageId: string;
@@ -411,6 +439,9 @@ export interface CommunityClient {
   getCommunityMessageReactions(
     p: GetCommunityMessageReactionsParams
   ): Promise<GetCommunityMessageReactionsResult>;
+  getCommunityMessageReactionsPage(
+    p: GetCommunityMessageReactionsPageParams
+  ): Promise<GetCommunityMessageReactionsPageResult>;
   forwardCommunityMessage(
     p: ForwardCommunityMessageParams
   ): Promise<ForwardCommunityMessageResult>;
@@ -650,6 +681,36 @@ export function createCommunityClient(): CommunityClient {
       )
   );
 
+  // int64 counts arrive as strings under the loader's longs:String, so they are
+  // coerced here rather than leaking a string into the socket ack.
+  const getReactionsPageBreaker = makeBreaker(
+    "community.getCommunityMessageReactionsPage",
+    async (p: GetCommunityMessageReactionsPageParams) => {
+      const raw = await call<unknown, GetCommunityMessageReactionsPageResult>(
+        "getCommunityMessageReactionsPage",
+        {
+          messageId: p.messageId,
+          communityId: p.communityId,
+          requesterId: p.requesterId,
+          emoji: p.emoji ?? "",
+          cursor: p.cursor ?? "",
+          limit: p.limit ?? 0,
+        }
+      );
+      return {
+        users: raw.users ?? [],
+        nextCursor: raw.nextCursor ?? "",
+        hasMore: Boolean(raw.hasMore),
+        counts: (raw.counts ?? []).map((c) => ({
+          emoji: c.emoji,
+          count: Number(c.count),
+        })),
+        total: Number(raw.total ?? 0),
+        selfEmoji: raw.selfEmoji ?? "",
+      };
+    }
+  );
+
   const forwardMsgBreaker = makeBreaker(
     "community.forwardCommunityMessage",
     (p: ForwardCommunityMessageParams) =>
@@ -714,6 +775,7 @@ export function createCommunityClient(): CommunityClient {
     checkCommunityMembership: (p) => checkMembershipBreaker.fire(p),
     markCommunityMessageRead: (p) => markReadBreaker.fire(p),
     getCommunityMessageReactions: (p) => getReactionsBreaker.fire(p),
+    getCommunityMessageReactionsPage: (p) => getReactionsPageBreaker.fire(p),
     forwardCommunityMessage: (p) => forwardMsgBreaker.fire(p),
     sendCommunityMessage: (p) => sendMsgBreaker.fire(p),
     getCommunityMessages: (p) => getMsgsBreaker.fire(p),

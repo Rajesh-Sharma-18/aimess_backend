@@ -25,6 +25,10 @@ service MessagingService {
   rpc PinMessage              (PinMessageRequest)              returns (PinMessageResponse);
   rpc UnpinMessage            (UnpinMessageRequest)            returns (UnpinMessageResponse);
   rpc GetMessageReactions     (GetMessageReactionsRequest)     returns (GetMessageReactionsResponse);
+  // Keyset-paged reactor list for the reaction-details popup. GetMessageReactions
+  // returns EVERY reactor, which a message with a large reaction count cannot
+  // afford; this bounds the response to one page plus aggregate counts.
+  rpc GetMessageReactionsPage (GetMessageReactionsPageRequest) returns (GetMessageReactionsPageResponse);
   rpc InitiateCall            (InitiateCallRequest)            returns (InitiateCallResponse);
   rpc AnswerCall              (AnswerCallRequest)              returns (AnswerCallResponse);
   rpc DeclineCall             (DeclineCallRequest)             returns (DeclineCallResponse);
@@ -632,6 +636,36 @@ message ReactionGroupDto {
 message GetMessageReactionsResponse {
   string message_id                   = 1;
   repeated ReactionGroupDto reactions  = 2;
+}
+
+// ---- Paginated reaction details ----
+message ReactionDetailUserDto {
+  string user_id      = 1;
+  string display_name = 2;
+  string avatar       = 3; // resolved download URL, never a raw object key
+  string emoji        = 4;
+}
+message ReactionCountDto {
+  string emoji = 1;
+  int64  count = 2;
+}
+message GetMessageReactionsPageRequest {
+  string           message_id        = 1;
+  string           conversation_id   = 2;
+  ConversationType conversation_type = 3;
+  string           requester_id      = 4;
+  string           emoji             = 5; // empty = the "All" filter
+  string           cursor            = 6; // empty = first page
+  int32            limit             = 7; // 0 = server default; server clamps
+}
+message GetMessageReactionsPageResponse {
+  repeated ReactionDetailUserDto users  = 1;
+  string   next_cursor                  = 2;
+  bool     has_more                     = 3;
+  // Aggregates over EVERY reaction on the message, not just the page above.
+  repeated ReactionCountDto counts       = 4;
+  int64    total                        = 5;
+  string   self_emoji                   = 6; // empty = caller has not reacted
 }
 
 message InitiateCallRequest {
