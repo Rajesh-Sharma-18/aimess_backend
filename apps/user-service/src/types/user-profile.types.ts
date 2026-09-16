@@ -47,6 +47,14 @@ export type UserProfileData = {
   googleEmail: string | null;
   /** Email of the linked Apple account; null when Apple is not linked or no email is available. Always present. */
   appleEmail: string | null;
+  /**
+   * Whether POST /auth/link-email may add an email. An account holds at most
+   * one additional identity (email OR Google/Apple), so this is false once a
+   * verified email or any social link exists, and false when auth is down.
+   */
+  canLinkEmail: boolean;
+  /** Whether Google/Apple linking is allowed; same rule as `canLinkEmail`. */
+  canLinkSocial: boolean;
   /** ISO date (YYYY-MM-DD); null when the user hasn't set a date of birth. */
   dateOfBirth: string | null;
   gender: ProfileGenderValue | null;

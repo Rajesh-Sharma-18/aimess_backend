@@ -49,6 +49,7 @@ function isProviderAccountConflict(
   return false;
 }
 import { loadActiveAuthUser } from "../lib/account-guard.js";
+import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
 import {
   countSignInMethods,
   toSocialAuthProvider,
@@ -104,8 +105,9 @@ async function linkProvider(
     throw new BadRequestError("AUTH_PROVIDER_ALREADY_LINKED");
   }
 
+  let primaryAccount: AuthProvider | null;
   try {
-    await linkedAccountRepository.create({
+    primaryAccount = await authRepository.linkSocialAccount({
       userId,
       provider,
       providerUserId: profile.sub,
@@ -125,11 +127,7 @@ async function linkProvider(
     throw error;
   }
 
-  // First linked method wins: only sets this provider when primaryAccount is null.
-  const primaryAccount = await authRepository.setPrimaryAccountIfUnset(
-    userId,
-    provider
-  );
+  emitProfileUpdatedSafe(userId);
 
   // A new way into the account — recorded past every guard and the insert, so a
   // rejected or racing link leaves no row. The provider id is deliberately not
@@ -167,6 +165,8 @@ async function unlinkProvider(
   }
 
   await linkedAccountRepository.deleteByUserIdAndProvider(userId, provider);
+
+  emitProfileUpdatedSafe(userId);
 
   publishAdminActivitySafe({
     actorId: userId,

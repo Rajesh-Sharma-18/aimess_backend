@@ -135,6 +135,7 @@ type ProfileAuthSummary = {
   primaryAccount: SignInProvider | null;
   googleEmail: string | null;
   appleEmail: string | null;
+  canLinkIdentity: boolean;
 };
 
 async function toProfileData(
@@ -174,6 +175,8 @@ async function toProfileData(
     // Provider emails — non-null only while that provider is linked; null otherwise.
     googleEmail: authSummary.googleEmail ?? null,
     appleEmail: authSummary.appleEmail ?? null,
+    canLinkEmail: authSummary.canLinkIdentity,
+    canLinkSocial: authSummary.canLinkIdentity,
     dateOfBirth: formatDateOfBirth(profile.dateOfBirth),
     gender: profile.gender,
     avatarUrl: avatarView?.url ?? null,
@@ -232,6 +235,14 @@ async function resolveProfileAuthSummary(
     primaryAccount: account?.primaryAccount ?? null,
     googleEmail: getProviderEmail(account, "GOOGLE"),
     appleEmail: getProviderEmail(account, "APPLE"),
+    // Mirrors auth-service lib/linked-identity.ts, which enforces it.
+    canLinkIdentity: Boolean(
+      account &&
+        !(account.email && account.emailVerified) &&
+        !account.providers.some(
+          (entry) => entry.provider !== "EMAIL" && entry.connected
+        )
+    ),
   };
 }
 

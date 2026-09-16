@@ -52,6 +52,14 @@ function isUniqueConstraintError(error: unknown): boolean {
   );
 }
 
+// The one-identity gate firing inside linkSocialAccount.
+function isLinkedIdentityLimit(error: unknown): boolean {
+  return (
+    error instanceof ConflictError &&
+    error.messageKey === "AUTH_LINKED_IDENTITY_LIMIT"
+  );
+}
+
 function assertUserCanLogin(user: AuthUserRow): void {
   // The provider's signed token is the proven credential here, so naming the
   // deleted state leaks nothing: only whoever controls that Google/Apple
@@ -195,32 +203,35 @@ async function signInWithProvider(
     if (existingUser) {
       assertUserCanLogin(existingUser);
 
-      // Rely on the unique constraint instead of a redundant pre-check: a
-      // concurrent login may create the same link, which surfaces as P2002.
+      // Linking here is BEST-EFFORT, never a precondition of signing in.
+      //
+      // `linkSocialAccount` enforces the same one-identity gate as the manual
+      // link, so an account that already spent its slot — typically on an
+      // OTP-verified email — throws AUTH_LINKED_IDENTITY_LIMIT. That is the
+      // right answer for a Settings link request and the WRONG one for a login:
+      // it locked every email-linked account out of the Google/Apple button
+      // permanently. The refusal is swallowed and the user is signed in with no
+      // second identity recorded, which leaves the limit itself intact.
+      //
+      // Trust is unchanged by skipping the link: the address is asserted
+      // verified by the provider's signed token AND owned-and-verified on this
+      // account, the same pairing the auto-link branch already relies on.
+      //
+      // A concurrent login creating the same link surfaces as P2002.
       try {
-        await linkedAccountRepository.create({
+        await authRepository.linkSocialAccount({
           userId: existingUser.id,
           provider: authProvider,
           providerUserId: profile.sub,
           email: profile.email,
-          // The token asserted it — the `profile.emailVerified` guard on this
-          // branch is exactly that proof — so this link may later resolve a
-          // sign-in from the OTHER provider on the same address.
           emailVerified: true,
           displayName: profile.displayName,
         });
       } catch (error) {
-        if (!isUniqueConstraintError(error)) {
+        if (!isUniqueConstraintError(error) && !isLinkedIdentityLimit(error)) {
           throw error;
         }
       }
-
-      // The account existed before this provider did, so whatever founded it
-      // keeps the primary slot; this only fills a slot that was never set.
-      await authRepository.setPrimaryAccountIfUnset(
-        existingUser.id,
-        authProvider
-      );
 
       await authRepository.mergeFcmTokens(existingUser.id, fcmTokens);
       const tokens = await issueTokensForUser(req, existingUser, device);

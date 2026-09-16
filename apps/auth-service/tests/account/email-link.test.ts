@@ -53,6 +53,7 @@ function linkUser(overrides: Record<string, unknown> = {}) {
     emailVerified: false,
     status: "ACTIVE",
     deletedAt: null,
+    _count: { linkedAccounts: 0 },
     ...overrides,
   };
 }
@@ -98,6 +99,28 @@ describe("POST /api/auth/link-email/request", () => {
 
     expect(res.status).toBe(200);
   });
+
+  it.each([
+    ["a linked Google/Apple account", { _count: { linkedAccounts: 1 } }],
+    [
+      "a different verified email",
+      { email: "old@example.com", emailVerified: true },
+    ],
+  ])(
+    "returns 409 AUTH_LINKED_IDENTITY_LIMIT for an account with %s, sending no OTP",
+    async (_label, overrides) => {
+      repo.findByIdForEmailLink.mockResolvedValue(linkUser(overrides));
+
+      const res = await request(app)
+        .post("/api/auth/link-email/request")
+        .set(bearer(makeAccessToken()))
+        .send({ email: EMAIL });
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe("AUTH_LINKED_IDENTITY_LIMIT");
+      expect(repo.findEmailTakenByOtherUser).not.toHaveBeenCalled();
+    }
+  );
 
   it("returns 409 when the email is taken by another user", async () => {
     repo.findEmailTakenByOtherUser.mockResolvedValue({ id: "other-user" });
@@ -180,6 +203,22 @@ describe("POST /api/auth/link-email/verify", () => {
     expect(res.body.data.emailVerified).toBe(true);
     expect(res.body.data.primaryAccount).toBe("EMAIL");
     expect(repo.linkVerifiedEmailAndSetPrimary).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects verify on a social-linked account before spending the OTP", async () => {
+    repo.findByIdForEmailLink.mockResolvedValue(
+      linkUser({ _count: { linkedAccounts: 1 } })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/link-email/verify")
+      .set(bearer(makeAccessToken()))
+      .send({ email: EMAIL, code: "123456" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("AUTH_LINKED_IDENTITY_LIMIT");
+    expect(consumeOtp).not.toHaveBeenCalled();
+    expect(repo.linkVerifiedEmailAndSetPrimary).not.toHaveBeenCalled();
   });
 
   it("returns 409 when the email got taken by another user before verify", async () => {
