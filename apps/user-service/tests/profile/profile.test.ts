@@ -190,6 +190,8 @@ describe("GET /api/v1/users/profiles/me", () => {
       primaryAccount: "GOOGLE",
       googleEmail: "user@gmail.com",
       appleEmail: null,
+      canLinkEmail: false,
+      canLinkSocial: false,
     });
   });
 

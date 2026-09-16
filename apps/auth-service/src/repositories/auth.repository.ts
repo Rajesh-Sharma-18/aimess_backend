@@ -1,3 +1,5 @@
+import { UnauthorizedError } from "@aimess/errors";
+
 import {
   anonymizedAccountFields,
   anonymizedLinkedAccountFields,
@@ -10,6 +12,37 @@ import {
   type DeviceType,
   type Prisma,
 } from "../generated/prisma/client.js";
+import {
+  assertCanLinkIdentity,
+  type LinkedIdentityState,
+} from "../lib/linked-identity.js";
+
+/**
+ * Locks the account row FOR UPDATE, then reads its identity state. Every
+ * identity-adding write takes this lock first, so two concurrent links on one
+ * account serialize and the second sees the first one's committed row.
+ */
+async function lockLinkedIdentityState(
+  tx: Prisma.TransactionClient,
+  userId: string
+): Promise<LinkedIdentityState> {
+  await tx.$queryRaw`SELECT id FROM auth_users WHERE id = ${userId}::uuid FOR UPDATE`;
+
+  const state = await tx.authUser.findUnique({
+    where: { id: userId },
+    select: {
+      email: true,
+      emailVerified: true,
+      _count: { select: { linkedAccounts: true } },
+    },
+  });
+
+  if (!state) {
+    throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
+  }
+
+  return state;
+}
 
 const loginUserSelect = {
   id: true,
@@ -59,6 +92,7 @@ export const authRepository = {
         emailVerified: true,
         status: true,
         deletedAt: true,
+        _count: { select: { linkedAccounts: true } },
       },
     });
   },
@@ -153,6 +187,8 @@ export const authRepository = {
     provider: AuthProvider
   ) {
     return prisma.$transaction(async (tx) => {
+      assertCanLinkIdentity(await lockLinkedIdentityState(tx, userId));
+
       const updated = await tx.authUser.update({
         where: { id: userId },
         data: { email, emailVerified: true },
@@ -170,6 +206,47 @@ export const authRepository = {
       });
 
       return { ...updated, primaryAccount: row?.primaryAccount ?? null };
+    });
+  },
+
+  /**
+   * Adds a Google/Apple link under the same row lock the email link takes, so
+   * a concurrent email link and social link cannot both pass the one-identity
+   * check. Returns the (possibly just stamped) primaryAccount.
+   */
+  async linkSocialAccount(params: {
+    userId: string;
+    provider: AuthProvider;
+    providerUserId: string;
+    email: string | null;
+    emailVerified: boolean;
+    displayName: string | null;
+  }) {
+    return prisma.$transaction(async (tx) => {
+      assertCanLinkIdentity(await lockLinkedIdentityState(tx, params.userId));
+
+      await tx.linkedAccount.create({
+        data: {
+          userId: params.userId,
+          provider: params.provider,
+          providerUserId: params.providerUserId,
+          email: params.email ?? undefined,
+          emailVerified: params.emailVerified,
+          displayName: params.displayName ?? undefined,
+        },
+      });
+
+      await tx.authUser.updateMany({
+        where: { id: params.userId, primaryAccount: null },
+        data: { primaryAccount: params.provider },
+      });
+
+      const row = await tx.authUser.findUnique({
+        where: { id: params.userId },
+        select: { primaryAccount: true },
+      });
+
+      return row?.primaryAccount ?? null;
     });
   },
 

@@ -19,6 +19,7 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
     findByEmail: jest.fn(),
     createUserWithLinkedAccount: jest.fn(),
     setPrimaryAccountIfUnset: jest.fn(),
+    linkSocialAccount: jest.fn(),
   },
 }));
 jest.mock("../../src/repositories/linked-account.repository.js", () => ({
@@ -101,6 +102,8 @@ beforeEach(() => {
   repo.getProfileCompleted.mockResolvedValue(true);
   repo.findByEmail.mockResolvedValue(null);
   repo.setPrimaryAccountIfUnset.mockResolvedValue(null);
+  repo.linkSocialAccount.mockReset();
+  repo.linkSocialAccount.mockResolvedValue("GOOGLE");
   repo.createUserWithLinkedAccount.mockResolvedValue({
     id: "new-user-1",
     account: "googleuser1",
@@ -144,7 +147,23 @@ describe("POST /api/auth/google", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.isNewUser).toBe(false);
-    expect(linkRepo.create).toHaveBeenCalledTimes(1);
+    expect(repo.linkSocialAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("signs in without linking when the matched account already has its one linked identity", async () => {
+    const { ConflictError } = await import("@aimess/errors");
+    repo.findByEmail.mockResolvedValue(activeUser());
+    repo.linkSocialAccount.mockRejectedValue(
+      new ConflictError("AUTH_LINKED_IDENTITY_LIMIT")
+    );
+
+    const res = await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isNewUser).toBe(false);
+    expect(res.body.data.tokens.accessToken).toBe(TOKENS.accessToken);
   });
 
   it("creates a brand-new account when no link/email match → 200, isNewUser:true", async () => {
@@ -223,7 +242,7 @@ describe("POST /api/auth/google", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.isNewUser).toBe(false);
     expect(repo.createUserWithLinkedAccount).not.toHaveBeenCalled();
-    expect(linkRepo.create).toHaveBeenCalledWith(
+    expect(repo.linkSocialAccount).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "APPLE", emailVerified: true })
     );
   });
