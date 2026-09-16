@@ -20,6 +20,7 @@ import {
   publishGroupMemberAddedSafe,
   publishGroupMemberMuteSafe,
 } from "../events/publish-group-member-added.js";
+import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import { ChatEvents } from "@aimess/shared-types";
 import { effectiveGroupMemberLimit } from "@aimess/constants";
 import { publishUserReport } from "../lib/report-user.js";
@@ -411,12 +412,20 @@ export class GroupMemberService {
    * they're no longer in. Covers leave, kick, and ban alike — the target's
    * own socket must never keep hearing a room it can no longer read or write
    * to. Fire-and-forget: never blocks or fails the membership-status change.
+   *
+   * The group also leaves that user's list here (it is no longer an ACTIVE
+   * membership, so `getInboxMemberships` stops returning it), which changes
+   * their Chats nav badge: an unread group that disappears must stop being
+   * counted. `notifyUnreadChanged` recomputes and pushes `chat:unread_summary`
+   * to every one of their devices in the same breath as the eviction, so no
+   * session is left showing a badge for a conversation it can no longer see.
    */
   private emitGroupRemoved(
     roomId: string,
     userId: string,
     reason: "LEAVE" | "KICK" | "BAN"
   ): void {
+    notifyUnreadChanged(userId);
     publishChatUserEvent(this.redis, userId, "group:removed", {
       roomId,
       reason,
@@ -517,6 +526,11 @@ export class GroupMemberService {
 
     const updated = await this.memberRepo.updateStatus(roomId, userId, "LEFT", {
       leftAt: new Date(),
+      // A membership that ends carries no unread: the group is gone from this
+      // user's list, so a leftover counter can only resurface as a phantom
+      // badge if they are ever added back. Zeroed on the SAME write that ends
+      // the membership, so the two can never disagree.
+      unreadCount: 0,
     });
     await this.roomRepo.incMemberCount(roomId, -1);
 
@@ -589,6 +603,8 @@ export class GroupMemberService {
         kickedAt: new Date(),
         kickedBy: params.kickedBy,
         kickReason: params.reason || null,
+        // See leave(): an ended membership carries no unread.
+        unreadCount: 0,
       }
     );
     await this.roomRepo.incMemberCount(params.roomId, -1);
@@ -928,6 +944,8 @@ export class GroupMemberService {
         bannedAt: new Date(),
         bannedBy: params.bannedBy,
         kickReason: params.reason || null,
+        // See leave(): an ended membership carries no unread.
+        unreadCount: 0,
       }
     );
     await this.roomRepo.incMemberCount(params.roomId, -1);
@@ -1243,17 +1261,20 @@ export class GroupMemberService {
      * route had NO membership check at all, so any authenticated user could
      * read any group's roster, and a removed member kept seeing Group Info
      * long after losing the group. Same read rule as the message timeline
-     * (`assertGroupReadAccess`): ACTIVE members, voluntary leavers AND removed
-     * (kicked) members may read — Group Info stays open read-only after a
-     * removal; banned/non-members may not. `findActiveMembers` still returns
-     * only the ACTIVE roster, so a removed viewer never sees themselves listed
-     * as a member. Optional so the existing internal/test call sites keep
-     * compiling unchanged.
+     * (`assertGroupReadAccess`): ACTIVE members only — a leaver, a removed
+     * member and a banned one are all refused, so Group Info closes the
+     * instant the membership does. Optional so the existing internal/test call
+     * sites keep compiling unchanged.
      */
     requesterId?: string
   ): Promise<Array<GroupMember | EnrichedGroupMember>> {
     if (requesterId) {
-      await assertGroupReadAccess(this.memberRepo, roomId, requesterId);
+      await assertGroupReadAccess(
+        this.memberRepo,
+        roomId,
+        requesterId,
+        this.roomRepo
+      );
     }
     return this.enrich(await this.memberRepo.findActiveMembers(roomId, params));
   }

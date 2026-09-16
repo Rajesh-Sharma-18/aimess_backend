@@ -4208,11 +4208,12 @@ const conversationsBulkLeave = {
       "**GROUP rows** follow `groupAction`: `LEAVE` (default) removes " +
       "membership for real (`group:removed` to the leaver, " +
       "`group:member:removed` + MEMBER_LEFT system message to the rest, " +
-      "member count decremented — the group does not return on reload), " +
+      "member count decremented — the group leaves the caller's list at once " +
+      "and does not return on reload), " +
       "`DELETE` only clears the caller's history and keeps membership, and " +
-      "`LEAVE_AND_DELETE` does both so the row also disappears from the " +
-      "caller's list — the sidebar's \"Delete Conversation\" on a group the " +
-      "caller is still ACTIVE in. `LEAVE_AND_DELETE` is idempotent: a caller " +
+      "`LEAVE_AND_DELETE` does both, additionally applying the caller's own " +
+      "clear-chat cutoff so nothing returns if they are ever re-added. " +
+      "`LEAVE_AND_DELETE` is idempotent: a caller " +
       "who is already not ACTIVE still gets the clear and emits no second " +
       "leave.\n\n" +
       "A group ADMIN cannot leave while other members remain — that item " +

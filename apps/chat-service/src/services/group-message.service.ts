@@ -800,7 +800,8 @@ export class GroupMessageService {
     const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      this.roomRepo
     );
     const cutoff = getGroupVisibilityCutoff(member);
     const [{ messages: items, hasMore }, total, roomRevision] =
@@ -889,7 +890,8 @@ export class GroupMessageService {
     const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      this.roomRepo
     );
     const cutoff = getGroupVisibilityCutoff(member);
     const [rows, roomRevision] = await Promise.all([
@@ -972,7 +974,8 @@ export class GroupMessageService {
     const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      this.roomRepo
     );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -1103,7 +1106,8 @@ export class GroupMessageService {
     const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      this.roomRepo
     );
     return this.messageRepo.searchByText({
       roomId: params.roomId,
@@ -1154,7 +1158,8 @@ export class GroupMessageService {
     const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       roomId,
-      userId
+      userId,
+      this.roomRepo
     );
     return this.messageRepo.countSearchResults(
       roomId,
@@ -2883,7 +2888,8 @@ export class GroupMessageService {
     const { readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
-      params.requesterId
+      params.requesterId,
+      this.roomRepo
     );
     const message = await this.messageRepo.findById(params.messageId);
     // NotFound, never Forbidden — a foreign message's existence isn't leaked.

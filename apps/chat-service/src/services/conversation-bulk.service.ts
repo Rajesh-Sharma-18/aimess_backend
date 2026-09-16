@@ -154,9 +154,9 @@ export class ConversationBulkService {
 
   /**
    * `groupAction: "LEAVE_AND_DELETE"` — the sidebar's "Delete Conversation" on a
-   * group the caller is still an ACTIVE member of. WhatsApp semantics: you leave
-   * the group AND the row goes away, instead of lingering as the read-only LEFT
-   * row a plain "LEAVE" produces.
+   * group the caller is still an ACTIVE member of. Leaving alone already takes
+   * the row out of their list; this also records the clear cutoff, so the old
+   * history stays hidden if they are ever added back.
    *
    * Composed from the two existing single-conversation operations, in this
    * order, so neither grows a second implementation:
@@ -164,8 +164,7 @@ export class ConversationBulkService {
    *   1. `GroupMemberService.leave` — MEMBER_LEFT system message, memberCount
    *      decrement, `group:removed` to the leaver, roster fan-out to the rest.
    *   2. `GroupRoomService.clearConversation` — the caller's own `clearedAt`
-   *      cutoff, which is what takes the row out of their inbox and their group
-   *      search results. Accepts LEFT members, so step 1 does not lock it out.
+   *      cutoff. Accepts LEFT members, so step 1 does not lock it out.
    *
    * IDEMPOTENT by construction. `leave` throws CHAT_NOT_A_MEMBER when the caller
    * is not ACTIVE — a double-click, a second device that already ran this, or an

@@ -337,17 +337,15 @@ export class GroupRoomService {
   }
 
   /**
-   * An ex-member's inbox row must not preview a message posted after they
-   * stopped being a member — same "no content past the cutoff" rule
-   * `assertGroupReadAccess`/`readCutoffBefore` already enforce when they open
-   * the room's actual history; without this, the shared
-   * `GroupRoom.lastMessagePreview` (which ISN'T per-viewer) would keep showing
-   * whatever the group's real last message is, effectively "receiving" its text
-   * via the sidebar even though the timeline itself correctly stops at the
-   * cutoff. Covers both ways a membership ends read-only — voluntary `LEFT`
-   * (`leftAt`) and admin removal `KICKED` (`kickedAt`), resolved by the shared
-   * `groupReadCutoff`; ACTIVE members and any row without a real membership
-   * pass through untouched.
+   * A row whose membership ended must not preview a message posted after the
+   * cutoff — the same "no content past the cutoff" rule
+   * `assertGroupReadAccess`/`readCutoffBefore` enforces on the history itself;
+   * without it the shared `GroupRoom.lastMessagePreview` (which ISN'T
+   * per-viewer) would leak the group's real last message text.
+   *
+   * Now reached only through {@link getRoom} on a DISBANDED room — the one
+   * place a non-ACTIVE membership still reads anything. Leave and removal end
+   * access outright, so the inbox has no capped rows left to build.
    */
   private async applyLeftMemberPreviewCap<T extends GroupRoom>(
     rooms: T[],
@@ -735,20 +733,20 @@ export class GroupRoomService {
   > {
     const found = await this.roomRepo.findActiveByRoomId(roomId);
     if (!found) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
-    // Same read rule as the timeline and the roster: ACTIVE members, plus
-    // voluntary leavers (who keep the frozen row in their inbox and must still
-    // be able to open it). Kicked/banned/never-members are rejected — this
+    // Same read rule as the timeline and the roster: ACTIVE members only (plus
+    // a past member of a DISBANDED room, which is the guard's one widening).
+    // Leavers, kicked, banned and never-members are all rejected — this
     // endpoint previously had NO gate at all, so anyone holding a roomId could
     // read the group's name, settings, member count AND the live
-    // `lastMessagePreview` text, which defeated the leave/kick read cutoff
-    // enforced everywhere else. Unauthenticated internal callers (no userId)
+    // `lastMessagePreview` text. Unauthenticated internal callers (no userId)
     // are unchanged.
     let membership: GroupMember | null = null;
     if (userId) {
       ({ member: membership } = await assertGroupReadAccess(
         this.memberRepo,
         roomId,
-        userId
+        userId,
+        this.roomRepo
       ));
     }
     const isJoined = membership?.status === "ACTIVE";
@@ -1048,11 +1046,12 @@ export class GroupRoomService {
    * in their inbox the moment one arrives, showing only messages sent after
    * this cutoff. Distinct from Leave, which removes membership entirely.
    *
-   * Allowed for LEFT/KICKED members too, not just ACTIVE ones: their read-only
-   * row is still in their conversation list, so "Delete Conversation" has to be
-   * able to remove it — and once it is gone the group also stops being
-   * searchable for them (see the gRPC `searchUserGroups` visibility rule).
-   * BANNED is excluded, matching the inbox, which never lists it.
+   * Allowed for LEFT/KICKED members too, not just ACTIVE ones, because
+   * `ConversationBulkService.leaveAndDelete` composes the two in that order —
+   * by the time the clear runs the membership has already ended. The cutoff is
+   * not wasted on them: it survives on the row, so an add-back starts on a
+   * clean transcript instead of restoring pre-leave history. BANNED is
+   * excluded.
    */
   async clearConversation(roomId: string, userId: string): Promise<void> {
     const member = await this.memberRepo.findByRoomAndUser(roomId, userId);
@@ -1164,10 +1163,9 @@ export class GroupRoomService {
   }
 
   async countUserGroups(userId: string, q?: string): Promise<number> {
-    // Matches getInboxGroups' membership source (ACTIVE + LEFT) so this total
+    // Matches getInboxGroups' membership source (ACTIVE only) so this total
     // stays consistent with what the inbox page actually returns.
-    const memberships =
-      await this.memberRepo.getActiveOrLeftMemberships(userId);
+    const memberships = await this.memberRepo.getInboxMemberships(userId);
     if (!memberships.length) return 0;
     const clearedByRoom = new Map(
       memberships.map((m) => [m.roomId, m.clearedAt])
@@ -1270,7 +1268,7 @@ export class GroupRoomService {
     inclusive?: boolean;
     limit: number;
   }): Promise<EnrichedGroupRoom[]> {
-    const memberships = await this.memberRepo.getActiveOrLeftMemberships(
+    const memberships = await this.memberRepo.getInboxMemberships(
       params.userId
     );
     if (!memberships.length) return [];
@@ -1292,14 +1290,12 @@ export class GroupRoomService {
     );
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
+    // No ex-member preview cap here any more — every row this list can produce
+    // is an ACTIVE membership, so there is no cutoff to cap against.
     const rooms = await this.enrichLastMessageSenderNames(
-      await this.applyLeftMemberPreviewCap(
-        this.applyClearChatPreviewCap(
-          await this.applyPerUserPreview(rawRooms, params.userId),
-          membershipByRoom
-        ),
-        membershipByRoom,
-        params.userId
+      this.applyClearChatPreviewCap(
+        await this.applyPerUserPreview(rawRooms, params.userId),
+        membershipByRoom
       )
     );
 
@@ -1328,13 +1324,17 @@ export class GroupRoomService {
         settings.mute === true &&
         (settings.muteUntil == null ||
           new Date(settings.muteUntil).getTime() > now);
+      // `getInboxMemberships` returns ACTIVE rows only, so every row this list
+      // produces is a live membership. The three membership flags below are
+      // kept on the wire (clients still read them) but can now only ever say
+      // "joined" — a leaver or a removed member has no row here at all.
       const isJoined = membership?.status === "ACTIVE";
-      const hasLeft = membership?.status === "LEFT";
-      const isRemoved = membership?.status === "KICKED";
+      const hasLeft = false;
+      const isRemoved = false;
       const isMemberMuted = isGroupMemberMuted(membership);
       // Per-viewer effective activity, read off the SAME preview the per-user
-      // passes above produced (delete-for-me override / clear-chat cap /
-      // ex-member cap), so preview and timestamp can never disagree.
+      // passes above produced (delete-for-me override / clear-chat cap), so
+      // preview and timestamp can never disagree.
       const lastActivity =
         activityByRoom.get(room.roomId) ?? EMPTY_GROUP_LAST_ACTIVITY;
       return {
@@ -1355,8 +1355,7 @@ export class GroupRoomService {
           isMemberMuted && membership?.moderationMutedUntil
             ? membership.moderationMutedUntil.getTime()
             : null,
-        // A left member accrues no unread — their cursor is frozen at leftAt.
-        unreadCount: isJoined ? (membership?.unreadCount ?? 0) : 0,
+        unreadCount: membership?.unreadCount ?? 0,
         lastReadMessageId: membership?.lastReadMessageId ?? null,
         role: membership?.role ?? "MEMBER",
         isJoined,

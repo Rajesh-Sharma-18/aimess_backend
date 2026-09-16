@@ -210,13 +210,20 @@ export class GroupMemberRepository {
   }
 
   /**
-   * Same as {@link getActiveMemberships} plus rooms the user voluntarily LEFT
-   * or was KICKED (removed) from — feeds the inbox listing so an ex-member's
-   * group stays visible (read-only, history intact) instead of vanishing,
-   * WhatsApp-style. BANNED rows are still excluded: a ban keeps its existing
-   * harder "gone" behavior.
+   * The membership rows the unified inbox lists a group from: ACTIVE only.
+   *
+   * A membership that has ended — LEFT, KICKED or BANNED — takes the group out
+   * of that user's list immediately, and keeps it out across reloads and
+   * re-logins. This used to widen to LEFT + KICKED so an ex-member kept a
+   * read-only row WhatsApp-style; the product rule is now that the end of a
+   * membership is the end of the conversation for that user. Enforced here —
+   * the ONE query behind the list, the list count and cross-room search —
+   * rather than per surface, so no listing can drift back to the old behavior.
+   *
+   * Selects more than {@link getActiveMemberships} because an inbox row also
+   * renders moderation-mute state and the caller's own read watermark.
    */
-  async getActiveOrLeftMemberships(userId: string): Promise<
+  async getInboxMemberships(userId: string): Promise<
     Array<{
       roomId: string;
       role: string;
@@ -233,7 +240,7 @@ export class GroupMemberRepository {
     }>
   > {
     return this.prisma.groupMember.findMany({
-      where: { userId, status: { in: ["ACTIVE", "LEFT", "KICKED"] } },
+      where: { userId, status: "ACTIVE" },
       select: {
         roomId: true,
         role: true,

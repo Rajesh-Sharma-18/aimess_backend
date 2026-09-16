@@ -104,14 +104,21 @@ export interface InboxItem {
   role: string | null;
   /** GROUP-only: true when the caller is an active member; null for PRIVATE rows. */
   isJoined: boolean | null;
-  /** GROUP-only: true when the caller voluntarily left; null for PRIVATE rows. */
+  /**
+   * GROUP-only, and always `false` on a row this list can produce.
+   *
+   * A membership that ends — voluntary leave (`hasLeft`) or admin removal
+   * (`isRemoved`) — now takes the group out of the caller's list entirely, so
+   * there is no ex-member row left for either flag to describe. Both stay on
+   * the wire for clients that still read them; neither is a state the server
+   * can report any more. Null for PRIVATE rows.
+   */
   hasLeft: boolean | null;
-  /** GROUP-only: true when an admin REMOVED the caller (kicked). Read-only row,
-   *  same as `hasLeft`, different notice wording. Null for PRIVATE rows. */
+  /** GROUP-only: see {@link InboxItem.hasLeft} — always false. Null for PRIVATE rows. */
   isRemoved: boolean | null;
-  /** GROUP-only: raw `GroupMember.status` ("ACTIVE" | "LEFT" | "KICKED") so the
-   *  client renders the right composer state on a cold start without inferring
-   *  it from `isJoined === false`. Null for PRIVATE rows. */
+  /** GROUP-only: raw `GroupMember.status`, which on a listed row is always
+   *  "ACTIVE" (the list's membership query admits nothing else). Null for
+   *  PRIVATE rows. */
   membershipStatus: string | null;
   /**
    * GROUP-only: an admin/moderator has silenced the CALLER (read stays open,

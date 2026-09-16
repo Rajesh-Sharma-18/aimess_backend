@@ -3059,34 +3059,24 @@ export function createMessagingImpl(
           const skip = Math.max(req.skip || 0, 0);
 
           // Same membership source the unified inbox lists a group from
-          // (ACTIVE + LEFT + KICKED, BANNED excluded) — one query, no per-group
-          // lookup, so search visibility can never drift from what the user's
-          // conversation list actually shows.
+          // (ACTIVE only) — one query, no per-group lookup, so search
+          // visibility can never drift from what the user's conversation list
+          // actually shows. A group whose membership ended is not in that list
+          // and must not be findable through search either, so the "OTHER"
+          // mode below (non-active rooms still in the list) now has no
+          // candidates by construction.
           const memberships = viewerId
-            ? await deps.groupMemberRepo.getActiveOrLeftMemberships(viewerId)
+            ? await deps.groupMemberRepo.getInboxMemberships(viewerId)
             : [];
-          const activeRoomIds = memberships
-            .filter((m) => m.status === "ACTIVE")
-            .map((m) => m.roomId);
+          const activeRoomIds = memberships.map((m) => m.roomId);
           const activeSet = new Set(activeRoomIds);
-          const clearedByRoom = new Map(
-            memberships.map((m) => [m.roomId, m.clearedAt])
-          );
 
-          // Non-active viewer: the group stays visible only while the
-          // conversation survives their own "Delete Conversation" cutoff —
-          // the same `isVisibleAfterClear` gate GroupRoomService applies to
-          // the inbox.
-          const isSearchable = (g: {
-            roomId: string;
-            lastMessageAt: Date | null;
-          }) => {
-            if (activeSet.has(g.roomId)) return true;
-            if (!clearedByRoom.has(g.roomId)) return false;
-            const clearedAt = clearedByRoom.get(g.roomId) ?? null;
-            if (!clearedAt) return true;
-            return (g.lastMessageAt?.getTime() ?? 0) > clearedAt.getTime();
-          };
+          // Group existence — public, name-matching, previously joined,
+          // previously invited — never grants visibility. Active membership is
+          // the whole rule, and BY_IDS is held to it too rather than trusting
+          // the ids the caller sent.
+          const isSearchable = (g: { roomId: string }) =>
+            activeSet.has(g.roomId);
 
           let rows;
           if (mode === "OTHER") {

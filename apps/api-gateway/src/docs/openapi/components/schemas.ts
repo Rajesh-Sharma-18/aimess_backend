@@ -12093,16 +12093,17 @@ export const openApiSchemas = {
           "- `LEAVE` (default) — real membership removal, identical to " +
           "`POST /chat/group-members/{roomId}/leave`: MEMBER_LEFT system " +
           "message, member count decrement, `group:removed` to the leaver and " +
-          "`group:member:removed` to the remaining roster. The group does " +
-          "**not** come back on reload, but the row stays in the caller's " +
-          "list read-only.\n" +
+          "`group:member:removed` to the remaining roster. The group leaves " +
+          "the caller's list immediately and does **not** come back on " +
+          "reload; every read of it is refused afterwards.\n" +
           '- `DELETE` — the sidebar\'s "Delete Conversation", identical to ' +
           "`DELETE /chat/groups/rooms/{roomId}`: clears the caller's own history " +
           "and keeps membership, so the room reappears when a new message " +
           "arrives.\n" +
-          "- `LEAVE_AND_DELETE` — both, in that order. WhatsApp semantics for " +
-          '"Delete Conversation" on a group the caller is still ACTIVE in: ' +
-          "membership ends AND the row disappears. Idempotent — a caller who " +
+          "- `LEAVE_AND_DELETE` — both, in that order. `LEAVE` alone already " +
+          "removes the row; this additionally applies the caller's own " +
+          "clear-chat cutoff, so nothing returns if they are ever re-added. " +
+          "Idempotent — a caller who " +
           "is already not ACTIVE still gets the clear, and no second " +
           "MEMBER_LEFT or `group:removed` is emitted. Reports `LEFT`. Only " +
           "`OWNER_CANNOT_LEAVE` still fails: the owner must transfer " +
