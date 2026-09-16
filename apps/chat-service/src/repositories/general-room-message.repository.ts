@@ -30,6 +30,18 @@ import {
   parseSearchCursor,
   readTextSearchPage,
 } from "./message-search.js";
+import {
+  MessageReactionRepository,
+  type ReactionConversationType,
+} from "./message-reaction.repository.js";
+import {
+  applyReactionIndexDelta,
+  ensureReactionIndex,
+  readReactionDetailsSlice,
+  type ReactionDetailsSlice,
+  type ReactionIndexDelta,
+  type ReactionIndexSource,
+} from "../lib/reaction-index.js";
 
 /**
  * PERSONAL system-message visibility check (applied in memory for Prisma
@@ -1390,6 +1402,66 @@ export class GeneralRoomMessageRepository {
     });
   }
 
+
+  private reactionIndexRepo: MessageReactionRepository | null = null;
+
+  private readonly reactionConversationType: ReactionConversationType =
+    "COMMUNITY";
+
+  /**
+   * Paginated reactor index for this collection. Built lazily from the same
+   * Prisma client rather than injected, so no construction site has to learn
+   * about it — the projection is an implementation detail of how reactions are
+   * read, not a new dependency of the message repository.
+   */
+  private get reactionIndex(): MessageReactionRepository {
+    this.reactionIndexRepo ??= new MessageReactionRepository(this.prisma);
+    return this.reactionIndexRepo;
+  }
+
+  /**
+   * One page of reactors plus the aggregate counts, for the reaction-details
+   * popup. Materializes the index on first use for rows that predate it.
+   *
+   * Returns identities only — the caller resolves profiles for the PAGE, which
+   * is what keeps the snapshot fan-out bounded however many reactors the message
+   * has in total.
+   */
+  async readReactionDetails(params: {
+    message: ReactionIndexSource;
+    requesterId: string;
+    emoji?: string | null;
+    cursor?: string | null;
+    limit?: number | null;
+  }): Promise<ReactionDetailsSlice> {
+    await ensureReactionIndex(
+      this.reactionIndex,
+      this.reactionConversationType,
+      params.message,
+      (messageId, at) =>
+        this.prisma.generalRoomMessage.update({
+          where: { id: messageId },
+          data: { reactionsIndexedAt: at },
+        })
+    );
+    return readReactionDetailsSlice(this.reactionIndex, {
+      messageId: params.message.id,
+      conversationType: this.reactionConversationType,
+      requesterId: params.requesterId,
+      emoji: params.emoji,
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+  }
+
+  /** Drop a message's reactor index — a deleted message carries no reactions. */
+  async clearReactionIndex(messageId: string): Promise<void> {
+    await this.reactionIndex.deleteForMessage(
+      messageId,
+      this.reactionConversationType
+    );
+  }
+
   /**
    * Compare-and-swap reaction write: only applies when the document's `revision`
    * still matches what the caller last read (bumped on EVERY state change, so any
@@ -1401,7 +1473,9 @@ export class GeneralRoomMessageRepository {
     messageId: string,
     reactions: Record<string, unknown[]>,
     expectedRevision: number,
-    newRevision: number
+    newRevision: number,
+    roomId?: string,
+    delta?: ReactionIndexDelta
   ): Promise<boolean> {
     const result = await this.prisma.generalRoomMessage.updateMany({
       where: { id: messageId, revision: expectedRevision },
@@ -1410,7 +1484,17 @@ export class GeneralRoomMessageRepository {
         revision: newRevision,
       },
     });
-    return result.count > 0;
+    const applied = result.count > 0;
+    // See PrivateMessageRepository.updateReactionsCas — winning attempt only.
+    if (applied && delta && roomId) {
+      await applyReactionIndexDelta(this.reactionIndex, {
+        messageId,
+        conversationType: this.reactionConversationType,
+        roomId,
+        delta,
+      });
+    }
+    return applied;
   }
 
   async deleteForUser(messageId: string, userId: string): Promise<void> {

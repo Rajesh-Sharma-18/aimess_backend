@@ -20,10 +20,12 @@ jest.mock("../../src/config/redis.js", () => ({
   connectBackofficeRedis: jest.fn(async () => undefined),
 }));
 
+import { redis } from "../../src/config/redis.js";
 import {
   probeInfrastructure,
   probeServices,
 } from "../../src/lib/health-probes.js";
+import { SYSTEM_HEALTH_SCHEMA_VERSION } from "../../src/types/system-health.types.js";
 import {
   computeOverall,
   computeServicesUp,
@@ -217,7 +219,8 @@ describe("systemHealthService.getSystemHealth", () => {
     expect(result.overall).toBe("degraded");
     expect(result.servicesUp.up).toBe(2);
     expect(result.services[0].status).toBe("down");
-    expect(result.services[0].note).toContain("timed out");
+    expect(result.services[0].reason).toContain("timed out");
+    expect(result.services[0].note).toBeUndefined();
   });
 
   it("reports down when a core datastore probe fails", async () => {
@@ -232,5 +235,59 @@ describe("systemHealthService.getSystemHealth", () => {
     const result = await systemHealthService.getSystemHealth();
 
     expect(result.overall).toBe("down");
+    expect(result.infrastructure[0].reason).toBe("Unreachable.");
+    expect(JSON.stringify(result)).not.toContain("ECONNREFUSED");
+  });
+
+  it("an infrastructure failure never marks a healthy service down — it degrades overall, with a reason", async () => {
+    probeServicesMock.mockResolvedValue([svc("media", "healthy", { name: "Media Service" })]);
+    probeInfraMock.mockResolvedValue([
+      inf("mongodb", "down", {
+        name: "Document Database (MongoDB)",
+        note: "probe timed out after 2000ms",
+        metrics: { latencyMs: null, engine: "mongodb", host: "10.0.0.1:27017" },
+      }),
+      inf("object_storage", "healthy", {
+        name: "Object Storage (MinIO)",
+        metrics: { latencyMs: 5, bucket: "avatars" },
+      }),
+    ]);
+
+    const result = await systemHealthService.getSystemHealth();
+
+    expect(result.services[0].status).toBe("healthy");
+    expect(result.services[0].checks?.map((c) => [c.key, c.status])).toEqual([
+      ["service", "healthy"],
+      ["mongodb", "down"],
+      ["object_storage", "healthy"],
+    ]);
+    expect(result.servicesUp).toEqual({ up: 1, total: 1, label: "1/1" });
+    expect(result.overall).toBe("degraded");
+    expect(result.overallReason).toBe(
+      "1 infrastructure component unavailable: Document Database (MongoDB)."
+    );
+    expect(result.infrastructure[0]).toMatchObject({
+      reason: "Health check timed out after 2000ms.",
+      metrics: { latencyMs: null, engine: "mongodb" },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/10\.0\.0\.1|avatars|"note"/);
+  });
+
+  it("healthy snapshot has no overall reason", async () => {
+    probeServicesMock.mockResolvedValue(HEALTHY_SERVICES);
+    probeInfraMock.mockResolvedValue(HEALTHY_INFRA);
+    const result = await systemHealthService.getSystemHealth();
+    expect(result.overallReason).toBeUndefined();
+  });
+
+  it("stamps the schema version and caches under a versioned key, so other contract versions are never served", async () => {
+    probeServicesMock.mockResolvedValue(HEALTHY_SERVICES);
+    probeInfraMock.mockResolvedValue(HEALTHY_INFRA);
+    const result = await systemHealthService.getSystemHealth();
+    const key = `backoffice:system-health:v${String(SYSTEM_HEALTH_SCHEMA_VERSION)}`;
+    expect(result.schemaVersion).toBe(SYSTEM_HEALTH_SCHEMA_VERSION);
+    expect(redis.get).toHaveBeenCalledWith(key);
+    expect(redis.get).not.toHaveBeenCalledWith("backoffice:system-health");
+    expect(redis.set).toHaveBeenCalledWith(key, expect.any(String), "EX", 5);
   });
 });

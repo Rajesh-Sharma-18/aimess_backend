@@ -229,8 +229,15 @@ export {
 } from "./system-maintenance.validator.js";
 
 export {
+  serviceRestartParamsSchema,
+  type ServiceRestartParams,
+} from "./service-restart.validator.js";
+
+export {
   notificationCategoryIdParamSchema,
+  updateNotificationCategoriesSchema,
   updateNotificationCategorySchema,
   type NotificationCategoryIdParam,
+  type UpdateNotificationCategoriesInput,
   type UpdateNotificationCategoryInput,
 } from "./notification-category.validator.js";

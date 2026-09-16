@@ -55,6 +55,10 @@ const MAX_URLS = 20; // link previews per message
 const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 const MAX_NAME_LEN = 120; // denormalized senderName fanned out to the room
 const MAX_URL_LEN = 3000; // a single URL / objectKey / avatar
+// Coarse transport cap only: chat-service enforces the authoritative 50-per-message
+// limit (CHAT_MENTION_LIMIT_EXCEEDED), so 51..200 must pass here to surface that
+// specific error instead of a generic INVALID_PAYLOAD.
+const MAX_MENTIONS = 200;
 
 /**
  * How often a live socket refreshes its presence device session. Must be
@@ -100,6 +104,17 @@ const withCommunityAliases = <T extends z.ZodTypeAny>(schema: T) =>
       !Array.isArray(v.content)
     ) {
       aliased.contentText = (v.content as Record<string, unknown>).text;
+    }
+    // Group @mentions: canonical is the flat top-level `mentions` (like files/urls);
+    // `content.mentions` (the REST/community body spelling) is accepted as an alias.
+    if (
+      aliased.mentions === undefined &&
+      v.content !== null &&
+      typeof v.content === "object" &&
+      !Array.isArray(v.content) &&
+      Array.isArray((v.content as Record<string, unknown>).mentions)
+    ) {
+      aliased.mentions = (v.content as Record<string, unknown>).mentions;
     }
     if (aliased.repliedToId === undefined && v.parentMessageId !== undefined) {
       aliased.repliedToId = v.parentMessageId;
@@ -199,6 +214,24 @@ const StickerSchema = z
   .refine((d) => d.objectKey || d.url, {
     message: "sticker requires objectKey or url",
   });
+// Group @mention entity: `offset`/`length` are UTF-16 code units into the text and
+// cover the literal "@handle" (USER, `type` optional) or "@all" (ALL) token.
+// Shape-only here — chat-service re-validates every entry against the text +
+// active membership and silently drops bad ones. `type` is forwarded as sent; an
+// ALL entry carries no user fields (stray `userId`/`username` are stripped).
+const mentionSpan = {
+  offset: z.number().int().nonnegative(),
+  length: z.number().int().min(1).max(64),
+};
+const MentionSchema = z.union([
+  z.object({
+    type: z.literal("USER").optional(),
+    userId: z.string().min(1).max(100),
+    username: z.string().max(64).optional(),
+    ...mentionSpan,
+  }),
+  z.object({ type: z.literal("ALL"), ...mentionSpan }),
+]);
 const MessageSendSchemaBase = z.object({
   conversationId: z.string().min(1),
   clientMessageId: z.string().optional(),
@@ -215,6 +248,8 @@ const MessageSendSchemaBase = z.object({
   location: LocationSchema.optional(),
   contact: ContactSchema.optional(),
   sticker: StickerSchema.optional(),
+  // GROUP only — chat-service strips it for private sends.
+  mentions: z.array(MentionSchema).max(MAX_MENTIONS).optional(),
   repliedToId: z.string().optional(),
   conversationType: z.preprocess(
     (value) =>
@@ -269,10 +304,38 @@ const MessagesFetchSchemaBase = z.object({
 // Each `*Base` above defines the canonical /chat field names; the exported
 // schema additionally accepts the equivalent /community spellings (roomId,
 // message, content.text, parentMessageId). See withCommunityAliases.
-const MessageSendSchema = withCommunityAliases(MessageSendSchemaBase);
+export const MessageSendSchema = withCommunityAliases(MessageSendSchemaBase);
 const MessageReadSchema = withCommunityAliases(MessageReadSchemaBase);
 const MessageReactSchema = withCommunityAliases(MessageReactSchemaBase);
 const MessagesFetchSchema = withCommunityAliases(MessagesFetchSchemaBase);
+
+/**
+ * The `contentJson` body `message:send` forwards to chat-service. Optional keys
+ * are added only when present, so a client that sends none of them produces the
+ * exact same JSON it always did.
+ */
+export function buildSendMessageContent(
+  data: z.infer<typeof MessageSendSchemaBase>
+) {
+  const files = [...(data.files ?? [])];
+  if (data.mediaKey && !files.some((f) => f.objectKey)) {
+    files.push({
+      objectKey: data.mediaKey,
+      name: "",
+      size: 0,
+      mime: "",
+    });
+  }
+  return {
+    text: data.contentText ?? "",
+    urls: data.urls ?? [],
+    files,
+    ...(data.location ? { location: data.location } : {}),
+    ...(data.contact ? { contact: data.contact } : {}),
+    ...(data.sticker ? { sticker: data.sticker } : {}),
+    ...(data.mentions?.length ? { mentions: data.mentions } : {}),
+  };
+}
 
 const CatchupSchema = z.object({
   rooms: z
@@ -1058,6 +1121,22 @@ export function registerChatNamespace(
       z.enum(["private", "group"]).default("private")
     ),
   });
+  // Paginated sibling of MessageReactionsGetSchemaBase. Separate event rather
+  // than extra optional fields on the old one, so an existing client that emits
+  // the unpaginated shape keeps the contract it was written against.
+  const MessageReactionsPageSchemaBase = z.object({
+    messageId: z.string().min(1),
+    conversationId: z.string().min(1),
+    conversationType: z.preprocess(
+      (v) => (typeof v === "string" ? v.toLowerCase() : v),
+      z.enum(["private", "group"]).default("private")
+    ),
+    // Absent = the "All" filter.
+    emoji: z.string().min(1).max(64).optional(),
+    cursor: z.string().max(128).optional(),
+    // Advisory: chat-service clamps to its own page ceiling regardless.
+    limit: z.coerce.number().int().positive().max(100).optional(),
+  });
   const MessageEditSchemaBase = z.object({
     messageId: z.string().min(1),
     conversationId: z.string().min(1),
@@ -1094,6 +1173,9 @@ export function registerChatNamespace(
   const MessageForwardSchema = withCommunityAliases(MessageForwardSchemaBase);
   const MessageReactionsGetSchema = withCommunityAliases(
     MessageReactionsGetSchemaBase
+  );
+  const MessageReactionsPageSchema = withCommunityAliases(
+    MessageReactionsPageSchemaBase
   );
   const MessageEditSchema = withCommunityAliases(MessageEditSchemaBase);
   const MessageDeliveredSchema = withCommunityAliases(
@@ -1444,23 +1526,7 @@ export function registerChatNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
-        const files = [...(r.data.files ?? [])];
-        if (r.data.mediaKey && !files.some((f) => f.objectKey)) {
-          files.push({
-            objectKey: r.data.mediaKey,
-            name: "",
-            size: 0,
-            mime: "",
-          });
-        }
-        const content = {
-          text: r.data.contentText ?? "",
-          urls: r.data.urls ?? [],
-          files,
-          ...(r.data.location ? { location: r.data.location } : {}),
-          ...(r.data.contact ? { contact: r.data.contact } : {}),
-          ...(r.data.sticker ? { sticker: r.data.sticker } : {}),
-        };
+        const content = buildSendMessageContent(r.data);
         messagingClient
           .sendMessage({
             ...r.data,
@@ -2162,6 +2228,30 @@ export function registerChatNamespace(
       }
     );
 
+    // Paginated reaction details — one page of reactors plus aggregate counts.
+    socket.on(
+      "message:reactions:page",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = MessageReactionsPageSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        messagingClient
+          .getMessageReactionsPage({ ...r.data, requesterId: userId })
+          .then((result) =>
+            ackOk(callback, "SOCKET_REACTIONS_FETCHED", locale, result)
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `/chat message:reactions:page gRPC error: ${String(err)}`
+            );
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
+          });
+      }
+    );
+
     // Feature 4: Call signaling
 
     /**
@@ -2272,6 +2362,9 @@ export function registerChatNamespace(
               // media usually comes up before that broadcast loops back, and
               // without it the answering leg times the call from its own clock.
               answeredAt: result.answeredAt,
+              // Server clock at send time, so the client can correct for its
+              // own clock skew before measuring `now - answeredAt`.
+              serverNow: Date.now(),
             });
           })
           .catch((err: unknown) => {

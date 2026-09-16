@@ -28,6 +28,7 @@ import {
 import {
   anonymizeSystemData,
   anonymizeWireSender,
+  collectDeletedUserIds,
   collectSenderIdentities,
   collectRowUserIds,
   liveAvatarKeys,
@@ -35,9 +36,21 @@ import {
 } from "../lib/deleted-identity.js";
 import {
   buildMessagePreview,
+  buildPushPreview,
   buildReactionTargetPreview,
 } from "./message-preview.service.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
+import {
+  publishMentionRetractedSafe,
+  publishMessageSentSafe,
+} from "../events/publish-message-sent.js";
+import {
+  hasMentionAll,
+  mentionedUserIdsOf,
+  resolveGroupMentions,
+} from "../lib/group-mentions.js";
+import { assertMentionAllAllowed } from "../middleware/rate-limit.js";
+import { once } from "../lib/once.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -125,7 +138,15 @@ import {
 } from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
+import type { MentionDto } from "@aimess/shared-types";
 import type { GroupMember, GroupMessage } from "../generated/prisma/index.js";
+import {
+  buildReactionDetailsPage,
+  type ReactionDetailsPage,
+} from "../lib/reaction-index.js";
+
+/** Claim-key suffix recording that a message's @all already pushed. */
+const MENTION_ALL_CLAIM = "ALL";
 
 export class GroupMessageService {
   constructor(
@@ -149,7 +170,13 @@ export class GroupMessageService {
     senderId: string;
     senderName: string;
     senderAvatar: string;
-    content: { text: string; urls?: string[]; files?: unknown[] };
+    content: {
+      text: string;
+      urls?: string[];
+      files?: unknown[];
+      /** Client-claimed @mentions — resolved (and stripped when invalid) below. */
+      mentions?: unknown;
+    };
     messageType: string;
     parentMessageId?: string | null;
     clientMessageId?: string | null;
@@ -255,9 +282,25 @@ export class GroupMessageService {
       }
     }
 
+    // Resolved only for a FRESH send (a replay returned above with the row it
+    // stored the first time). Invalid entries are dropped; only the limit throws.
+    const mentions = await this.resolveMentions(
+      params.content?.mentions,
+      params.content?.text ?? "",
+      params.roomId
+    );
+    const content: typeof params.content = { ...params.content };
+    if (mentions.length > 0) content.mentions = mentions;
+    else delete content.mentions;
+    // An @all pushes the whole roster: metered per (room, sender) before
+    // anything is persisted. Replays returned above and are never charged.
+    if (hasMentionAll([content])) {
+      await assertMentionAllAllowed(params.senderId, params.roomId);
+    }
+
     const parts = splitDirectMediaAlbum(
       params.messageType,
-      params.content,
+      content,
       params.clientMessageId ?? null
     );
 
@@ -428,6 +471,16 @@ export class GroupMessageService {
     if (params.clientMessageId) {
       const idemKey = `${params.roomId}:${params.senderId}:${params.clientMessageId}`;
       this.cacheRepo.setMessageIdempotency(idemKey, message.id).catch(() => {});
+    }
+
+    // Record who this send notifies, so an edit that removes and re-adds a
+    // mention never pushes them again. Never throws.
+    for (const row of created) {
+      const mentioned = mentionedUserIdsOf([row.content], params.senderId);
+      if (hasMentionAll([row.content])) mentioned.push(MENTION_ALL_CLAIM);
+      if (mentioned.length > 0) {
+        await this.claimMentionNotifications(row.id, mentioned);
+      }
     }
 
     const messageContent = (message.content ?? {}) as Record<string, unknown>;
@@ -608,6 +661,27 @@ export class GroupMessageService {
   }
 
   /**
+   * Who an @all in `roomId` notifies: ACTIVE members read now (left, removed
+   * and banned members are not active) minus the sender and deleted accounts.
+   * `activeIds` reuses a roster the caller already read.
+   */
+  async getMentionAllRecipients(
+    roomId: string,
+    senderId: string,
+    activeIds?: string[]
+  ): Promise<string[]> {
+    const ids = (activeIds ?? (await this.getActiveMemberIds(roomId))).filter(
+      (id) => id !== senderId
+    );
+    const deleted = await collectDeletedUserIds(
+      ids,
+      this.userSnapshotService,
+      this.cacheRepo
+    );
+    return ids.filter((id) => !deleted.has(id));
+  }
+
+  /**
    * {@link getActiveMemberIds} plus the subset currently moderation-muted, from
    * the SAME query — the gateway's typing/recording gate needs both and would
    * otherwise pay a second round trip per keystroke. Lazy expiry is applied
@@ -730,7 +804,8 @@ export class GroupMessageService {
     const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      this.roomRepo
     );
     const cutoff = getGroupVisibilityCutoff(member);
     const [{ messages: items, hasMore }, total, roomRevision] =
@@ -819,7 +894,8 @@ export class GroupMessageService {
     const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      this.roomRepo
     );
     const cutoff = getGroupVisibilityCutoff(member);
     const [rows, roomRevision] = await Promise.all([
@@ -902,7 +978,8 @@ export class GroupMessageService {
     const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      this.roomRepo
     );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -1033,7 +1110,8 @@ export class GroupMessageService {
     const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      this.roomRepo
     );
     return this.messageRepo.searchByText({
       roomId: params.roomId,
@@ -1084,7 +1162,8 @@ export class GroupMessageService {
     const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       roomId,
-      userId
+      userId,
+      this.roomRepo
     );
     return this.messageRepo.countSearchResults(
       roomId,
@@ -1429,6 +1508,27 @@ export class GroupMessageService {
       userId,
       deletedType
     );
+    // Every group delete-for-everyone (REST, bulk, gRPC/socket via deleteDirect,
+    // the auto-delete sweep) lands here, so the mention inbox rows go with it.
+    if (deleted) {
+      const senderId = message.senderId ?? "";
+      const individual = mentionedUserIdsOf([message.content], senderId);
+      const all = hasMentionAll([message.content]);
+      if (individual.length > 0 || all) {
+        // @all rows reach every membership row, not just today's roster: a
+        // member who left or was removed/banned since still holds one.
+        this.retractMentionsSafe(message.id, roomId, async () =>
+          all
+            ? [
+                ...individual,
+                ...(await this.memberRepo.findAllUserIds(roomId)).filter(
+                  (id) => id !== senderId
+                ),
+              ]
+            : individual
+        );
+      }
+    }
     publishAdminActivitySafe({
       // A system-driven purge (auto-delete sweeper) has no human actor.
       actorId: bySystem ? null : userId,
@@ -1478,6 +1578,8 @@ export class GroupMessageService {
       text: string;
       urls?: string[];
       files?: unknown[];
+      /** Omitted = keep the previous mentions still valid for the new text. */
+      mentions?: unknown;
     };
   }): Promise<GroupMessage> {
     const message = await this.messageRepo.findById(params.messageId);
@@ -1504,11 +1606,137 @@ export class GroupMessageService {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
+
+    // An edit re-resolves mentions against the NEW text. A client that omits
+    // `mentions` (older build) keeps the previous ones — each still has to line
+    // up with the new text, so a moved or rewritten token drops out. A lookup
+    // outage keeps them instead of erasing what the row already stored.
+    const previousContent = (message.content ?? {}) as Record<string, unknown>;
+    const mentions = await this.resolveMentions(
+      params.content.mentions !== undefined
+        ? params.content.mentions
+        : previousContent.mentions,
+      params.content.text,
+      message.roomId,
+      params.content.mentions === undefined &&
+        Array.isArray(previousContent.mentions)
+        ? (previousContent.mentions as MentionDto[])
+        : undefined
+    );
+    // Text, urls and mentions ONLY — never `files`. The REST validator already
+    // strips them, but the socket/gRPC edit path parses contentJson wholesale;
+    // see editGroupMessageSchema for why an edit must not write attachments.
+    const nextContent = {
+      text: params.content.text,
+      urls: params.content.urls ?? [],
+      ...(mentions.length > 0 ? { mentions } : {}),
+    };
+    // Newly adding @all is charged like a send, BEFORE persisting, so a
+    // rate-limited edit changes nothing.
+    const addedAll =
+      hasMentionAll([nextContent]) && !hasMentionAll([previousContent]);
+    if (addedAll) {
+      await assertMentionAllAllowed(params.userId, message.roomId);
+    }
     const updated = await this.messageRepo.editMessage(
       params.messageId,
       message.roomId,
-      params.content
+      nextContent
     );
+
+    // Push ONLY people newly mentioned by this edit. Keeping or removing
+    // mentions notifies nobody. Forward/replay paths never reach here.
+    const alreadyMentioned = new Set(
+      mentionedUserIdsOf([previousContent], params.userId)
+    );
+    const added = mentionedUserIdsOf([nextContent], params.userId).filter(
+      (id) => !alreadyMentioned.has(id)
+    );
+    // …and at most once per user (and once for @all) per message: toggling a
+    // mention off and on must not re-push (a mention push bypasses group mute).
+    const claimed = await this.claimMentionNotifications(
+      message.id,
+      addedAll ? [...added, MENTION_ALL_CLAIM] : added
+    );
+    const freshAll = claimed.includes(MENTION_ALL_CLAIM);
+    const fresh = claimed.filter((id) => id !== MENTION_ALL_CLAIM);
+    // Users mentioned in the previous or new content are not pushed again by
+    // a newly added @all (a fresh one is already in `fresh`).
+    // ponytail: a user mentioned and removed by an EARLIER edit can still get
+    // the @all push. Per-user claims across the roster if that matters.
+    const allAudience = once(() =>
+      this.getMentionAllRecipients(message.roomId, params.userId).then((ids) =>
+        ids.filter((id) => !alreadyMentioned.has(id) && !added.includes(id))
+      )
+    );
+    const publishMention = (
+      userIds: string[],
+      withAll: boolean,
+      inboxOnly: boolean
+    ) =>
+      publishMessageSentSafe({
+        conversationId: message.roomId,
+        conversationType: "GROUP",
+        messageId: message.id,
+        clientMessageId: message.clientMessageId ?? "",
+        senderId: params.userId,
+        senderName: message.senderName ?? "",
+        senderAvatar: message.senderAvatar ?? "",
+        preview: buildPushPreview("TEXT", params.content.text),
+        messageType: "TEXT",
+        sentAt: Date.now(),
+        mentionOnly: true,
+        ...(inboxOnly ? { inboxOnly: true } : {}),
+        mentionedUserIds: userIds,
+        ...(withAll
+          ? {
+              // Never the whole roster: a consumer unaware of `mentionOnly`
+              // would push every listed recipient.
+              fetchRecipients: () =>
+                allAudience().then((ids) => [...userIds, ...ids]),
+              fetchMentionAllUserIds: allAudience,
+            }
+          : { recipientIds: userIds }),
+      });
+    if (fresh.length > 0 || freshAll) publishMention(fresh, freshAll, false);
+    // A re-added mention whose push was already claimed (an earlier edit
+    // retracted its row) gets the inbox row back without a second push.
+    const rowOnly = added.filter((id) => !fresh.includes(id));
+    const rowOnlyAll = addedAll && !freshAll;
+    if (rowOnly.length > 0 || rowOnlyAll) {
+      publishMention(rowOnly, rowOnlyAll, true);
+    }
+    // Retract the inbox rows of mentions this edit removed. A user still named
+    // individually keeps theirs; one covered only by a kept @all keeps it
+    // unless they muted @all (decided downstream via `ifAllMutedUserIds`).
+    const nextAll = hasMentionAll([nextContent]);
+    const stillMentioned = new Set(
+      mentionedUserIdsOf([nextContent], params.userId)
+    );
+    const removed = [...alreadyMentioned].filter(
+      (id) => !stillMentioned.has(id)
+    );
+    const droppedAll = hasMentionAll([previousContent]) && !nextAll;
+    if (removed.length > 0 || droppedAll) {
+      this.retractMentionsSafe(
+        message.id,
+        message.roomId,
+        async () =>
+          droppedAll
+            ? [
+                ...removed,
+                ...(
+                  await this.memberRepo.findAllUserIds(message.roomId)
+                ).filter(
+                  (id) => id !== params.userId && !stillMentioned.has(id)
+                ),
+              ]
+            : nextAll
+              ? []
+              : removed,
+        nextAll ? removed : []
+      );
+    }
     // Best-effort: keep every existing reply's `quoteData.preview` in sync with
     // the new text (edits are TEXT-only, so preview === the new text verbatim).
     this.messageRepo
@@ -1620,7 +1848,8 @@ export class GroupMessageService {
         messageId,
         message.roomId,
         updated,
-        message.revision
+        message.revision,
+        { userId, emoji: added ? emoji : null }
       );
       if (applied) break;
       if (attempt === MAX_ATTEMPTS - 1)
@@ -1943,6 +2172,87 @@ export class GroupMessageService {
     return member;
   }
 
+  /** `resolveGroupMentions` bound to this service's roster + snapshot deps. */
+  private resolveMentions(
+    raw: unknown,
+    text: string,
+    roomId: string,
+    previous?: MentionDto[]
+  ) {
+    return resolveGroupMentions({
+      raw,
+      text,
+      roomId,
+      previous,
+      memberRepo: this.memberRepo,
+      userSnapshotService: this.userSnapshotService,
+      cacheRepo: this.cacheRepo,
+    });
+  }
+
+  /**
+   * Fire-and-forget: resolve who lost a mention in `messageId`, then publish
+   * the retraction. Never throws — the delete/edit that triggered it stands.
+   */
+  private retractMentionsSafe(
+    messageId: string,
+    roomId: string,
+    userIds: () => Promise<string[]>,
+    ifAllMutedUserIds: string[] = []
+  ): void {
+    void userIds()
+      .then((ids) =>
+        publishMentionRetractedSafe({
+          messageId,
+          conversationId: roomId,
+          userIds: ids,
+          ifAllMutedUserIds,
+        })
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `GroupMessageService|retractMentions|message=${messageId}: ${String(err)}`
+        );
+      });
+  }
+
+  /**
+   * Claim "notified of a mention in `messageId`" per user (SET NX, outlives the
+   * edit window). Returns only the ids claimed now. Fails open on a Redis
+   * error: push is best-effort, and a blip must not swallow a mention.
+   */
+  private async claimMentionNotifications(
+    messageId: string,
+    userIds: string[]
+  ): Promise<string[]> {
+    if (!this.redis || userIds.length === 0) return userIds;
+    try {
+      const pipeline = this.redis.pipeline();
+      for (const userId of userIds) {
+        // `{messageId}` hash tag keeps every key on one cluster slot.
+        pipeline.set(
+          `gm:mention-notified:{${messageId}}:${userId}`,
+          "1",
+          "PX",
+          CHAT_EDIT_WINDOW_MS + 5 * 60_000,
+          "NX"
+        );
+      }
+      const results = await pipeline.exec();
+      // Only a clean "already claimed" (nil reply) suppresses; a per-command
+      // error fails open like a thrown one.
+      return userIds.filter((_, i) => {
+        const r = results?.[i];
+        return !r || r[0] != null || r[1] === "OK";
+      });
+    } catch (err) {
+      logger.warn(
+        `GroupMessageService|claimMentionNotifications|message=${messageId}: ${String(err)}`
+      );
+      return userIds;
+    }
+  }
+
   async forwardMessage(params: {
     sourceMessageId: string;
     /** SOURCE room the message is being forwarded FROM (REST path param). When
@@ -2003,6 +2313,26 @@ export class GroupMessageService {
       originalContentType: source.messageType,
     };
 
+    // Mentions were resolved against the SOURCE room's roster. Re-resolve them
+    // against the target (same text) so a forward never carries a mention of
+    // someone who isn't in the room it lands in. A forward publishes no push,
+    // so this never notifies anyone — and @all is stripped so it never renders
+    // as one.
+    const forwardContent = {
+      ...((source.content ?? {}) as Record<string, unknown>),
+    };
+    if (forwardContent.mentions !== undefined) {
+      const mentions = (
+        await this.resolveMentions(
+          forwardContent.mentions,
+          typeof forwardContent.text === "string" ? forwardContent.text : "",
+          params.targetRoomId
+        )
+      ).filter((m) => m.type !== "ALL");
+      if (mentions.length > 0) forwardContent.mentions = mentions;
+      else delete forwardContent.mentions;
+    }
+
     // A forward is a brand-new message in the TARGET room, so it follows THAT
     // room's timer — never the source room's.
     const targetSlot = await this.roomRepo.allocateSequenceWithRoom(
@@ -2015,7 +2345,7 @@ export class GroupMessageService {
       senderId: params.senderId,
       senderName: params.senderName,
       senderAvatar: params.senderAvatar,
-      content: source.content as object,
+      content: forwardContent,
       messageType: source.messageType,
       forwardData,
       clientMessageId: params.clientMessageId ?? null,
@@ -2546,6 +2876,65 @@ export class GroupMessageService {
     return this.roomRepo.getRoomRevision(roomId);
   }
 
+  /**
+   * ONE PAGE of a message's reactors, plus aggregate counts that do not depend
+   * on it.
+   *
+   * The unpaginated {@link getMessageReactions} stays for the existing callers,
+   * but it cannot be used by a popup on a message with a large reaction count:
+   * it returns every reactor and fans a profile lookup over all of them. This
+   * reads a keyset page off the reactor index instead, so the response, the
+   * snapshot batch and the avatar presign batch are all bounded by `limit`
+   * however many reactions the message has.
+   *
+   * `emoji` narrows to one filter chip; omit it for "All". Authorization is the
+   * same guard the unpaginated read uses — paging is not a way around it.
+   */
+  async getMessageReactionsPage(params: {
+    messageId: string;
+    roomId: string;
+    requesterId: string;
+    emoji?: string | null;
+    cursor?: string | null;
+    limit?: number | null;
+  }): Promise<ReactionDetailsPage> {
+    const { readCutoffBefore } = await assertGroupReadAccess(
+      this.memberRepo,
+      params.roomId,
+      params.requesterId,
+      this.roomRepo
+    );
+    const message = await this.messageRepo.findById(params.messageId);
+    // NotFound, never Forbidden — a foreign message's existence isn't leaked.
+    if (!message || message.roomId !== params.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (readCutoffBefore && message.createdAt > readCutoffBefore)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const slice = await this.messageRepo.readReactionDetails({
+      message: {
+        id: message.id,
+        roomId: message.roomId,
+        reactions: message.reactions,
+        createdAt: message.createdAt,
+        reactionsIndexedAt: message.reactionsIndexedAt,
+      },
+      requesterId: params.requesterId,
+      emoji: params.emoji,
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+
+    return buildReactionDetailsPage({
+      slice,
+      loadSnapshots: (ids) =>
+        this.userSnapshotService.getUserSnapshotsMap(ids, this.cacheRepo),
+      resolveAvatars: (keys) => resolveMediaUrlMap(keys),
+      resolveName: (snap) => resolveDisplayName(snap),
+      urlFor: (map, key) => urlFromMap(map, key),
+    });
+  }
+
   async getMessageReactions(params: {
     messageId: string;
     roomId: string;
@@ -2563,7 +2952,8 @@ export class GroupMessageService {
     const { readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
-      params.requesterId
+      params.requesterId,
+      this.roomRepo
     );
     const message = await this.messageRepo.findById(params.messageId);
     // NotFound, never Forbidden — a foreign message's existence isn't leaked.

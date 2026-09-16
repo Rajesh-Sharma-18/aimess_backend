@@ -21,6 +21,18 @@ import {
 } from "./message-search.js";
 import type { PrivateRoomRepository } from "./private-room.repository.js";
 import {
+  MessageReactionRepository,
+  type ReactionConversationType,
+} from "./message-reaction.repository.js";
+import {
+  applyReactionIndexDelta,
+  ensureReactionIndex,
+  readReactionDetailsSlice,
+  type ReactionDetailsSlice,
+  type ReactionIndexDelta,
+  type ReactionIndexSource,
+} from "../lib/reaction-index.js";
+import {
   claimDueAutoDeletes,
   releaseAutoDeleteClaim,
   type AutoDeleteClaimDelegate,
@@ -733,11 +745,72 @@ export class PrivateMessageRepository {
    * for the full rationale. Returns false on a lost race so the caller re-reads
    * and retries, closing the non-atomic reaction read-modify-write gap.
    */
+
+  private reactionIndexRepo: MessageReactionRepository | null = null;
+
+  private readonly reactionConversationType: ReactionConversationType =
+    "PRIVATE";
+
+  /**
+   * Paginated reactor index for this collection. Built lazily from the same
+   * Prisma client rather than injected, so no construction site has to learn
+   * about it — the projection is an implementation detail of how reactions are
+   * read, not a new dependency of the message repository.
+   */
+  private get reactionIndex(): MessageReactionRepository {
+    this.reactionIndexRepo ??= new MessageReactionRepository(this.prisma);
+    return this.reactionIndexRepo;
+  }
+
+  /**
+   * One page of reactors plus the aggregate counts, for the reaction-details
+   * popup. Materializes the index on first use for rows that predate it.
+   *
+   * Returns identities only — the caller resolves profiles for the PAGE, which
+   * is what keeps the snapshot fan-out bounded however many reactors the message
+   * has in total.
+   */
+  async readReactionDetails(params: {
+    message: ReactionIndexSource;
+    requesterId: string;
+    emoji?: string | null;
+    cursor?: string | null;
+    limit?: number | null;
+  }): Promise<ReactionDetailsSlice> {
+    await ensureReactionIndex(
+      this.reactionIndex,
+      this.reactionConversationType,
+      params.message,
+      (messageId, at) =>
+        this.prisma.privateMessage.update({
+          where: { id: messageId },
+          data: { reactionsIndexedAt: at },
+        })
+    );
+    return readReactionDetailsSlice(this.reactionIndex, {
+      messageId: params.message.id,
+      conversationType: this.reactionConversationType,
+      requesterId: params.requesterId,
+      emoji: params.emoji,
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+  }
+
+  /** Drop a message's reactor index — a deleted message carries no reactions. */
+  async clearReactionIndex(messageId: string): Promise<void> {
+    await this.reactionIndex.deleteForMessage(
+      messageId,
+      this.reactionConversationType
+    );
+  }
+
   async updateReactionsCas(
     messageId: string,
     roomId: string,
     reactions: Record<string, unknown[]>,
-    expectedRevision: number
+    expectedRevision: number,
+    delta?: ReactionIndexDelta
   ): Promise<boolean> {
     const revision = await this.roomRepo.allocateRevision(roomId);
     const result = await this.prisma.privateMessage.updateMany({
@@ -747,7 +820,18 @@ export class PrivateMessageRepository {
         revision,
       },
     });
-    return result.count > 0;
+    const applied = result.count > 0;
+    // Mirrored only on the winning attempt: a lost CAS wrote nothing, and
+    // projecting its delta would index a reaction the map never took.
+    if (applied && delta) {
+      await applyReactionIndexDelta(this.reactionIndex, {
+        messageId,
+        conversationType: this.reactionConversationType,
+        roomId,
+        delta,
+      });
+    }
+    return applied;
   }
 
   async editMessage(

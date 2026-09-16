@@ -1003,10 +1003,19 @@ describe("claimDueAutoDeletes query shape", () => {
     );
     // Explicit OR against null rather than relying on "lte also matches null":
     // if that quirk ever changes, the sweeper must not stop entirely.
-    expect(backoff.OR).toEqual([
-      { autoDeleteNextAttemptAt: null },
-      { autoDeleteNextAttemptAt: { lte: now } },
-    ]);
+    //
+    // `isSet: false` is the branch that carries the NORMAL case. Prisma only
+    // writes an optional column it was given, so a message that has never
+    // failed a delete has no `autoDeleteNextAttemptAt` field at all, and a bare
+    // null filter does not reach an absent field on MongoDB. Without this
+    // branch the whole condition matched nothing and the sweeper never ran.
+    expect(backoff.OR).toEqual(
+      expect.arrayContaining([
+        { autoDeleteNextAttemptAt: { isSet: false } },
+        { autoDeleteNextAttemptAt: null },
+        { autoDeleteNextAttemptAt: { lte: now } },
+      ])
+    );
   });
 
   it("only claims rows nobody holds, or whose lease has expired", async () => {
@@ -1015,10 +1024,20 @@ describe("claimDueAutoDeletes query shape", () => {
     const claimable = conditions.find((c) =>
       (c?.OR ?? []).some((o: any) => "autoDeleteClaimToken" in o)
     );
-    expect(claimable.OR[0]).toEqual({ autoDeleteClaimToken: null });
+    // Both spellings of "unclaimed": the field absent (every row that has never
+    // been claimed, which is the normal case) and the field present but null
+    // (a row a failed delete handed back). Missing the first is what stopped
+    // the sweeper from ever claiming anything.
+    expect(claimable.OR).toEqual(
+      expect.arrayContaining([
+        { autoDeleteClaimToken: { isSet: false } },
+        { autoDeleteClaimToken: null },
+      ])
+    );
     // The `not: null` guard again: without it a NEVER-claimed row matches `lt`
     // and the stale-recovery branch would take rows a live worker just claimed.
-    expect(claimable.OR[1].AND[0]).toEqual({
+    const stale = claimable.OR.find((o: any) => o?.AND);
+    expect(stale.AND[0]).toEqual({
       autoDeleteClaimedAt: { not: null },
     });
   });

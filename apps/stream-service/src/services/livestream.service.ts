@@ -38,6 +38,10 @@ import { publishStreamEvent } from "../events/index.js";
 import { userGrpcClient } from "../grpc/user.client.js";
 import { assertNotSystemBanned, isSystemBanned } from "../lib/system-ban.js";
 
+const hostSessionKey = (sessionId: string) => `stream:host-session:${sessionId}`;
+// Outlives any realistic broadcast; refreshed on go-live.
+const HOST_SESSION_TTL_SEC = 24 * 60 * 60;
+
 /** A single watching user, enriched for the owner-only viewers list. */
 export interface StreamViewerView {
   userId: string;
@@ -1051,6 +1055,80 @@ export class LivestreamService {
     await this.finalizeAsEnded(stream, reason || "ADMIN_FORCE_ENDED", true);
 
     return { success: true, status: "ENDED" };
+  }
+
+  /**
+   * Record which auth session started a stream, so revoking that one session
+   * (logout, "sign this device out", password change) ends the broadcast it
+   * owns without touching one the same user is running from another device.
+   * Best-effort: without Redis a revoked host falls back to the publisher
+   * dropping (on_unpublish) or an explicit stop.
+   */
+  async rememberHostSession(streamId: string, sessionId: string): Promise<void> {
+    if (!streamId || !sessionId) return;
+    const key = hostSessionKey(sessionId);
+    try {
+      await this.redis
+        .multi()
+        .sadd(key, streamId)
+        .expire(key, HOST_SESSION_TTL_SEC)
+        .exec();
+    } catch (err) {
+      logger.warn(
+        `rememberHostSession failed stream=${streamId}: ${String(err)}`
+      );
+    }
+  }
+
+  /**
+   * End every still-active stream the revoked session started. SMEMBERS+DEL in
+   * one MULTI, so when several replicas hear the same revoke only one of them
+   * gets the ids.
+   */
+  async endStreamsOfRevokedSession(
+    userId: string,
+    sessionId: string
+  ): Promise<{ endedCount: number }> {
+    if (!userId || !sessionId) return { endedCount: 0 };
+    const key = hostSessionKey(sessionId);
+    let streamIds: string[];
+    try {
+      const results = await this.redis.multi().smembers(key).del(key).exec();
+      streamIds = (results?.[0]?.[1] as string[] | undefined) ?? [];
+    } catch (err) {
+      logger.warn(
+        `endStreamsOfRevokedSession: lookup failed session=${sessionId}: ${String(err)}`
+      );
+      return { endedCount: 0 };
+    }
+    if (!streamIds.length) return { endedCount: 0 };
+
+    let active: Livestream[];
+    try {
+      active = await this.streamRepo.findActiveByCreator(userId, undefined);
+    } catch (err) {
+      logger.warn(
+        `endStreamsOfRevokedSession: query failed creator=${userId}: ${String(err)}`
+      );
+      return { endedCount: 0 };
+    }
+
+    let endedCount = 0;
+    for (const stream of active) {
+      if (!streamIds.includes(stream.id)) continue;
+      try {
+        await this.finalizeAsEnded(stream, "SESSION_ENDED");
+        endedCount++;
+        logger.info(
+          `endStreamsOfRevokedSession: ended stream=${stream.id} creator=${userId} session=${sessionId}`
+        );
+      } catch (err) {
+        logger.warn(
+          `endStreamsOfRevokedSession: failed to end stream=${stream.id}: ${String(err)}`
+        );
+      }
+    }
+    return { endedCount };
   }
 
   /**

@@ -3,7 +3,12 @@ import { usersWithRoomOpen } from "@aimess/redis";
 import { type SupportedLocale } from "@aimess/constants";
 
 import { redis } from "../config/redis.js";
-import { chatCopy, chatPreviewHiddenBody } from "../lib/notification-copy.js";
+import {
+  chatCopy,
+  chatMentionAllPreviewHiddenBody,
+  chatMentionPreviewHiddenBody,
+  chatPreviewHiddenBody,
+} from "../lib/notification-copy.js";
 import { pushToUser } from "./push.service.js";
 
 /**
@@ -56,6 +61,10 @@ export interface ChatPushMessage {
   previewImageUrl?: string;
   messageType: string;
   sentAt: number;
+  /** The recipient was @mentioned in this (GROUP) message. */
+  mentioned?: boolean;
+  /** The recipient is notified through @all in this (GROUP) message. */
+  mentionAll?: boolean;
 }
 
 /** Everything that is a property of the CONVERSATION, not of one message. */
@@ -83,8 +92,42 @@ interface Pending {
 
 const pending = new Map<string, Pending>();
 
+/** Who a GROUP edit still mentions: USER mention ids, and whether @all stays. */
+export interface EditedMentions {
+  ids: ReadonlySet<string>;
+  hasAll: boolean;
+}
+
+/**
+ * messageId → who its newest GROUP edit still mentions. A mention push that
+ * lands AFTER the edit which removed it (a delayed event, e.g. two replayed
+ * edits) is dropped against this instead of bypassing mute.
+ * ponytail: remembered for one max hold; an event delayed longer still leaks.
+ */
+const editedMentions = new Map<string, EditedMentions & { at: number }>();
+
 const keyOf = (userId: string, conversationId: string): string =>
   `${userId}|${conversationId}`;
+
+/**
+ * What a GROUP edit leaves of one copy queued for `userId`. A mention or @all
+ * copy skipped the group mute, so the edit must still justify its flag or it is
+ * dropped (`undefined`), never downgraded to a plain push. `mentioned` needs the
+ * user still in `ids`: the @all mute was never read for them. `mentionAll`
+ * needs `ids` or `hasAll`. A merged copy with both flags already passed the @all
+ * mute, so losing only the individual mention downgrades it to @all.
+ */
+function afterEdit(
+  message: ChatPushMessage,
+  userId: string,
+  edit: EditedMentions
+): ChatPushMessage | undefined {
+  if ((!message.mentioned && !message.mentionAll) || edit.ids.has(userId)) {
+    return message;
+  }
+  if (!message.mentionAll || !edit.hasAll) return undefined;
+  return message.mentioned ? { ...message, mentioned: false } : message;
+}
 
 /**
  * Add one message to this recipient's pending notification for this
@@ -94,13 +137,36 @@ export function enqueueChatPush(
   context: ChatPushContext,
   message: ChatPushMessage
 ): void {
+  const edited = editedMentions.get(message.messageId);
+  if (edited && Date.now() - edited.at < PUSH_COALESCE_MAX_HOLD_MS) {
+    const kept = afterEdit(message, context.userId, edited);
+    if (!kept) return;
+    message = kept;
+  }
   const key = keyOf(context.userId, context.conversationId);
   const existing = pending.get(key);
   if (existing) {
     // Context is refreshed from the newest message: a rename mid-burst should
     // title the notification on the CURRENT name.
     existing.context = context;
-    existing.messages.push(message);
+    // The SAME message again — typically the send push followed by the push
+    // for an edit that added a mention. Replace it in place (newest text) and
+    // keep it flagged as a mention if either copy was; never count it twice.
+    const index = existing.messages.findIndex(
+      (m) => m.messageId === message.messageId
+    );
+    if (index === -1) {
+      existing.messages.push(message);
+    } else {
+      const previous = existing.messages[index]!;
+      existing.messages[index] = {
+        ...message,
+        ...(previous.mentioned || message.mentioned ? { mentioned: true } : {}),
+        ...(previous.mentionAll || message.mentionAll
+          ? { mentionAll: true }
+          : {}),
+      };
+    }
     clearTimeout(existing.timer);
     const wait = Math.max(
       0,
@@ -137,13 +203,42 @@ export function dropPendingChatMessage(messageId: string): void {
   }
 }
 
-/** A message was edited before its notification went out — push the new text. */
+/**
+ * A message was edited before its notification went out — push the new text.
+ *
+ * `mentions` (every GROUP edit) is who the edited message still mentions; each
+ * queued copy of it is kept, downgraded or dropped per {@link afterEdit}.
+ * `undefined` (non-GROUP edit) drops nothing and clears any earlier record.
+ */
 export function updatePendingChatMessage(
   messageId: string,
-  preview: string
+  preview: string,
+  mentions?: EditedMentions
 ): void {
   if (!messageId) return;
-  for (const entry of pending.values()) {
+  if (mentions) {
+    const now = Date.now();
+    for (const [id, e] of editedMentions) {
+      if (now - e.at >= PUSH_COALESCE_MAX_HOLD_MS) editedMentions.delete(id);
+    }
+    editedMentions.set(messageId, { ...mentions, at: now });
+  } else {
+    editedMentions.delete(messageId);
+  }
+  for (const [key, entry] of pending) {
+    if (mentions) {
+      entry.messages = entry.messages.flatMap((m) =>
+        m.messageId === messageId
+          ? (afterEdit(m, entry.context.userId, mentions) ?? [])
+          : [m]
+      );
+      if (entry.messages.length === 0) {
+        clearTimeout(entry.timer);
+        pending.delete(key);
+        continue;
+      }
+    }
+    if (!preview) continue;
     for (const message of entry.messages) {
       if (message.messageId === messageId) message.preview = preview;
     }
@@ -173,6 +268,15 @@ async function flush(key: string): Promise<void> {
     }
 
     const latest = messages[messages.length - 1]!;
+    // A mention anywhere in the window leads the notification: the newest
+    // mention is its subject (copy, ids, preview), not the newest message. With
+    // no mention the subject is `latest` and the payload is exactly as before.
+    // An individual mention outranks @all anywhere in the window.
+    const lead =
+      messages.filter((m) => m.mentioned).pop() ??
+      messages.filter((m) => m.mentionAll).pop();
+    const leadIsAll = lead !== undefined && lead.mentioned !== true;
+    const subject = lead ?? latest;
     const count = messages.length;
     const isCommunity = context.conversationType === "COMMUNITY";
     const isGroup = context.conversationType === "GROUP";
@@ -186,20 +290,30 @@ async function flush(key: string): Promise<void> {
       preview: latest.preview,
       messageType: latest.messageType,
     };
-    const copy =
-      count > 1
+    const copy = lead
+      ? (leadIsAll ? chatCopy.mentionAll : chatCopy.mention)({
+          ...(context.groupName ? { groupName: context.groupName } : {}),
+          senderName: lead.senderName,
+          preview: lead.preview,
+          messageType: lead.messageType,
+        })
+      : count > 1
         ? chatCopy.messageBurst({ ...copyParams, count })
         : chatCopy.message(copyParams);
 
     const showPreviewOverride = (locale: SupportedLocale): string =>
-      chatPreviewHiddenBody(
-        isCommunity
-          ? context.communityName
-          : isGroup
-            ? context.groupName
-            : undefined,
-        locale
-      );
+      lead
+        ? (leadIsAll
+            ? chatMentionAllPreviewHiddenBody
+            : chatMentionPreviewHiddenBody)(context.groupName, locale)
+        : chatPreviewHiddenBody(
+            isCommunity
+              ? context.communityName
+              : isGroup
+                ? context.groupName
+                : undefined,
+            locale
+          );
 
     const navigation = JSON.stringify({
       screen: isCommunity
@@ -213,7 +327,7 @@ async function flush(key: string): Promise<void> {
         : {}),
       roomId: context.conversationId,
       conversationType: context.conversationType,
-      messageId: latest.messageId,
+      messageId: subject.messageId,
     });
 
     await pushToUser({
@@ -224,14 +338,18 @@ async function flush(key: string): Promise<void> {
         : {}),
       type: "MESSAGE",
       copy,
-      actorId: latest.senderId,
+      actorId: subject.senderId,
       deepLink: context.deepLink,
       // Collapse ONLY the coalesced summary. The historical objection to a
       // collapse key on chat — FCM keeps just the newest message per key while
       // a device is unreachable, so earlier ones are lost — does not apply to a
       // summary: a newer summary is strictly a better thing to show than an
       // older one, and the client's catch-up sync owns the actual history.
-      collapseKey: `conv:${context.conversationId}`,
+      // A mention collapses on its OWN key, so a later ordinary summary for the
+      // same room cannot replace "X mentioned you" in the tray.
+      collapseKey: lead
+        ? `mention:${context.conversationId}`
+        : `conv:${context.conversationId}`,
       apnsThreadId: context.threadId,
       chatType: isCommunity
         ? "COMMUNITY"
@@ -243,18 +361,28 @@ async function flush(key: string): Promise<void> {
       suppressForegroundSessions: true,
       skipInbox: true,
       data: {
+        // `type` stays MESSAGE for a mention: shipped Android builds render
+        // MESSAGE via MessagingStyle and switch rendering path on any other
+        // type. `notificationType` is what the web / newer clients branch on.
         type: "MESSAGE",
+        ...(lead
+          ? {
+              notificationType: "MENTION",
+              mentioned: "true",
+              mentionType: leadIsAll ? "ALL" : "USER",
+            }
+          : {}),
         conversationId: context.conversationId,
         conversationType: context.conversationType,
         ...(context.communityId ? { communityId: context.communityId } : {}),
         ...(context.communityName
           ? { communityName: context.communityName }
           : {}),
-        messageId: latest.messageId,
-        clientMessageId: latest.clientMessageId ?? "",
-        senderId: latest.senderId,
-        senderName: latest.senderName ?? "",
-        senderAvatar: latest.senderAvatar ?? "",
+        messageId: subject.messageId,
+        clientMessageId: subject.clientMessageId ?? "",
+        senderId: subject.senderId,
+        senderName: subject.senderName ?? "",
+        senderAvatar: subject.senderAvatar ?? "",
         ...(context.groupName ? { groupName: context.groupName } : {}),
         ...(context.conversationAvatar
           ? {
@@ -268,16 +396,19 @@ async function flush(key: string): Promise<void> {
             }
           : {}),
         canReply: context.canReply === false ? "false" : "true",
-        contentType: latest.messageType ?? "",
-        preview: latest.preview ?? "",
-        ...(latest.previewImageUrl
-          ? { previewImageUrl: latest.previewImageUrl }
+        contentType: subject.messageType ?? "",
+        preview: subject.preview ?? "",
+        ...(subject.previewImageUrl
+          ? { previewImageUrl: subject.previewImageUrl }
           : {}),
-        sentAt: String(latest.sentAt ?? ""),
+        sentAt: String(subject.sentAt ?? ""),
         // The client dedups on this. A coalesced push stands for a RANGE, so it
         // carries the newest id plus the count and the full id list, letting a
         // client that already rendered some of them work out what is new.
-        idempotencyKey: latest.messageId,
+        // A mention gets its own namespace so a client that already deduped
+        // the plain push for the same id (send, then edit-added mention) still
+        // shows it.
+        idempotencyKey: lead ? `mention:${lead.messageId}` : latest.messageId,
         messageCount: String(count),
         messageIds: messages.map((m) => m.messageId).join(","),
         deepLink: context.deepLink,
@@ -294,5 +425,6 @@ async function flush(key: string): Promise<void> {
 
 /** Tests / shutdown: deliver everything now. */
 export async function flushAllChatPushes(): Promise<void> {
+  editedMentions.clear();
   await Promise.all([...pending.keys()].map((key) => flush(key)));
 }

@@ -1007,6 +1007,84 @@ describe("LivestreamService.forceEndStreamsByCreator â€” account/membership
   });
 });
 
+describe("LivestreamService.endStreamsOfRevokedSession", () => {
+  function redisWithHostSession(streamIds: string[]) {
+    const chain = {
+      smembers: jest.fn().mockReturnThis(),
+      del: jest.fn().mockReturnThis(),
+      sadd: jest.fn().mockReturnThis(),
+      expire: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue([
+        [null, streamIds],
+        [null, 1],
+      ]),
+    };
+    return { chain, redis: { multi: jest.fn(() => chain) } };
+  }
+
+  it("ends only the streams the revoked session started, leaving another device's broadcast live", async () => {
+    const fromWeb = makeStream({ id: "stream-web", status: "LIVE" });
+    const fromPhone = makeStream({ id: "stream-phone", status: "LIVE" });
+    const { chain, redis } = redisWithHostSession(["stream-web"]);
+    const { service, streamRepo } = makeDeps({
+      redis,
+      streamRepo: {
+        findActiveByCreator: jest.fn().mockResolvedValue([fromWeb, fromPhone]),
+        updateById: jest
+          .fn()
+          .mockImplementation((id: string, data: Record<string, unknown>) =>
+            Promise.resolve({
+              ...(id === "stream-web" ? fromWeb : fromPhone),
+              ...data,
+            })
+          ),
+      },
+    });
+
+    const result = await service.endStreamsOfRevokedSession(
+      "creator-1",
+      "sid-web"
+    );
+
+    expect(result).toEqual({ endedCount: 1 });
+    expect(chain.smembers).toHaveBeenCalledWith("stream:host-session:sid-web");
+    expect(chain.del).toHaveBeenCalledWith("stream:host-session:sid-web");
+    expect(streamRepo.updateById).toHaveBeenCalledTimes(1);
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-web",
+      expect.objectContaining({ status: "ENDED" })
+    );
+  });
+
+  it("does nothing when the session started no stream", async () => {
+    const { redis } = redisWithHostSession([]);
+    const findActiveByCreator = jest.fn();
+    const { service } = makeDeps({ redis, streamRepo: { findActiveByCreator } });
+
+    await expect(
+      service.endStreamsOfRevokedSession("creator-1", "sid-x")
+    ).resolves.toEqual({ endedCount: 0 });
+    expect(findActiveByCreator).not.toHaveBeenCalled();
+  });
+
+  it("never throws when Redis is unavailable", async () => {
+    const { service } = makeDeps({
+      redis: {
+        multi: jest.fn(() => {
+          throw new Error("redis down");
+        }),
+      },
+    });
+
+    await expect(
+      service.endStreamsOfRevokedSession("creator-1", "sid-web")
+    ).resolves.toEqual({ endedCount: 0 });
+    await expect(
+      service.rememberHostSession("stream-1", "sid-web")
+    ).resolves.toBeUndefined();
+  });
+});
+
 describe("LivestreamService â€” admin viewerCount overlay (fixes the stale-count bug)", () => {
   it("adminGetStream overlays the LIVE Redis count over the stale stored column", async () => {
     const stream = makeStream({ status: "LIVE", viewerCount: 999 });

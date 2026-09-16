@@ -11,6 +11,7 @@ import { ProfileStatus } from "../generated/prisma/client.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
+import { toNotificationSettingsWire } from "./notification-settings.wire.js";
 import { friendshipService } from "../services/friendship.service.js";
 import { buildDisplayName } from "../lib/profile-fields.util.js";
 import {
@@ -262,23 +263,7 @@ export function startUserGrpcServer(): grpc.Server {
             userSettingsRepository.findNotificationSettings(userId),
             userSettingsRepository.findAppLanguage(userId),
           ]);
-          callback(null, {
-            language,
-            chatEnabled: row?.chatEnabled ?? true,
-            callEnabled: row?.callEnabled ?? true,
-            friendRequestEnabled: row?.friendRequestEnabled ?? true,
-            systemEnabled: row?.systemEnabled ?? true,
-            communityEnabled: row?.communityEnabled ?? true,
-            liveStreamEnabled: row?.liveStreamEnabled ?? true,
-            showPreview: row?.showPreview ?? true,
-            quietHoursEnabled: row?.quietHoursEnabled ?? false,
-            quietHoursStart: row?.quietHoursStart ?? "",
-            quietHoursEnd: row?.quietHoursEnd ?? "",
-            quietHoursDays: row?.quietHoursDays ?? [],
-            // "" tells notifications-service to evaluate in server-local time,
-            // which is what every row did before the column existed.
-            timezone: row?.quietHoursTimezone ?? "",
-          });
+          callback(null, toNotificationSettingsWire(row, language));
         } catch (err) {
           logger.error(`gRPC getNotificationSettings error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });

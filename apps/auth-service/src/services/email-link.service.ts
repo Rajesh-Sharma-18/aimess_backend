@@ -20,6 +20,7 @@ import {
 } from "../lib/otp.js";
 import { assertNotBanned, assertNotDeleted } from "../lib/account-guard.js";
 import { assertEmailAvailable } from "../lib/email-availability.js";
+import { assertCanLinkIdentity } from "../lib/linked-identity.js";
 import { assertOtpRequestAllowed } from "../lib/otp-rate-limit.js";
 import { rethrowAsEmailConflict } from "../lib/email-conflict.js";
 import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
@@ -108,6 +109,8 @@ export const emailLinkService = {
       throw new BadRequestError("AUTH_EMAIL_ALREADY_LINKED");
     }
 
+    assertCanLinkIdentity(user);
+
     // Runs on the resend path too: the row excludes this user, but an admin
     // account may have claimed the address since it was first written here.
     await assertEmailAvailable(email, userId);
@@ -126,7 +129,7 @@ export const emailLinkService = {
     input: VerifyLinkEmailOtpInput
   ): Promise<LinkEmailResult> {
     const email = normalizeEmail(input.email);
-    await loadActiveUser(userId);
+    assertCanLinkIdentity(await loadActiveUser(userId));
 
     await assertEmailAvailable(email, userId);
 

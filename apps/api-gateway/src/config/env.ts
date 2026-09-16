@@ -101,9 +101,38 @@ const envSchema = z.object({
     z.string().min(32).optional()
   ),
   /**
+   * Master switch for the admin source-address allowlist.
+   *
+   * Enforcement used to be implied by "ADMIN_IP_WHITELIST is non-empty", which
+   * left an operator no way to say "this deployment has no IP perimeter":
+   * production refuses an empty list, and the explicit spellings of allow-all
+   * (`0.0.0.0/0`, `::/0`, internet-scale prefixes) are refused too — correctly,
+   * since on a real production edge those are the control being removed under
+   * another name. A NODE_ENV=production dev or staging box therefore could not
+   * boot at all without inventing operator CIDRs it does not have.
+   *
+   * The enum is deliberately strict rather than a `=== "true"` coercion: a
+   * typo'd `ADMIN_IP_WHITELIST_ENABLED=abc` fails the schema and kills the boot
+   * instead of reading as falsy and silently dropping the perimeter. Only the
+   * two exact spellings parse — "1", "yes", "TRUE" and "off" are all refused.
+   *
+   * Absent, or present-but-blank, resolves to `true`: disabling the perimeter
+   * has to be something an operator wrote on purpose, never something a dropped
+   * or half-edited variable did for them.
+   *
+   * Switching it off skips ONLY the source-address check. Admin JWT
+   * verification, the rate limiters and every other edge control still run.
+   */
+  ADMIN_IP_WHITELIST_ENABLED: z.preprocess(
+    (v) => (v === undefined || v === "" ? "true" : v),
+    z.enum(["true", "false"]).transform((v) => v === "true")
+  ),
+  /**
    * Comma-separated admin IP allowlist. Empty is allowed only outside
    * production; see the boot assertion below, which refuses to start a
-   * production gateway whose admin surface is reachable from anywhere.
+   * production gateway whose admin surface is reachable from anywhere — unless
+   * ADMIN_IP_WHITELIST_ENABLED is explicitly `false`, in which case the list is
+   * read by nothing and may be empty.
    */
   ADMIN_IP_WHITELIST: z.string().default(""),
   ADMIN_RATE_LIMIT_WINDOW_MINUTES: z.coerce
@@ -111,7 +140,24 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(15),
-  ADMIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
+  /**
+   * Per-admin Backoffice READS per minute (GET/HEAD), keyed on the verified
+   * admin id. Replaces the old ADMIN_RATE_LIMIT_MAX (100 per 15 min for reads
+   * and writes together), which normal use exceeded. Sizing: a page load is
+   * 1-5 reads, the Dashboard polls service-status twice a minute, and a fast
+   * operator clicking through pages, search and pagination stays under ~60 a
+   * minute even with a few tabs open. 150 leaves headroom for that and still
+   * sits below the per-user READ_RATE_LIMIT_MAX (300); a runaway loop blows
+   * through it in seconds.
+   */
+  ADMIN_READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(150),
+  /**
+   * Per-admin Backoffice MUTATIONS per minute (POST/PUT/PATCH/DELETE). Every
+   * sensitive action sits behind a confirm dialog, so a human manages a few a
+   * minute; 20 covers a busy moderation burst while capping how fast one
+   * session can ban, delete or re-permission accounts.
+   */
+  ADMIN_WRITE_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   ADMIN_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
   REDIS_URL: z.string(),
   CORS_ALLOWED_ORIGINS: z.string(),
@@ -444,7 +490,12 @@ function assertProductionInvariants(): void {
     );
   }
 
-  if (env.BACKOFFICE_SERVICE_URL) {
+  // Only when the perimeter is switched on. With it off the list is read by
+  // nothing, so demanding a populated one would force operators to invent
+  // CIDRs — which is what pushed them toward `0.0.0.0/0` in the first place.
+  // Turning it off is an explicit, logged decision; see
+  // middleware/admin-ip-allowlist.ts.
+  if (env.BACKOFFICE_SERVICE_URL && env.ADMIN_IP_WHITELIST_ENABLED) {
     failures.push(...adminIpWhitelistFailures(getAdminIpWhitelist()));
   }
 

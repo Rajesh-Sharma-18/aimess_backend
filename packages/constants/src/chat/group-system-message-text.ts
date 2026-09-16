@@ -270,8 +270,14 @@ export function buildGroupSystemFallbackText(
       if (isActor) return t("SYS_GROUP_MEMBER_LEFT_SELF", locale);
       return t("SYS_GROUP_MEMBER_LEFT", locale, { actor });
 
+    // Three perspectives, in priority order: the removed member (who is
+    // excluded from the live fan-out but can still read the row in history),
+    // the admin who did it, and everyone else. The actor branch is what stops
+    // the remover being shown their own name in the third person.
     case "MEMBER_REMOVED":
       if (isTarget) return t("SYS_GROUP_MEMBER_REMOVED_SELF", locale);
+      if (isActor)
+        return t("SYS_GROUP_MEMBER_REMOVED_ACTOR", locale, { target });
       return t("SYS_GROUP_MEMBER_REMOVED", locale, { actor, target });
 
     case "MEMBER_BANNED":

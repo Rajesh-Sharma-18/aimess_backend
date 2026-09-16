@@ -619,25 +619,40 @@ export const openApiSchemas = {
             label: { type: "string", example: "Chat Service" },
             status: {
               type: "string",
-              enum: ["operational", "degraded", "down"],
+              enum: ["operational", "degraded", "down", "unknown"],
               example: "operational",
-            },
-            latencyMs: { type: "integer", nullable: true, example: 21 },
-            breaker: {
-              type: "string",
-              nullable: true,
-              example: "half-open",
-              description: "opossum circuit-breaker state when not closed.",
-            },
-            note: {
-              type: "string",
               description:
-                "Optional short reason string — set on degraded/down rows (probe error, HTTP status code, slow-response warning).",
+                "The SAME status GET /admin/v1/system-health reports for this service (`healthy` → `operational`). `unknown` when no snapshot or probe result exists — never `down`.",
+            },
+            restarting: {
+              type: "boolean",
+              description:
+                "A Super Admin restart of this service is in flight.",
+            },
+            checkedAt: {
+              type: "integer",
+              nullable: true,
+              example: 1789440000000,
+              description: "Epoch ms of the service probe.",
             },
           },
         },
       },
-      checkedAt: { type: "string", format: "date-time" },
+      overall: {
+        type: "string",
+        enum: ["operational", "degraded", "down", "unknown"],
+        description: "The System Health overall status.",
+      },
+      overallReason: {
+        type: "string",
+        example:
+          "1 infrastructure component unavailable: Document Database (MongoDB).",
+      },
+      checkedAt: {
+        type: "integer",
+        example: 1789440000000,
+        description: "Epoch ms of the System Health snapshot.",
+      },
     },
   },
   AdminQuickLinks: {
@@ -3758,6 +3773,12 @@ export const openApiSchemas = {
         type: "string",
         enum: ["healthy", "degraded", "down", "unknown"],
         example: "healthy",
+        description:
+          "From the service's OWN check (backoffice lib/service-status.ts). down: its endpoint failed (unreachable, timed out, non-2xx, breaker open). degraded: over the latency threshold or breaker half-open. unknown: no probe. Infrastructure failures never change a service's status — they affect `overall` and appear in `checks` as diagnostics.",
+      },
+      restarting: {
+        type: "boolean",
+        description: "A Super Admin restart of this service is in flight.",
       },
       monitored: {
         type: "boolean",
@@ -3782,8 +3803,42 @@ export const openApiSchemas = {
         nullable: true,
         enum: ["open", "half-open", null],
       },
-      lastChecked: { type: "string", format: "date-time" },
-      note: { type: "string" },
+      lastChecked: {
+        type: "integer",
+        example: 1789440000000,
+        description: "Epoch ms of the service probe.",
+      },
+      reason: {
+        type: "string",
+        example:
+          "Object Storage (MinIO): Response time 812ms exceeded the 500ms threshold.",
+        description:
+          "Sanitized, human-readable reason naming the responsible check(s). Present when not healthy.",
+      },
+      checks: {
+        type: "array",
+        description:
+          "The service endpoint check first, then each infrastructure dependency the service uses that is monitored in this environment.",
+        items: {
+          type: "object",
+          properties: {
+            key: { type: "string", example: "object_storage" },
+            name: { type: "string", example: "Object Storage (MinIO)" },
+            status: {
+              type: "string",
+              enum: ["healthy", "degraded", "down", "unknown"],
+            },
+            critical: {
+              type: "boolean",
+              description:
+                "When a critical check is down, the service is down.",
+            },
+            responseTimeMs: { type: "number", nullable: true },
+            reason: { type: "string" },
+          },
+          required: ["key", "name", "status", "critical", "responseTimeMs"],
+        },
+      },
     },
     required: ["key", "name", "status", "monitored", "lastChecked"],
   },
@@ -3804,12 +3859,21 @@ export const openApiSchemas = {
       metrics: {
         type: "object",
         description:
-          "Component-specific bag (latencyMs, engine, connection, transport, bucket, ...).",
+          "Component-specific bag (latencyMs, engine, connection, transport, version, protocol). Location metrics (host, bucket) are never included.",
         additionalProperties: true,
       },
-      latencyMs: { type: "integer", nullable: true },
-      lastChecked: { type: "string", format: "date-time" },
-      note: { type: "string" },
+      latencyMs: { type: "number", nullable: true },
+      lastChecked: {
+        type: "integer",
+        example: 1789440000000,
+        description: "Epoch ms of the probe.",
+      },
+      reason: {
+        type: "string",
+        example: "Health check timed out after 2000ms.",
+        description:
+          "Sanitized, human-readable reason. Present when degraded or down; raw probe errors are never included.",
+      },
     },
     required: ["key", "name", "status", "lastChecked"],
   },
@@ -3818,11 +3882,24 @@ export const openApiSchemas = {
     description:
       "GET /admin/v1/system-health. Cannot 500 by design — a partial outage still returns 200 with the affected component(s) marked down/degraded. Redis-cached, 5s TTL; lastUpdated is the true staleness indicator.",
     properties: {
+      schemaVersion: {
+        type: "integer",
+        example: 2,
+        description:
+          "Payload contract version. Clients ignore pushed snapshots with a version they do not understand.",
+      },
       overall: { type: "string", enum: ["healthy", "degraded", "down"] },
+      overallReason: {
+        type: "string",
+        example:
+          "1 infrastructure component unavailable: Document Database (MongoDB).",
+        description:
+          "Which services and infrastructure components make `overall` non-healthy, by name. Absent when healthy.",
+      },
       servicesUp: {
         type: "object",
         description:
-          "Counts only MONITORED services; a degraded service still counts as up.",
+          "Counts only MONITORED application services (never infrastructure); a degraded service still counts as up.",
         properties: {
           up: { type: "integer", example: 3 },
           total: { type: "integer", example: 3 },
@@ -4055,14 +4132,16 @@ export const openApiSchemas = {
       installerPackage: {
         type: "string",
         nullable: true,
-        description: "Store that installed the app; null when sideloaded, always null on web.",
+        description:
+          "Store that installed the app; null when sideloaded, always null on web.",
       },
       locale: { type: "string", nullable: true, example: "en-IN" },
       language: { type: "string", nullable: true, example: "en" },
       country: {
         type: "string",
         nullable: true,
-        description: "Derived from the LOCALE only — never from SIM, GPS or IP. May be null.",
+        description:
+          "Derived from the LOCALE only — never from SIM, GPS or IP. May be null.",
         example: "IN",
       },
       timezone: { type: "string", nullable: true, example: "Asia/Kolkata" },
@@ -4078,18 +4157,28 @@ export const openApiSchemas = {
       networkType: {
         type: "string",
         nullable: true,
-        enum: ["WIFI", "CELLULAR", "ETHERNET", "VPN", "OTHER", "NONE", "UNKNOWN"],
+        enum: [
+          "WIFI",
+          "CELLULAR",
+          "ETHERNET",
+          "VPN",
+          "OTHER",
+          "NONE",
+          "UNKNOWN",
+        ],
       },
       carrier: { type: "string", nullable: true },
       isEmulator: {
         type: "boolean",
         nullable: true,
-        description: "Client-asserted and spoofable. Recorded as a fraud SIGNAL; never blocks a login on its own.",
+        description:
+          "Client-asserted and spoofable. Recorded as a fraud SIGNAL; never blocks a login on its own.",
       },
       isRooted: {
         type: "boolean",
         nullable: true,
-        description: "Client-asserted and spoofable. Recorded as a fraud SIGNAL; never blocks a login on its own.",
+        description:
+          "Client-asserted and spoofable. Recorded as a fraud SIGNAL; never blocks a login on its own.",
       },
     },
     required: ["deviceId", "platform"],
@@ -5075,6 +5164,11 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       chat: { type: "boolean" },
+      mentionAll: {
+        type: "boolean",
+        description:
+          "false mutes `@all` mention pushes in groups (individual @username mentions still push). Defaults to true; still gated by `chat`.",
+      },
       call: { type: "boolean" },
       friendRequest: { type: "boolean" },
       system: { type: "boolean" },
@@ -5094,6 +5188,7 @@ export const openApiSchemas = {
     },
     required: [
       "chat",
+      "mentionAll",
       "call",
       "friendRequest",
       "system",
@@ -5222,6 +5317,10 @@ export const openApiSchemas = {
       },
       liveStream: { type: "boolean" },
       showPreview: { type: "boolean" },
+      mentionAll: {
+        type: "boolean",
+        description: "false mutes `@all` mention pushes in groups.",
+      },
       quietHours: { $ref: "#/components/schemas/UpdateQuietHoursRequest" },
     },
   },
@@ -5923,12 +6022,14 @@ export const openApiSchemas = {
       name: { type: "string" },
       avatar: {
         type: "string",
-        description: "Raw stored object key (`group-avatars/...`). Not loadable directly — render `avatarUrl`.",
+        description:
+          "Raw stored object key (`group-avatars/...`). Not loadable directly — render `avatarUrl`.",
       },
       avatarUrl: {
         type: "string",
         nullable: true,
-        description: "Presigned view URL for `avatar`, or null when the group has no logo.",
+        description:
+          "Presigned view URL for `avatar`, or null when the group has no logo.",
       },
       description: { type: "string" },
       memberCount: { type: "integer" },
@@ -9018,6 +9119,87 @@ export const openApiSchemas = {
     },
     required: ["pagination", "data", "hasMore", "nextCursor"],
   },
+  ChatMessageMention: {
+    type: "object",
+    description:
+      "Group @mention entity. GROUP conversations only — private and community messages never persist mentions (the key is stripped server-side). " +
+      'Two kinds, told apart by `type`: USER (`type` absent or `"USER"`) mentions one member; ALL (`type: "ALL"`) is the literal `@all` token and mentions the whole group. Clients should render an entry with any other `type` as plain text. ' +
+      '`offset`/`length` are UTF-16 code units into `content.text` and cover the literal token: `text[offset] === "@"` and `length = 1 + handle.length` (4 for `@all`). ' +
+      "Server validation on send/edit: every entry is re-checked (in-bounds, token on a word boundary, no overlap with an earlier entry; USER: `@` + `[A-Za-z0-9_]{1,32}` token, mentioned user is an ACTIVE group member with a non-deleted account, token matches the user's current handle case-insensitively; ALL: token is `@all` case-insensitively; unknown `type` values are dropped) and invalid entries are silently DROPPED — the message itself is never rejected for them. " +
+      "More than 50 entries in one message (ALL entries included) is rejected with 400 `CHAT_MENTION_LIMIT_EXCEEDED` (requests carrying more than 200 entries fail generic validation first). " +
+      "Mentioned members receive a mention push even when they muted the group.",
+    oneOf: [
+      {
+        type: "object",
+        title: "UserMention",
+        properties: {
+          type: {
+            type: "string",
+            enum: ["USER"],
+            description:
+              'Optional on requests. The server writes `"USER"` on new entries; entries stored earlier have no `type` — treat absent as USER.',
+          },
+          userId: {
+            type: "string",
+            minLength: 1,
+            maxLength: 100,
+            description: "Stable identity — use it for tap-to-profile.",
+          },
+          username: {
+            type: "string",
+            maxLength: 64,
+            description:
+              "Handle without the `@`, as resolved at send/edit time (message text is immutable, so after a rename the text may still read `@oldhandle`). Optional on requests (ignored — the server fills in its own value); always present on responses.",
+          },
+          offset: {
+            type: "integer",
+            minimum: 0,
+            description: "UTF-16 index of the `@` in `content.text`.",
+          },
+          length: {
+            type: "integer",
+            minimum: 1,
+            maximum: 64,
+            description: "UTF-16 length of the `@handle` token.",
+          },
+        },
+        required: ["userId", "offset", "length"],
+        example: {
+          type: "USER",
+          userId: "usr_01j9x8vb2f",
+          username: "kristi",
+          offset: 6,
+          length: 7,
+        },
+      },
+      {
+        type: "object",
+        title: "AllMention",
+        description:
+          "`@all`: notifies the whole group. No `userId`/`username` (sent ones are ignored). " +
+          "Recipients are resolved by the server when the push is published: ACTIVE members at that moment, minus the sender and deleted accounts. Like a USER mention it bypasses a group mute; members who set `notifications.mentionAll: false` get no @all push. Several `@all` tokens in one message are separate entities for rendering but notify once. " +
+          "Rate limited per sender per group (default 5 per 10 minutes): over the limit the send is rejected with 429 `CHAT_MENTION_ALL_RATE_LIMITED` (with `retryAfter`) and nothing is stored. " +
+          "Edit: adding `@all` to a message that did not have it is charged the same way (over the limit → 429, edit not saved) and notifies at most once per message, skipping members already mentioned individually in the previous version; keeping or removing it notifies nobody. " +
+          "Forward: ALL entries are removed from the forwarded copy.",
+        properties: {
+          type: { type: "string", enum: ["ALL"] },
+          offset: {
+            type: "integer",
+            minimum: 0,
+            description: "UTF-16 index of the `@` in `content.text`.",
+          },
+          length: {
+            type: "integer",
+            minimum: 1,
+            maximum: 64,
+            description: "UTF-16 length of the token (4 for `@all`).",
+          },
+        },
+        required: ["type", "offset", "length"],
+        example: { type: "ALL", offset: 0, length: 4 },
+      },
+    ],
+  },
   ChatMessage: {
     type: "object",
     properties: {
@@ -9079,6 +9261,12 @@ export const openApiSchemas = {
           location: { $ref: "#/components/schemas/ChatLocationAttachment" },
           contact: { $ref: "#/components/schemas/ChatContactAttachment" },
           sticker: { $ref: "#/components/schemas/ChatSticker" },
+          mentions: {
+            type: "array",
+            description:
+              "GROUP only: server-validated @mention entities (USER or `@all`) into `text` (UTF-16 offsets). Absent when there are none.",
+            items: { $ref: "#/components/schemas/ChatMessageMention" },
+          },
         },
       },
       contentType: {
@@ -9191,6 +9379,12 @@ export const openApiSchemas = {
           location: { $ref: "#/components/schemas/ChatLocationAttachment" },
           contact: { $ref: "#/components/schemas/ChatContactAttachment" },
           sticker: { $ref: "#/components/schemas/ChatSticker" },
+          mentions: {
+            type: "array",
+            description:
+              "GROUP only: server-validated @mention entities (USER or `@all`) into `text` (UTF-16 offsets). Absent when there are none.",
+            items: { $ref: "#/components/schemas/ChatMessageMention" },
+          },
         },
         nullable: true,
       },
@@ -9778,8 +9972,14 @@ export const openApiSchemas = {
       "call.activity (1:1 call history — one row per call per participant, with " +
       "the canonical call status in `data.callStatus`, `data.callType`, " +
       "`data.callDirection` and `data.durationSec`; CALL_MISSED is its legacy " +
-      "predecessor) — the rest are push-only. MENTIONS has no producer yet; " +
-      "reserved for chat/community mentions.",
+      "predecessor), chat.mention (group @username/@all mention — one row per " +
+      "message per mentioned recipient, `data.mentionType` USER|ALL, " +
+      "`data.conversationId` + `data.messageId` to open the message; written " +
+      "already read when the recipient had the chat open) — the rest are " +
+      "push-only. A chat.mention row is removed (`notification:deleted`) when " +
+      "the message is deleted for everyone or an edit drops the mention; the " +
+      "internal chat.mention_retracted type does that and never becomes a row. " +
+      "community.mention is reserved (community chat has no mentions).",
     example: "friend.requested",
   },
   NotificationCategory: {
@@ -11620,6 +11820,11 @@ export const openApiSchemas = {
             description:
               "Authoritative answer instant, epoch MILLISECONDS (0 when unknown). Render the in-call timer as `now - answeredAt` so every leg counts the same call; timing from local media arrival is what makes two devices disagree.",
           },
+          serverNow: {
+            type: "integer",
+            description:
+              "Server clock at send time, epoch MILLISECONDS. Compute `offset = serverNow - Date.now()` on receipt and use `Date.now() + offset` when measuring against `answeredAt`, so a skewed device clock does not freeze or jump the timer.",
+          },
         },
       },
     ],
@@ -11760,6 +11965,13 @@ export const openApiSchemas = {
           text: { type: "string", minLength: 1, maxLength: 10000 },
           urls: { type: "array", items: { type: "string" } },
           files: { type: "array", items: { type: "object" } },
+          mentions: {
+            type: "array",
+            maxItems: 200,
+            description:
+              "GROUP edits only. Re-validated against the NEW text (see ChatMessageMention). Omit to keep the previous message's still-valid mentions; send `[]` to clear them. Only members newly mentioned by the edit are notified. Adding `@all` is rate limited (429 `CHAT_MENTION_ALL_RATE_LIMITED`, edit not saved) and notifies at most once per message. More than 50 → 400 `CHAT_MENTION_LIMIT_EXCEEDED`.",
+            items: { $ref: "#/components/schemas/ChatMessageMention" },
+          },
         },
       },
     },
@@ -11881,16 +12093,17 @@ export const openApiSchemas = {
           "- `LEAVE` (default) — real membership removal, identical to " +
           "`POST /chat/group-members/{roomId}/leave`: MEMBER_LEFT system " +
           "message, member count decrement, `group:removed` to the leaver and " +
-          "`group:member:removed` to the remaining roster. The group does " +
-          "**not** come back on reload, but the row stays in the caller's " +
-          "list read-only.\n" +
+          "`group:member:removed` to the remaining roster. The group leaves " +
+          "the caller's list immediately and does **not** come back on " +
+          "reload; every read of it is refused afterwards.\n" +
           '- `DELETE` — the sidebar\'s "Delete Conversation", identical to ' +
           "`DELETE /chat/groups/rooms/{roomId}`: clears the caller's own history " +
           "and keeps membership, so the room reappears when a new message " +
           "arrives.\n" +
-          "- `LEAVE_AND_DELETE` — both, in that order. WhatsApp semantics for " +
-          '"Delete Conversation" on a group the caller is still ACTIVE in: ' +
-          "membership ends AND the row disappears. Idempotent — a caller who " +
+          "- `LEAVE_AND_DELETE` — both, in that order. `LEAVE` alone already " +
+          "removes the row; this additionally applies the caller's own " +
+          "clear-chat cutoff, so nothing returns if they are ever re-added. " +
+          "Idempotent — a caller who " +
           "is already not ACTIVE still gets the clear, and no second " +
           "MEMBER_LEFT or `group:removed` is emitted. Reports `LEFT`. Only " +
           "`OWNER_CANNOT_LEAVE` still fails: the owner must transfer " +

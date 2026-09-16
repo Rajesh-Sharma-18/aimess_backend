@@ -269,38 +269,26 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
     expect(res.body.data.nextCursor).toBe("1700000000000_abc");
   });
 
-  // A member who left keeps read access frozen at `leftAt`, and the history
-  // endpoint already honours that. Search used to answer 403 for a room the very
-  // same user could still open and scroll — now it answers the same window,
-  // capped at the same instant, on the results AND on the counter.
-  it("lets a LEFT member search, capped at the instant they left", async () => {
-    const leftAt = new Date(1700000000000);
+  // Leaving a group ends access to it, search included. The group is also gone
+  // from the leaver's list, so a 200 here would be the one surface still
+  // handing back content from a conversation they no longer have.
+  it("refuses a LEFT member's search", async () => {
     mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
       status: "LEFT",
-      leftAt,
+      leftAt: new Date(1700000000000),
     });
-    mocks.groupMessageRepo.searchByText.mockResolvedValue({
-      messages: [],
-      scores: new Map(),
-      hasMore: false,
-      nextCursor: null,
+    mocks.groupRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      status: "ACTIVE",
     });
-    mocks.groupMessageRepo.countSearchResults.mockResolvedValue(0);
 
     const res = await request(app)
       .get(`${BASE}/${ROOM}/messages/search?q=hello`)
       .set(bearer(makeAccessToken()));
 
-    expect(res.status).toBe(200);
-    expect(mocks.groupMessageRepo.searchByText.mock.calls[0][0]).toMatchObject({
-      readCutoffBefore: leftAt,
-    });
-    // The counter is bounded by the SAME instant, or it would report matches the
-    // result list can never reach.
-    expect(mocks.groupMessageRepo.countSearchResults.mock.calls[0][4]).toEqual(
-      leftAt
-    );
+    expect(res.status).toBe(403);
+    expect(mocks.groupMessageRepo.searchByText).not.toHaveBeenCalled();
   });
 
   // AUDIT H2 — search must be gated on membership (IDOR).

@@ -25,6 +25,10 @@ service MessagingService {
   rpc PinMessage              (PinMessageRequest)              returns (PinMessageResponse);
   rpc UnpinMessage            (UnpinMessageRequest)            returns (UnpinMessageResponse);
   rpc GetMessageReactions     (GetMessageReactionsRequest)     returns (GetMessageReactionsResponse);
+  // Keyset-paged reactor list for the reaction-details popup. GetMessageReactions
+  // returns EVERY reactor, which a message with a large reaction count cannot
+  // afford; this bounds the response to one page plus aggregate counts.
+  rpc GetMessageReactionsPage (GetMessageReactionsPageRequest) returns (GetMessageReactionsPageResponse);
   rpc InitiateCall            (InitiateCallRequest)            returns (InitiateCallResponse);
   rpc AnswerCall              (AnswerCallRequest)              returns (AnswerCallResponse);
   rpc DeclineCall             (DeclineCallRequest)             returns (DeclineCallResponse);
@@ -105,6 +109,12 @@ service MessagingService {
   // per-platform enable set are writable.
   rpc AdminListNotificationCategories (AdminListNotificationCategoriesRequest) returns (AdminNotificationCategoryList);
   rpc AdminUpdateNotificationCategory (AdminUpdateNotificationCategoryRequest) returns (AdminNotificationCategoryMutation);
+  // The Super Admin grid's Save: the admin's whole draft in ONE call, applied
+  // in ONE transaction. Separate from the single-row rpc above because the
+  // catalogue-wide rules (priorities must be unique across the FINAL state)
+  // can only be decided when every edited row is known at once — row by row, a
+  // valid 1<->2 swap looks like a conflict at its halfway point.
+  rpc AdminUpdateNotificationCategories (AdminUpdateNotificationCategoriesRequest) returns (AdminNotificationCategoryBulkMutation);
 
   // Authorize a media download against resource membership. media-service calls
   // this for chat-scoped attachments because the object key encodes the uploader,
@@ -628,6 +638,36 @@ message GetMessageReactionsResponse {
   repeated ReactionGroupDto reactions  = 2;
 }
 
+// ---- Paginated reaction details ----
+message ReactionDetailUserDto {
+  string user_id      = 1;
+  string display_name = 2;
+  string avatar       = 3; // resolved download URL, never a raw object key
+  string emoji        = 4;
+}
+message ReactionCountDto {
+  string emoji = 1;
+  int64  count = 2;
+}
+message GetMessageReactionsPageRequest {
+  string           message_id        = 1;
+  string           conversation_id   = 2;
+  ConversationType conversation_type = 3;
+  string           requester_id      = 4;
+  string           emoji             = 5; // empty = the "All" filter
+  string           cursor            = 6; // empty = first page
+  int32            limit             = 7; // 0 = server default; server clamps
+}
+message GetMessageReactionsPageResponse {
+  repeated ReactionDetailUserDto users  = 1;
+  string   next_cursor                  = 2;
+  bool     has_more                     = 3;
+  // Aggregates over EVERY reaction on the message, not just the page above.
+  repeated ReactionCountDto counts       = 4;
+  int64    total                        = 5;
+  string   self_emoji                   = 6; // empty = caller has not reacted
+}
+
 message InitiateCallRequest {
   string caller_id       = 1;
   string callee_id       = 2;
@@ -947,4 +987,29 @@ message AdminNotificationCategoryMutation {
   bool                      ok         = 1;
   AdminNotificationCategory category   = 2;
   string                    error_code = 3;
+}
+
+// One edited row inside a bulk save. Same presence convention as the single-row
+// request — an untouched field is not sent, and "not sent" is not "set to zero".
+message AdminNotificationCategoryUpdate {
+  string          category_id           = 1;
+  int32           priority              = 2; // ignored unless has_priority
+  bool            has_priority          = 3;
+  repeated string enabled_platforms     = 4; // ignored unless has_enabled_platforms
+  bool            has_enabled_platforms = 5;
+}
+
+message AdminUpdateNotificationCategoriesRequest {
+  repeated AdminNotificationCategoryUpdate updates = 1;
+  string                                   actor_id = 2;
+}
+
+// "" on success, else NOTIFICATION_CATEGORY_NOT_FOUND /
+// NOTIFICATION_CATEGORY_PRIORITY_INVALID / NOTIFICATION_CATEGORY_PRIORITY_CONFLICT.
+// `categories` carries the WHOLE catalogue after the save, not just the edited
+// rows, so the panel reconciles against the persisted truth in one round trip.
+message AdminNotificationCategoryBulkMutation {
+  bool                               ok         = 1;
+  repeated AdminNotificationCategory categories = 2;
+  string                             error_code = 3;
 }

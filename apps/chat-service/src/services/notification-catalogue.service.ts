@@ -178,6 +178,102 @@ export class NotificationCatalogueService {
       updatedAt: row.updatedAt.toISOString(),
     };
   }
+
+  /**
+   * Apply a whole administrator draft at once — the Save button's write.
+   *
+   * The catalogue-wide rule lives here and nowhere else: the FINAL state, after
+   * every submitted change is layered onto the rows that were not touched, must
+   * use each priority 1..N exactly once. Deciding it on the final state rather
+   * than row by row is the difference between the two cases the panel has to
+   * tell apart:
+   *
+   * - Community 2 -> 1 while Friend Request keeps 1: two rows end on 1, which
+   *   is a CONFLICT and is rejected. Nothing is written, and no other row is
+   *   silently pushed aside to make the number fit.
+   * - Friend Request 1 -> 2 and Community 2 -> 1 in the same draft: the final
+   *   state is still a clean permutation, so it saves. The pair-wise duplicate
+   *   that exists halfway through is not a state anyone can observe.
+   *
+   * Validated here, not only at the panel's request schema, because this
+   * service owns the rows: a direct gRPC/API call that skipped the UI is
+   * refused on exactly the same terms.
+   *
+   * `null` when an id is not one of the seeded categories — reported as a 404
+   * by the caller, never an implicit create.
+   *
+   * @throws BadRequestError NOTIFICATION_CATEGORY_PRIORITY_INVALID — a priority
+   *   that is not a whole number in 1..N.
+   * @throws BadRequestError NOTIFICATION_CATEGORY_PRIORITY_CONFLICT — the final
+   *   state would give two categories the same priority.
+   */
+  async updateCategories(
+    updates: NotificationCategoryUpdate[],
+    actorId?: string | null
+  ): Promise<NotificationCategoryAdminDTO[] | null> {
+    const rows = await this.repo.listAll();
+    const known = new Map(rows.map((row) => [row.id, row]));
+    if (updates.some((change) => !known.has(change.id))) return null;
+
+    for (const { priority } of updates) {
+      if (priority === undefined) continue;
+      if (
+        !Number.isInteger(priority) ||
+        priority < 1 ||
+        priority > rows.length
+      ) {
+        throw new BadRequestError("NOTIFICATION_CATEGORY_PRIORITY_INVALID");
+      }
+    }
+
+    // The catalogue as it would stand after this save: untouched rows keep the
+    // priority they already have, which is what makes a half-draft ("move ONE
+    // row onto a number another row still holds") a conflict rather than a
+    // reorder.
+    const finalPriority = new Map(rows.map((row) => [row.id, row.priority]));
+    for (const change of updates) {
+      if (change.priority !== undefined) {
+        finalPriority.set(change.id, change.priority);
+      }
+    }
+    if (new Set(finalPriority.values()).size !== rows.length) {
+      throw new BadRequestError("NOTIFICATION_CATEGORY_PRIORITY_CONFLICT");
+    }
+
+    const saved = await this.repo.updateManyConfigs(
+      updates.map((change) => ({
+        id: change.id,
+        ...(change.priority !== undefined ? { priority: change.priority } : {}),
+        ...(change.enabledPlatforms !== undefined
+          ? { enabledPlatforms: change.enabledPlatforms }
+          : {}),
+      })),
+      actorId ?? null
+    );
+
+    // One row moving re-slices every platform's payload, so drop the whole
+    // cache rather than guessing which entries went stale.
+    this.cache.clear();
+    logger.info(
+      `NotificationCatalogueService|${String(updates.length)} categor${updates.length === 1 ? "y" : "ies"} updated by ${actorId ?? "unknown"}: ${updates.map((c) => c.id).join(", ")}`
+    );
+
+    return saved.map((row) => ({
+      id: row.id,
+      priority: row.priority,
+      defaultLabel: row.defaultLabel,
+      iconKey: row.iconKey,
+      enabledPlatforms: row.enabledPlatforms as NotificationPlatform[],
+      updatedAt: row.updatedAt.toISOString(),
+    }));
+  }
+}
+
+/** One row of an administrator's draft, as the Save button submits it. */
+export interface NotificationCategoryUpdate {
+  id: string;
+  priority?: number;
+  enabledPlatforms?: NotificationPlatform[];
 }
 
 /** Hash the payload a client would cache — never the timestamp around it. */

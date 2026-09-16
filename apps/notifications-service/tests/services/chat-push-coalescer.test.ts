@@ -208,3 +208,454 @@ describe("chat push coalescing", () => {
     expect(copy.body).toContain("Ana");
   });
 });
+
+describe("chat push coalescing — group @mentions", () => {
+  const GROUP = "grp_mention_room";
+  const groupCtx = (over: Partial<ChatPushContext> = {}) =>
+    context({
+      conversationId: GROUP,
+      conversationType: "GROUP",
+      groupName: "Weekend Trip",
+      deepLink: `aimess://conversation/${GROUP}`,
+      threadId: `group_${GROUP}`,
+      ...over,
+    });
+
+  it("a single mention uses the mention copy, its own collapse key and MENTION data", async () => {
+    enqueueChatPush(
+      groupCtx(),
+      message(1, { preview: "hi @kristi", mentioned: true })
+    );
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const sent = push.mock.calls[0][0];
+    expect(sent.copy("en")).toEqual({
+      title: "Weekend Trip",
+      body: "Ana mentioned you: hi @kristi",
+    });
+    expect(sent.copy("vi").body).toBe("Ana đã nhắc đến bạn: hi @kristi");
+    expect(sent.copy("th").body).toBe("Ana กล่าวถึงคุณ: hi @kristi");
+    expect(sent.type).toBe("MESSAGE");
+    expect(sent.skipInbox).toBe(true);
+    expect(sent.collapseKey).toBe(`mention:${GROUP}`);
+    expect(sent.data.type).toBe("MESSAGE");
+    expect(sent.data.notificationType).toBe("MENTION");
+    expect(sent.data.mentioned).toBe("true");
+    expect(sent.data.messageId).toBe("m1");
+    expect(sent.data.idempotencyKey).toBe("mention:m1");
+    expect(JSON.parse(sent.data.navigation)).toMatchObject({
+      screen: "GROUP_CHAT",
+      roomId: GROUP,
+      messageId: "m1",
+    });
+    // Preview-off recipients still learn it was a mention, never the text.
+    expect(sent.showPreviewOverride("en")).toBe(
+      "You were mentioned in Weekend Trip"
+    );
+    expect(sent.showPreviewOverride("vi")).toBe(
+      "Bạn được nhắc đến trong Weekend Trip"
+    );
+  });
+
+  it("a burst with a mention leads on the mention, not on the newest message", async () => {
+    enqueueChatPush(groupCtx(), message(1));
+    enqueueChatPush(
+      groupCtx(),
+      message(2, {
+        senderName: "Bo",
+        senderId: "bo",
+        preview: "hey @kristi",
+        mentioned: true,
+      })
+    );
+    enqueueChatPush(groupCtx(), message(3));
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const sent = push.mock.calls[0][0];
+    expect(sent.copy("en").body).toBe("Bo mentioned you: hey @kristi");
+    expect(sent.actorId).toBe("bo");
+    expect(sent.data.messageId).toBe("m2");
+    expect(sent.data.senderName).toBe("Bo");
+    expect(sent.data.preview).toBe("hey @kristi");
+    expect(sent.data.idempotencyKey).toBe("mention:m2");
+    expect(JSON.parse(sent.data.navigation).messageId).toBe("m2");
+    expect(sent.data.messageCount).toBe("3");
+    expect(sent.data.messageIds).toBe("m1,m2,m3");
+  });
+
+  it("the same message enqueued twice (send, then an edit that adds a mention) counts once and is a mention", async () => {
+    enqueueChatPush(groupCtx(), message(1, { preview: "hi kristi" }));
+    enqueueChatPush(
+      groupCtx(),
+      message(1, { preview: "hi @kristi", mentioned: true })
+    );
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const sent = push.mock.calls[0][0];
+    expect(sent.data.messageCount).toBe("1");
+    expect(sent.data.messageIds).toBe("m1");
+    expect(sent.data.notificationType).toBe("MENTION");
+    expect(sent.copy("en").body).toBe("Ana mentioned you: hi @kristi");
+  });
+
+  it("a re-enqueue WITHOUT the flag never un-mentions a pending mention", async () => {
+    enqueueChatPush(groupCtx(), message(1, { mentioned: true }));
+    enqueueChatPush(groupCtx(), message(1));
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].data.mentioned).toBe("true");
+    expect(push.mock.calls[0][0].data.messageCount).toBe("1");
+  });
+
+  it("a non-mention group push is unchanged: no MENTION keys, conv collapse key, plain idempotency key", async () => {
+    enqueueChatPush(groupCtx(), message(1));
+
+    await flushAllChatPushes();
+
+    const sent = push.mock.calls[0][0];
+    expect(sent.collapseKey).toBe(`conv:${GROUP}`);
+    expect(sent.actorId).toBe("sender-1");
+    expect(sent.showPreviewOverride("en")).toBe("New message in Weekend Trip");
+    expect(sent.data).toEqual({
+      type: "MESSAGE",
+      conversationId: GROUP,
+      conversationType: "GROUP",
+      messageId: "m1",
+      clientMessageId: "c1",
+      senderId: "sender-1",
+      senderName: "Ana",
+      senderAvatar: "",
+      groupName: "Weekend Trip",
+      canReply: "true",
+      contentType: "TEXT",
+      preview: "line 1",
+      sentAt: String(1_700_000_000_001),
+      idempotencyKey: "m1",
+      messageCount: "1",
+      messageIds: "m1",
+      deepLink: `aimess://conversation/${GROUP}`,
+      navigation: JSON.stringify({
+        screen: "GROUP_CHAT",
+        roomId: GROUP,
+        conversationType: "GROUP",
+        messageId: "m1",
+      }),
+    });
+  });
+
+  it("a mention with no group name falls back to generic title and hidden body", async () => {
+    enqueueChatPush(
+      groupCtx({ groupName: undefined }),
+      message(1, { mentioned: true })
+    );
+
+    await flushAllChatPushes();
+
+    const sent = push.mock.calls[0][0];
+    expect(sent.copy("en").title).toBe("New message");
+    expect(sent.showPreviewOverride("en")).toBe("You were mentioned");
+  });
+
+  it("room-open suppression still cancels a mention", async () => {
+    enqueueChatPush(groupCtx(), message(1, { mentioned: true }));
+    roomOpen(true);
+
+    await flushAllChatPushes();
+
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("an edit that removes the mention cancels a push that was only that mention", async () => {
+    enqueueChatPush(
+      groupCtx(),
+      message(1, { preview: "hi @kristi", mentioned: true })
+    );
+
+    updatePendingChatMessage("m1", "hi all", { ids: new Set(), hasAll: false });
+    await flushAllChatPushes();
+
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("an edit that keeps the mention still pushes a mention, with the new text", async () => {
+    enqueueChatPush(
+      groupCtx(),
+      message(1, { preview: "hi @kristi", mentioned: true })
+    );
+
+    updatePendingChatMessage("m1", "hey @kristi", {
+      ids: new Set([USER]),
+      hasAll: false,
+    });
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const sent = push.mock.calls[0][0];
+    expect(sent.data.notificationType).toBe("MENTION");
+    expect(sent.copy("en").body).toBe("Ana mentioned you: hey @kristi");
+  });
+
+  it("a removed mention in a burst drops only that message; the rest flush as a normal push", async () => {
+    enqueueChatPush(groupCtx(), message(1));
+    enqueueChatPush(
+      groupCtx(),
+      message(2, { preview: "hi @kristi", mentioned: true })
+    );
+
+    updatePendingChatMessage("m2", "hi all", { ids: new Set(), hasAll: false });
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const sent = push.mock.calls[0][0];
+    expect(sent.collapseKey).toBe(`conv:${GROUP}`);
+    expect(sent.data.notificationType).toBeUndefined();
+    expect(sent.data.messageIds).toBe("m1");
+    expect(sent.copy("en").body).toContain("line 1");
+  });
+
+  it("an edit never drops a non-mention copy, and a mention the edit ADDS survives either arrival order", async () => {
+    const OTHER = "22222222-2222-4222-8222-222222222222";
+    enqueueChatPush(groupCtx(), message(1, { preview: "hi kristi" }));
+    enqueueChatPush(
+      groupCtx({ userId: OTHER }),
+      message(1, { preview: "hi kristi" })
+    );
+    // The edit frame can land before the consumer re-enqueues the mention...
+    updatePendingChatMessage("m1", "hi @kristi", {
+      ids: new Set([USER]),
+      hasAll: false,
+    });
+    enqueueChatPush(
+      groupCtx(),
+      message(1, { preview: "hi @kristi", mentioned: true })
+    );
+    // ...or after it.
+    updatePendingChatMessage("m1", "hi @kristi", {
+      ids: new Set([USER]),
+      hasAll: false,
+    });
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(2);
+    const sentTo = (id: string) =>
+      push.mock.calls.find((c) => c[0].userId === id)![0];
+    expect(sentTo(USER).data.notificationType).toBe("MENTION");
+    expect(sentTo(USER).data.messageCount).toBe("1");
+    expect(sentTo(OTHER).data.notificationType).toBeUndefined();
+    expect(sentTo(OTHER).copy("en").body).toContain("hi @kristi");
+  });
+
+  it("a mention push delayed past the edit that removed it is still dropped", async () => {
+    updatePendingChatMessage("m1", "hi @kristi", {
+      ids: new Set([USER]),
+      hasAll: false,
+    });
+    updatePendingChatMessage("m1", "hi all", { ids: new Set(), hasAll: false });
+    enqueueChatPush(
+      groupCtx(),
+      message(1, { preview: "hi @kristi", mentioned: true })
+    );
+
+    await flushAllChatPushes();
+
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("an update with no mention set (non-GROUP edit) leaves a pending mention flagged", async () => {
+    enqueueChatPush(groupCtx(), message(1, { mentioned: true }));
+
+    updatePendingChatMessage("m1", "fixed");
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].data.notificationType).toBe("MENTION");
+    expect(push.mock.calls[0][0].data.preview).toBe("fixed");
+  });
+});
+
+describe("chat push coalescing — group @all", () => {
+  const GROUP = "grp_mention_all_room";
+  const groupCtx = (over: Partial<ChatPushContext> = {}) =>
+    context({
+      conversationId: GROUP,
+      conversationType: "GROUP",
+      groupName: "Weekend Trip",
+      deepLink: `aimess://conversation/${GROUP}`,
+      threadId: `group_${GROUP}`,
+      ...over,
+    });
+
+  it("an @all push uses the @all copy in every locale, mention collapse key and mentionType ALL", async () => {
+    enqueueChatPush(
+      groupCtx(),
+      message(1, { preview: "standup @all", mentionAll: true })
+    );
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const sent = push.mock.calls[0][0];
+    expect(sent.copy("en")).toEqual({
+      title: "Weekend Trip",
+      body: "Ana mentioned @all: standup @all",
+    });
+    expect(sent.copy("vi").body).toBe("Ana đã nhắc đến @all: standup @all");
+    expect(sent.copy("th").body).toBe("Ana กล่าวถึง @all: standup @all");
+    expect(sent.type).toBe("MESSAGE");
+    expect(sent.collapseKey).toBe(`mention:${GROUP}`);
+    expect(sent.data.type).toBe("MESSAGE");
+    expect(sent.data.notificationType).toBe("MENTION");
+    expect(sent.data.mentioned).toBe("true");
+    expect(sent.data.mentionType).toBe("ALL");
+    expect(sent.data.idempotencyKey).toBe("mention:m1");
+    expect(sent.showPreviewOverride("en")).toBe(
+      "Everyone was mentioned in Weekend Trip"
+    );
+    expect(sent.showPreviewOverride("vi")).toBe(
+      "Mọi người được nhắc đến trong Weekend Trip"
+    );
+    expect(sent.showPreviewOverride("th")).toBe(
+      "มีการกล่าวถึงทุกคนในWeekend Trip"
+    );
+  });
+
+  it("an individual mention wins over a newer @all in the same burst", async () => {
+    enqueueChatPush(
+      groupCtx(),
+      message(1, { preview: "hi @kristi", mentioned: true })
+    );
+    enqueueChatPush(
+      groupCtx(),
+      message(2, { preview: "standup @all", mentionAll: true })
+    );
+
+    await flushAllChatPushes();
+
+    const sent = push.mock.calls[0][0];
+    expect(sent.copy("en").body).toBe("Ana mentioned you: hi @kristi");
+    expect(sent.data.messageId).toBe("m1");
+    expect(sent.data.mentionType).toBe("USER");
+    expect(sent.showPreviewOverride("en")).toBe(
+      "You were mentioned in Weekend Trip"
+    );
+  });
+
+  it("the same message enqueued twice keeps the @all flag either way round", async () => {
+    enqueueChatPush(groupCtx(), message(1, { preview: "standup" }));
+    enqueueChatPush(
+      groupCtx(),
+      message(1, { preview: "standup @all", mentionAll: true })
+    );
+    enqueueChatPush(groupCtx({ userId: "u2" }), message(2, { mentionAll: true }));
+    enqueueChatPush(groupCtx({ userId: "u2" }), message(2));
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(2);
+    for (const [sent] of push.mock.calls) {
+      expect(sent.data.messageCount).toBe("1");
+      expect(sent.data.mentionType).toBe("ALL");
+    }
+  });
+
+  it("an @all push survives an edit that keeps @all (hasAll), with the new text", async () => {
+    enqueueChatPush(groupCtx(), message(1, { mentionAll: true }));
+
+    updatePendingChatMessage("m1", "updated @all", {
+      ids: new Set(),
+      hasAll: true,
+    });
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].data.mentionType).toBe("ALL");
+    expect(push.mock.calls[0][0].data.preview).toBe("updated @all");
+  });
+
+  it("an edit that removes @all drops the queued @all message", async () => {
+    enqueueChatPush(groupCtx(), message(1, { mentionAll: true }));
+
+    updatePendingChatMessage("m1", "standup", { ids: new Set(), hasAll: false });
+    await flushAllChatPushes();
+
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("an @all push arriving after the edit that removed @all is dropped", async () => {
+    updatePendingChatMessage("m1", "standup", { ids: new Set(), hasAll: false });
+    enqueueChatPush(groupCtx(), message(1, { mentionAll: true }));
+
+    await flushAllChatPushes();
+
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("an edit that re-adds @all clears the earlier removal, so the late @all push survives", async () => {
+    updatePendingChatMessage("m1", "standup", { ids: new Set(), hasAll: false });
+    updatePendingChatMessage("m1", "standup @all", {
+      ids: new Set(),
+      hasAll: true,
+    });
+    enqueueChatPush(groupCtx(), message(1, { mentionAll: true }));
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].data.mentionType).toBe("ALL");
+  });
+
+  const OTHER = "22222222-2222-4222-8222-222222222222";
+  const keptAllOnly = { ids: new Set<string>(), hasAll: true };
+
+  it("an edit removing the individual mention but keeping @all drops a mentioned-only push (its @all mute was never read)", async () => {
+    enqueueChatPush(
+      groupCtx(),
+      message(1, { preview: "@kristi @all hi", mentioned: true })
+    );
+    enqueueChatPush(
+      groupCtx({ userId: OTHER }),
+      message(1, { preview: "@kristi @all hi", mentionAll: true })
+    );
+
+    updatePendingChatMessage("m1", "@all hi", keptAllOnly);
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].userId).toBe(OTHER);
+    expect(push.mock.calls[0][0].data.mentionType).toBe("ALL");
+  });
+
+  it("a merged mentioned+@all copy that loses only its individual mention is downgraded to @all, not dropped", async () => {
+    enqueueChatPush(groupCtx(), message(1, { mentionAll: true }));
+    enqueueChatPush(groupCtx(), message(1, { mentioned: true }));
+
+    updatePendingChatMessage("m1", "@all hi", keptAllOnly);
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const sent = push.mock.calls[0][0];
+    expect(sent.data.mentionType).toBe("ALL");
+    expect(sent.copy("en").body).toBe("Ana mentioned @all: @all hi");
+  });
+
+  it("after an edit that keeps only @all, a late mentioned push is dropped and a late @all push survives", async () => {
+    updatePendingChatMessage("m1", "@all hi", keptAllOnly);
+    enqueueChatPush(groupCtx(), message(1, { mentioned: true }));
+    enqueueChatPush(groupCtx({ userId: OTHER }), message(1, { mentionAll: true }));
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].userId).toBe(OTHER);
+    expect(push.mock.calls[0][0].data.mentionType).toBe("ALL");
+  });
+});

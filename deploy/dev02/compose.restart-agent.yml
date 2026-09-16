@@ -1,0 +1,60 @@
+# =============================================================================
+# OPT-IN overlay — Super Admin service restart from System Health.
+#
+# Without this overlay backoffice has no agent to call and the panel shows
+# "Restart unavailable from Admin Panel". To enable, on Dev 02:
+#
+#   1. Token, readable by the containers but kept in a root-only directory:
+#        sudo install -d -m 700 deploy/dev02/secrets
+#        openssl rand -hex 32 | sudo tee deploy/dev02/secrets/restart-agent-token >/dev/null
+#        sudo chmod 444 deploy/dev02/secrets/restart-agent-token
+#   2. Image:
+#        docker build -t aimess-restart-agent:latest deploy/restart-agent
+#   3. Start it and recreate backoffice with the overlay:
+#        cd deploy/dev02
+#        DOCKER_GID=$(getent group docker | cut -d: -f3) docker compose \
+#          -f compose.yml -f compose.restart-agent.yml --env-file .env.dev02 \
+#          up -d restart-agent backoffice-service
+#      Every later compose command for backoffice-service must include both
+#      -f files (or set COMPOSE_FILE=compose.yml:compose.restart-agent.yml),
+#      otherwise backoffice is recreated without the agent and restart turns off.
+#
+# Security model
+#   • The Docker socket is root-equivalent on this host. Only restart-agent
+#     mounts it; backoffice-service never does.
+#   • restart-agent publishes no port — reachable only on the compose network.
+#   • The token is a compose secret mounted into exactly these two containers,
+#     not a variable in .env.dev02 (which env_file hands to every service).
+#   • The agent accepts only an allowlisted service id and cannot restart
+#     backoffice-service, api-gateway, admin-panel or itself.
+# =============================================================================
+services:
+  restart-agent:
+    image: aimess-restart-agent:latest
+    container_name: aimess-restart-agent
+    restart: unless-stopped
+    networks: [aimess]
+    environment:
+      RESTART_AGENT_TOKEN_FILE: /run/secrets/restart_agent_token
+    secrets: [restart_agent_token]
+    group_add: ["${DOCKER_GID:?set DOCKER_GID to the host docker group id}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backoffice-service:
+    environment:
+      SERVICE_RESTART_AGENT_URL: http://restart-agent:8085
+      SERVICE_RESTART_AGENT_TOKEN_FILE: /run/secrets/restart_agent_token
+    secrets: [restart_agent_token]
+
+secrets:
+  restart_agent_token:
+    file: ./secrets/restart-agent-token

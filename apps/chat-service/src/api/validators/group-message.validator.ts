@@ -13,6 +13,36 @@ import {
   enforceMediaLimits,
 } from "../../constants/media-limits.js";
 
+/**
+ * Coarse TRANSPORT cap for `content.mentions`. The authoritative checks (50 per
+ * message → CHAT_MENTION_LIMIT_EXCEEDED, offsets against the text, active
+ * membership, current handle) live in `lib/group-mentions.ts`; this only keeps
+ * absurd payloads out, and is deliberately looser so the limit error a client
+ * sees is the specific service one, not a generic validation failure.
+ */
+const mentionSpan = {
+  offset: z.number().int().nonnegative(),
+  length: z.number().int().min(1).max(64),
+};
+const groupMentionsSchema = z
+  .array(
+    z.union([
+      z.object({
+        type: z.literal("USER").optional(),
+        userId: z.string().min(1).max(100),
+        username: z.string().max(64).optional(),
+        ...mentionSpan,
+      }),
+      // @all: no identity; `username` is tolerated and ignored.
+      z.object({
+        type: z.literal("ALL"),
+        username: z.string().max(64).optional(),
+        ...mentionSpan,
+      }),
+    ])
+  )
+  .max(200);
+
 export const reportGroupMessageSchema = z.object({
   reportReason: z.string().min(1).max(200).trim(),
   /** Reporter's free text for the "OTHER" reason — was dropped before. */
@@ -89,6 +119,7 @@ export const sendGroupMessageBodySchema = z
       location: locationSchema.optional(),
       contact: contactSchema.optional(),
       sticker: stickerSchema.optional(),
+      mentions: groupMentionsSchema.optional(),
     }),
     messageType: z.enum(CONTENT_TYPES),
     parentMessageId: z.string().nullish(),
@@ -135,6 +166,9 @@ export const editGroupMessageSchema = z.object({
   content: z.object({
     text: z.string().min(1).max(CHAT_TEXT_MAX_CHARS),
     urls: z.array(httpUrlSchema).default([]),
+    // Absent = keep the previous mentions that are still valid for the new
+    // text; present (even []) = replace them. See GroupMessageService.editMessage.
+    mentions: groupMentionsSchema.optional(),
   }),
 });
 

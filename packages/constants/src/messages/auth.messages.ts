@@ -389,6 +389,11 @@ export const AUTH_MESSAGES = {
     en: "You have already linked this sign-in provider.",
     th: "คุณเชื่อมผู้ให้บริการเข้าสู่ระบบนี้ไว้แล้ว",
   },
+  AUTH_LINKED_IDENTITY_LIMIT: {
+    vi: "Tài khoản của bạn đã có một phương thức đăng nhập được liên kết. Không thể liên kết thêm email hoặc tài khoản mạng xã hội",
+    en: "Your account already has a linked sign-in method. You can link either an email or a Google/Apple account, not both.",
+    th: "บัญชีของคุณมีวิธีเข้าสู่ระบบที่เชื่อมไว้แล้ว คุณเชื่อมได้เพียงอีเมลหรือบัญชี Google/Apple อย่างใดอย่างหนึ่งเท่านั้น",
+  },
   AUTH_SOCIAL_NOT_LINKED: {
     vi: "Nhà cung cấp này chưa được liên kết",
     en: "This sign-in provider is not linked to your account.",

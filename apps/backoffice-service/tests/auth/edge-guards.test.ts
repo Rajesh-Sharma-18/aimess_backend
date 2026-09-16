@@ -41,7 +41,6 @@ describe("admin credential rate limiter", () => {
   it("throttles repeated login attempts from one address", async () => {
     const app = await buildApp({
       ADMIN_LOGIN_RATE_LIMIT_MAX: "3",
-      ADMIN_RATE_LIMIT_MAX: "100000",
     });
 
     const attempt = () =>
@@ -73,7 +72,6 @@ describe("admin credential rate limiter", () => {
     // admin's reset code.
     const app = await buildApp({
       ADMIN_LOGIN_RATE_LIMIT_MAX: "2",
-      ADMIN_RATE_LIMIT_MAX: "100000",
     });
 
     const attempt = () => request(app).post(path).send({});
@@ -89,12 +87,78 @@ describe("admin credential rate limiter", () => {
     // of a service it is meant to be watching.
     const app = await buildApp({
       ADMIN_LOGIN_RATE_LIMIT_MAX: "1",
-      ADMIN_RATE_LIMIT_MAX: "1",
+      ADMIN_READ_RATE_LIMIT_MAX: "1",
     });
 
     for (let i = 0; i < 5; i += 1) {
       expect((await request(app).get("/health")).status).toBe(200);
     }
+  });
+});
+
+describe("admin read/write rate limiters", () => {
+  // Whatever answers after the limiters (adminAuth has no database here) is
+  // irrelevant: anything but 429 = let through, 429 = throttled.
+  const PROBE = "/v1/__rate-limit-probe";
+  const SMALL = { ADMIN_READ_RATE_LIMIT_MAX: "3", ADMIN_WRITE_RATE_LIMIT_MAX: "2" };
+
+  async function adminToken(adminId: string): Promise<string> {
+    const { signAdminAccessToken } = await import("../../src/lib/admin-jwt.js");
+    return signAdminAccessToken({
+      adminId,
+      sessionId: "22222222-2222-4222-8222-222222222222",
+    }).token;
+  }
+
+  it("throttles excessive reads with RATE_LIMITED and retryAfter", async () => {
+    const app = await buildApp(SMALL);
+    const bearer = `Bearer ${await adminToken("admin-a")}`;
+
+    for (let i = 0; i < 3; i += 1) {
+      expect((await request(app).get(PROBE).set("Authorization", bearer)).status).not.toBe(429);
+    }
+    const res = await request(app).get(PROBE).set("Authorization", bearer);
+
+    expect(res.status).toBe(429);
+    expect(res.body.error).toMatchObject({ code: "RATE_LIMITED", retryable: true });
+    expect(res.body.error.retryAfter).toBeGreaterThan(0);
+  });
+
+  it("keeps writes in a separate, stricter bucket", async () => {
+    const app = await buildApp(SMALL);
+    const bearer = `Bearer ${await adminToken("admin-a")}`;
+
+    await request(app).post(PROBE).set("Authorization", bearer);
+    await request(app).post(PROBE).set("Authorization", bearer);
+    expect((await request(app).post(PROBE).set("Authorization", bearer)).status).toBe(429);
+    expect((await request(app).get(PROBE).set("Authorization", bearer)).status).not.toBe(429);
+  });
+
+  it("keys on the verified admin, not the shared address", async () => {
+    // Supertest sends every request from one loopback address — the office NAT
+    // case. Admin A exhausting their bucket must not throttle admin B.
+    const app = await buildApp(SMALL);
+    const a = `Bearer ${await adminToken("admin-a")}`;
+    const b = `Bearer ${await adminToken("admin-b")}`;
+
+    for (let i = 0; i < 3; i += 1) await request(app).get(PROBE).set("Authorization", a);
+    expect((await request(app).get(PROBE).set("Authorization", a)).status).toBe(429);
+    expect((await request(app).get(PROBE).set("Authorization", b)).status).not.toBe(429);
+  });
+
+  it("gives unverified tokens and spoofed headers only the IP bucket", async () => {
+    const app = await buildApp(SMALL);
+    const b = `Bearer ${await adminToken("admin-b")}`;
+    const spoof = () =>
+      request(app)
+        .get(PROBE)
+        .set("Authorization", "Bearer forged.token.value")
+        .set("X-Is-Admin", "true");
+
+    for (let i = 0; i < 3; i += 1) await spoof();
+    expect((await spoof()).status).toBe(429);
+    expect((await request(app).get(PROBE)).status).toBe(429);
+    expect((await request(app).get(PROBE).set("Authorization", b)).status).not.toBe(429);
   });
 });
 

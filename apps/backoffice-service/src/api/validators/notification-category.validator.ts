@@ -59,3 +59,68 @@ export const updateNotificationCategorySchema = z
 export type UpdateNotificationCategoryInput = z.infer<
   typeof updateNotificationCategorySchema
 >;
+
+/**
+ * The grid's Save — the administrator's whole draft in one body.
+ *
+ * Shape and per-row range are checked here; the catalogue-wide rule (no two
+ * categories may END UP on the same priority) is checked in chat-service, which
+ * is the only place that can see the rows the draft did NOT touch. Duplicate
+ * ids and a duplicate priority WITHIN the draft are caught here because those
+ * are decidable from the body alone, and catching them early spares a round
+ * trip.
+ */
+export const updateNotificationCategoriesSchema = z.object({
+  categories: z
+    .array(
+      z
+        .object({
+          id: z
+            .string()
+            .trim()
+            .min(1)
+            .max(64)
+            .regex(/^[A-Z][A-Z0-9_]*$/, "Category id must be uppercase snake case"),
+          priority: z
+            .number()
+            .int()
+            .min(1)
+            .max(NOTIFICATION_CATEGORY_COUNT)
+            .optional(),
+          enabledPlatforms: z.array(notificationPlatformEnum).max(3).optional(),
+        })
+        .refine(
+          (v) => v.priority !== undefined || v.enabledPlatforms !== undefined,
+          {
+            message:
+              "Each category must carry at least one of priority or enabledPlatforms",
+          }
+        )
+        .refine(
+          (v) =>
+            v.enabledPlatforms === undefined ||
+            new Set(v.enabledPlatforms).size === v.enabledPlatforms.length,
+          { message: "enabledPlatforms must not repeat a platform" }
+        )
+    )
+    // An empty draft is not a save — the panel hides Save until something is
+    // dirty, and a request that changes nothing should not reach the database.
+    .min(1)
+    .max(NOTIFICATION_CATEGORY_COUNT),
+})
+  .refine(
+    (v) => new Set(v.categories.map((c) => c.id)).size === v.categories.length,
+    { message: "A category may appear at most once per request" }
+  )
+  .refine(
+    (v) => {
+      const priorities = v.categories
+        .map((c) => c.priority)
+        .filter((p): p is number => p !== undefined);
+      return new Set(priorities).size === priorities.length;
+    },
+    { message: "Two categories in the same request cannot share a priority" }
+  );
+export type UpdateNotificationCategoriesInput = z.infer<
+  typeof updateNotificationCategoriesSchema
+>;

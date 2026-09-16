@@ -11,6 +11,8 @@ export {
   communityCopy,
   chatCopy,
   chatPreviewHiddenBody,
+  chatMentionPreviewHiddenBody,
+  chatMentionAllPreviewHiddenBody,
   groupCopy,
   callCopy,
   authCopy,

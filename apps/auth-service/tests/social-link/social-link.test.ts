@@ -14,7 +14,7 @@ jest.mock("../../src/lib/apple-id-token.js", () => ({
 jest.mock("../../src/repositories/auth.repository.js", () => ({
   authRepository: {
     findByIdForAccountOps: jest.fn(),
-    setPrimaryAccountIfUnset: jest.fn(),
+    linkSocialAccount: jest.fn(),
   },
 }));
 jest.mock("../../src/repositories/linked-account.repository.js", () => ({
@@ -61,7 +61,7 @@ beforeEach(() => {
     displayName: "John",
   });
   repo.findByIdForAccountOps.mockResolvedValue(activeUser());
-  repo.setPrimaryAccountIfUnset.mockResolvedValue("GOOGLE");
+  repo.linkSocialAccount.mockResolvedValue("GOOGLE");
   linkRepo.findByProvider.mockResolvedValue(null);
   linkRepo.findByUserIdAndProvider.mockResolvedValue(null);
   linkRepo.countByUserId.mockResolvedValue(2);
@@ -77,7 +77,7 @@ describe("POST /api/auth/social/google/link", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.provider).toBe("GOOGLE");
-    expect(linkRepo.create).toHaveBeenCalledTimes(1);
+    expect(repo.linkSocialAccount).toHaveBeenCalledTimes(1);
   });
 
   it("returns 400 when the provider is already linked to THIS user", async () => {
@@ -89,7 +89,7 @@ describe("POST /api/auth/social/google/link", () => {
       .send({ idToken: "valid-google-token" });
 
     expect(res.status).toBe(400);
-    expect(linkRepo.create).not.toHaveBeenCalled();
+    expect(repo.linkSocialAccount).not.toHaveBeenCalled();
   });
 
   it("returns 409 when the provider account is linked to ANOTHER user", async () => {

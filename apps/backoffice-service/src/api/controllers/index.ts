@@ -89,10 +89,15 @@ export {
 } from "./category.controller.js";
 export {
   listNotificationCategories,
+  updateNotificationCategories,
   updateNotificationCategory,
 } from "./notification-category.controller.js";
 export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";
 export { getSystemHealth } from "./system-health.controller.js";
+export {
+  listServiceRestarts,
+  restartService,
+} from "./service-restart.controller.js";
 export {
   disconnectAllFriendships,
   getCallingEnabled,

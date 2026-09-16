@@ -228,13 +228,17 @@ describe("GET /api/chat/groups/rooms/:roomId", () => {
     expect(res.body.data.isJoined).toBe(true);
   });
 
-  // A voluntary leaver keeps read access (their inbox row survives, frozen at
-  // leftAt) but is no longer "joined".
-  it("POSITIVE: isJoined=false for a member who left", async () => {
+  // Leaving ends access: the group is out of the leaver's list, and opening it
+  // by roomId must fail rather than return a read-only detail payload.
+  it("NEGATIVE: 403 for a member who left", async () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: "grp_1",
       name: "Devs",
       lastMessageAt: null,
+    });
+    mocks.groupRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: "grp_1",
+      status: "ACTIVE",
     });
     mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       roomId: "grp_1",
@@ -247,8 +251,7 @@ describe("GET /api/chat/groups/rooms/:roomId", () => {
       .get("/api/chat/groups/rooms/grp_1")
       .set(bearer(makeAccessToken()));
 
-    expect(res.status).toBe(200);
-    expect(res.body.data.isJoined).toBe(false);
+    expect(res.status).toBe(403);
   });
 
   // The detail read used to have NO membership gate, so anyone holding a roomId

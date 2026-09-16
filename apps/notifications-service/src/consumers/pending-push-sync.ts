@@ -61,7 +61,9 @@ export function startPendingPushSync(): void {
         return;
       }
       if (event === "message:edited" || event === "community:message:edited") {
-        const content = data.content as { text?: unknown } | undefined;
+        const content = data.content as
+          | { text?: unknown; mentions?: unknown }
+          | undefined;
         const text =
           typeof content?.text === "string"
             ? content.text
@@ -70,6 +72,25 @@ export function startPendingPushSync(): void {
               : typeof data.message === "string"
                 ? data.message
                 : "";
+        // A GROUP edit re-states who is still mentioned (no `mentions` array =
+        // nobody). That must reach the coalescer even when the text is empty.
+        if (data.conversationType === "GROUP") {
+          const mentions = (
+            Array.isArray(content?.mentions) ? content.mentions : []
+          ) as Array<{ userId?: unknown; type?: unknown } | null>;
+          // USER ids and @all stay separate: a queued individual mention needs
+          // its user still named, even when @all remains (they may mute @all).
+          updatePendingChatMessage(messageId, text, {
+            ids: new Set(
+              mentions
+                .filter((m) => m?.type !== "ALL")
+                .map((m) => String(m?.userId ?? ""))
+                .filter(Boolean)
+            ),
+            hasAll: mentions.some((m) => m?.type === "ALL"),
+          });
+          return;
+        }
         // Only a TEXT edit changes what a notification would say; an edit that
         // carries no text (attachment-only rows) leaves the preview alone.
         if (text) updatePendingChatMessage(messageId, text);

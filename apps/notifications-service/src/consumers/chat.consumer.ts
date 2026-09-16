@@ -1,9 +1,17 @@
 import { logger } from "@aimess/logger";
+import { usersWithRoomOpen } from "@aimess/redis";
 import amqp from "amqplib";
 import { env } from "../config/env.js";
+import { redis } from "../config/redis.js";
 import { buildDeepLink } from "../lib/deep-link.js";
+import { chatCopy } from "../lib/notification-copy.js";
 import { generateThreadId } from "../lib/thread-id.js";
 import { enqueueChatPush } from "../services/chat-push-coalescer.js";
+import { pushToUser } from "../services/push.service.js";
+import {
+  getNotificationSettings,
+  isMentionAllMuted,
+} from "../services/notification-settings.service.js";
 import {
   filterToNotifiableCommunityMembers,
   isCommunityActorMuted,
@@ -45,9 +53,223 @@ interface MessageSentPayload {
   messageType: string;
   sentAt: number;
   recipientIds: string[];
+  /**
+   * GROUP only: recipients @mentioned in this message (already server-validated
+   * and sender-excluded by chat-service). Ignored for PRIVATE/COMMUNITY.
+   */
+  mentionedUserIds?: string[];
+  /**
+   * GROUP only: recipients reached by @all (server-resolved active members,
+   * sender and deleted accounts excluded). Each one's own @all mute applies.
+   */
+  mentionAllUserIds?: string[];
+  /** Edit publish: push ONLY to the mentioned / @all sets, never a plain push. */
+  mentionOnly?: boolean;
+  /**
+   * The album row that holds content.mentions, when it is not `messageId`.
+   * Mention rows key and navigate on it; the push keeps `messageId`.
+   */
+  mentionMessageId?: string;
+  /** Re-mention after a retraction: write the rows, never enqueue a push. */
+  inboxOnly?: boolean;
 }
 
-async function handleMessageSent(data: MessageSentPayload): Promise<void> {
+/** chat-service: the message was deleted, or these users' mention edited out. */
+interface MentionRetractedPayload {
+  messageId: string;
+  conversationId: string;
+  userIds: string[];
+  /** Name removed while @all stays: retract only if the user muted @all. */
+  ifAllMutedUserIds?: string[];
+}
+
+/** One claim per (message, recipient) row; the push has its own upstream claim. */
+const MENTION_ROW_CLAIM_TTL_SEC = 3600;
+const mentionRowClaimKey = (messageId: string, userId: string): string =>
+  `notif:mention-row:{${messageId}}:${userId}`;
+
+/**
+ * Notification-Center rows for a GROUP @mention: one `chat.mention` row per
+ * mentioned recipient, written BEFORE any push is enqueued so a failed write
+ * nacks the message with nothing pushed yet.
+ *
+ * `recipients` has already been through every gate (sender excluded, @all
+ * opt-out, mute bypass, mentionOnly), so this only picks the mentioned ones.
+ * A Redis SET NX claim makes the write once-only across concurrent first
+ * deliveries; it fails open, and the explicit groupKey still turns a replay
+ * into an UPDATE instead of a second row. A redelivery (the claim may belong to
+ * a crashed first attempt) and an inboxOnly re-mention (the claim outlives the
+ * retracted row) skip the claim and lean on the groupKey alone.
+ */
+async function writeMentionRows(
+  data: MessageSentPayload,
+  recipients: string[],
+  individual: Set<string>,
+  allowedAll: Set<string>,
+  finalAttempt: boolean
+): Promise<void> {
+  // An album publishes its LAST row as messageId, but only the first row keeps
+  // content.mentions: the row, the guard and retraction all key on that one.
+  const mentionId = data.mentionMessageId || data.messageId;
+  // Without a message id the row has no identity: every such event would share
+  // groupKey "mention:" and escape the chat-service guard.
+  if (!mentionId) return;
+  const rowRecipients = recipients.filter(
+    (id) => individual.has(id) || allowedAll.has(id)
+  );
+  if (rowRecipients.length === 0) return;
+
+  let claimed = rowRecipients;
+  if (!finalAttempt && !data.inboxOnly) {
+    try {
+      const pipeline = redis.pipeline();
+      for (const id of rowRecipients) {
+        pipeline.set(
+          mentionRowClaimKey(mentionId, id),
+          "1",
+          "EX",
+          MENTION_ROW_CLAIM_TTL_SEC,
+          "NX"
+        );
+      }
+      const replies = await pipeline.exec();
+      if (replies) {
+        // Only a clean nil reply means "already claimed"; a per-command error
+        // fails open like the pipeline as a whole.
+        claimed = rowRecipients.filter((_, i) => {
+          const reply = replies[i];
+          return !reply || reply[0] !== null || reply[1] !== null;
+        });
+      }
+    } catch (error) {
+      logger.warn(
+        `Mention row claim failed for message ${mentionId}; writing anyway`
+      );
+      logger.warn(error);
+    }
+  }
+  if (claimed.length === 0) return;
+
+  // Someone already reading the room gets the row as read: no badge bump.
+  const open = await usersWithRoomOpen(redis, data.conversationId, claimed);
+  const actorSnapshot = JSON.stringify({
+    userId: data.senderId,
+    displayName: data.senderName,
+    avatarUrl: data.senderAvatar,
+  });
+  const navigation = JSON.stringify({
+    screen: "GROUP_CHAT",
+    roomId: data.conversationId,
+    conversationType: "GROUP",
+    messageId: mentionId,
+  });
+
+  // ponytail: one CreateNotification gRPC round per recipient (≤256 members
+  // for an @all); add a batch RPC if groups grow past that.
+  const results = await Promise.allSettled(
+    claimed.map((userId) =>
+      pushToUser({
+        userId,
+        category: "chatEnabled",
+        type: "chat.mention",
+        skipPush: true,
+        actorId: data.senderId,
+        inboxTitle: null,
+        copy: chatCopy.mentionInbox({
+          senderName: data.senderName,
+          groupName: data.groupName,
+        }),
+        data: {
+          groupKey: `mention:${mentionId}`,
+          mentionType: individual.has(userId) ? "USER" : "ALL",
+          conversationId: data.conversationId,
+          conversationType: "GROUP",
+          messageId: mentionId,
+          ...(data.groupName ? { groupName: data.groupName } : {}),
+          ...(data.conversationAvatar
+            ? { groupAvatarUrl: data.conversationAvatar }
+            : {}),
+          actorSnapshot,
+          navigation,
+          ...(open.has(userId) ? { markRead: "true" } : {}),
+        },
+      })
+    )
+  );
+
+  const failed = claimed.filter((_, i) => results[i]!.status === "rejected");
+  if (failed.length === 0) return;
+  // Release the failed claims so the redelivery retries exactly those rows.
+  await redis
+    .del(...failed.map((id) => mentionRowClaimKey(mentionId, id)))
+    .catch((error: unknown) => logger.warn(error));
+  const reason = `Mention inbox write failed for ${failed.length} recipient(s): message=${mentionId}`;
+  // The redelivery is the last try (the consumer drops after it). Throwing
+  // there would cost every group member the PUSH too; lose only the rows.
+  if (finalAttempt) {
+    logger.error(`${reason}; pushing without them`);
+    return;
+  }
+  throw new Error(reason);
+}
+
+/**
+ * Remove the mention rows chat-service says are no longer justified. Bypasses
+ * settings so a user who has since turned Chat off (or left) is still cleaned
+ * up; no row to remove is a no-op on the chat-service side.
+ */
+async function handleMentionRetracted(
+  data: MentionRetractedPayload
+): Promise<void> {
+  const ifAllMuted = [...new Set(data.ifAllMutedUserIds ?? [])].filter(Boolean);
+  // Only notifications-service can see the @all mute; a failed read keeps the row.
+  const allMuted = await Promise.all(
+    ifAllMuted.map((id) =>
+      getNotificationSettings(id)
+        .then(isMentionAllMuted)
+        .catch(() => false)
+    )
+  );
+  const userIds = [
+    ...new Set([
+      ...(data.userIds ?? []),
+      ...ifAllMuted.filter((_, i) => allMuted[i]),
+    ]),
+  ].filter(Boolean);
+  if (userIds.length === 0) return;
+  const results = await Promise.allSettled(
+    userIds.map((userId) =>
+      pushToUser({
+        userId,
+        category: "chatEnabled",
+        type: "chat.mention_retracted",
+        skipPush: true,
+        bypassSettings: true,
+        data: {
+          groupKey: `mention:${data.messageId}`,
+          conversationId: data.conversationId,
+          messageId: data.messageId,
+        },
+      })
+    )
+  );
+  // Free the row claims so a later re-mention of the same message writes again.
+  // One hash-tagged slot per message, so the multi-key DEL is cluster-safe.
+  await redis
+    .del(...userIds.map((id) => mentionRowClaimKey(data.messageId, id)))
+    .catch((error: unknown) => logger.warn(error));
+  const failed = results.filter((r) => r.status === "rejected").length;
+  if (failed > 0) {
+    throw new Error(
+      `Mention retraction failed for ${failed} recipient(s): message=${data.messageId}`
+    );
+  }
+}
+
+async function handleMessageSent(
+  data: MessageSentPayload,
+  finalAttempt = false
+): Promise<void> {
   const isCommunity = data.conversationType === "COMMUNITY";
   // Prefer explicit communityId; fall back to conversationId (roomId ===
   // communityId for community chat) so the membership gate always has a key.
@@ -103,19 +325,64 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     if (recipients.length === 0) return;
   }
 
+  // @mentioned recipients (GROUP only). Mentions on any other conversation type
+  // are ignored outright — chat-service never persists them there anyway.
+  const isGroupMessage = data.conversationType === "GROUP";
+  const inRecipients = new Set(recipients);
+  const individual = new Set(
+    isGroupMessage && Array.isArray(data.mentionedUserIds)
+      ? data.mentionedUserIds.filter((id) => inRecipients.has(id))
+      : []
+  );
+  // @all recipients who have not muted @all. A muted-@all user falls back to an
+  // ordinary group message (group mute applies, no mention flag).
+  // ponytail: N cached settings reads per @all message; add a batch RPC if
+  // groups grow well past MAX_GROUP_MEMBERS.
+  const allCandidates =
+    isGroupMessage && Array.isArray(data.mentionAllUserIds)
+      ? [...new Set(data.mentionAllUserIds)].filter(
+          (id) => inRecipients.has(id) && !individual.has(id)
+        )
+      : [];
+  const allMuted = await Promise.all(
+    allCandidates.map((id) =>
+      getNotificationSettings(id)
+        .then(isMentionAllMuted)
+        .catch(() => false)
+    )
+  );
+  const allowedAll = new Set(allCandidates.filter((_, i) => !allMuted[i]));
+  const mentioned = new Set([...individual, ...allowedAll]);
+
+  if (isGroupMessage && data.mentionOnly === true) {
+    recipients = recipients.filter((id) => mentioned.has(id));
+    if (recipients.length === 0) return;
+  }
+
   // Group-room mute gate: mirror of the private-room gate above, but the mute
   // setting lives on the GroupMember row (per-membership) rather than the room.
   if (data.conversationType === "GROUP") {
     const before = recipients.length;
+    // A mention bypasses the member's group mute — the shipped mute copy
+    // promises "You will still be notified if you are mentioned". Only the
+    // NON-mentioned recipients go through the gate; mentioned ones are only
+    // ever taken from recipientIds, never added. Account-level Chat toggle,
+    // quiet hours and room-open/foreground suppression still apply downstream.
+    //
     // ONE call for the whole fan-out. This was `Promise.all` over
     // `isGroupMemberMuted` — one gRPC round trip per recipient into
     // chat-service, the same process serving message sends, so a 256-member
     // group message opened 256 concurrent calls against it. Community was
     // given the batched treatment after exactly this saturated
     // community-service and tripped its breaker; group had never had it.
-    recipients = await filterOutMutedGroupMembers(
-      data.conversationId,
-      recipients
+    const others = recipients.filter((id) => !mentioned.has(id));
+    const unmuted = new Set(
+      others.length > 0
+        ? await filterOutMutedGroupMembers(data.conversationId, others)
+        : []
+    );
+    recipients = [...new Set(recipients)].filter(
+      (id) => mentioned.has(id) || unmuted.has(id)
     );
     if (recipients.length < before) {
       logger.info(
@@ -170,6 +437,18 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     communityId
   );
 
+  if (isGroup) {
+    await writeMentionRows(
+      data,
+      recipients,
+      individual,
+      allowedAll,
+      finalAttempt
+    );
+  }
+  // A re-mention of an already-pushed message: the rows are the whole point.
+  if (data.inboxOnly) return;
+
   // Hand the message to the per-(recipient, conversation) coalescer instead of
   // dispatching one push per message. Everything above — the mute gates, the
   // ACTIVE-roster filter, the muted-sender check — has already decided WHO is
@@ -204,6 +483,11 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
           : {}),
         messageType: data.messageType ?? "",
         sentAt: data.sentAt,
+        ...(individual.has(userId)
+          ? { mentioned: true }
+          : allowedAll.has(userId)
+            ? { mentionAll: true }
+            : {}),
       }
     );
   }
@@ -227,10 +511,15 @@ export async function startChatConsumer(): Promise<void> {
       try {
         const parsed = JSON.parse(message.content.toString()) as {
           type: string;
-          data: MessageSentPayload;
+          data: unknown;
         };
         if (parsed.type === "chat.message_sent") {
-          await handleMessageSent(parsed.data);
+          await handleMessageSent(
+            parsed.data as MessageSentPayload,
+            message.fields?.redelivered === true
+          );
+        } else if (parsed.type === "chat.mention_retracted") {
+          await handleMentionRetracted(parsed.data as MentionRetractedPayload);
         } else {
           logger.warn(`Unknown chat event type: ${parsed.type}`);
         }

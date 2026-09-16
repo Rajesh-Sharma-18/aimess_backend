@@ -690,6 +690,80 @@ export const chatCopy = register("chat", {
             }),
       };
     },
+  /**
+   * A GROUP message that @mentions the recipient. Titled on the group like
+   * {@link chatCopy.message}; the body says who mentioned the reader and quotes
+   * the line. Push-only, like every chat copy (no inbox row).
+   *
+   * A mention bypasses the recipient's group mute, so this is often the only
+   * notification a muted member gets from that group — it must read on its own.
+   */
+  mention:
+    (params: {
+      groupName?: string;
+      senderName?: string;
+      /** Built in `STORED_TEXT_LOCALE`, re-rendered per recipient like `message`. */
+      preview?: string;
+      messageType?: string;
+    }): LocalizedCopy =>
+    (locale) => {
+      const preview = localizeMessagePreview(
+        params.preview,
+        params.messageType,
+        locale
+      );
+      const name = person(params.senderName, locale);
+      return {
+        title: params.groupName || t("NOTIF_CHAT_NEW_MESSAGE", locale),
+        body: preview
+          ? t("NOTIF_CHAT_MENTION_BODY", locale, { name, preview })
+          : t("NOTIF_CHAT_MENTION_BODY_NO_PREVIEW", locale, { name }),
+      };
+    },
+  /**
+   * A GROUP message that mentions @all. Same params and shape as
+   * {@link chatCopy.mention}; the body says the sender mentioned @all.
+   */
+  mentionAll:
+    (params: {
+      groupName?: string;
+      senderName?: string;
+      preview?: string;
+      messageType?: string;
+    }): LocalizedCopy =>
+    (locale) => {
+      const preview = localizeMessagePreview(
+        params.preview,
+        params.messageType,
+        locale
+      );
+      const name = person(params.senderName, locale);
+      return {
+        title: params.groupName || t("NOTIF_CHAT_NEW_MESSAGE", locale),
+        body: preview
+          ? t("NOTIF_CHAT_MENTION_ALL_BODY", locale, { name, preview })
+          : t("NOTIF_CHAT_MENTION_ALL_BODY_NO_PREVIEW", locale, { name }),
+      };
+    },
+  /**
+   * Notification-Center row for a GROUP @mention (individual or @all). The one
+   * chat builder that reaches the inbox: it quotes no preview, because the
+   * replay ticket would freeze the line as it was before any later edit.
+   */
+  mentionInbox:
+    (params: { senderName?: string; groupName?: string }): LocalizedCopy =>
+    (locale) => {
+      const name = person(params.senderName, locale);
+      return {
+        title: params.groupName || t("NOTIF_CHAT_NEW_MESSAGE", locale),
+        body: params.groupName
+          ? t("NOTIF_CHAT_MENTION_INBOX_BODY", locale, {
+              name,
+              group: params.groupName,
+            })
+          : t("NOTIF_CHAT_MENTION_INBOX_BODY_NO_GROUP", locale, { name }),
+      };
+    },
 });
 
 /**
@@ -704,6 +778,27 @@ export const chatPreviewHiddenBody = (
   roomName
     ? t("NOTIF_CHAT_NEW_MESSAGE_IN", locale, { community: roomName })
     : t("NOTIF_CHAT_NEW_MESSAGE", locale);
+
+/**
+ * Preview-off body for a mention push. Still says it was a MENTION — that is
+ * the one fact a muted member needs — but never quotes the line.
+ */
+export const chatMentionPreviewHiddenBody = (
+  groupName: string | undefined,
+  locale: SupportedLocale
+): string =>
+  groupName
+    ? t("NOTIF_CHAT_MENTION_HIDDEN_IN", locale, { group: groupName })
+    : t("NOTIF_CHAT_MENTION_HIDDEN", locale);
+
+/** Preview-off body for an @all push. */
+export const chatMentionAllPreviewHiddenBody = (
+  groupName: string | undefined,
+  locale: SupportedLocale
+): string =>
+  groupName
+    ? t("NOTIF_CHAT_MENTION_ALL_HIDDEN_IN", locale, { group: groupName })
+    : t("NOTIF_CHAT_MENTION_ALL_HIDDEN", locale);
 
 export const groupCopy = register("group", {
   memberAdded:
@@ -897,11 +992,14 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "community.closed": ["communityName"],
   "community.reopened": ["communityName"],
 
-  // Both take ONE options object; it is passed through under its own name
-  // rather than flattened. Neither reaches the Notification Center (chat
-  // messages are push-only), so nothing renders these from a ticket.
+  // Each takes ONE options object; it is passed through under its own name
+  // rather than flattened. All but `mentionInbox` are push-only; that one is
+  // the group @mention Notification-Center row and IS rendered from a ticket.
   "chat.message": ["params"],
   "chat.messageBurst": ["params"],
+  "chat.mention": ["params"],
+  "chat.mentionAll": ["params"],
+  "chat.mentionInbox": ["params"],
 
   "group.memberAdded": ["groupName"],
   "group.memberMuted": ["groupName", "mutedUntil"],

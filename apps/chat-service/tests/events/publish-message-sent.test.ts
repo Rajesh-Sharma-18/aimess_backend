@@ -51,7 +51,9 @@ jest.mock("../../src/config/prisma.js", () => ({
 
 import {
   publishMessageSentSafe,
+  publishMentionRetractedSafe,
   CHAT_MESSAGE_SENT_EVENT,
+  CHAT_MENTION_RETRACTED_EVENT,
 } from "../../src/events/publish-message-sent.js";
 
 const AVATARS_BUCKET = "aimess-avatars"; // MINIO_BUCKET_AVATARS test default
@@ -225,5 +227,254 @@ describe("publishMessageSentSafe — conversation identity", () => {
     const data = lastQueuedPayload().data as Record<string, unknown>;
     expect(data).not.toHaveProperty("conversationAvatar");
     expect(data).not.toHaveProperty("groupName");
+  });
+});
+
+/**
+ * `mentionedUserIds` (group @mentions): GROUP only, never wider than the final
+ * recipient list (sender excluded), omitted from the wire when empty.
+ */
+describe("publishMessageSentSafe — mentionedUserIds", () => {
+  const base = {
+    conversationId: "grp_1",
+    messageId: "m-10",
+    clientMessageId: "c-10",
+    senderId: "u-sender",
+    senderName: "Alice",
+    senderAvatar: "",
+    preview: "hi",
+    messageType: "TEXT",
+    sentAt: 1_700_000_000_003,
+    recipientIds: ["u-a", "u-b", "u-sender"],
+  };
+
+  it("GROUP: filtered to the final recipients and deduped", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationType: "GROUP",
+      mentionedUserIds: ["u-a", "u-a", "u-sender", "u-outsider"],
+    });
+    await flush();
+
+    const data = lastQueuedPayload().data as Record<string, unknown>;
+    expect(data.mentionedUserIds).toEqual(["u-a"]);
+  });
+
+  it("GROUP with no mentions: the key is absent", async () => {
+    publishMessageSentSafe({ ...base, conversationType: "GROUP" });
+    await flush();
+
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionedUserIds");
+  });
+
+  it("PRIVATE never carries mentionedUserIds", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationId: "prv_1",
+      conversationType: "PRIVATE",
+      mentionedUserIds: ["u-a"],
+    });
+    await flush();
+
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionedUserIds");
+  });
+});
+
+/**
+ * `mentionAllUserIds` (group @all): resolved lazily, GROUP only, never wider
+ * than the final recipients, omitted when empty. `mentionOnly` only when true.
+ */
+describe("publishMessageSentSafe — mentionAllUserIds / mentionOnly", () => {
+  const base = {
+    conversationId: "grp_1",
+    messageId: "m-11",
+    clientMessageId: "c-11",
+    senderId: "u-sender",
+    senderName: "Alice",
+    senderAvatar: "",
+    preview: "hi",
+    messageType: "TEXT",
+    sentAt: 1_700_000_000_004,
+    recipientIds: ["u-a", "u-b", "u-sender"],
+  };
+
+  it("GROUP: resolved ids are filtered to the final recipients and deduped", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationType: "GROUP",
+      fetchMentionAllUserIds: async () => [
+        "u-a",
+        "u-b",
+        "u-b",
+        "u-sender",
+        "u-outsider",
+      ],
+    });
+    await flush();
+
+    const data = lastQueuedPayload().data as Record<string, unknown>;
+    expect(data.mentionAllUserIds).toEqual(["u-a", "u-b"]);
+    expect(data).not.toHaveProperty("mentionOnly");
+  });
+
+  it("GROUP: nothing left after filtering → the key is absent", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationType: "GROUP",
+      fetchMentionAllUserIds: async () => ["u-outsider", "u-sender"],
+    });
+    await flush();
+
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionAllUserIds");
+  });
+
+  it("PRIVATE never resolves or carries mentionAllUserIds", async () => {
+    const fetchMentionAllUserIds = jest.fn(async () => ["u-a"]);
+    publishMessageSentSafe({
+      ...base,
+      conversationId: "prv_1",
+      conversationType: "PRIVATE",
+      fetchMentionAllUserIds,
+    });
+    await flush();
+
+    expect(fetchMentionAllUserIds).not.toHaveBeenCalled();
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionAllUserIds");
+  });
+
+  it("mentionOnly is on the wire only when true", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationType: "GROUP",
+      mentionOnly: true,
+      mentionedUserIds: ["u-a"],
+    });
+    await flush();
+    expect(lastQueuedPayload().data).toMatchObject({
+      mentionOnly: true,
+      mentionedUserIds: ["u-a"],
+    });
+
+    publishMessageSentSafe({
+      ...base,
+      conversationType: "GROUP",
+      mentionOnly: false,
+    });
+    await flush();
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionOnly");
+  });
+});
+
+describe("publishMessageSentSafe — mentionMessageId / inboxOnly", () => {
+  const base = {
+    conversationId: "grp_1",
+    conversationType: "GROUP" as const,
+    messageId: "m-row2",
+    clientMessageId: "c-14",
+    senderId: "u-sender",
+    senderName: "Alice",
+    senderAvatar: "",
+    preview: "hi",
+    messageType: "IMAGE",
+    sentAt: 1_700_000_000_005,
+    recipientIds: ["u-a", "u-sender"],
+  };
+
+  it("mentionMessageId rides only with mentions and only when it differs from messageId", async () => {
+    publishMessageSentSafe({
+      ...base,
+      mentionedUserIds: ["u-a"],
+      mentionMessageId: "m-row0",
+    });
+    await flush();
+    expect(lastQueuedPayload().data).toMatchObject({
+      messageId: "m-row2",
+      mentionMessageId: "m-row0",
+    });
+
+    publishMessageSentSafe({
+      ...base,
+      mentionedUserIds: ["u-a"],
+      mentionMessageId: "m-row2",
+    });
+    await flush();
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionMessageId");
+
+    publishMessageSentSafe({ ...base, mentionMessageId: "m-row0" });
+    await flush();
+    expect(lastQueuedPayload().data).not.toHaveProperty("mentionMessageId");
+  });
+
+  it("inboxOnly is on the wire only together with mentionOnly", async () => {
+    publishMessageSentSafe({
+      ...base,
+      mentionOnly: true,
+      inboxOnly: true,
+      mentionedUserIds: ["u-a"],
+    });
+    await flush();
+    expect(lastQueuedPayload().data).toMatchObject({
+      mentionOnly: true,
+      inboxOnly: true,
+    });
+
+    publishMessageSentSafe({ ...base, inboxOnly: true });
+    await flush();
+    expect(lastQueuedPayload().data).not.toHaveProperty("inboxOnly");
+  });
+});
+
+describe("publishMentionRetractedSafe", () => {
+  it("queues chat.mention_retracted on chat.message.queue with deduped userIds", async () => {
+    sentToQueue.mockClear();
+    publishMentionRetractedSafe({
+      messageId: "m-12",
+      conversationId: "grp_1",
+      userIds: ["u-a", "u-b", "u-a", ""],
+    });
+    await flush();
+
+    expect(sentToQueue.mock.calls.at(-1)![0]).toBe("chat.message.queue");
+    expect(lastQueuedPayload()).toEqual({
+      type: CHAT_MENTION_RETRACTED_EVENT,
+      data: {
+        messageId: "m-12",
+        conversationId: "grp_1",
+        userIds: ["u-a", "u-b"],
+      },
+    });
+  });
+
+  it("publishes deduped ifAllMutedUserIds even with no userIds", async () => {
+    sentToQueue.mockClear();
+    publishMentionRetractedSafe({
+      messageId: "m-14",
+      conversationId: "grp_1",
+      userIds: [],
+      ifAllMutedUserIds: ["u-k", "u-k", ""],
+    });
+    await flush();
+
+    expect(lastQueuedPayload()).toEqual({
+      type: CHAT_MENTION_RETRACTED_EVENT,
+      data: {
+        messageId: "m-14",
+        conversationId: "grp_1",
+        userIds: [],
+        ifAllMutedUserIds: ["u-k"],
+      },
+    });
+  });
+
+  it("publishes nothing when there is nobody to retract", async () => {
+    sentToQueue.mockClear();
+    publishMentionRetractedSafe({
+      messageId: "m-13",
+      conversationId: "grp_1",
+      userIds: [],
+    });
+    await flush();
+
+    expect(sentToQueue).not.toHaveBeenCalled();
   });
 });

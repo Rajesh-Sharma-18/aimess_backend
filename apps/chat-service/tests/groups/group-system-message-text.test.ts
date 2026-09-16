@@ -3,7 +3,10 @@
  * Covers the Telegram-style ROLE_CHANGED promote/demote/ownership-transfer
  * distinction and the new MESSAGE_PINNED/MESSAGE_UNPINNED lines.
  */
-import { buildGroupSystemFallbackText } from "@aimess/constants";
+import {
+  buildGroupSystemFallbackText,
+  personalizeGroupSystemMessageForViewer,
+} from "@aimess/constants";
 
 describe("buildGroupSystemFallbackText — ROLE_CHANGED", () => {
   // Admin promotion is a full hand-off — there is exactly ONE admin per
@@ -71,5 +74,96 @@ describe("buildGroupSystemFallbackText — pin/unpin", () => {
     expect(
       buildGroupSystemFallbackText("MESSAGE_UNPINNED", { actorName: "Rajesh" })
     ).toBe("Rajesh unpinned a message");
+  });
+});
+
+describe("buildGroupSystemFallbackText — MEMBER_REMOVED", () => {
+  // The exact row the bug report screenshots: admin `actor-1` ("Smiley
+  // Creatures") kicks `target-1` ("Tom"). One stored row, three readings.
+  const REMOVAL = {
+    actorId: "actor-1",
+    actorName: "Smiley Creatures",
+    targetUserId: "target-1",
+    targetName: "Tom",
+  };
+
+  it("POSITIVE: the admin who removed the member reads it first-person", () => {
+    expect(
+      buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "actor-1")
+    ).toBe("You removed Tom");
+  });
+
+  it("POSITIVE: another member still reads the actor's name", () => {
+    expect(
+      buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "bystander-1")
+    ).toBe("Smiley Creatures removed Tom");
+  });
+
+  it("POSITIVE: the removed member keeps the existing self copy", () => {
+    expect(
+      buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "target-1")
+    ).toBe("You were removed");
+  });
+
+  it("POSITIVE: the stored (viewer-less) text stays third-person", () => {
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL)).toBe(
+      "Smiley Creatures removed Tom"
+    );
+  });
+
+  // Backoffice removals post the row with `actorId: null`, so nobody is the
+  // actor and the line must not collapse into a first-person sentence.
+  it("NEGATIVE: a platform-admin removal names no actor for anyone", () => {
+    expect(
+      buildGroupSystemFallbackText(
+        "MEMBER_REMOVED",
+        { actorId: null, targetUserId: "target-1", targetName: "Tom" },
+        "bystander-1"
+      )
+    ).toBe("Someone removed Tom");
+  });
+
+  it("POSITIVE: the actor line is localized, not English-only", () => {
+    expect(
+      buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "actor-1", "vi")
+    ).toBe("Bạn đã xóa Tom");
+    expect(
+      buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "actor-1", "th")
+    ).toBe("คุณนำTomออกจากกลุ่ม");
+  });
+});
+
+describe("personalizeGroupSystemMessageForViewer — MEMBER_REMOVED", () => {
+  // Realtime (socket fan-out) and history (REST serializer) both re-render the
+  // stored row through this one function, so asserting it here is asserting
+  // that the two surfaces cannot disagree.
+  const STORED = "Smiley Creatures removed Tom";
+  const REMOVAL = {
+    actorId: "actor-1",
+    actorName: "Smiley Creatures",
+    targetUserId: "target-1",
+    targetName: "Tom",
+  };
+
+  it("POSITIVE: rebuilds the actor's perspective from the stored row", () => {
+    expect(
+      personalizeGroupSystemMessageForViewer(
+        "MEMBER_REMOVED",
+        REMOVAL,
+        STORED,
+        "actor-1"
+      )
+    ).toBe("You removed Tom");
+  });
+
+  it("POSITIVE: leaves another member's row untouched", () => {
+    expect(
+      personalizeGroupSystemMessageForViewer(
+        "MEMBER_REMOVED",
+        REMOVAL,
+        STORED,
+        "bystander-1"
+      )
+    ).toBe(STORED);
   });
 });

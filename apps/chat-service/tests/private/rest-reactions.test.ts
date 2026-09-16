@@ -341,3 +341,71 @@ describe("B1: cross-room IDOR — message does not belong to the URL room", () =
     expect(reactionBroadcasts(mocks.redis, GROUP)).toHaveLength(0);
   });
 });
+
+describe("GET /private/rooms/:roomId/messages/:messageId/reactions (details)", () => {
+  it("POSITIVE: resolves each reactor's avatar key to a download URL and their live display name", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer_1"],
+    });
+    mocks.privateMessageRepo.findMessageMeta.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+    });
+    mocks.privateMessageRepo.getReactions.mockResolvedValue({
+      reactions: {
+        [EMOJI]: [
+          { userId: TEST_USER_ID, userName: "", avatar: "", memberId: "" },
+          { userId: "peer_1", userName: "", avatar: "", memberId: "" },
+        ],
+      },
+      roomId: ROOM,
+    });
+    // Stored reactor rows carry empty name/avatar; the live snapshot is what the
+    // read path enriches from — and its `avatar` is a raw object key.
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(
+      new Map([
+        [TEST_USER_ID, { displayName: "Me", avatar: "avatars/me.png" }],
+        ["peer_1", { displayName: "Harshil", avatar: "avatars/peer.png" }],
+      ])
+    );
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages/${MSG}/reactions`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const group = res.body.data.reactions[EMOJI];
+    expect(group.count).toBe(2);
+    expect(group.selfReacted).toBe(true);
+    expect(group.users.map((u: { userId: string }) => u.userId)).toEqual([
+      TEST_USER_ID,
+      "peer_1",
+    ]);
+    expect(group.users.map((u: { displayName: string }) => u.displayName)).toEqual([
+      "Me",
+      "Harshil",
+    ]);
+    // Raw object keys never reach the client: the private read presigns them,
+    // exactly as the group twin already did.
+    for (const user of group.users as Array<{ avatar: string }>) {
+      expect(user.avatar).toMatch(
+        /^https:\/\/media\.test\/[^/]+\/avatars\/[^/]+\.png$/
+      );
+    }
+  });
+
+  it("NEGATIVE: 403 for a non-participant — reactor identities are never read", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: ["someone_else", "peer_1"],
+    });
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages/${MSG}/reactions`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(403);
+    expect(mocks.privateMessageRepo.getReactions).not.toHaveBeenCalled();
+  });
+});

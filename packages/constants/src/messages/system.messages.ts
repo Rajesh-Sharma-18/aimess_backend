@@ -283,6 +283,17 @@ export const SYSTEM_MESSAGES = {
     en: "{{actor}} removed {{target}}",
     th: "{{actor}}นำ{{target}}ออกจากกลุ่ม",
   },
+  // The ACTOR's own view of the same row everyone else reads as "{{actor}}
+  // removed {{target}}" — without it the remover is shown their own name in the
+  // third person ("Smiley Creatures removed Tom"). `_SELF` below is the
+  // TARGET's perspective, so the actor form takes the `_ACTOR` suffix already
+  // used by the other two-perspective lines (SYS_PRIVATE_FRIENDSHIP_*_ACTOR,
+  // SYS_GROUP_OWNERSHIP_TRANSFERRED_ACTOR).
+  SYS_GROUP_MEMBER_REMOVED_ACTOR: {
+    vi: "Bạn đã xóa {{target}}",
+    en: "You removed {{target}}",
+    th: "คุณนำ{{target}}ออกจากกลุ่ม",
+  },
   SYS_GROUP_MEMBER_REMOVED_SELF: {
     vi: "Bạn đã bị xóa khỏi nhóm",
     en: "You were removed",

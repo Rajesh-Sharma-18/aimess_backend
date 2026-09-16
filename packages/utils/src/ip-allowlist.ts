@@ -93,22 +93,44 @@ export function buildIpAllowList(
 }
 
 /**
- * True for a rule that matches every address of its family — `0.0.0.0/0` or
- * `::/0`, and any other zero-length prefix.
+ * Shortest prefix an operator network may legitimately use on this perimeter.
+ * A /8 is already 16.7M addresses and a v6 /32 is a whole allocation, so
+ * anything shorter is not an office or a VPN egress — it is the control being
+ * removed under another spelling.
+ */
+const MIN_ADMIN_IPV4_PREFIX = 8;
+const MIN_ADMIN_IPV6_PREFIX = 32;
+
+/**
+ * True for a rule that opens the admin surface to the internet — `0.0.0.0/0`
+ * and `::/0`, and any prefix short enough to be internet-scale rather than an
+ * operator network.
  *
  * `buildIpAllowList` matches these faithfully, because a zero prefix is what
  * the operator wrote and silently narrowing it would be worse than obeying it.
  * But on the admin perimeter it produces exactly the state the boot invariant
  * already refuses for an EMPTY list — "reachable from any address" — so the
  * production assertions reject it there too, loudly, rather than letting the
- * two spellings of allow-all disagree.
+ * spellings of allow-all disagree.
+ *
+ * The check is a prefix floor rather than an equality test on /0 because
+ * allow-all splits: `0.0.0.0/1,128.0.0.0/1,::/1,8000::/1` is four entries, not
+ * one of them /0, that together match every address on both stacks. Testing
+ * only for a zero prefix passed that list through and booted an open admin
+ * perimeter.
  */
 export function isAllowAllIpRule(entry: string): boolean {
   const slash = entry.indexOf("/");
   if (slash === -1) return false;
   const net = normalizeIp(entry.slice(0, slash));
   const prefix = Number(entry.slice(slash + 1));
-  return prefix === 0 && (isIPv4(net) || isIPv6(net));
+  if (!Number.isInteger(prefix) || prefix < 0) return false;
+  // ponytail: per-entry prefix floor, not union-coverage math. 128 hand-listed
+  // /8s would still tile the whole v4 space and pass; swap in a real coverage
+  // union if an allowlist ever legitimately grows that long.
+  if (isIPv4(net)) return prefix < MIN_ADMIN_IPV4_PREFIX;
+  if (isIPv6(net)) return prefix < MIN_ADMIN_IPV6_PREFIX;
+  return false;
 }
 
 /**
@@ -123,9 +145,10 @@ export function isAllowAllIpRule(entry: string): boolean {
  *  - every entry is malformed (`203.0.113.0/33`, a typo'd address), which makes
  *    `buildIpAllowList` return null and the guard open. A misconfiguration must
  *    never be the thing that removes the control;
- *  - an entry is an explicit `0.0.0.0/0` or `::/0`, which is allow-all spelled
- *    out. It matches faithfully everywhere else — dev and staging may want
- *    it — but on this perimeter it is the same outcome as an empty list.
+ *  - an entry is internet-scale — an explicit `0.0.0.0/0` or `::/0`, or one of
+ *    the short prefixes an allow-all is split into to dodge a /0 check. Those
+ *    match faithfully everywhere else — dev and staging may want them — but on
+ *    this perimeter they are the same outcome as an empty list.
  */
 export function adminIpWhitelistFailures(entries: string[]): string[] {
   if (entries.length === 0) {
@@ -154,7 +177,7 @@ export function adminIpWhitelistFailures(entries: string[]): string[] {
   const allowAll = entries.filter(isAllowAllIpRule);
   if (allowAll.length > 0) {
     failures.push(
-      `ADMIN_IP_WHITELIST contains ${allowAll.join(", ")}, which matches every address — the /admin surface (including the unauthenticated login and password-reset paths) would be reachable from anywhere. Use the operator networks explicitly.`
+      `ADMIN_IP_WHITELIST contains ${allowAll.join(", ")}, which matches every address or an internet-scale slice of one family — the /admin surface (including the unauthenticated login and password-reset paths) would be reachable from anywhere. Use the operator networks explicitly.`
     );
   }
 

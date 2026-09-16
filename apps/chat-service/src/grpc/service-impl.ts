@@ -14,7 +14,11 @@ import { randomUUID } from "node:crypto";
 import { once } from "../lib/once.js";
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
-import { isAppError, ForbiddenError } from "@aimess/errors";
+import {
+  isAppError,
+  ForbiddenError,
+  TooManyRequestsError,
+} from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
 import { buildReactionActivityText, copyTickets } from "@aimess/constants";
 import { redis } from "../config/redis.js";
@@ -81,6 +85,7 @@ import {
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
+import { hasMentionAll, mentionedUserIdsOf } from "../lib/group-mentions.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
@@ -189,11 +194,19 @@ export interface GrpcDeps {
   privateRoomService: PrivateRoomService;
 }
 
-function parseMessageContent(req: {
-  contentJson?: string;
-  contentText?: string;
-  mediaKey?: string;
-}): {
+/**
+ * `allowMentions` is set only for GROUP rooms: the raw `mentions` array is passed
+ * through for GroupMessageService to validate (lib/group-mentions.ts). Private
+ * sends/edits never carry it, whatever the client put in `contentJson`.
+ */
+function parseMessageContent(
+  req: {
+    contentJson?: string;
+    contentText?: string;
+    mediaKey?: string;
+  },
+  opts?: { allowMentions?: boolean }
+): {
   text: string;
   urls: string[];
   files: Array<Record<string, unknown>>;
@@ -220,6 +233,9 @@ function parseMessageContent(req: {
       // STICKER media lives outside files[]; dropping it here persisted an
       // empty content blob, so the sticker vanished on the next history read.
       ...(parsed.sticker ? { sticker: parsed.sticker } : {}),
+      ...(opts?.allowMentions && Array.isArray(parsed.mentions)
+        ? { mentions: parsed.mentions }
+        : {}),
     };
   } catch {
     return fallback;
@@ -354,7 +370,9 @@ export function createMessagingImpl(
             req.conversationId,
             req.conversationType
           );
-          const content = parseMessageContent(req);
+          const content = parseMessageContent(req, {
+            allowMentions: conversationType === "GROUP",
+          });
           // Takes this send's place in the (room, sender) order — synchronously,
           // before the first `await`, or the arrival order is already lost. Only
           // the sequence allocation waits on it; the reads below still overlap
@@ -607,9 +625,36 @@ export function createMessagingImpl(
               sentAt: pushSentAt,
             };
             if (conversationType === "GROUP") {
+              const albumRows = getAlbumMessages(msg);
+              const albumContents = albumRows.map((r) => r.content);
+              // An album keeps its mentions on row 0 only; inbox rows key on it.
+              const mentionRow = albumRows.find(
+                (r) =>
+                  hasMentionAll([r.content]) ||
+                  mentionedUserIdsOf([r.content], req.senderId).length > 0
+              );
               publishMessageSentSafe({
                 ...pushBase,
+                ...(mentionRow && mentionRow.id !== msg.id
+                  ? { mentionMessageId: mentionRow.id }
+                  : {}),
                 fetchRecipients: groupRecipients,
+                mentionedUserIds: mentionedUserIdsOf(
+                  albumContents,
+                  req.senderId
+                ),
+                ...(hasMentionAll(albumContents)
+                  ? {
+                      fetchMentionAllUserIds: () =>
+                        groupRecipients().then((ids) =>
+                          deps.groupMessageService.getMentionAllRecipients(
+                            req.conversationId,
+                            req.senderId,
+                            ids
+                          )
+                        ),
+                    }
+                  : {}),
               });
             } else {
               publishMessageSentSafe({
@@ -647,7 +692,14 @@ export function createMessagingImpl(
             req.conversationType
           );
 
-          const content = parseMessageContent(req);
+          const content = parseMessageContent(req, {
+            allowMentions: conversationType === "GROUP",
+          });
+          // A group edit can add mentions (a push), so the socket path draws on
+          // the same `gm:send` bucket as a send instead of being unmetered.
+          if (conversationType === "GROUP") {
+            await assertSendAllowed("gm", req.editorId);
+          }
           const updated =
             conversationType === "GROUP"
               ? await deps.groupMessageService.editMessage({
@@ -741,7 +793,13 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC editMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          // Rate limit maps like sendMessage (RESOURCE_EXHAUSTED → RATE_LIMITED
+          // ack); every other edit error keeps its existing mapping.
+          callback(
+            err instanceof TooManyRequestsError
+              ? toGrpcCallbackError(err)
+              : { code: grpc.status.INTERNAL, message: String(err) }
+          );
         }
       })();
     },
@@ -1595,6 +1653,70 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC getMessageReactions error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    /**
+     * Keyset-paged reaction details.
+     *
+     * getMessageReactions above returns every reactor on the message, which the
+     * popup cannot use once a message has more reactions than fit in one frame.
+     * This returns one page plus aggregates read from the reactor index, so the
+     * response size is a function of `limit` and nothing else.
+     */
+    getMessageReactionsPage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId?: string;
+            conversationId?: string;
+            conversationType?: string;
+            requesterId?: string;
+            emoji?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          const conversationType =
+            typeof req.conversationType === "string"
+              ? req.conversationType.toUpperCase()
+              : "PRIVATE";
+
+          // Identical guard to the unpaginated read — paging must not become a
+          // second, softer door onto the same reactor identities.
+          const page =
+            conversationType === "GROUP"
+              ? await deps.groupMessageService.getMessageReactionsPage({
+                  messageId: req.messageId ?? "",
+                  roomId: req.conversationId ?? "",
+                  requesterId: req.requesterId ?? "",
+                  emoji: req.emoji || null,
+                  cursor: req.cursor || null,
+                  limit: req.limit || null,
+                })
+              : await deps.privateMessageService.getMessageReactionsPage({
+                  messageId: req.messageId ?? "",
+                  roomId: req.conversationId ?? "",
+                  requesterId: req.requesterId ?? "",
+                  emoji: req.emoji || null,
+                  cursor: req.cursor || null,
+                  limit: req.limit || null,
+                });
+
+          callback(null, {
+            users: page.users,
+            nextCursor: page.nextCursor ?? "",
+            hasMore: page.hasMore,
+            counts: page.counts,
+            total: page.total,
+            selfEmoji: page.selfEmoji,
+          });
+        } catch (err) {
+          logger.error(`gRPC getMessageReactionsPage error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
@@ -2707,6 +2829,83 @@ export function createMessagingImpl(
       })();
     },
 
+    // Super Admin: apply the whole grid draft in one transaction. A rejected
+    // priority (out of range, or a final state with two rows on one number)
+    // comes back on the {ok:false, errorCode} channel, same as an unknown id,
+    // so the panel renders it as a 400 instead of a dead gRPC call.
+    adminUpdateNotificationCategories: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            updates?: {
+              categoryId?: string;
+              priority?: number;
+              hasPriority?: boolean;
+              enabledPlatforms?: string[];
+              hasEnabledPlatforms?: boolean;
+            }[];
+            actorId?: string;
+          };
+          const updated =
+            await deps.notificationCatalogueService.updateCategories(
+              (req.updates ?? []).map((change) => ({
+                id: change.categoryId ?? "",
+                ...(change.hasPriority
+                  ? { priority: Number(change.priority) }
+                  : {}),
+                ...(change.hasEnabledPlatforms
+                  ? {
+                      enabledPlatforms: (change.enabledPlatforms ?? []).flatMap(
+                        (p) => {
+                          const parsed = parsePlatform(p);
+                          return parsed ? [parsed] : [];
+                        }
+                      ),
+                    }
+                  : {}),
+              })),
+              req.actorId || null
+            );
+          if (!updated) {
+            callback(null, {
+              ok: false,
+              errorCode: "NOTIFICATION_CATEGORY_NOT_FOUND",
+              categories: [],
+            });
+            return;
+          }
+          callback(null, {
+            ok: true,
+            errorCode: "",
+            categories: updated.map((c) => ({
+              id: c.id,
+              priority: c.priority,
+              defaultLabel: c.defaultLabel,
+              iconKey: c.iconKey,
+              enabledPlatforms: c.enabledPlatforms,
+              updatedAt: new Date(c.updatedAt).getTime(),
+            })),
+          });
+        } catch (err) {
+          if (isAppError(err) && err.statusCode === 400) {
+            callback(null, {
+              ok: false,
+              errorCode: err.messageKey ?? "BAD_REQUEST",
+              categories: [],
+            });
+            return;
+          }
+          logger.error(
+            `gRPC adminUpdateNotificationCategories error: ${String(err)}`
+          );
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
     // Authorize a media download against chat-resource HISTORICAL membership.
     // media-service calls this because an object key encodes the uploader, not
     // the room the attachment belongs to. Deliberately looser than the guards
@@ -2924,34 +3123,24 @@ export function createMessagingImpl(
           const skip = Math.max(req.skip || 0, 0);
 
           // Same membership source the unified inbox lists a group from
-          // (ACTIVE + LEFT + KICKED, BANNED excluded) — one query, no per-group
-          // lookup, so search visibility can never drift from what the user's
-          // conversation list actually shows.
+          // (ACTIVE only) — one query, no per-group lookup, so search
+          // visibility can never drift from what the user's conversation list
+          // actually shows. A group whose membership ended is not in that list
+          // and must not be findable through search either, so the "OTHER"
+          // mode below (non-active rooms still in the list) now has no
+          // candidates by construction.
           const memberships = viewerId
-            ? await deps.groupMemberRepo.getActiveOrLeftMemberships(viewerId)
+            ? await deps.groupMemberRepo.getInboxMemberships(viewerId)
             : [];
-          const activeRoomIds = memberships
-            .filter((m) => m.status === "ACTIVE")
-            .map((m) => m.roomId);
+          const activeRoomIds = memberships.map((m) => m.roomId);
           const activeSet = new Set(activeRoomIds);
-          const clearedByRoom = new Map(
-            memberships.map((m) => [m.roomId, m.clearedAt])
-          );
 
-          // Non-active viewer: the group stays visible only while the
-          // conversation survives their own "Delete Conversation" cutoff —
-          // the same `isVisibleAfterClear` gate GroupRoomService applies to
-          // the inbox.
-          const isSearchable = (g: {
-            roomId: string;
-            lastMessageAt: Date | null;
-          }) => {
-            if (activeSet.has(g.roomId)) return true;
-            if (!clearedByRoom.has(g.roomId)) return false;
-            const clearedAt = clearedByRoom.get(g.roomId) ?? null;
-            if (!clearedAt) return true;
-            return (g.lastMessageAt?.getTime() ?? 0) > clearedAt.getTime();
-          };
+          // Group existence — public, name-matching, previously joined,
+          // previously invited — never grants visibility. Active membership is
+          // the whole rule, and BY_IDS is held to it too rather than trusting
+          // the ids the caller sent.
+          const isSearchable = (g: { roomId: string }) =>
+            activeSet.has(g.roomId);
 
           let rows;
           if (mode === "OTHER") {
@@ -4510,6 +4699,47 @@ export function createCommunityImpl(
       })();
     },
 
+    /** Keyset-paged reaction details — see getMessageReactionsPage. */
+    getCommunityMessageReactionsPage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId?: string;
+            communityId?: string;
+            requesterId?: string;
+            emoji?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          const page =
+            await deps.communityMessageService.getMessageReactionsPage({
+              messageId: req.messageId ?? "",
+              communityId: req.communityId ?? "",
+              requesterId: req.requesterId ?? "",
+              emoji: req.emoji || null,
+              cursor: req.cursor || null,
+              limit: req.limit || null,
+            });
+          callback(null, {
+            users: page.users,
+            nextCursor: page.nextCursor ?? "",
+            hasMore: page.hasMore,
+            counts: page.counts,
+            total: page.total,
+            selfEmoji: page.selfEmoji,
+          });
+        } catch (err) {
+          logger.error(
+            `gRPC getCommunityMessageReactionsPage error: ${String(err)}`
+          );
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     forwardCommunityMessage: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -4569,6 +4799,37 @@ export function createCommunityImpl(
       })();
     },
   };
+}
+
+/**
+ * A group mention row is decided late: between the event being queued and this
+ * write the message may have been deleted for everyone, or edited to drop the
+ * mention — and its retraction may already have been consumed with nothing to
+ * remove. Fails open: a lookup error must not swallow a real mention.
+ */
+async function groupMentionStillStands(
+  deps: GrpcDeps,
+  userId: string,
+  data: Record<string, string>
+): Promise<boolean> {
+  try {
+    const message = await deps.groupMessageService.findMessageById(
+      data.messageId as string
+    );
+    if (!message || message.isDeleted) return false;
+    // Either kind of mention keeps either row — the rule the edit retraction
+    // applies, so a create racing an edit cannot drop a row an in-order edit
+    // would keep (e.g. "@kristi @all" edited to "@all").
+    return (
+      hasMentionAll([message.content]) ||
+      mentionedUserIdsOf([message.content], "").includes(userId)
+    );
+  } catch (err) {
+    logger.warn(
+      `createNotification|mention guard lookup failed message=${data.messageId}: ${String(err)}`
+    );
+    return true;
+  }
 }
 
 export function createNotificationImpl(
@@ -4804,6 +5065,16 @@ export function createNotificationImpl(
             return;
           }
 
+          const isGroupMention =
+            req.type === "chat.mention" && !!data.messageId;
+          if (
+            isGroupMention &&
+            !(await groupMentionStillStands(deps, req.userId, data))
+          ) {
+            callback(null, { id: "" });
+            return;
+          }
+
           const created = await deps.notificationRepo.create({
             userId: req.userId,
             actorId: rowActorId,
@@ -4826,6 +5097,23 @@ export function createNotificationImpl(
               ? { isRead: true, readAt: new Date() }
               : {}),
           });
+
+          // Re-check after the insert: a retraction whose lookup ran before
+          // this insert committed found nothing to remove, but the delete/edit
+          // behind it committed before that lookup, so this read sees it. The
+          // row goes before any client hears of it.
+          if (
+            isGroupMention &&
+            groupKey &&
+            !(await groupMentionStillStands(deps, req.userId, data))
+          ) {
+            await deps.notificationRepo.deleteActiveByGroupKey(
+              req.userId,
+              groupKey
+            );
+            callback(null, { id: "" });
+            return;
+          }
 
           await publishRow("notification:new", created);
 
@@ -5132,4 +5420,3 @@ export function createNotificationImpl(
     },
   };
 }
-

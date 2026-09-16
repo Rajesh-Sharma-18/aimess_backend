@@ -124,6 +124,11 @@ export const AUDIT_ACTIONS = {
   ADMIN_PASSWORD_CHANGED: "admin.password_changed",
   SYSTEM_ALL_FRIENDSHIPS_DISCONNECTED: "system.all_friendships_disconnected",
   SYSTEM_CALLING_TOGGLED: "system.calling_toggled",
+  // A Super Admin restarted an allowlisted service from System Health. Two rows:
+  // the restart runs after the request returns, and its result is only known
+  // once health has been verified.
+  SYSTEM_SERVICE_RESTART_REQUESTED: "system.service_restart_requested",
+  SYSTEM_SERVICE_RESTART_COMPLETED: "system.service_restart_completed",
   // Notification-category catalogue configuration. Only ever an UPDATE: the
   // catalogue is fixed, so there is no created/deleted counterpart to add.
   NOTIFICATION_CATEGORY_UPDATED: "notification_category.updated",

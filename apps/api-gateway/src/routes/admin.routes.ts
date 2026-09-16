@@ -12,13 +12,14 @@ import { adminIpAllowlist } from "../middleware/admin-ip-allowlist.js";
 import { adminJwt } from "../middleware/admin-jwt.js";
 import {
   adminLoginRateLimiter,
-  adminRateLimiter,
+  adminReadRateLimiter,
+  adminWriteRateLimiter,
 } from "../middleware/rate-limit.js";
 
 /**
  * Admin edge router, mounted at `/admin`. Order:
- *   adminRateLimiter → adminIpAllowlist → (login paths: stricter limiter)
- *   → adminJwt (skips public paths) → proxy → backoffice-service.
+ *   admin read/write limiters → adminIpAllowlist → (login paths: stricter
+ *   limiter) → adminJwt (skips public paths) → proxy → backoffice-service.
  *
  * Path rewrite: `/admin/v1/auth/login` → `/v1/auth/login` (strip `/admin`),
  * matching backoffice-service which mounts its routes at `/v1`.
@@ -26,8 +27,9 @@ import {
 export function createAdminRouter(): IRouter {
   const adminRouter: IRouter = Router();
 
-  // Whole-surface controls.
-  adminRouter.use(adminRateLimiter);
+  // Whole-surface controls. Each limiter skips the other's methods.
+  adminRouter.use(adminReadRateLimiter);
+  adminRouter.use(adminWriteRateLimiter);
   adminRouter.use(adminIpAllowlist);
 
   // Stricter throttle on the public, unauthenticated auth paths (before the JWT

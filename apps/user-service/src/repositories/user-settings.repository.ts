@@ -39,6 +39,7 @@ export type SettingsBundle = {
     communityEnabled: boolean;
     liveStreamEnabled: boolean;
     showPreview: boolean;
+    mentionAllEnabled: boolean;
     quietHoursEnabled: boolean;
     quietHoursStart: string | null;
     quietHoursEnd: string | null;
@@ -85,6 +86,7 @@ export type NotificationSettingsUpdate = {
   communityEnabled?: boolean;
   liveStreamEnabled?: boolean;
   showPreview?: boolean;
+  mentionAllEnabled?: boolean;
   quietHoursEnabled?: boolean;
   quietHoursStart?: string;
   quietHoursEnd?: string;
@@ -104,6 +106,7 @@ const notificationSelect = {
   communityEnabled: true,
   liveStreamEnabled: true,
   showPreview: true,
+  mentionAllEnabled: true,
   quietHoursEnabled: true,
   quietHoursStart: true,
   quietHoursEnd: true,
@@ -120,6 +123,7 @@ export type NotificationSettingsRow = {
   communityEnabled: boolean;
   liveStreamEnabled: boolean;
   showPreview: boolean;
+  mentionAllEnabled: boolean;
   quietHoursEnabled: boolean;
   quietHoursStart: string | null;
   quietHoursEnd: string | null;
@@ -159,6 +163,7 @@ export const userSettingsRepository = {
         communityEnabled: true,
         liveStreamEnabled: true,
         showPreview: true,
+        mentionAllEnabled: true,
         quietHoursEnabled: true,
         quietHoursStart: true,
         quietHoursEnd: true,

@@ -86,12 +86,16 @@ jest.mock("../../src/config/redis.js", () => {
 // Imported AFTER the mock so the module binds to the fake client.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const {
+  assertMentionAllAllowed,
   assertSendAllowed,
   consumeRateLimit,
   MESSAGING_RATE_LIMITS,
   MESSAGING_RATE_WINDOW_MS,
 } =
   require("../../src/middleware/rate-limit.js") as typeof import("../../src/middleware/rate-limit.js");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { env } =
+  require("../../src/config/env.js") as typeof import("../../src/config/env.js");
 
 const USER = "user-1";
 
@@ -184,5 +188,36 @@ describe("send limiter — one bucket for REST and gRPC", () => {
     await expect(assertSendAllowed("pm", USER)).rejects.toMatchObject({
       retryAfterSec: expect.any(Number),
     });
+  });
+});
+
+describe("@all limiter — per room and sender", () => {
+  it("allows GROUP_MENTION_ALL_RATE_MAX, then refuses with its own key", async () => {
+    for (let i = 0; i < env.GROUP_MENTION_ALL_RATE_MAX; i += 1) {
+      await expect(
+        assertMentionAllAllowed(USER, "room-1")
+      ).resolves.toBeUndefined();
+    }
+
+    await expect(assertMentionAllAllowed(USER, "room-1")).rejects.toMatchObject(
+      {
+        statusCode: 429,
+        messageKey: "CHAT_MENTION_ALL_RATE_LIMITED",
+        retryAfterSec: expect.any(Number),
+      }
+    );
+    expect([...store.keys()]).toEqual([`rl:gm:mention-all:room-1:${USER}`]);
+  });
+
+  it("is separate per room and never spends the send bucket", async () => {
+    for (let i = 0; i < env.GROUP_MENTION_ALL_RATE_MAX; i += 1) {
+      await assertMentionAllAllowed(USER, "room-1");
+    }
+
+    await expect(
+      assertMentionAllAllowed(USER, "room-2")
+    ).resolves.toBeUndefined();
+    await expect(assertSendAllowed("gm", USER)).resolves.toBeUndefined();
+    expect(sorted(`rl:gm:send:${USER}`)).toHaveLength(1);
   });
 });

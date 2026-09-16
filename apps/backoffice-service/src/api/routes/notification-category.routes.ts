@@ -3,6 +3,7 @@ import { Router, type IRouter } from "express";
 import { PERMISSIONS } from "../../constants/index.js";
 import {
   listNotificationCategories,
+  updateNotificationCategories,
   updateNotificationCategory,
 } from "../controllers/index.js";
 import {
@@ -13,6 +14,7 @@ import {
 } from "../middleware/index.js";
 import {
   notificationCategoryIdParamSchema,
+  updateNotificationCategoriesSchema,
   updateNotificationCategorySchema,
 } from "../validators/index.js";
 
@@ -42,6 +44,21 @@ notificationCategoryRoutes.get(
   listNotificationCategories
 );
 
+// The grid's Save: the whole draft, one transaction, all-or-nothing. Registered
+// on the COLLECTION because it is a statement about the catalogue as a whole —
+// "these are the rows I changed, check them together" — which is the only way a
+// priority swap can be told apart from a priority collision.
+notificationCategoryRoutes.patch(
+  "/notification-categories",
+  requirePermission(PERMISSIONS.SETTINGS_MANAGE),
+  validateBody(updateNotificationCategoriesSchema),
+  updateNotificationCategories
+);
+
+// Single-row edit. Kept for the existing API contract; it treats a priority
+// another row holds as a REORDER and renumbers around it, which is why the
+// panel no longer uses it — an administrator typing a number wants to be told
+// about the clash, not to have five other rows quietly shuffled.
 notificationCategoryRoutes.patch(
   "/notification-categories/:categoryId",
   requirePermission(PERMISSIONS.SETTINGS_MANAGE),

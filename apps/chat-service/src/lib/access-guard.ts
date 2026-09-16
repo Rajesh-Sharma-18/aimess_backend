@@ -126,45 +126,61 @@ export async function assertGroupWritable(
 }
 
 /**
- * Group READ access: an ACTIVE member reads everything; a member who
- * voluntarily LEFT *or* was KICKED (removed by an admin/moderator) keeps read
- * access to history up to (and including) the moment they stopped being a
- * member (WhatsApp-style — the chat stays visible, read-only, no new
- * messages). Banned/never-a-member callers are denied, same as
- * {@link assertGroupMember} — this only widens LEFT/KICKED.
+ * Group READ access: an ACTIVE member reads everything. Anyone whose
+ * membership has ENDED — LEFT, KICKED or BANNED — is denied outright, so the
+ * group they no longer belong to cannot be opened, paged, searched or probed
+ * by holding onto its roomId. This guard used to widen LEFT/KICKED to a
+ * cutoff-capped read (WhatsApp-style read-only history); it no longer does,
+ * matching the inbox, which stopped listing those rooms at all
+ * (`getInboxMemberships`).
  *
- * READ and WRITE are deliberately split here: this guard is the ONLY one that
- * widens past ACTIVE. Every write/member action keeps calling
- * {@link assertGroupMember} (which resolves through `findActiveByRoomAndUser`),
- * so a removed member is read-allowed / write-denied by construction.
+ * The ONE surviving widening is a DISBANDED room, where the ROOM is the thing
+ * that died rather than the membership: `markAllLeft` ends every membership at
+ * exactly the room's `disbandedAt`, and an open client has to keep rendering
+ * the history it already holds. So a LEFT row is admitted only when its
+ * `leftAt` IS that disband instant — someone who left or was removed earlier,
+ * of their own accord or by an admin, already lost access then and does not
+ * get it back because the room later died. That needs the ROOM, which is why
+ * `roomRepo` is required, but it is read only on the non-ACTIVE path, so the
+ * hot path pays nothing.
  *
- * BANNED is intentionally NOT widened — a ban is a harder state than a removal
- * and keeps its existing "no access" behavior.
+ * READ and WRITE stay split: every write/member action calls
+ * {@link assertGroupMember} (ACTIVE-only via `findActiveByRoomAndUser`), and a
+ * disbanded room additionally fails {@link assertGroupRoomWritable}.
  *
- * @throws ForbiddenError `CHAT_NOT_A_MEMBER` for anyone who isn't currently
- *   active, a past voluntary leaver, or a removed member (banned/no row).
+ * @throws ForbiddenError `CHAT_NOT_A_MEMBER` for anyone not currently ACTIVE
+ *   (except a member a disband ended).
  */
 export async function assertGroupReadAccess(
   memberRepo: Pick<GroupMemberRepository, "findByRoomAndUser">,
   roomId: string,
-  userId: string
+  userId: string,
+  roomRepo: Pick<GroupRoomRepository, "findByRoomId">
 ): Promise<{ member: GroupMember; readCutoffBefore?: Date }> {
   const member = await memberRepo.findByRoomAndUser(roomId, userId);
   if (member?.status === "ACTIVE") return { member };
   const cutoff = groupReadCutoff(member);
-  if (cutoff)
-    return { member: member as GroupMember, readCutoffBefore: cutoff };
+  if (cutoff && member?.status === "LEFT") {
+    const room = await roomRepo.findByRoomId(roomId);
+    if (
+      room?.status === "DISBANDED" &&
+      room.disbandedAt?.getTime() === cutoff.getTime()
+    ) {
+      return { member, readCutoffBefore: cutoff };
+    }
+  }
   throw new ForbiddenError("CHAT_NOT_A_MEMBER");
 }
 
 /**
- * The instant a non-ACTIVE membership's read access freezes, or `null` when the
+ * The instant a non-ACTIVE membership's read access froze, or `null` when the
  * row carries no historical read access at all (ACTIVE, BANNED, missing, or a
  * LEFT/KICKED row whose timestamp was never written).
  *
- * Single source of truth for "how far can this ex-member read" — used by the
- * guard above AND by the inbox/detail preview caps, so the sidebar preview and
- * the timeline can never disagree about the cutoff.
+ * Since a removal now ends access entirely, this is reached only on the
+ * DISBANDED path (see {@link assertGroupReadAccess}) and by the detail preview
+ * cap that mirrors it, so the preview and the timeline can never disagree
+ * about how far a disbanded room may be read.
  */
 export function groupReadCutoff(
   member:
