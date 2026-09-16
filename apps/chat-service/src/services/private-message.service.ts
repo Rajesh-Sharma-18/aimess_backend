@@ -114,6 +114,7 @@ import type { GroupRoomRepository } from "../repositories/group-room.repository.
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import {
+  resolveDisplayName,
   resolveRealDisplayName,
   type UserSnapshotService,
 } from "./user-snapshot.service.js";
@@ -2315,6 +2316,13 @@ export class PrivateMessageService {
       }
     > = {};
 
+    // Resolve reactor avatar keys → download URLs on read (one batch, deduped).
+    // Without this the private path hands the FE a raw MinIO object key while the
+    // group twin returns a presigned URL, so every DM reactor avatar renders broken.
+    const urlMap = await resolveMediaUrlMap(
+      [...snapshots.values()].map((s) => (s.avatar as string) || "")
+    );
+
     for (const [emoji, userIds] of Object.entries(reactions)) {
       result[emoji] = {
         count: userIds.length,
@@ -2323,9 +2331,8 @@ export class PrivateMessageService {
           const snap = snapshots.get(uid) ?? {};
           return {
             userId: uid,
-            displayName:
-              (snap.displayName as string) ?? (snap.memberId as string) ?? "",
-            avatar: (snap.avatar as string) ?? "",
+            displayName: resolveDisplayName(snap),
+            avatar: urlFromMap(urlMap, (snap.avatar as string) || ""),
           };
         }),
       };
