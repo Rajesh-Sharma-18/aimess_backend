@@ -84,6 +84,15 @@ export interface AutoDeleteClaimDelegate {
  * `autoDeleteNextAttemptAt` is filtered with an explicit `OR` against null for
  * the opposite reason: relying on "lte also matches null" to let never-failed
  * rows through would make the whole sweeper stop the day that quirk changes.
+ *
+ * That `OR` needs `isSet: false` beside the null branch, and the omission is
+ * what stopped the sweeper dead. Prisma only ever writes an optional column it
+ * was actually given, so a message that has never failed a delete carries NO
+ * `autoDeleteNextAttemptAt` field at all — and on MongoDB `{ field: null }`
+ * matches a field that is present and null, NOT one that is absent. Every row
+ * therefore failed the condition, the candidate query returned nothing on every
+ * tick, and no message was ever swept. Same trap, same fix, as the `isSet`
+ * notes in notification.repository and last-activity-guard.
  */
 function dueConditions(now: Date): Array<Record<string, unknown>> {
   return [
@@ -91,6 +100,7 @@ function dueConditions(now: Date): Array<Record<string, unknown>> {
     { autoDeleteAt: { lte: now } },
     {
       OR: [
+        { autoDeleteNextAttemptAt: { isSet: false } },
         { autoDeleteNextAttemptAt: null },
         { autoDeleteNextAttemptAt: { lte: now } },
       ],
@@ -104,10 +114,15 @@ function dueConditions(now: Date): Array<Record<string, unknown>> {
  * row from matching `lt` through the same Null-orders-first quirk documented
  * above; it would be harmless here (the first branch already covers it) but the
  * predicate is also re-evaluated on the write, where precision matters.
+ *
+ * `isSet: false` carries the never-claimed case, for the reason given on
+ * {@link dueConditions}: a row nobody has ever claimed has no
+ * `autoDeleteClaimToken` field, and the null branch alone does not reach it.
  */
 function claimableCondition(leaseCutoff: Date): Record<string, unknown> {
   return {
     OR: [
+      { autoDeleteClaimToken: { isSet: false } },
       { autoDeleteClaimToken: null },
       {
         AND: [
