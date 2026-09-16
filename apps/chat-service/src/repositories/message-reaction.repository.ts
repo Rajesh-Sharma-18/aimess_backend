@@ -143,11 +143,26 @@ export class MessageReactionRepository {
    * that one message's existing reaction count, which for pre-existing rows is
    * small. New reactions maintain the index incrementally from then on.
    *
-   * Idempotent: the unique key makes a concurrent double-materialize collapse to
-   * the same rows, so a lost race costs a duplicate-key error, not a duplicate
-   * reactor. `createdAt` cannot be recovered from the map (it stores no
-   * timestamps), so seeded rows take their position from the map's own order —
-   * which is the order the clients were already being shown.
+   * REBUILDS rather than appends, which is what makes it idempotent.
+   *
+   * The write path populates this collection for any message that gets a
+   * reaction, including one that has never been materialized — so by the time a
+   * legacy message is first paged, some of its reactors may already have rows.
+   * Inserting the map on top of those produced a SECOND row for each of them and
+   * inflated every count that read the projection: a message with seven real
+   * reactions reported ten. Clearing first means the map, which is
+   * authoritative, is the only thing that decides what ends up here.
+   *
+   * `createdAt` cannot be recovered from the map (it stores no timestamps), so
+   * seeded rows take their position from the map's own order — which is the
+   * order the clients were already being shown. A row the write path had already
+   * created loses its real timestamp to the synthesized one; that only reorders
+   * reactors within a single message, once, and is the price of having one
+   * authority instead of two.
+   *
+   * The unique key is the backstop for two readers racing to rebuild the same
+   * message; it is created by `prisma db push`, and this method is correct
+   * without it.
    */
   async materializeFromStoredMap(params: {
     messageId: string;
@@ -183,6 +198,12 @@ export class MessageReactionRepository {
         offset += 1;
       }
     }
+    await this.prisma.messageReaction.deleteMany({
+      where: {
+        messageId: params.messageId,
+        conversationType: params.conversationType,
+      },
+    });
     if (rows.length === 0) return;
     await this.prisma.messageReaction.createMany({
       data: rows,

@@ -98,12 +98,23 @@ const fakePrisma = (rows: Row[]) => {
           return {};
         }),
         deleteMany: jest.fn(async (args: Record<string, any>) => {
-          const userId = args.where.userId;
+          // Honours every key it is given, so a message-scoped delete cannot
+          // quietly behave like a user-scoped one (or vice versa).
+          const where = args.where ?? {};
+          let count = 0;
           for (let i = store.length - 1; i >= 0; i -= 1) {
-            if (userId === undefined || store[i].userId === userId)
+            const row: Record<string, unknown> = { messageId: "m1", ...store[i] };
+            // conversationType is always paired with messageId by the caller;
+            // scoping by message is the property these tests care about.
+            const keys = Object.entries(where).filter(
+              ([k]) => k !== "conversationType"
+            );
+            if (keys.every(([k, v]) => row[k] === v)) {
               store.splice(i, 1);
+              count += 1;
+            }
           }
-          return { count: 0 };
+          return { count };
         }),
         createMany: jest.fn(async (args: Record<string, any>) => {
           store.push(...args.data);
@@ -383,5 +394,154 @@ describe("MessageReactionRepository.applyReactorChange", () => {
     });
 
     expect(fake.store.map((r) => r.userId)).toEqual(["u0", "u2"]);
+  });
+});
+
+/**
+ * The count-inflation bug, as it actually happened.
+ *
+ * The write path populates the projection for any message that gets a reaction,
+ * including one whose index has never been built. `materializeFromStoredMap`
+ * then inserted the whole stored map on top of those rows, giving a second row
+ * to every reactor who had arrived first. The popup read its counts off the
+ * projection, so a message with seven real reactions reported ten — the exact
+ * numbers in the report: `10 reactions`, with 🔥 😂 👏 each doubled to 2.
+ */
+describe("materializeFromStoredMap — no double counting", () => {
+  /** The reported message: seven reactors, ❤️ twice, five other emoji once. */
+  const storedMap = {
+    "❤️": [{ userId: "u-self" }, { userId: "u-smiley" }],
+    "👍": [{ userId: "u-tom" }],
+    "👎": [{ userId: "u-kristi" }],
+    "🔥": [{ userId: "u-iron" }],
+    "😂": [{ userId: "u-spider" }],
+    "👏": [{ userId: "u-clap" }],
+  };
+
+  const source = {
+    id: "m1",
+    roomId: "r1",
+    reactions: storedMap,
+    createdAt: BASE,
+    reactionsIndexedAt: null,
+  };
+
+  const materialize = async (repo: MessageReactionRepository) =>
+    ensureReactionIndex(repo, "COMMUNITY", source, async () => ({}));
+
+  const totals = async (repo: MessageReactionRepository) =>
+    repo.countsFor("m1", "COMMUNITY");
+
+  it("counts each reactor once when the index starts empty", async () => {
+    const { repo } = repoFor([]);
+    await materialize(repo);
+
+    const counts = await totals(repo);
+    expect(counts.total).toBe(7);
+    expect(Object.fromEntries(counts.byEmoji.map((c) => [c.emoji, c.count]))).toEqual({
+      "❤️": 2,
+      "👍": 1,
+      "👎": 1,
+      "🔥": 1,
+      "😂": 1,
+      "👏": 1,
+    });
+  });
+
+  it("counts each reactor once when the write path got there first", async () => {
+    const { fake, repo } = repoFor([]);
+    // 🔥 😂 👏 reacted before the index was ever built — one row each, written
+    // by applyReactorChange, exactly as in the reported message.
+    for (const [userId, emoji] of [
+      ["u-iron", "🔥"],
+      ["u-spider", "😂"],
+      ["u-clap", "👏"],
+    ] as const) {
+      await repo.applyReactorChange({
+        messageId: "m1",
+        conversationType: "COMMUNITY",
+        roomId: "r1",
+        userId,
+        emoji,
+      });
+    }
+    expect(fake.store).toHaveLength(3);
+
+    await materialize(repo);
+
+    const counts = await totals(repo);
+    expect(counts.total).toBe(7);
+    expect(counts.byEmoji.find((c) => c.emoji === "🔥")?.count).toBe(1);
+    expect(counts.byEmoji.find((c) => c.emoji === "😂")?.count).toBe(1);
+    expect(counts.byEmoji.find((c) => c.emoji === "👏")?.count).toBe(1);
+  });
+
+  it("gives every reactor exactly one row", async () => {
+    const { fake, repo } = repoFor([]);
+    await repo.applyReactorChange({
+      messageId: "m1",
+      conversationType: "COMMUNITY",
+      roomId: "r1",
+      userId: "u-iron",
+      emoji: "🔥",
+    });
+    await materialize(repo);
+
+    const ids = fake.store.map((r) => r.userId);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("is idempotent — rebuilding twice changes nothing", async () => {
+    const { repo } = repoFor([]);
+    await materialize(repo);
+    const first = await totals(repo);
+    await materialize(repo);
+
+    expect(await totals(repo)).toEqual(first);
+  });
+
+  it("drops a reactor the stored map no longer has", async () => {
+    const { fake, repo } = repoFor([]);
+    await repo.applyReactorChange({
+      messageId: "m1",
+      conversationType: "COMMUNITY",
+      roomId: "r1",
+      userId: "u-ghost",
+      emoji: "👻",
+    });
+    await materialize(repo);
+
+    expect(fake.store.some((r) => r.userId === "u-ghost")).toBe(false);
+    expect((await totals(repo)).total).toBe(7);
+  });
+
+  it("keeps the header total equal to the sum of the filter chips", async () => {
+    const { repo } = repoFor([]);
+    await repo.applyReactorChange({
+      messageId: "m1",
+      conversationType: "COMMUNITY",
+      roomId: "r1",
+      userId: "u-iron",
+      emoji: "🔥",
+    });
+    await materialize(repo);
+
+    const counts = await totals(repo);
+    expect(counts.total).toBe(counts.byEmoji.reduce((n, c) => n + c.count, 0));
+  });
+
+  it("matches the message's own reaction summary reactor-for-reactor", async () => {
+    const { repo } = repoFor([]);
+    await materialize(repo);
+
+    const counts = await totals(repo);
+    const fromMap = Object.entries(storedMap).map(([emoji, list]) => ({
+      emoji,
+      count: list.length,
+    }));
+    expect(counts.total).toBe(fromMap.reduce((n, c) => n + c.count, 0));
+    for (const { emoji, count } of fromMap) {
+      expect(counts.byEmoji.find((c) => c.emoji === emoji)?.count).toBe(count);
+    }
   });
 });
