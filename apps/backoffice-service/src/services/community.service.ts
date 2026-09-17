@@ -10,6 +10,10 @@ import {
   moderationActionRepository,
 } from "../repositories/index.js";
 import type { ActorRef } from "../repositories/community.repository.js";
+import {
+  toReactionDetailsPage,
+  type ReactionDetailsPageResult,
+} from "../lib/reaction-details.js";
 import type { RequestAdmin } from "../types/index.js";
 import type {
   BulkResult,
@@ -148,6 +152,8 @@ export const communityService = {
       roomId: communityId,
       cursor: query.cursor ?? "",
       limit: query.limit,
+      aroundMessageId: query.aroundMessageId ?? "",
+      direction: query.direction ?? "",
     });
 
     const messages = (res.messages ?? []).map((m) => ({
@@ -158,6 +164,7 @@ export const communityService = {
       message: m.message,
       contentType: m.contentType,
       attachments: m.attachmentsJson ? JSON.parse(m.attachmentsJson) : [],
+      // Emoji + count only — the reactor list is a separate, paginated read.
       reactions: m.reactionsJson ? JSON.parse(m.reactionsJson) : [],
       quoteData: m.quoteDataJson ? JSON.parse(m.quoteDataJson) : null,
       sentAt: Number(m.sentAt) || 0,
@@ -168,10 +175,32 @@ export const communityService = {
       messages,
       nextCursor: res.nextCursor || null,
       hasMore: Boolean(res.hasMore),
+      newerCursor: res.newerCursor || null,
+      hasMoreNewer: Boolean(res.hasMoreNewer),
       pinnedMessage: res.pinnedMessageJson
         ? JSON.parse(res.pinnedMessageJson)
         : null,
     };
+  },
+
+  /**
+   * One page of a community message's reactors — the community counterpart of
+   * groupService.getMessageReactions. Same canonical aggregation, same
+   * inspection-only contract: no admin write path exists for reactions.
+   */
+  async getMessageReactions(
+    communityId: string,
+    messageId: string,
+    query: { emoji?: string; cursor?: string; limit: number }
+  ): Promise<ReactionDetailsPageResult> {
+    const res = await chatClient.adminGetCommunityMessageReactionsPage({
+      messageId,
+      communityId,
+      emoji: query.emoji ?? "",
+      cursor: query.cursor ?? "",
+      limit: query.limit,
+    });
+    return toReactionDetailsPage(res);
   },
 
   async closeCommunity(

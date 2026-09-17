@@ -8,6 +8,7 @@ import {
   bulkReopenCommunities,
   closeCommunity,
   getCommunityConversationMessages,
+  getCommunityMessageReactions,
   getCommunityDetails,
   listCommunities,
   listCommunityMembers,
@@ -28,7 +29,9 @@ import {
   closeCommunitySchema,
   communityIdParamSchema,
   communityMemberParamSchema,
+  communityMessageParamSchema,
   communityMessagesQuerySchema,
+  messageReactionsQuerySchema,
   listCommunitiesQuerySchema,
   listCommunityMembersQuerySchema,
   listMutedMembersQuerySchema,
@@ -112,6 +115,16 @@ communityRoutes.get(
   validateParams(communityIdParamSchema),
   validateQuery(communityMessagesQuerySchema),
   getCommunityConversationMessages
+);
+
+// Reaction Details popup — one keyset page of the reactor list plus aggregate
+// counts. Same permission as the transcript, and no write counterpart exists.
+communityRoutes.get(
+  "/communities/:communityId/messages/:messageId/reactions",
+  requirePermission(PERMISSIONS.COMMUNITIES_VIEW),
+  validateParams(communityMessageParamSchema),
+  validateQuery(messageReactionsQuerySchema),
+  getCommunityMessageReactions
 );
 communityRoutes.post(
   "/communities/:communityId/members/:userId/remove",

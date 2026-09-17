@@ -130,6 +130,10 @@ import {
   buildReactionDetailsPage,
   type ReactionDetailsPage,
 } from "../lib/reaction-index.js";
+import {
+  EMPTY_MODERATION_PAGE,
+  type ModerationMessagePage,
+} from "../lib/moderation-page.js";
 
 /**
  * Client-facing community message row: the raw Prisma entity with its
@@ -1652,11 +1656,28 @@ export class CommunityMessageService {
     roomId: string;
     cursor?: string | null;
     limit: number;
+    /** "after" walks forward (newer); default "before". */
+    direction?: "before" | "after";
+    /**
+     * Jump-to-message: return a window CENTRED on this message instead of a
+     * page, with continuation cursors both ways. Overrides cursor/direction.
+     */
+    aroundMessageId?: string | null;
   }): Promise<{
     items: CommunityMessageWire[];
     hasMore: boolean;
     nextCursor: string | null;
+    hasMoreNewer: boolean;
+    newerCursor: string | null;
+    found?: boolean;
   }> {
+    if (params.aroundMessageId) {
+      return this.getAroundForModeration({
+        roomId: params.roomId,
+        messageId: params.aroundMessageId,
+        limit: params.limit,
+      });
+    }
     // Same compound `"<createdAtMs>_<id>"` keyset the member-facing timeline
     // uses. It MUST NOT be the legacy findByRoomIdWithTime path: that one
     // over-fetches only `limit + 10` and then drops hidden/personal rows in
@@ -1684,7 +1705,9 @@ export class CommunityMessageService {
       // which is what the moderation view wants — "You joined" lines addressed
       // to individual members are not part of the conversation.
       userId: "",
-      direction: "before",
+      direction: params.direction === "after" ? "after" : "before",
+      // Forward paging is always cursor-anchored: `Date.now()` as an after_ts
+      // boundary would ask for messages newer than now, i.e. nothing.
       ts: new Date(hasCursor ? parsedMs : Date.now()),
       boundaryId: idPart,
       // First page includes the newest message; a cursor is exclusive so it
@@ -1697,10 +1720,78 @@ export class CommunityMessageService {
       trustedAdmin: true,
     });
 
+    return params.direction === "after"
+      ? {
+          items: page.items,
+          hasMore: false,
+          nextCursor: null,
+          hasMoreNewer: page.hasMore,
+          newerCursor: page.nextCursor,
+        }
+      : {
+          items: page.items,
+          hasMore: page.hasMore,
+          nextCursor: page.nextCursor,
+          hasMoreNewer: false,
+          newerCursor: null,
+        };
+  }
+
+  /**
+   * Jump-to-message window for the read-only Backoffice viewer — the admin
+   * counterpart of {@link getMessagesAround}.
+   *
+   * Same window query and same bidirectional continuation cursors; what differs
+   * is that there is no viewer, so `assertCommunityReadAccess` is skipped (the
+   * admin is never a member) and `viewerIsActiveMember` is forced true so a
+   * PRIVATE community's history is visible. Authorization happened at the admin
+   * API boundary, exactly as in {@link getMessagesForModeration}.
+   */
+  private async getAroundForModeration(params: {
+    roomId: string;
+    messageId: string;
+    limit: number;
+  }): Promise<{
+    items: CommunityMessageWire[];
+    hasMore: boolean;
+    nextCursor: string | null;
+    hasMoreNewer: boolean;
+    newerCursor: string | null;
+    found: boolean;
+  }> {
+    const anchor = await this.messageRepo.findById(params.messageId);
+    // Wrong room, gone, or deleted for everyone: the window query would not
+    // return the anchor either, so there would be nothing to scroll to.
+    if (!anchor || anchor.roomId !== params.roomId) {
+      return { ...EMPTY_MODERATION_PAGE, items: [], found: false };
+    }
+    const adapter = makeTimelineAdapter(this.messageRepo, {
+      strategy: "TIMESTAMP",
+      ts: new Date(0),
+      boundaryId: null,
+      inclusive: false,
+    });
+    const { rows, cursors } = await adapter.around({
+      roomId: params.roomId,
+      userId: "",
+      anchor,
+      limit: params.limit,
+      viewerIsActiveMember: true,
+    });
+    if (!rows.some((row) => row.id === anchor.id)) {
+      return { ...EMPTY_MODERATION_PAGE, items: [], found: false };
+    }
+    const { urlMap, deletedUserIds, identities } =
+      await this.resolveRowsWireContext(rows);
     return {
-      items: page.items,
-      hasMore: page.hasMore,
-      nextCursor: page.nextCursor,
+      items: rows.map((m) =>
+        this.toWire(m, urlMap, undefined, "", deletedUserIds, identities)
+      ),
+      hasMore: cursors.hasMoreOlder,
+      nextCursor: cursors.olderCursor,
+      hasMoreNewer: cursors.hasMoreNewer,
+      newerCursor: cursors.newerCursor,
+      found: true,
     };
   }
 
@@ -3362,15 +3453,24 @@ export class CommunityMessageService {
     emoji?: string | null;
     cursor?: string | null;
     limit?: number | null;
+    /** Read-only Backoffice viewer — see the membership branch below. */
+    asAdmin?: boolean;
   }): Promise<ReactionDetailsPage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
-    const member = await this.memberRepo.findByRoomAndUser(
-      message.roomId,
-      params.requesterId
-    );
-    assertRoomMemberActive(member);
+    // The Backoffice viewer is never a room member, so there is no membership
+    // to assert — authorization happened at the admin API boundary. Set ONLY by
+    // adminGetCommunityMessageReactionsPage; every user-facing caller leaves it
+    // unset and keeps the guard. requesterId is "" there, so selfEmoji comes
+    // back empty and the popup shows no "You".
+    if (!params.asAdmin) {
+      const member = await this.memberRepo.findByRoomAndUser(
+        message.roomId,
+        params.requesterId
+      );
+      assertRoomMemberActive(member);
+    }
 
     const slice = await this.messageRepo.readReactionDetails({
       message: {

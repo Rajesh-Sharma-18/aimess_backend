@@ -94,6 +94,14 @@ export interface ListGroupMembersQuery {
 export type GroupConversationMessagesQuery = {
   cursor?: string;
   limit: number;
+  /**
+   * Jump to a message the viewer does not have loaded (a pinned banner tap, a
+   * reply tap): returns a window CENTRED on it with cursors both ways, instead
+   * of paging history one page at a time. Overrides cursor/direction.
+   */
+  aroundMessageId?: string;
+  /** "after" pages newer (walking back down after a jump); default older. */
+  direction?: "before" | "after";
 };
 
 /** One message row in the Group Conversation viewer (mirrors the community one). */
@@ -111,6 +119,8 @@ export type GroupConversationMessageItem = {
   sentAt: number;
   systemMessageType: string | null;
   isDeleted: boolean;
+  /** Server-resolved @username / @all spans, for rendering only. */
+  mentions: unknown[];
 };
 
 /** Group Conversation viewer — paginated message read result. */
@@ -118,4 +128,9 @@ export type GroupConversationMessagesResult = {
   messages: GroupConversationMessageItem[];
   nextCursor: string | null;
   hasMore: boolean;
+  /** Continuation toward newer messages — only set after a jump. */
+  newerCursor: string | null;
+  hasMoreNewer: boolean;
+  /** The room's active pinned message, or null. */
+  pinnedMessage: unknown | null;
 };

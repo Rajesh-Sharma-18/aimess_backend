@@ -62,6 +62,7 @@ import type { CommunityMessageService } from "../services/community-message.serv
 import { resolveConversationType } from "../lib/conversation-type.js";
 import { parsePlatform } from "../lib/notification-category.js";
 import type { CommunityPinService } from "../services/community-pin.service.js";
+import type { GroupPinService } from "../services/group-pin.service.js";
 import type { NotificationRepository } from "../repositories/notification.repository.js";
 import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
 import { resolveSenderIdentity } from "../lib/resolve-sender-identity.js";
@@ -88,6 +89,7 @@ import { getAlbumMessages } from "../lib/album-messages.js";
 import { hasMentionAll, mentionedUserIdsOf } from "../lib/group-mentions.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
+import { adminMentions, adminReactionCounts } from "../lib/admin-wire.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { serializeNotification } from "../lib/notification-serializer.js";
 import { resolveAvatarRefresh } from "../services/notification.service.js";
@@ -189,6 +191,8 @@ export interface GrpcDeps {
   presenceService: PresenceService;
   communityMessageService: CommunityMessageService;
   communityPinService: CommunityPinService;
+  /** Active-pin summary for the read-only Backoffice group viewer's banner. */
+  groupPinService: GroupPinService;
   notificationRepo: NotificationRepository;
   chatMessageOrchestrator: ChatMessageOrchestrator;
   privateRoomService: PrivateRoomService;
@@ -1722,6 +1726,58 @@ export function createMessagingImpl(
       })();
     },
 
+    /**
+     * Reaction details for the read-only Backoffice viewer.
+     *
+     * Same page, same aggregates and the same bounded fan-out as
+     * `getMessageReactionsPage` — the ONLY difference is that there is no
+     * requester: the Super Admin is never a room member, so there is no
+     * membership guard to pass (authorization happened at the admin API
+     * boundary, which gates this on the same permission as the transcript) and
+     * `selfEmoji` comes back empty, so the popup never renders "You" or a
+     * remove affordance. This is an inspection read and can mutate nothing.
+     */
+    adminGetMessageReactionsPage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId?: string;
+            conversationId?: string;
+            emoji?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          // GROUP only. There is no admin viewer for private DMs, so the
+          // private read keeps its participant guard with no admin bypass at
+          // all — the most privacy-sensitive surface gets no second door.
+          const page = await deps.groupMessageService.getMessageReactionsPage({
+            messageId: req.messageId ?? "",
+            roomId: req.conversationId ?? "",
+            requesterId: "",
+            emoji: req.emoji || null,
+            cursor: req.cursor || null,
+            limit: req.limit || null,
+            asAdmin: true,
+          });
+
+          callback(null, {
+            users: page.users,
+            nextCursor: page.nextCursor ?? "",
+            hasMore: page.hasMore,
+            counts: page.counts,
+            total: page.total,
+            selfEmoji: "",
+          });
+        } catch (err) {
+          logger.error(`gRPC adminGetMessageReactionsPage error: ${String(err)}`);
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
     initiateCall: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -2573,16 +2629,28 @@ export function createMessagingImpl(
             groupId: string;
             cursor: string;
             limit: number;
+            aroundMessageId?: string;
+            direction?: string;
           };
           const limit = req.limit || 30;
           const parsedSeq = req.cursor ? Number(req.cursor) : NaN;
           const seq = Number.isFinite(parsedSeq) ? parsedSeq : null;
 
-          const page = await deps.groupMessageService.getMessagesForModeration({
-            roomId: req.groupId,
-            seq,
-            limit,
-          });
+          // The pin banner is read alongside every page, not just the first:
+          // the viewer can rebuild its transcript at any time (reload, jump,
+          // reconnect) and must never paint a stale pin under a fresh page.
+          const [page, pinnedMessage] = await Promise.all([
+            deps.groupMessageService.getMessagesForModeration({
+              roomId: req.groupId,
+              seq,
+              limit,
+              direction: req.direction === "after" ? "after" : "before",
+              aroundMessageId: req.aroundMessageId || null,
+            }),
+            // No userId: the admin is not a member, so no per-member Clear Chat
+            // cutoff applies to what they are allowed to see pinned.
+            deps.groupPinService.getActivePinSummary(req.groupId),
+          ]);
 
           // `page.items` are canonical enriched wire messages: attachments,
           // avatars and quote thumbnails are already presigned download URLs.
@@ -2618,10 +2686,13 @@ export function createMessagingImpl(
                   str(firstFile?.url) ||
                   str(firstFile?.objectKey),
                 attachmentsJson: JSON.stringify(files),
+                // Counts only — the reactor identities come from the paginated
+                // admin reaction-details RPC, never inline on the transcript.
                 reactionsJson: JSON.stringify(
-                  m.reactionGroups ?? m.reactions ?? []
+                  adminReactionCounts(m.reactionGroups ?? m.reactions ?? [])
                 ),
                 quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
+                mentionsJson: JSON.stringify(adminMentions(content)),
                 sentAt: Number(m.serverTs) || 0,
                 systemMessageType: str(m.systemEvent),
                 systemMetadata: m.systemData
@@ -2632,6 +2703,11 @@ export function createMessagingImpl(
             }),
             nextCursor: page.nextCursor ?? "",
             hasMore: page.hasMore,
+            newerCursor: page.newerCursor ?? "",
+            hasMoreNewer: page.hasMoreNewer,
+            pinnedMessageJson: pinnedMessage
+              ? JSON.stringify(pinnedMessage)
+              : "",
           });
         } catch (err) {
           logger.error(`gRPC adminGetGroupMessages error: ${String(err)}`);
@@ -3675,6 +3751,8 @@ export function createCommunityImpl(
             roomId: string;
             cursor: string;
             limit: number;
+            aroundMessageId?: string;
+            direction?: string;
           };
 
           const limit = req.limit || 30;
@@ -3683,6 +3761,8 @@ export function createCommunityImpl(
               roomId: req.roomId,
               cursor: req.cursor || undefined,
               limit,
+              direction: req.direction === "after" ? "after" : "before",
+              aroundMessageId: req.aroundMessageId || null,
             }),
             deps.communityPinService.getActivePinSummary(req.roomId, ""),
           ]);
@@ -3738,7 +3818,11 @@ export function createCommunityImpl(
                 const merged = sticker ? [...base, sticker] : base;
                 return JSON.stringify(merged);
               })(),
-              reactionsJson: JSON.stringify(m.reactions ?? []),
+              // Counts only — see the group viewer's equivalent. Community
+              // messages carry no mentions: @username / @all is a GROUP feature.
+              reactionsJson: JSON.stringify(
+                adminReactionCounts(m.reactionGroups ?? m.reactions)
+              ),
               quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
               sentAt:
                 m.createdAt instanceof Date
@@ -3755,6 +3839,8 @@ export function createCommunityImpl(
             })),
             nextCursor,
             hasMore,
+            newerCursor: page.newerCursor ?? "",
+            hasMoreNewer: page.hasMoreNewer,
             pinnedMessageJson: pinnedMessage
               ? JSON.stringify(pinnedMessage)
               : "",
@@ -4736,6 +4822,47 @@ export function createCommunityImpl(
             `gRPC getCommunityMessageReactionsPage error: ${String(err)}`
           );
           callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    /** Read-only Backoffice reaction details — see adminGetMessageReactionsPage. */
+    adminGetCommunityMessageReactionsPage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId?: string;
+            communityId?: string;
+            emoji?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          const page =
+            await deps.communityMessageService.getMessageReactionsPage({
+              messageId: req.messageId ?? "",
+              communityId: req.communityId ?? "",
+              requesterId: "",
+              emoji: req.emoji || null,
+              cursor: req.cursor || null,
+              limit: req.limit || null,
+              asAdmin: true,
+            });
+          callback(null, {
+            users: page.users,
+            nextCursor: page.nextCursor ?? "",
+            hasMore: page.hasMore,
+            counts: page.counts,
+            total: page.total,
+            selfEmoji: "",
+          });
+        } catch (err) {
+          logger.error(
+            `gRPC adminGetCommunityMessageReactionsPage error: ${String(err)}`
+          );
+          callback(toGrpcCallbackError(err));
         }
       })();
     },

@@ -129,6 +129,7 @@ export {
   closeReasonEnum,
   communityMemberParamSchema,
   communityMessagesQuerySchema,
+  communityMessageParamSchema,
   memberModerationSchema,
   type ListCommunitiesQueryInput,
   type CommunityIdParam,
@@ -140,6 +141,7 @@ export {
   type BulkReopenInput,
   type CommunityMemberParamInput,
   type CommunityMessagesQueryInput,
+  type CommunityMessageParamInput,
   type MemberModerationBodyInput,
 } from "./community.validator.js";
 
@@ -151,6 +153,7 @@ export {
   disbandGroupSchema,
   removeGroupMemberSchema,
   groupMessagesQuerySchema,
+  groupMessageParamSchema,
   groupSortByEnum,
   groupSortOrderEnum,
   groupRoleEnum,
@@ -161,6 +164,7 @@ export {
   type DisbandGroupInput,
   type RemoveGroupMemberInput,
   type GroupMessagesQueryInput,
+  type GroupMessageParam,
 } from "./groups.validator.js";
 
 export {
@@ -241,3 +245,9 @@ export {
   type UpdateNotificationCategoriesInput,
   type UpdateNotificationCategoryInput,
 } from "./notification-category.validator.js";
+
+export {
+  messageReactionsQuerySchema,
+  messageNavigationQueryFields,
+  type MessageReactionsQueryInput,
+} from "./message-reactions.validator.js";

@@ -144,6 +144,10 @@ import {
   buildReactionDetailsPage,
   type ReactionDetailsPage,
 } from "../lib/reaction-index.js";
+import {
+  EMPTY_MODERATION_PAGE,
+  type ModerationMessagePage,
+} from "../lib/moderation-page.js";
 
 /** Claim-key suffix recording that a message's @all already pushed. */
 const MENTION_ALL_CLAIM = "ALL";
@@ -935,30 +939,81 @@ export class GroupMessageService {
    */
   async getMessagesForModeration(params: {
     roomId: string;
-    /** before_seq boundary; null = newest page. */
+    /** Seq boundary; null = newest page. */
     seq: number | null;
     limit: number;
-  }): Promise<{
-    items: Array<Record<string, unknown>>;
-    hasMore: boolean;
-    nextCursor: string | null;
-  }> {
+    /** "after" walks forward (newer); default "before". */
+    direction?: "before" | "after";
+    /**
+     * Jump-to-message: return a window CENTRED on this message instead of a
+     * page, with continuation cursors both ways. Overrides seq/direction.
+     */
+    aroundMessageId?: string | null;
+  }): Promise<ModerationMessagePage> {
+    // Reuse the canonical resolve-on-read hydrator so attachments, sender/reaction
+    // avatars and quote thumbnails come back as presigned download URLs (not raw
+    // object keys) — same wire shape the member read + socket use, no viewer.
+    if (params.aroundMessageId) {
+      const anchor = await this.messageRepo.findById(params.aroundMessageId);
+      // A deleted-for-everyone anchor is absent from the window query too, so
+      // there would be nothing to scroll to — report it as not found and let
+      // the viewer show its "message unavailable" state.
+      if (!anchor || anchor.roomId !== params.roomId || anchor.isDeleted) {
+        return { ...EMPTY_MODERATION_PAGE, found: false };
+      }
+      const rows = await this.messageRepo.findAroundSeq({
+        userId: "",
+        roomId: params.roomId,
+        anchorSeq: anchor.sequenceNumber,
+        limit: params.limit,
+      });
+      const cursors = await computeSeqAroundCursors(rows, (direction, seq) =>
+        this.messageRepo.findByRoomIdSeq({
+          userId: "",
+          roomId: params.roomId,
+          direction,
+          seq,
+          limit: 1,
+        })
+      );
+      return {
+        items: await this.enrichForWire(rows),
+        hasMore: cursors.hasMoreOlder,
+        nextCursor: cursors.olderCursor,
+        hasMoreNewer: cursors.hasMoreNewer,
+        newerCursor: cursors.newerCursor,
+        found: true,
+      };
+    }
+
+    const direction = params.direction === "after" ? "after" : "before";
     const rows = await this.messageRepo.findByRoomIdSeq({
       userId: "",
       roomId: params.roomId,
-      direction: "before",
+      direction,
       seq: params.seq,
       limit: params.limit,
     });
     const hasMore = rows.length > params.limit;
     const page = rows.slice(0, params.limit);
     const last = page[page.length - 1];
-    const nextCursor = hasMore && last ? String(last.sequenceNumber) : null;
-    // Reuse the canonical resolve-on-read hydrator so attachments, sender/reaction
-    // avatars and quote thumbnails come back as presigned download URLs (not raw
-    // object keys) — same wire shape the member read + socket use, no viewer.
+    const boundary = hasMore && last ? String(last.sequenceNumber) : null;
     const items = await this.enrichForWire(page);
-    return { items, hasMore, nextCursor };
+    return direction === "after"
+      ? {
+          items,
+          hasMore: false,
+          nextCursor: null,
+          hasMoreNewer: hasMore,
+          newerCursor: boundary,
+        }
+      : {
+          items,
+          hasMore,
+          nextCursor: boundary,
+          hasMoreNewer: false,
+          newerCursor: null,
+        };
   }
 
   /** Raw message lookup — the path-param delete route resolves its room from the message. */
@@ -2897,13 +2952,24 @@ export class GroupMessageService {
     emoji?: string | null;
     cursor?: string | null;
     limit?: number | null;
+    /**
+     * Backoffice read-only viewer. The Super Admin is not (and never becomes) a
+     * member, so there is no membership to assert and no read cutoff to apply —
+     * authorization happened at the admin API boundary. Set ONLY by
+     * `adminGetMessageReactionsPage`; every user-facing caller leaves it unset
+     * and keeps the member guard. `requesterId` is "" on this path, so the
+     * response's `selfEmoji` is empty and the popup shows no "You".
+     */
+    asAdmin?: boolean;
   }): Promise<ReactionDetailsPage> {
-    const { readCutoffBefore } = await assertGroupReadAccess(
-      this.memberRepo,
-      params.roomId,
-      params.requesterId,
-      this.roomRepo
-    );
+    const { readCutoffBefore } = params.asAdmin
+      ? { readCutoffBefore: null as Date | null }
+      : await assertGroupReadAccess(
+          this.memberRepo,
+          params.roomId,
+          params.requesterId,
+          this.roomRepo
+        );
     const message = await this.messageRepo.findById(params.messageId);
     // NotFound, never Forbidden — a foreign message's existence isn't leaked.
     if (!message || message.roomId !== params.roomId)

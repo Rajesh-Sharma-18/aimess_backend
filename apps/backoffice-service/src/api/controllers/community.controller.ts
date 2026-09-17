@@ -16,7 +16,9 @@ import type {
   BulkCloseInput,
   BulkReopenInput,
   CloseCommunityInput,
+  CommunityMessageParamInput,
   CommunityMessagesQueryInput,
+  MessageReactionsQueryInput,
   ListCommunitiesQueryInput,
   ListCommunityMembersQueryInput,
   ListMutedMembersQueryInput,
@@ -232,6 +234,37 @@ export const bulkCloseCommunities: RequestHandler = (req, res, next) => {
 };
 
 /** GET /v1/communities/:communityId/messages — Community Conversation viewer, paginated. */
+/**
+ * GET /v1/communities/:communityId/messages/:messageId/reactions — one page of
+ * the reactor list for the read-only Reaction Details popup. Inspection only;
+ * no admin reaction write endpoint exists.
+ */
+export const getCommunityMessageReactions: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by communityMessageParamSchema + messageReactionsQuerySchema.
+      const { communityId, messageId } =
+        req.params as unknown as CommunityMessageParamInput;
+      const query = req.query as unknown as MessageReactionsQueryInput;
+      const result = await communityService.getMessageReactions(
+        communityId,
+        messageId,
+        query
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_COMMUNITY_MESSAGES_FETCHED", req.locale)
+          )
+        );
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
 export const getCommunityConversationMessages: RequestHandler = (
   req,
   res,

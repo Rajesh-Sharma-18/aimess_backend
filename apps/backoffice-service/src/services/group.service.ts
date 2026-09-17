@@ -4,6 +4,10 @@ import { AUDIT_ACTIONS } from "../constants/index.js";
 import { chatClient } from "../grpc/chat.client.js";
 import { getAccountStatuses } from "../repositories/user-directory.repository.js";
 import { groupRepository } from "../repositories/index.js";
+import {
+  toReactionDetailsPage,
+  type ReactionDetailsPageResult,
+} from "../lib/reaction-details.js";
 import type { RequestAdmin } from "../types/index.js";
 import type {
   GroupConversationMessageItem,
@@ -142,6 +146,8 @@ export const groupService = {
       groupId,
       cursor: query.cursor ?? "",
       limit: query.limit,
+      aroundMessageId: query.aroundMessageId ?? "",
+      direction: query.direction ?? "",
     });
 
     const messages: GroupConversationMessageItem[] = (res.messages ?? []).map(
@@ -153,8 +159,10 @@ export const groupService = {
         message: m.message,
         contentType: m.contentType,
         attachments: m.attachmentsJson ? JSON.parse(m.attachmentsJson) : [],
+        // Emoji + count only — the reactor list is a separate, paginated read.
         reactions: m.reactionsJson ? JSON.parse(m.reactionsJson) : [],
         quoteData: m.quoteDataJson ? JSON.parse(m.quoteDataJson) : null,
+        mentions: m.mentionsJson ? JSON.parse(m.mentionsJson) : [],
         sentAt: Number(m.sentAt) || 0,
         systemMessageType: m.systemMessageType || null,
         isDeleted: Boolean(m.isDeleted),
@@ -165,7 +173,35 @@ export const groupService = {
       messages,
       nextCursor: res.nextCursor || null,
       hasMore: Boolean(res.hasMore),
+      newerCursor: res.newerCursor || null,
+      hasMoreNewer: Boolean(res.hasMoreNewer),
+      pinnedMessage: res.pinnedMessageJson
+        ? JSON.parse(res.pinnedMessageJson)
+        : null,
     };
+  },
+
+  /**
+   * One page of a group message's reactors, for the read-only Reaction Details
+   * popup. Aggregate counts come back with every page and are computed over the
+   * WHOLE reaction set, never over the loaded page — so the popup header, the
+   * "All" chip and the per-emoji chips are the same numbers a member sees.
+   *
+   * Inspection only: there is no admin write path for reactions anywhere.
+   */
+  async getMessageReactions(
+    groupId: string,
+    messageId: string,
+    query: { emoji?: string; cursor?: string; limit: number }
+  ): Promise<ReactionDetailsPageResult> {
+    const res = await chatClient.adminGetMessageReactionsPage({
+      messageId,
+      conversationId: groupId,
+      emoji: query.emoji ?? "",
+      cursor: query.cursor ?? "",
+      limit: query.limit,
+    });
+    return toReactionDetailsPage(res);
   },
 
   // Disband a group platform-side. The repository throws NotFound/Conflict on
