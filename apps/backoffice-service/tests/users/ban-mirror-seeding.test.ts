@@ -100,6 +100,14 @@ jest.mock("../../src/services/audit.service.js", () => ({
 }));
 
 const mockPublishBanned = jest.fn();
+jest.mock("../../src/messaging/publish-admin-broadcast.js", () => ({
+  ADMIN_USERS_CHANGED: "admin:users:changed",
+  publishAdminBroadcastSafe: jest.fn(),
+  publishUserDirectoryChangedSafe: jest.fn(),
+}));
+jest.mock("../../src/services/dashboard.service.js", () => ({
+  invalidateOverviewCache: jest.fn(async () => undefined),
+}));
 jest.mock("../../src/messaging/publish-admin-user-event.js", () => ({
   publishUserBannedSafe: mockPublishBanned,
   publishUserSuspendedSafe: jest.fn(),

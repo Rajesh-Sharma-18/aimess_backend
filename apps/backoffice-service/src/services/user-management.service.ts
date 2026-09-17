@@ -57,7 +57,13 @@ import type {
   UserStatus,
   UserStatusResult,
 } from "../types/user-management.types.js";
+import {
+  ADMIN_USERS_CHANGED,
+  publishAdminBroadcastSafe,
+  publishUserDirectoryChangedSafe,
+} from "../messaging/publish-admin-broadcast.js";
 import { auditService } from "./audit.service.js";
+import { invalidateOverviewCache } from "./dashboard.service.js";
 import { userAvatarService } from "./user-avatar.service.js";
 
 /** Audit/request context derived from `getRequestContext(req)`. */
@@ -208,6 +214,34 @@ function mirrorProfileStatus(
         err,
       });
     });
+}
+
+/**
+ * Tell every OPEN admin session — and every signed-in reader — that the user
+ * directory moved, and drop the server-side stat-card snapshot the cards would
+ * otherwise be answered from.
+ *
+ * The acting panel already invalidates its own React Query cache on the
+ * mutation's response, so this is for the sessions that did NOT click: a second
+ * Super Admin with the list on screen, this admin's other tab, the Dashboard in
+ * the background. None of them poll (`refetchOnWindowFocus` is off panel-wide),
+ * so before this the only way they learned about a ban was a manual reload.
+ *
+ * Called ONCE per admin operation — including once after a bulk loop, not once
+ * per target, because the payload is empty and 100 identical bumps would buy
+ * exactly one refetch's worth of truth at 100x the cost.
+ *
+ * Both halves are best-effort and deliberately un-awaited: the moderation write
+ * has already committed and must not be rolled back because Redis blipped.
+ */
+function announceUserDirectoryChange(): void {
+  publishAdminBroadcastSafe(ADMIN_USERS_CHANGED);
+  // The website leg: a banned account is filtered out of people search by the
+  // query itself, but a reader whose search panel was already open holds a
+  // cached page that nothing on the client would otherwise re-read. This is the
+  // signal that makes it re-read.
+  publishUserDirectoryChangedSafe();
+  void invalidateOverviewCache();
 }
 
 export const userManagementService = {
@@ -702,6 +736,7 @@ export const userManagementService = {
     // Same split the status above already made: a `durationDays` ban is a
     // suspension, and only the permanent one removes the user from discovery.
     mirrorProfileStatus(userId, timeBoxed ? "SUSPENDED" : "BANNED");
+    announceUserDirectoryChange();
 
     return result;
   },
@@ -762,6 +797,7 @@ export const userManagementService = {
     // Best-effort — see banUser's identical call for why.
     void streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
     mirrorProfileStatus(userId, "SUSPENDED");
+    announceUserDirectoryChange();
 
     return result;
   },
@@ -864,6 +900,7 @@ export const userManagementService = {
       banType: "SYSTEM",
     });
     mirrorProfileStatus(userId, "ACTIVE");
+    announceUserDirectoryChange();
 
     return result;
   },
@@ -998,6 +1035,7 @@ export const userManagementService = {
     // `user.restored` event has already cleared the profile's own deletedAt;
     // this is the same suspended/active mirror the ban and unban maintain.
     mirrorProfileStatus(userId, "ACTIVE");
+    announceUserDirectoryChange();
 
     return result;
   },
@@ -1082,6 +1120,7 @@ export const userManagementService = {
       );
       mirrorProfileStatus(item.userId, timeBoxed ? "SUSPENDED" : "BANNED");
     }
+    announceUserDirectoryChange();
 
     return result;
   },
@@ -1133,6 +1172,7 @@ export const userManagementService = {
       });
       mirrorProfileStatus(item.userId, "ACTIVE");
     }
+    announceUserDirectoryChange();
 
     return result;
   },
