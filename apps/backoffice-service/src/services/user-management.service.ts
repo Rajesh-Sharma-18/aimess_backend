@@ -52,6 +52,7 @@ import type {
   StatusChange,
   UserDetail,
   UserDeviceRow,
+  UserDirectoryRow,
   UserListItem,
   UserStatus,
   UserStatusResult,
@@ -113,6 +114,35 @@ type UserReportRow = Omit<ReportRow, "reporter"> & {
 
 function buildActor(actor: RequestAdmin): Actor {
   return { actorId: actor.id, at: Date.now() };
+}
+
+
+/**
+ * Read a user's status BEFORE this request changes anything, and materialize
+ * the admin_db mirror row from that reading.
+ *
+ * Every account mutation below writes auth-service FIRST and the mirror
+ * second, because auth-service is what actually enforces the restriction. The
+ * mirror row is created on demand for the users the ~40-row dev seed never
+ * covered, and that creation used to happen inside `setStatus` — i.e. after
+ * the auth-service write, from a live re-read that therefore returned the
+ * status this very request had just applied. The row was born already BANNED,
+ * `assertTransition` rejected BANNED→BANNED, and the ban half-landed: enforced
+ * in auth-service, mirrored without its reason or timestamp, and missing its
+ * ModerationAction, AuditLog, `admin.user_banned` event and space cascade,
+ * while the admin got "This user is already banned." on a row still rendered
+ * Active.
+ *
+ * Seeding here — from pre-mutation state, before auth-service is touched —
+ * removes that window: the transition is judged against the status the user
+ * actually had when the admin clicked.
+ */
+async function preflightStatus(
+  userId: string
+): Promise<UserDirectoryRow | null> {
+  const before = await userDirectoryRepository.getById(userId);
+  if (before) await userDirectoryRepository.ensureMirrored(before);
+  return before;
 }
 
 /** Add N days to an epoch-ms timestamp (UTC). */
@@ -525,7 +555,7 @@ export const userManagementService = {
     }
 
     const ref = buildActor(actor);
-    const before = await userDirectoryRepository.getById(userId);
+    const before = await preflightStatus(userId);
 
     const timeBoxed = input.durationDays != null && input.durationDays > 0;
     const change: StatusChange = timeBoxed
@@ -673,7 +703,7 @@ export const userManagementService = {
     ctx: RequestCtx
   ): Promise<UserStatusResult> {
     const ref = buildActor(actor);
-    const before = await userDirectoryRepository.getById(userId);
+    const before = await preflightStatus(userId);
     const suspendedUntil = addDays(ref.at, input.durationDays);
 
     const result = await userDirectoryRepository.setStatus(userId, {
@@ -749,7 +779,7 @@ export const userManagementService = {
     }
 
     const ref = buildActor(actor);
-    const before = await userDirectoryRepository.getById(userId);
+    const before = await preflightStatus(userId);
 
     // Same pre-flight as the ban, for the same reason: the mirror rejects
     // ACTIVE -> ACTIVE, and that rejection must not land after auth-service has
@@ -867,7 +897,7 @@ export const userManagementService = {
     ctx: RequestCtx
   ): Promise<UserStatusResult> {
     const ref = buildActor(actor);
-    const before = await userDirectoryRepository.getById(userId);
+    const before = await preflightStatus(userId);
 
     if (!before) {
       throw new NotFoundError("USER_NOT_FOUND");
