@@ -916,6 +916,10 @@ message ReactToCommunityMessageRequest {
   string community_id = 2;
   string user_id      = 3;
   string emoji        = 4;
+  // 0-based index of the attachment being reacted to, for a message carrying
+  // several (a collage). -1 / absent = the message as a whole. proto3 has no
+  // optional int32 here, so -1 is the "unset" value existing clients send.
+  int32  media_index  = 5;
 }
 message CommunityReactionUserDto {
   string user_id      = 1;
@@ -1079,6 +1083,8 @@ message GetCommunityMessageReactionsRequest {
   string message_id    = 1;
   string community_id  = 2;
   string requester_id  = 3;
+  // -1 / absent = the message as a whole; otherwise ONE attachment's bucket.
+  int32  media_index   = 4;
 }
 message GetCommunityMessageReactionsResponse {
   string message_id   = 1;
@@ -1092,6 +1098,11 @@ message CommunityReactionDetailUserDto {
   string display_name = 2;
   string avatar       = 3; // resolved download URL, never a raw object key
   string emoji        = 4;
+  // Which message and attachment this reactor pointed at. `media_index` is -1 for
+  // the message (or collage) as a whole and 0-based for one of its photos, which
+  // is what lets the popup draw the exact thumbnail that was reacted to.
+  string message_id   = 5;
+  int32  media_index  = 6;
 }
 message CommunityReactionCountDto {
   string emoji = 1;
@@ -1104,6 +1115,10 @@ message GetCommunityMessageReactionsPageRequest {
   string emoji        = 4; // empty = the "All" filter
   string cursor       = 5; // empty = first page
   int32  limit        = 6; // 0 = server default; server clamps
+  // The collage's other members. A web-sent album is N separate messages rendered
+  // as one row, so its reactor list spans them; empty for an ordinary message.
+  // Every id is re-bound to the room server-side before it is read.
+  repeated string sibling_message_ids = 7;
 }
 message GetCommunityMessageReactionsPageResponse {
   repeated CommunityReactionDetailUserDto users = 1;

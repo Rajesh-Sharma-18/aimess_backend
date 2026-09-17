@@ -34,9 +34,14 @@ import {
   buildReplyQuoteSnapshot,
   buildReplyPreviewText,
   buildReactionGroups,
+  buildMediaReactionGroups,
   reactionUserIdMap,
   toggleStoredReaction,
   setStoredReaction,
+  toggleStoredMediaReaction,
+  setStoredMediaReaction,
+  mediaReactionBucket,
+  resolveMediaReactionIndex,
   toWireMessage,
   isCommunityInvitationMessage,
   buildCommunityInvitationAction,
@@ -1753,8 +1758,9 @@ export class PrivateMessageService {
   private async reactCas(
     messageId: string,
     userId: string,
-    emoji: string
-  ): Promise<{ message: PrivateMessage; added: boolean }> {
+    emoji: string,
+    mediaIndex?: number | null
+  ): Promise<{ message: PrivateMessage; added: boolean; mediaIndex: number | null }> {
     const MAX_ATTEMPTS = 5;
     let message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -1764,33 +1770,61 @@ export class PrivateMessageService {
     // conversation cannot react in it either.
     await this.assertRoomInteractionAllowed(message.roomId, userId);
     let added = false;
+    let scoped: number | null = null;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
         const refetched = await this.messageRepo.findById(messageId);
         if (!refetched) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
         message = refetched;
       }
+      // Which bucket this toggle owns — one attachment of a collage, or the
+      // whole message. Re-resolved per attempt because a lost CAS refetches the
+      // row, and an edit between attempts could change the attachment count.
+      const target = resolveMediaReactionIndex(message.content, mediaIndex);
+      if (target === false)
+        throw new BadRequestError("CHAT_MEDIA_INDEX_OUT_OF_RANGE");
+      scoped = target;
+      const currentBucket =
+        target === null
+          ? message.reactions
+          : mediaReactionBucket(message.mediaReactions, target);
       const wasReactedByUser = (
-        reactionUserIdMap(message.reactions)[emoji] ?? []
+        reactionUserIdMap(currentBucket)[emoji] ?? []
       ).includes(userId);
       added = !wasReactedByUser;
-      const updated = toggleStoredReaction(message.reactions, userId, emoji);
-      const applied = await this.messageRepo.updateReactionsCas(
-        messageId,
-        message.roomId,
-        updated,
-        message.revision,
-        // One user per toggle: `toggleStoredReaction` strips them from every
-        // bucket before re-adding to at most one, so the reactor index needs a
-        // single row written, never the whole map re-projected.
-        { userId, emoji: added ? emoji : null }
-      );
+      const applied =
+        target === null
+          ? await this.messageRepo.updateReactionsCas(
+              messageId,
+              message.roomId,
+              toggleStoredReaction(message.reactions, userId, emoji),
+              message.revision,
+              // One user per toggle: `toggleStoredReaction` strips them from every
+              // bucket before re-adding to at most one, so the reactor index needs a
+              // single row written, never the whole map re-projected.
+              { userId, emoji: added ? emoji : null }
+            )
+          : await this.messageRepo.updateMediaReactionsCas(
+              messageId,
+              message.roomId,
+              toggleStoredMediaReaction(
+                message.mediaReactions,
+                target,
+                userId,
+                emoji
+              ),
+              message.revision,
+              // The index now carries the attachment, so a per-photo toggle is
+              // projected like any other — that is what lets the details popup
+              // say WHICH photo a reactor pointed at.
+              { userId, emoji: added ? emoji : null, mediaIndex: target }
+            );
       if (applied) break;
       if (attempt === MAX_ATTEMPTS - 1)
         throw new ConflictError("CHAT_REACTION_CONFLICT");
     }
     const after = await this.messageRepo.findById(messageId);
-    return { message: after ?? message, added };
+    return { message: after ?? message, added, mediaIndex: scoped };
   }
 
   /**
@@ -1801,9 +1835,15 @@ export class PrivateMessageService {
   async react(
     messageId: string,
     userId: string,
-    emoji: string
+    emoji: string,
+    mediaIndex?: number | null
   ): Promise<PrivateMessage | null> {
-    const { message } = await this.reactCas(messageId, userId, emoji);
+    const { message } = await this.reactCas(
+      messageId,
+      userId,
+      emoji,
+      mediaIndex
+    );
     return message;
   }
 
@@ -1817,20 +1857,24 @@ export class PrivateMessageService {
     messageId: string;
     userId: string;
     emoji: string;
+    mediaIndex?: number | null;
   }): Promise<{
     roomId: string;
     added: boolean;
     targetUserId: string;
     targetMessagePreview: string;
+    mediaIndex: number | null;
   }> {
-    const { message, added } = await this.reactCas(
+    const { message, added, mediaIndex } = await this.reactCas(
       params.messageId,
       params.userId,
-      params.emoji
+      params.emoji,
+      params.mediaIndex
     );
     return {
       roomId: message.roomId,
       added,
+      mediaIndex,
       targetUserId: message.senderId ?? "",
       targetMessagePreview: buildReactionTargetPreview(
         normalizeMessageType(message.messageType),
@@ -1847,15 +1891,32 @@ export class PrivateMessageService {
   async setReaction(
     messageId: string,
     userId: string,
-    emoji: string
+    emoji: string,
+    mediaIndex?: number | null
   ): Promise<PrivateMessage | null> {
-    const raw = await this.messageRepo.getReactions(messageId);
-    if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     // Same friend-only rule as `reactCas` — this SET path skips it, so it needs
     // its own copy rather than inheriting one.
-    await this.assertRoomInteractionAllowed(raw.roomId, userId);
-    const updated = setStoredReaction(raw.reactions, userId, emoji);
-    return this.messageRepo.addReactions(messageId, raw.roomId, updated);
+    await this.assertRoomInteractionAllowed(message.roomId, userId);
+    const target = resolveMediaReactionIndex(message.content, mediaIndex);
+    if (target === false)
+      throw new BadRequestError("CHAT_MEDIA_INDEX_OUT_OF_RANGE");
+    if (target !== null) {
+      // Per-media SET needs the CAS: `addReactions` writes the whole map
+      // unconditionally, and one photo's bucket must not clobber its siblings'
+      // when two people react to different photos of the same album at once.
+      const applied = await this.messageRepo.updateMediaReactionsCas(
+        messageId,
+        message.roomId,
+        setStoredMediaReaction(message.mediaReactions, target, userId, emoji),
+        message.revision
+      );
+      if (!applied) throw new ConflictError("CHAT_REACTION_CONFLICT");
+      return this.messageRepo.findById(messageId);
+    }
+    const updated = setStoredReaction(message.reactions, userId, emoji);
+    return this.messageRepo.addReactions(messageId, message.roomId, updated);
   }
 
   /** {@link setReaction} in {@link reactToMessage}'s return shape, for the REST orchestrator. */
@@ -1863,21 +1924,26 @@ export class PrivateMessageService {
     messageId: string;
     userId: string;
     emoji: string;
+    mediaIndex?: number | null;
   }): Promise<{
     roomId: string;
     added: boolean;
     targetUserId: string;
     targetMessagePreview: string;
+    mediaIndex: number | null;
   }> {
     const message = await this.setReaction(
       params.messageId,
       params.userId,
-      params.emoji
+      params.emoji,
+      params.mediaIndex
     );
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const target = resolveMediaReactionIndex(message.content, params.mediaIndex);
     return {
       roomId: message.roomId,
       added: true,
+      mediaIndex: target === false ? null : target,
       targetUserId: message.senderId ?? "",
       targetMessagePreview: buildReactionTargetPreview(
         normalizeMessageType(message.messageType),
@@ -2299,24 +2365,25 @@ export class PrivateMessageService {
     emoji?: string | null;
     cursor?: string | null;
     limit?: number | null;
+    /**
+     * The other members of a collage, when the popup was opened on one. A
+     * web-sent album is N separate messages, so its reactor list spans them.
+     */
+    siblingMessageIds?: string[] | null;
   }): Promise<ReactionDetailsPage> {
     await assertPrivateParticipant(
       this.roomRepo,
       params.roomId,
       params.requesterId
     );
-    await this.assertMessageInRoom(params.roomId, params.messageId);
-    const message = await this.messageRepo.findById(params.messageId);
-    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const messages = await this.collectReactionTargets(
+      params.roomId,
+      params.messageId,
+      params.siblingMessageIds
+    );
 
     const slice = await this.messageRepo.readReactionDetails({
-      message: {
-        id: message.id,
-        roomId: message.roomId,
-        reactions: message.reactions,
-        createdAt: message.createdAt,
-        reactionsIndexedAt: message.reactionsIndexedAt,
-      },
+      messages,
       requesterId: params.requesterId,
       emoji: params.emoji,
       cursor: params.cursor,
@@ -2333,10 +2400,42 @@ export class PrivateMessageService {
     });
   }
 
+  /**
+   * Load the messages a reaction-details page may span, each bound to `roomId`.
+   *
+   * The sibling ids arrive from the CLIENT (they are the collage's other members
+   * as the transcript grouped them), so every one is re-checked against the room
+   * here — without that, a caller could name any message id in the system and
+   * read its reactor list through a room they happen to be in.
+   */
+  private async collectReactionTargets(
+    roomId: string,
+    messageId: string,
+    siblingIds?: string[] | null
+  ) {
+    const ids = [...new Set([messageId, ...(siblingIds ?? [])])];
+    const rows = await this.messageRepo.findManyByIds(ids);
+    const anchor = rows.find((row) => row.id === messageId);
+    if (!anchor || anchor.roomId !== roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    return rows
+      .filter((row) => row.roomId === roomId)
+      .map((row) => ({
+        id: row.id,
+        roomId: row.roomId,
+        reactions: row.reactions,
+        mediaReactions: row.mediaReactions,
+        createdAt: row.createdAt,
+        reactionsIndexedAt: row.reactionsIndexedAt,
+      }));
+  }
+
   async getMessageReactions(params: {
     messageId: string;
     roomId: string;
     requesterId: string;
+    /** Read ONE attachment's bucket instead of the message's own reactions. */
+    mediaIndex?: number | null;
   }): Promise<{
     reactions: Record<
       string,
@@ -2359,7 +2458,11 @@ export class PrivateMessageService {
 
     // Stored entries are reactor OBJECTS; reduce to { emoji: userId[] } so the
     // grouped result carries the plain id string in users[].userId (not the object).
-    const reactions = reactionUserIdMap(raw.reactions);
+    const reactions = reactionUserIdMap(
+      params.mediaIndex == null
+        ? raw.reactions
+        : mediaReactionBucket(raw.mediaReactions, params.mediaIndex)
+    );
     const allUserIds = [...new Set(Object.values(reactions).flat())];
 
     const snapshots =
@@ -2910,6 +3013,14 @@ export class PrivateMessageService {
         urlFromMap(urlMap, key)
       );
 
+      // Per-attachment reactions for a collage, keyed by media index. Empty for
+      // every message that has none, which is all of them until someone reacts to
+      // one photo of an album — so no existing row grows on the wire.
+      const mediaReactionGroups = buildMediaReactionGroups(
+        (message as unknown as { mediaReactions?: unknown }).mediaReactions,
+        (key) => urlFromMap(urlMap, key)
+      );
+
       return {
         ...wire,
         content: resolvedContent,
@@ -2926,6 +3037,7 @@ export class PrivateMessageService {
           urlMap
         ),
         reactionGroups,
+        mediaReactionGroups,
         // Normalized tombstone (one shape across private/group/community).
         ...tombstoneWireFields(message),
         clientTs: Number(

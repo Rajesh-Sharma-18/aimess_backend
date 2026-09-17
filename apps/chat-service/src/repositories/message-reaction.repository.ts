@@ -13,6 +13,10 @@ export interface ReactionPageRow {
   userId: string;
   emoji: string;
   createdAt: Date;
+  /** The message this reaction sits on — an album pages over several at once. */
+  messageId: string;
+  /** The attachment it names, or null for the message/collage as a whole. */
+  mediaIndex: number | null;
 }
 
 export interface ReactionPage {
@@ -43,23 +47,47 @@ export const clampReactionLimit = (limit?: number | null): number => {
 };
 
 /**
- * Keyset cursor — `<epochMs>:<userId>`, the exact tuple the sort orders on.
- * Opaque to the client by contract; encoded rather than signed because it names
- * no data the caller is not already being shown on the page it came from.
+ * Keyset cursor — `<epochMs>|<userId>|<messageId>|<mediaIndex>`, the exact tuple the
+ * sort orders on. Opaque to the client by contract; encoded rather than signed
+ * because it names no data the caller is not already being shown on the page it
+ * came from.
+ *
+ * `messageId` and `mediaIndex` joined the tuple when a page grew to span a whole
+ * album: one user reacting to two photos in the same millisecond is two rows that
+ * `(createdAt, userId)` alone cannot order, and an ambiguous keyset either repeats
+ * a row on the next page or skips it. `|` rather than `:` because an ObjectId is
+ * hex but a userId is a UUID — neither can contain a pipe.
  */
+const NO_MEDIA = -1;
+
 const encodeCursor = (row: ReactionPageRow): string =>
-  `${row.createdAt.getTime()}:${row.userId}`;
+  // `messageId` is always selected on the read path, but defaulted rather than
+  // interpolated raw: an undefined here would encode the string "undefined" into
+  // a cursor the next page then fails to resume from, silently.
+  `${row.createdAt.getTime()}|${row.userId}|${row.messageId ?? ""}|${row.mediaIndex ?? NO_MEDIA}`;
+
+interface ReactionCursor {
+  createdAt: Date;
+  userId: string;
+  messageId: string;
+  mediaIndex: number;
+}
 
 const decodeCursor = (
   cursor: string | null | undefined
-): { createdAt: Date; userId: string } | null => {
+): ReactionCursor | null => {
   if (!cursor) return null;
-  const split = cursor.indexOf(":");
-  if (split <= 0) return null;
-  const ms = Number(cursor.slice(0, split));
-  const userId = cursor.slice(split + 1);
-  if (!Number.isFinite(ms) || !userId) return null;
-  return { createdAt: new Date(ms), userId };
+  const parts = cursor.split("|");
+  if (parts.length !== 4) return null;
+  const ms = Number(parts[0]);
+  const mediaIndex = Number(parts[3]);
+  if (!Number.isFinite(ms) || !parts[1] || !parts[2]) return null;
+  return {
+    createdAt: new Date(ms),
+    userId: parts[1],
+    messageId: parts[2],
+    mediaIndex: Number.isFinite(mediaIndex) ? mediaIndex : NO_MEDIA,
+  };
 };
 
 /**
@@ -79,11 +107,18 @@ export class MessageReactionRepository {
    * Apply one reactor's change. `emoji: null` removes them. Called after a
    * reaction CAS lands, so it writes exactly one row — never the whole map.
    *
-   * One reaction per user per message is the product rule, so the unique key is
-   * (messageId, conversationType, userId) and a re-react is an update in place,
-   * not a second row. `createdAt` is deliberately NOT refreshed when a user
-   * switches emoji: their position in the reactor order is when they first
-   * reacted, and rewriting it would shuffle live cursors underneath open popups.
+   * One reaction per user per TARGET is the product rule, and the target is
+   * (message, attachment) — a reader may hold one reaction on each photo of a
+   * collage plus one on the collage itself — so that triple is the unique key and
+   * a re-react is an update in place, not a second row. `createdAt` is
+   * deliberately NOT refreshed when a user switches emoji: their position in the
+   * reactor order is when they first reacted, and rewriting it would shuffle live
+   * cursors underneath open popups.
+   *
+   * `updateMany`-then-`create` rather than `upsert`: the compound unique key now
+   * contains a NULLABLE column, which Prisma's `where` for a compound key cannot
+   * express. The update keeps `createdAt` untouched, which is the behaviour the
+   * paragraph above depends on.
    */
   async applyReactorChange(params: {
     messageId: string;
@@ -91,35 +126,34 @@ export class MessageReactionRepository {
     roomId: string;
     userId: string;
     emoji: string | null;
+    mediaIndex?: number | null;
   }): Promise<void> {
-    const key = {
-      messageId_conversationType_userId: {
-        messageId: params.messageId,
-        conversationType: params.conversationType,
-        userId: params.userId,
-      },
+    const target = {
+      messageId: params.messageId,
+      conversationType: params.conversationType,
+      userId: params.userId,
+      mediaIndex: params.mediaIndex ?? null,
     };
 
     if (params.emoji === null) {
-      await this.prisma.messageReaction.deleteMany({
-        where: {
-          messageId: params.messageId,
-          conversationType: params.conversationType,
-          userId: params.userId,
-        },
-      });
+      await this.prisma.messageReaction.deleteMany({ where: target });
       return;
     }
 
-    await this.prisma.messageReaction.upsert({
-      where: key,
-      update: { emoji: params.emoji },
-      create: {
+    const updated = await this.prisma.messageReaction.updateMany({
+      where: target,
+      data: { emoji: params.emoji },
+    });
+    if (updated.count > 0) return;
+
+    await this.prisma.messageReaction.create({
+      data: {
         messageId: params.messageId,
         conversationType: params.conversationType,
         roomId: params.roomId,
         userId: params.userId,
         emoji: params.emoji,
+        mediaIndex: params.mediaIndex ?? null,
       },
     });
   }
@@ -169,33 +203,51 @@ export class MessageReactionRepository {
     conversationType: ReactionConversationType;
     roomId: string;
     storedReactions: unknown;
+    /** The per-attachment buckets, `{ "<idx>": { emoji: reactor[] } }`. */
+    storedMediaReactions?: unknown;
     /** Anchor for the synthesized ordering; the message's own createdAt. */
     baseTime: Date;
   }): Promise<void> {
-    const byEmoji = reactionUserIdMap(params.storedReactions);
     const rows: Array<{
       messageId: string;
       conversationType: string;
       roomId: string;
       userId: string;
       emoji: string;
+      mediaIndex: number | null;
       createdAt: Date;
     }> = [];
+    // De-duped per TARGET, not per user: one reader legitimately holds a reaction
+    // on several photos of the same message, and keying on the user alone dropped
+    // all but the first.
     const seen = new Set<string>();
     let offset = 0;
-    for (const [emoji, userIds] of Object.entries(byEmoji)) {
-      for (const userId of userIds) {
-        if (!userId || seen.has(userId)) continue;
-        seen.add(userId);
-        rows.push({
-          messageId: params.messageId,
-          conversationType: params.conversationType,
-          roomId: params.roomId,
-          userId,
-          emoji,
-          createdAt: new Date(params.baseTime.getTime() + offset),
-        });
-        offset += 1;
+    const project = (stored: unknown, mediaIndex: number | null) => {
+      for (const [emoji, userIds] of Object.entries(reactionUserIdMap(stored))) {
+        for (const userId of userIds) {
+          const key = `${mediaIndex ?? -1}:${userId}`;
+          if (!userId || seen.has(key)) continue;
+          seen.add(key);
+          rows.push({
+            messageId: params.messageId,
+            conversationType: params.conversationType,
+            roomId: params.roomId,
+            userId,
+            emoji,
+            mediaIndex,
+            createdAt: new Date(params.baseTime.getTime() + offset),
+          });
+          offset += 1;
+        }
+      }
+    };
+    project(params.storedReactions, null);
+    const media = params.storedMediaReactions;
+    if (media && typeof media === "object") {
+      for (const key of Object.keys(media as Record<string, unknown>)) {
+        const index = Number(key);
+        if (!Number.isInteger(index) || index < 0) continue;
+        project((media as Record<string, unknown>)[key], index);
       }
     }
     await this.prisma.messageReaction.deleteMany({
@@ -216,12 +268,12 @@ export class MessageReactionRepository {
    * twenty rows. Grouped on the indexed prefix, so it never scans the collection.
    */
   async countsFor(
-    messageId: string,
+    messageIds: string[],
     conversationType: ReactionConversationType
   ): Promise<ReactionCounts> {
     const grouped = await this.prisma.messageReaction.groupBy({
       by: ["emoji"],
-      where: { messageId, conversationType },
+      where: { messageId: { in: messageIds }, conversationType },
       _count: { _all: true },
     });
     const byEmoji = grouped
@@ -233,19 +285,23 @@ export class MessageReactionRepository {
     };
   }
 
-  /** The caller's own reaction, if any — drives the "You / Click to remove" row. */
+  /**
+   * The caller's own reaction on the MESSAGE itself, if any — drives the popup's
+   * "you have reacted" state. Per-attachment reactions are deliberately not
+   * folded in here: a reader can hold several at once, so there is no single
+   * answer, and each row already reports its own target.
+   */
   async selfEmoji(
-    messageId: string,
+    messageIds: string[],
     conversationType: ReactionConversationType,
     userId: string
   ): Promise<string | null> {
-    const row = await this.prisma.messageReaction.findUnique({
+    const row = await this.prisma.messageReaction.findFirst({
       where: {
-        messageId_conversationType_userId: {
-          messageId,
-          conversationType,
-          userId,
-        },
+        messageId: { in: messageIds },
+        conversationType,
+        userId,
+        mediaIndex: null,
       },
       select: { emoji: true },
     });
@@ -261,7 +317,12 @@ export class MessageReactionRepository {
    * second count.
    */
   async page(params: {
-    messageId: string;
+    /**
+     * Every message the page spans. One id for an ordinary message; a web-sent
+     * album is N separate messages rendered as one collage, and its popup has to
+     * read across all of them.
+     */
+    messageIds: string[];
     conversationType: ReactionConversationType;
     emoji?: string | null;
     cursor?: string | null;
@@ -272,9 +333,12 @@ export class MessageReactionRepository {
 
     const rows = await this.prisma.messageReaction.findMany({
       where: {
-        messageId: params.messageId,
+        messageId: { in: params.messageIds },
         conversationType: params.conversationType,
         ...(params.emoji ? { emoji: params.emoji } : {}),
+        // The keyset, spelled out in full: strictly-after on the leading column,
+        // then equal-and-after on each following one. Four terms because the sort
+        // key is four columns — see encodeCursor.
         ...(after
           ? {
               OR: [
@@ -283,13 +347,35 @@ export class MessageReactionRepository {
                   createdAt: after.createdAt,
                   userId: { gt: after.userId },
                 },
+                {
+                  createdAt: after.createdAt,
+                  userId: after.userId,
+                  messageId: { gt: after.messageId },
+                },
+                {
+                  createdAt: after.createdAt,
+                  userId: after.userId,
+                  messageId: after.messageId,
+                  mediaIndex: { gt: after.mediaIndex },
+                },
               ],
             }
           : {}),
       },
-      orderBy: [{ createdAt: "asc" }, { userId: "asc" }],
+      orderBy: [
+        { createdAt: "asc" },
+        { userId: "asc" },
+        { messageId: "asc" },
+        { mediaIndex: "asc" },
+      ],
       take: limit + 1,
-      select: { userId: true, emoji: true, createdAt: true },
+      select: {
+        userId: true,
+        emoji: true,
+        createdAt: true,
+        messageId: true,
+        mediaIndex: true,
+      },
     });
 
     const hasMore = rows.length > limit;

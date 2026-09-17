@@ -10,6 +10,7 @@ import {
 import {
   CHAT_TEXT_MAX_CHARS,
   CHAT_EMOJI_MAX_CHARS,
+  CHAT_MEDIA_INDEX_MAX,
   enforceMediaLimits,
 } from "../../constants/media-limits.js";
 import { reportUserReasonSchema } from "../../lib/report-user.js";
@@ -134,6 +135,10 @@ export const reactMessageSchema = z.object({
  */
 export const reactionBodySchema = z.object({
   emoji: z.string().min(1).max(CHAT_EMOJI_MAX_CHARS),
+  // 0-based index of the attachment being reacted to, for a message carrying
+  // several (a collage). Omitted = the message as a whole — what every text and
+  // single-attachment message uses, unchanged.
+  mediaIndex: z.coerce.number().int().min(0).max(CHAT_MEDIA_INDEX_MAX).optional(),
 });
 
 /**
@@ -143,6 +148,17 @@ export const reactionBodySchema = z.object({
  */
 export const reactionParamSchema = z.object({
   emoji: z.string().min(1).max(CHAT_EMOJI_MAX_CHARS),
+});
+
+/**
+ * Query for `DELETE …/reactions/:emoji`. A DELETE carries no body, so the
+ * attachment a reaction is being removed from rides the query string.
+ */
+export const reactionRemoveQuerySchema = z.object({
+  // 0-based index of the attachment being reacted to, for a message carrying
+  // several (a collage). Omitted = the message as a whole — what every text and
+  // single-attachment message uses, unchanged.
+  mediaIndex: z.coerce.number().int().min(0).max(CHAT_MEDIA_INDEX_MAX).optional(),
 });
 
 export const pinMessageSchema = z.object({

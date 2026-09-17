@@ -1119,7 +1119,19 @@ export function createMessagingImpl(
             emoji: string;
             conversationType?: string;
             mode?: string;
+            /** proto3 int32 — -1 (or the 0-default from a client that omits it
+             *  entirely alongside no other media) means "the message as a whole". */
+            mediaIndex?: number;
           };
+          // Only a NON-NEGATIVE index addresses an attachment. proto3 scalars are
+          // never absent on the wire, so a client that does not know the field
+          // sends 0 — which would silently retarget every legacy reaction at
+          // photo #0. The gateway therefore sends -1 for "message-level", and
+          // anything below zero is normalized back to undefined here.
+          const reactMediaIndex =
+            typeof req.mediaIndex === "number" && req.mediaIndex >= 0
+              ? req.mediaIndex
+              : undefined;
 
           // §2.4: route group reactions to the group collection. The two services
           // expose identical react/getMessageReactions signatures.
@@ -1174,6 +1186,7 @@ export function createMessagingImpl(
             messageId: req.messageId,
             userId: req.userId,
             emoji: req.emoji,
+            mediaIndex: reactMediaIndex,
           });
 
           // V2 §2.4: broadcast the full ChatReactionGroup[] shape (emoji, count,
@@ -1193,6 +1206,9 @@ export function createMessagingImpl(
               messageId: req.messageId,
               roomId: req.conversationId,
               requesterId: req.userId,
+              // The SERVICE decides the bucket — a single-attachment message is
+              // message-level however the caller addressed it.
+              mediaIndex: toggled.mediaIndex,
             });
             reactionGroups = Object.entries(grouped.reactions).map(
               ([emoji, d]) => ({
@@ -1256,6 +1272,9 @@ export function createMessagingImpl(
                   messageId: req.messageId,
                   conversationId: req.conversationId,
                   reactions: resolvedReactionGroups,
+                  ...(toggled.mediaIndex !== null
+                    ? { mediaIndex: toggled.mediaIndex }
+                    : {}),
                 },
               })
             );
@@ -1288,6 +1307,7 @@ export function createMessagingImpl(
               userId: r.userId,
               emoji: r.emoji,
             })),
+            mediaIndex: toggled.mediaIndex ?? -1,
           });
         } catch (err) {
           logger.error(`gRPC sendReaction error: ${String(err)}`);
@@ -1602,12 +1622,18 @@ export function createMessagingImpl(
             conversationId?: string;
             conversationType?: string;
             requesterId?: string;
+            mediaIndex?: number;
           };
 
           const conversationType =
             typeof req.conversationType === "string"
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
+          // See sendReaction — proto3 sends 0 for an omitted int32.
+          const mediaIndex =
+            typeof req.mediaIndex === "number" && req.mediaIndex >= 0
+              ? req.mediaIndex
+              : undefined;
 
           // Authorize the caller against the room before reading reactor
           // identities: without this, any authenticated user who learns a
@@ -1631,11 +1657,13 @@ export function createMessagingImpl(
                   messageId: req.messageId ?? "",
                   roomId: req.conversationId ?? "",
                   requesterId: req.requesterId ?? "",
+                  mediaIndex,
                 })
               : await deps.privateMessageService.getMessageReactions({
                   messageId: req.messageId ?? "",
                   roomId: req.conversationId ?? "",
                   requesterId: req.requesterId ?? "",
+                  mediaIndex,
                 });
 
           const reactionList = Object.entries(result.reactions).map(
@@ -1680,11 +1708,17 @@ export function createMessagingImpl(
             emoji?: string;
             cursor?: string;
             limit?: number;
+            siblingMessageIds?: string[];
           };
           const conversationType =
             typeof req.conversationType === "string"
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
+          const siblingMessageIds = Array.isArray(req.siblingMessageIds)
+            ? req.siblingMessageIds.filter(
+                (id): id is string => typeof id === "string" && id.length > 0
+              )
+            : null;
 
           // Identical guard to the unpaginated read — paging must not become a
           // second, softer door onto the same reactor identities.
@@ -1697,6 +1731,7 @@ export function createMessagingImpl(
                   emoji: req.emoji || null,
                   cursor: req.cursor || null,
                   limit: req.limit || null,
+                  siblingMessageIds,
                 })
               : await deps.privateMessageService.getMessageReactionsPage({
                   messageId: req.messageId ?? "",
@@ -1705,10 +1740,16 @@ export function createMessagingImpl(
                   emoji: req.emoji || null,
                   cursor: req.cursor || null,
                   limit: req.limit || null,
+                  siblingMessageIds,
                 });
 
           callback(null, {
-            users: page.users,
+            // proto3 has no null int32, so the message/collage-level rows travel
+            // as -1 and the client maps it back — see ReactionDetailUserDto.
+            users: page.users.map((user) => ({
+              ...user,
+              mediaIndex: user.mediaIndex ?? -1,
+            })),
             nextCursor: page.nextCursor ?? "",
             hasMore: page.hasMore,
             counts: page.counts,
@@ -3996,12 +4037,19 @@ export function createCommunityImpl(
             communityId: string;
             userId: string;
             emoji: string;
+            mediaIndex?: number;
           };
 
           const result = await deps.communityMessageService.reactToMessage({
             messageId: req.messageId,
             userId: req.userId,
             emoji: req.emoji,
+            // See sendReaction: proto3 sends 0 for an omitted int32, so only a
+            // non-negative index from a client that knows the field counts.
+            mediaIndex:
+              typeof req.mediaIndex === "number" && req.mediaIndex >= 0
+                ? req.mediaIndex
+                : undefined,
           });
 
           // reactToMessage already resolves avatar URLs before returning, so
@@ -4014,6 +4062,9 @@ export function createCommunityImpl(
                 messageId: result.messageId,
                 communityId: result.roomId,
                 reactions: result.reactions,
+                ...(result.mediaIndex !== null
+                  ? { mediaIndex: result.mediaIndex }
+                  : {}),
                 revision: result.revision,
               },
             })
@@ -4669,12 +4720,17 @@ export function createCommunityImpl(
             messageId: string;
             communityId: string;
             requesterId: string;
+            mediaIndex?: number;
           };
           const result = await deps.communityMessageService.getMessageReactions(
             {
               messageId: req.messageId,
               communityId: req.communityId,
               requesterId: req.requesterId,
+              mediaIndex:
+                typeof req.mediaIndex === "number" && req.mediaIndex >= 0
+                  ? req.mediaIndex
+                  : undefined,
             }
           );
           callback(null, {
@@ -4713,6 +4769,7 @@ export function createCommunityImpl(
             emoji?: string;
             cursor?: string;
             limit?: number;
+            siblingMessageIds?: string[];
           };
           const page =
             await deps.communityMessageService.getMessageReactionsPage({
@@ -4722,9 +4779,18 @@ export function createCommunityImpl(
               emoji: req.emoji || null,
               cursor: req.cursor || null,
               limit: req.limit || null,
+              siblingMessageIds: Array.isArray(req.siblingMessageIds)
+                ? req.siblingMessageIds.filter(
+                    (id): id is string => typeof id === "string" && id.length > 0
+                  )
+                : null,
             });
           callback(null, {
-            users: page.users,
+            // -1 for a message/collage-level row — see ReactionDetailUserDto.
+            users: page.users.map((user) => ({
+              ...user,
+              mediaIndex: user.mediaIndex ?? -1,
+            })),
             nextCursor: page.nextCursor ?? "",
             hasMore: page.hasMore,
             counts: page.counts,

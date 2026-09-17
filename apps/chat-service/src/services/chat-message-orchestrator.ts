@@ -254,11 +254,19 @@ export interface ReactDirectParams {
   /** add = toggle the reaction ON if absent; remove = toggle it OFF if present. */
   /** `set` = caller ends up holding exactly this emoji (community REST semantics). */
   op: "add" | "remove" | "set";
+  /**
+   * 0-based index of the attachment being reacted to, for a message holding
+   * several (a collage). Absent/null = the message as a whole, which is what a
+   * text message and a single-attachment one always use.
+   */
+  mediaIndex?: number | null;
 }
 
 export interface ReactDirectResult {
   /** Canonical grouped reactions after the op, reactor avatars resolved-on-read. */
   reactions: ReactionGroup[];
+  /** Which attachment they belong to; null = the message as a whole. */
+  mediaIndex: number | null;
 }
 
 /**
@@ -1767,6 +1775,7 @@ export class ChatMessageOrchestrator {
       messageId: params.messageId,
       roomId: params.roomId,
       requesterId: params.userId,
+      mediaIndex: params.mediaIndex,
     });
     const already =
       before.reactions[params.emoji]?.selfReacted ??
@@ -1786,7 +1795,10 @@ export class ChatMessageOrchestrator {
     // 3a. NO-OP (duplicate add / absent remove): return the already-read state,
     //     avatars resolved for the response — but DO NOT re-read or publish.
     if (!shouldToggle) {
-      return { reactions: await toResolvedGroups(before) };
+      return {
+        reactions: await toResolvedGroups(before),
+        mediaIndex: params.mediaIndex ?? null,
+      };
     }
 
     // 3b. State-changing op: CAS-toggle (see PrivateMessageService.reactCas /
@@ -1801,11 +1813,17 @@ export class ChatMessageOrchestrator {
       messageId: params.messageId,
       userId: params.userId,
       emoji: params.emoji,
+      mediaIndex: params.mediaIndex,
     });
+    // The SERVICE decides which bucket the write landed in — a single-attachment
+    // message is message-level however the client addressed it — so the read-back
+    // and the broadcast follow its answer, never the request's.
+    const scoped = toggled.mediaIndex;
     const after = await service.getMessageReactions({
       messageId: params.messageId,
       roomId: params.roomId,
       requesterId: params.userId,
+      mediaIndex: scoped,
     });
     const resolvedGroups = await toResolvedGroups(after);
 
@@ -1826,6 +1844,10 @@ export class ChatMessageOrchestrator {
           messageId: params.messageId,
           conversationId: params.roomId,
           reactions: resolvedGroups,
+          // Present only for a per-attachment reaction. A client that does not
+          // know the field treats the event as message-level, which is exactly
+          // what it was before per-media reactions existed.
+          ...(scoped !== null ? { mediaIndex: scoped } : {}),
           revision,
         },
       })
@@ -1850,7 +1872,7 @@ export class ChatMessageOrchestrator {
       logger.warn(`reactDirect activity bump failed: ${String(err)}`)
     );
 
-    return { reactions: resolvedGroups };
+    return { reactions: resolvedGroups, mediaIndex: scoped };
   }
 
   /**

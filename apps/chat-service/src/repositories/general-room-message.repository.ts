@@ -245,6 +245,15 @@ export class GeneralRoomMessageRepository {
    * Batched id → message lookup (read-pointer resolution for the per-message
    * "Viewed by" sheet). Mirrors GroupMessageRepository#findManyByIds.
    */
+  /** Batched id → row lookup, for a reaction page that spans a whole collage. */
+  async findManyByIds(ids: string[]): Promise<GeneralRoomMessage[]> {
+    const valid = ids.filter((id) => /^[0-9a-f]{24}$/i.test(id));
+    if (!valid.length) return [];
+    return this.prisma.generalRoomMessage.findMany({
+      where: { id: { in: valid } },
+    });
+  }
+
   async findSequencesByIds(
     ids: string[]
   ): Promise<Array<{ id: string; sequenceNumber: number }>> {
@@ -1428,24 +1437,35 @@ export class GeneralRoomMessageRepository {
    * has in total.
    */
   async readReactionDetails(params: {
-    message: ReactionIndexSource;
+    /**
+     * Every message the page spans, ALREADY authorized against the room by the
+     * caller. One for an ordinary message; a web-sent album is N messages
+     * rendered as one collage, and its popup reads across all of them. Each is
+     * materialized on demand, so a legacy member is indexed the first time its
+     * collage's popup opens rather than only the anchor.
+     */
+    messages: ReactionIndexSource[];
     requesterId: string;
     emoji?: string | null;
     cursor?: string | null;
     limit?: number | null;
   }): Promise<ReactionDetailsSlice> {
-    await ensureReactionIndex(
-      this.reactionIndex,
-      this.reactionConversationType,
-      params.message,
-      (messageId, at) =>
-        this.prisma.generalRoomMessage.update({
-          where: { id: messageId },
-          data: { reactionsIndexedAt: at },
-        })
+    await Promise.all(
+      params.messages.map((message) =>
+        ensureReactionIndex(
+          this.reactionIndex,
+          this.reactionConversationType,
+          message,
+          (messageId, at) =>
+            this.prisma.generalRoomMessage.update({
+              where: { id: messageId },
+              data: { reactionsIndexedAt: at },
+            })
+        )
+      )
     );
     return readReactionDetailsSlice(this.reactionIndex, {
-      messageId: params.message.id,
+      messageIds: [...new Set(params.messages.map((message) => message.id))],
       conversationType: this.reactionConversationType,
       requesterId: params.requesterId,
       emoji: params.emoji,
@@ -1486,6 +1506,40 @@ export class GeneralRoomMessageRepository {
     });
     const applied = result.count > 0;
     // See PrivateMessageRepository.updateReactionsCas — winning attempt only.
+    if (applied && delta && roomId) {
+      await applyReactionIndexDelta(this.reactionIndex, {
+        messageId,
+        conversationType: this.reactionConversationType,
+        roomId,
+        delta,
+      });
+    }
+    return applied;
+  }
+
+  /**
+   * {@link updateReactionsCas} for the PER-MEDIA map — a reaction on one photo of
+   * a community album. Same revision CAS and the same revision bump, so the
+   * changes feed replays it without needing a second cursor.
+   */
+  async updateMediaReactionsCas(
+    messageId: string,
+    mediaReactions: Record<string, Record<string, unknown[]>>,
+    expectedRevision: number,
+    newRevision: number,
+    roomId?: string,
+    delta?: ReactionIndexDelta
+  ): Promise<boolean> {
+    const result = await this.prisma.generalRoomMessage.updateMany({
+      where: { id: messageId, revision: expectedRevision },
+      data: {
+        mediaReactions: mediaReactions as unknown as Prisma.InputJsonValue,
+        revision: newRevision,
+      },
+    });
+    const applied = result.count > 0;
+    // See the message-level CAS: mirrored only on the winning attempt, and the
+    // delta names the attachment so the index can tell the two apart.
     if (applied && delta && roomId) {
       await applyReactionIndexDelta(this.reactionIndex, {
         messageId,

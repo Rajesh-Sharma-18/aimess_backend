@@ -409,6 +409,147 @@ export function setStoredReaction(
   return out;
 }
 
+/** How many attachments a stored message content carries. */
+export function attachmentCountOf(content: unknown): number {
+  const files = (content as { files?: unknown } | null)?.files;
+  return Array.isArray(files) ? files.length : 0;
+}
+
+/**
+ * Resolve a caller-supplied `mediaIndex` into the bucket a reaction must be
+ * written to. `null` means "the message as a whole" — what a text message gets,
+ * and what a single-attachment message still gets when it is addressed WITHOUT an
+ * index: a lone photo's reaction has lived on the message since before per-media
+ * reactions existed, and moving it would blank every reaction already on one.
+ *
+ * An explicit in-range index addresses that attachment even when the message
+ * holds exactly one, because a web-sent album is N messages of one photo each:
+ * without an address of its own, a photo of such a collage and the collage as a
+ * whole would write to the same bucket, and a reaction meant for the collage
+ * surfaced as a chip on one of its photos.
+ *
+ * Returns `false` for an index this message has no attachment at, so the caller
+ * rejects rather than silently reacting to the whole collage.
+ */
+export function resolveMediaReactionIndex(
+  content: unknown,
+  mediaIndex?: number | null
+): number | null | false {
+  if (mediaIndex == null) return null;
+  const count = attachmentCountOf(content);
+  if (count === 0) return null;
+  if (!Number.isInteger(mediaIndex) || mediaIndex < 0 || mediaIndex >= count)
+    return false;
+  return mediaIndex;
+}
+
+/**
+ * Per-MEDIA reaction storage: `{ "<mediaIndex>": { "<emoji>": StoredReactor[] } }`.
+ * The inner bucket is byte-for-byte the shape `reactions` already uses, so every
+ * helper above operates on it unchanged — this layer only picks the bucket.
+ */
+export type StoredMediaReactions = Record<string, Record<string, StoredReactor[]>>;
+
+/** The stored `{ emoji: reactor[] }` bucket for one attachment, or `{}`. */
+export function mediaReactionBucket(raw: unknown, mediaIndex: number): unknown {
+  if (!raw || typeof raw !== "object") return {};
+  const bucket = (raw as Record<string, unknown>)[String(mediaIndex)];
+  return bucket && typeof bucket === "object" ? bucket : {};
+}
+
+/**
+ * Replace one attachment's bucket and return a NEW map, dropping the bucket
+ * entirely when it ends up empty so an un-reacted album never accumulates
+ * `{"0":{},"1":{},…}`. `apply` is `toggleStoredReaction`/`setStoredReaction`.
+ */
+function writeMediaBucket(
+  raw: unknown,
+  mediaIndex: number,
+  apply: (bucket: unknown) => Record<string, StoredReactor[]>
+): StoredMediaReactions {
+  const out: StoredMediaReactions = {};
+  if (raw && typeof raw === "object") {
+    for (const [key, bucket] of Object.entries(raw as Record<string, unknown>)) {
+      if (key === String(mediaIndex)) continue;
+      if (!bucket || typeof bucket !== "object") continue;
+      const normalized: Record<string, StoredReactor[]> = {};
+      for (const [emoji, list] of Object.entries(
+        bucket as Record<string, unknown>
+      )) {
+        if (!Array.isArray(list) || list.length === 0) continue;
+        const entries = list.map(normalizeReactor).filter((r) => r.userId);
+        if (entries.length) normalized[emoji] = entries;
+      }
+      if (Object.keys(normalized).length) out[key] = normalized;
+    }
+  }
+  const next = apply(mediaReactionBucket(raw, mediaIndex));
+  if (Object.keys(next).length) out[String(mediaIndex)] = next;
+  return out;
+}
+
+/**
+ * Swap in an already-built `{ emoji: reactor[] }` bucket for one attachment,
+ * leaving its siblings alone — for callers (community) that enrich the reactor
+ * entries with live profile data before persisting them.
+ */
+export function replaceMediaReactionBucket(
+  raw: unknown,
+  mediaIndex: number,
+  bucket: Record<string, StoredReactor[]>
+): StoredMediaReactions {
+  return writeMediaBucket(raw, mediaIndex, () => bucket);
+}
+
+/** {@link toggleStoredReaction}, scoped to one attachment of a multi-media message. */
+export function toggleStoredMediaReaction(
+  raw: unknown,
+  mediaIndex: number,
+  userId: string,
+  emoji: string
+): StoredMediaReactions {
+  return writeMediaBucket(raw, mediaIndex, (bucket) =>
+    toggleStoredReaction(bucket, userId, emoji)
+  );
+}
+
+/** {@link setStoredReaction}, scoped to one attachment of a multi-media message. */
+export function setStoredMediaReaction(
+  raw: unknown,
+  mediaIndex: number,
+  userId: string,
+  emoji: string
+): StoredMediaReactions {
+  return writeMediaBucket(raw, mediaIndex, (bucket) =>
+    setStoredReaction(bucket, userId, emoji)
+  );
+}
+
+/**
+ * {@link buildReactionGroups} for every attachment that has reactions, keyed by
+ * media index. Empty buckets are dropped, so a message whose album nobody has
+ * reacted to serializes as `{}` and costs a client nothing to read.
+ */
+export function buildMediaReactionGroups(
+  raw: unknown,
+  resolveAvatar: (key: string) => string,
+  resolveUser?: (
+    userId: string
+  ) => { displayName: string; avatarUrl: string } | undefined
+): Record<string, ReactionGroup[]> {
+  const out: Record<string, ReactionGroup[]> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const key of Object.keys(raw as Record<string, unknown>)) {
+    const groups = buildReactionGroups(
+      mediaReactionBucket(raw, Number(key)),
+      resolveAvatar,
+      resolveUser
+    );
+    if (groups.length) out[key] = groups;
+  }
+  return out;
+}
+
 /**
  * Flatten the stored reactions map into the thin `[{ userId, emoji }]` shape used
  * by the gRPC MessageDto (history fetch). Distinct from the grouped broadcast

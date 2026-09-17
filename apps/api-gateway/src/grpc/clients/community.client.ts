@@ -106,6 +106,8 @@ export interface ReactCommunityMessageParams {
   communityId: string;
   userId: string;
   emoji: string;
+  /** -1 = the message as a whole; 0-based attachment index otherwise. */
+  mediaIndex?: number;
 }
 export interface CommunityReactionUserDto {
   userId: string;
@@ -306,6 +308,8 @@ export interface GetCommunityMessageReactionsParams {
   messageId: string;
   communityId: string;
   requesterId: string;
+  /** -1 = the message as a whole; 0-based attachment index otherwise. */
+  mediaIndex?: number;
 }
 export interface GetCommunityMessageReactionsResult {
   messageId: string;
@@ -324,12 +328,18 @@ export interface GetCommunityMessageReactionsPageParams {
   emoji?: string;
   cursor?: string;
   limit?: number;
+  /** The collage's other members, when the popup was opened on one. */
+  siblingMessageIds?: string[];
 }
 export interface CommunityReactionDetailUserDto {
   userId: string;
   displayName: string;
   avatar: string;
   emoji: string;
+  /** The message this reaction sits on — a collage's page spans several. */
+  messageId: string;
+  /** The attachment it names; -1 on the wire = the message as a whole. */
+  mediaIndex: number | null;
 }
 export interface GetCommunityMessageReactionsPageResult {
   users: CommunityReactionDetailUserDto[];
@@ -542,6 +552,11 @@ export function createCommunityClient(): CommunityClient {
         communityId: p.communityId,
         userId: p.userId,
         emoji: p.emoji,
+        // Which attachment the reaction names. This payload is built field by
+        // field, so omitting it does not mean "message-level" — proto3 would
+        // decode the absent int32 as 0 and every reaction would land on the
+        // FIRST photo of the collage. -1 is the contract's sentinel.
+        mediaIndex: p.mediaIndex ?? -1,
       })
   );
 
@@ -677,6 +692,8 @@ export function createCommunityClient(): CommunityClient {
           messageId: p.messageId,
           communityId: p.communityId,
           requesterId: p.requesterId,
+          // -1 = the message as a whole; see the reaction breaker above.
+          mediaIndex: p.mediaIndex ?? -1,
         }
       )
   );
@@ -695,10 +712,22 @@ export function createCommunityClient(): CommunityClient {
           emoji: p.emoji ?? "",
           cursor: p.cursor ?? "",
           limit: p.limit ?? 0,
+          // The collage's other members. This payload is built field by field,
+          // so anything not named here never reaches chat-service.
+          siblingMessageIds: p.siblingMessageIds ?? [],
         }
       );
       return {
-        users: raw.users ?? [],
+        users: (raw.users ?? []).map((user) => ({
+          ...user,
+          messageId: user.messageId ?? "",
+          // -1 on the wire means "the message as a whole" — proto3 has no absent
+          // int32, so it is normalized here exactly as the messaging client does.
+          mediaIndex:
+            typeof user.mediaIndex === "number" && user.mediaIndex >= 0
+              ? user.mediaIndex
+              : null,
+        })),
         nextCursor: raw.nextCursor ?? "",
         hasMore: Boolean(raw.hasMore),
         counts: (raw.counts ?? []).map((c) => ({

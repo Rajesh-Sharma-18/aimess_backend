@@ -18,6 +18,8 @@ export interface ReactionIndexSource {
   reactions: unknown;
   createdAt: Date;
   reactionsIndexedAt: Date | null;
+  /** Per-attachment buckets; absent on a text message and on every legacy row. */
+  mediaReactions?: unknown;
 }
 
 /**
@@ -56,6 +58,7 @@ export async function ensureReactionIndex(
       conversationType,
       roomId: message.roomId,
       storedReactions: message.reactions,
+      storedMediaReactions: message.mediaReactions,
       baseTime: message.createdAt,
     });
     await stamp(message.id, new Date());
@@ -74,6 +77,12 @@ export async function ensureReactionIndex(
 export interface ReactionIndexDelta {
   userId: string;
   emoji: string | null;
+  /**
+   * Which attachment the toggle landed on; null/absent = the message itself.
+   * Without it a reaction on one photo overwrote the reader's row for another,
+   * because the index's unique key only reached as far as the user.
+   */
+  mediaIndex?: number | null;
 }
 
 /**
@@ -100,6 +109,7 @@ export async function applyReactionIndexDelta(
       roomId: params.roomId,
       userId: params.delta.userId,
       emoji: params.delta.emoji,
+      mediaIndex: params.delta.mediaIndex ?? null,
     });
   } catch (err) {
     logger.warn(
@@ -125,7 +135,7 @@ export interface ReactionDetailsSlice {
 export async function readReactionDetailsSlice(
   index: MessageReactionRepository,
   params: {
-    messageId: string;
+    messageIds: string[];
     conversationType: ReactionConversationType;
     requesterId: string;
     emoji?: string | null;
@@ -135,15 +145,15 @@ export async function readReactionDetailsSlice(
 ): Promise<ReactionDetailsSlice> {
   const [page, counts, selfEmoji] = await Promise.all([
     index.page({
-      messageId: params.messageId,
+      messageIds: params.messageIds,
       conversationType: params.conversationType,
       emoji: params.emoji,
       cursor: params.cursor,
       limit: params.limit,
     }),
-    index.countsFor(params.messageId, params.conversationType),
+    index.countsFor(params.messageIds, params.conversationType),
     index.selfEmoji(
-      params.messageId,
+      params.messageIds,
       params.conversationType,
       params.requesterId
     ),
@@ -158,6 +168,17 @@ export interface ReactionDetailsUser {
   /** Resolved download URL — never a raw object key. */
   avatar: string;
   emoji: string;
+  /**
+   * The message this reaction sits on. Only interesting for a collage, whose
+   * popup spans several messages — but always sent, so the client never has to
+   * infer it from which row it asked for.
+   */
+  messageId: string;
+  /**
+   * The attachment it names, or null for the message/collage as a whole. The
+   * client renders a thumbnail for the former and nothing for the latter.
+   */
+  mediaIndex: number | null;
 }
 
 /** The whole reaction-details response for one page of one filter. */
@@ -208,6 +229,8 @@ export async function buildReactionDetailsPage(params: {
         displayName: params.resolveName(snap),
         avatar: params.urlFor(urlMap, (snap?.avatar as string) || ""),
         emoji: row.emoji,
+        messageId: row.messageId,
+        mediaIndex: row.mediaIndex,
       };
     }),
     nextCursor: slice.page.nextCursor,
