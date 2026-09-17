@@ -15,6 +15,9 @@ process.env.JWT_ACCESS_SECRET = "test-access-secret-do-not-use-in-prod";
 process.env.USER_GRPC_URL = "localhost:4002";
 process.env.COMMUNITY_GRPC_URL = "localhost:4003";
 process.env.SRS_HOOK_SECRET = "test-srs-hook-secret-do-not-use-in-prod";
+// The CDN callback/remote-auth endpoints fail closed on a blank secret, so
+// route tests need a value here — same reason SRS_HOOK_SECRET is pinned.
+process.env.CDN_CALLBACK_SECRET = "test-cdn-callback-secret-do-not-use-in-prod";
 // Pinned explicitly (matches the schema's own default) so tests are hermetic —
 // without this, dotenv falls through to whatever `apps/stream-service/.env`
 // happens to have on the machine running the suite (often "false" for local

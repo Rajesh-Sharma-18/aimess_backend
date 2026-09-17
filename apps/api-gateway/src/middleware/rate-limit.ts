@@ -261,6 +261,11 @@ function skipRateLimit(req: Request): boolean {
     // a busy stream would exhaust the 100/window global cap in seconds and get
     // its on_publish denied.
     path.startsWith("/internal/srs") ||
+    // CDNetworks stream-status callbacks and publish auth — same shape, same
+    // reason, and metered by the same `srsHookRateLimiter`. Every callback for
+    // every stream arrives from CDN edge nodes with no Authorization header,
+    // and `/cdn/auth` gates whether a broadcast is accepted at all.
+    path.startsWith("/internal/cdn") ||
     // Same shape, same reason — metered by `livekitWebhookRateLimiter`, not
     // exempted. LiveKit Cloud sends `Authorization: <jwt>` with NO `Bearer `
     // prefix, so `credentialKey` sees no credential and every webhook falls

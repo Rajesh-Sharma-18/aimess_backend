@@ -60,6 +60,16 @@ model Livestream {
   // approach community-service uses for Community.invitationCode, because
   // Prisma cannot express sparse indexes for MongoDB.
   playbackId    String?
+  // Which media provider ingests and delivers this stream: "SRS" (self-hosted)
+  // or "CDN" (CDNetworks RTMP ingest + HLS/FLV delivery). Chosen at create time
+  // and never changed, because the ingest and playback URLs on this row are
+  // already minted against it.
+  //
+  // Nullable, and deliberately without a default: MongoDB does not backfill a
+  // new required field into existing documents, so a non-optional column would
+  // break reads of every stream created before this change. Absent = SRS
+  // (see isCdnStream in services/cdn.service.ts).
+  provider      String?
   status        String    @default("PENDING")
   hlsUrl        String?
   flvUrl        String?

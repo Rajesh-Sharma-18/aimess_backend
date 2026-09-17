@@ -88,6 +88,8 @@ export class StreamController {
       thumbnail: parsed.data.thumbnail,
       sourceType: parsed.data.sourceType,
       sourceUrl: parsed.data.sourceUrl,
+      ingest: parsed.data.ingest,
+      provider: parsed.data.provider,
     });
     void this.livestreamService.rememberHostSession(
       result.id,
