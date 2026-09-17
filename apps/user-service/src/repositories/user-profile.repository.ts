@@ -21,6 +21,39 @@ import {
 /** Maximum users returned by findAllActiveExcept — prevents full-table scans on large deployments. */
 const AUTO_CONNECT_USER_LIMIT = 10_000;
 
+/**
+ * The account-state half of "may a viewer-facing listing return this row at
+ * all" — merged into EVERY people-discovery query below (search, the exact
+ * -handle head, recent searches, the friends/"Add Members" picker and their
+ * count twins), so a single rule decides discoverability instead of each query
+ * restating it.
+ *
+ * BANNED is the permanent Super Admin system ban, mirrored here from backoffice
+ * over `AdminSetProfileStatus`. A banned account cannot log in, cannot accept a
+ * friend request and cannot be added to anything, so surfacing it in people
+ * search only leaks the existence of a moderated account. Excluding it in the
+ * WHERE (rather than dropping rows from an already-paginated page) is what
+ * keeps `count`, `hasMore` and the keyset cursor honest — a post-filter would
+ * return short pages and over-report totals.
+ *
+ * Deliberately NOT excluded:
+ *   - SUSPENDED — a time-boxed restriction. NOTHING in this service expires it
+ *     (there is no sweeper anywhere; the mirror only changes when an admin acts),
+ *     so hiding it here would turn a three-day suspension into permanent
+ *     invisibility. That is a separate decision from this one, and it is not
+ *     the one the ban needs.
+ *   - DELETED — already covered by the `deletedAt: null` each query carries;
+ *     the status is the same fact written twice.
+ *
+ * Admin surfaces (`adminGetProfile`, `adminSearchProfileIds`,
+ * `adminGetProfilesByIds`) and the identity RPC (`findManyByUserIds`) must NOT
+ * use this — the panel has to keep finding banned users, and history has to keep
+ * rendering their name.
+ */
+const DISCOVERABLE_ACCOUNT_WHERE = {
+  status: { not: ProfileStatus.BANNED },
+} as const satisfies Prisma.UserProfileWhereInput;
+
 const DISCOVERY_SELECT = {
   userId: true,
   username: true,
@@ -150,6 +183,7 @@ export const userProfileRepository = {
       where: {
         userId: { in: userIds },
         deletedAt: null,
+        ...DISCOVERABLE_ACCOUNT_WHERE,
         ...discoverableWhere(viewer),
       },
       select: DISCOVERY_SELECT,
@@ -179,6 +213,7 @@ export const userProfileRepository = {
       where: {
         normalizedUsername,
         deletedAt: null,
+        ...DISCOVERABLE_ACCOUNT_WHERE,
         ...(alwaysVisibleIds?.length
           ? {
               OR: [
@@ -286,6 +321,7 @@ export const userProfileRepository = {
       where: {
         userId: { in: userIds },
         deletedAt: null,
+        ...DISCOVERABLE_ACCOUNT_WHERE,
         ...buildSearchFilter(q),
       },
       select: DISCOVERY_SELECT,
@@ -302,6 +338,7 @@ export const userProfileRepository = {
       where: {
         userId: { in: userIds },
         deletedAt: null,
+        ...DISCOVERABLE_ACCOUNT_WHERE,
         ...buildSearchFilter(q),
       },
     });
@@ -329,6 +366,7 @@ export const userProfileRepository = {
       where: {
         userId: { notIn: excludeIds },
         deletedAt: null,
+        ...DISCOVERABLE_ACCOUNT_WHERE,
         ...buildDiscoveryWhere(q, viewer, cursor, alwaysVisibleIds),
       },
       select: DISCOVERY_SELECT,
@@ -349,6 +387,7 @@ export const userProfileRepository = {
       where: {
         userId: { notIn: excludeIds },
         deletedAt: null,
+        ...DISCOVERABLE_ACCOUNT_WHERE,
         ...buildDiscoveryWhere(q, viewer),
       },
     });
@@ -435,7 +474,7 @@ export const userProfileRepository = {
 
   /**
    * Admin mirror of an account ban/suspend/reinstate (backoffice → gRPC
-   * AdminSetProfileStatus). Only ACTIVE <-> SUSPENDED; a DELETED profile is
+   * AdminSetProfileStatus). ACTIVE, SUSPENDED or BANNED; a DELETED profile is
    * terminal and is left alone so a late ban event cannot resurrect it.
    */
   adminSetStatus(userId: string, status: ProfileStatus) {

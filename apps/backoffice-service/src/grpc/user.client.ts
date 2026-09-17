@@ -172,7 +172,7 @@ export const userClient = {
    */
   async adminSetProfileStatus(
     userId: string,
-    status: "ACTIVE" | "SUSPENDED"
+    status: "ACTIVE" | "SUSPENDED" | "BANNED"
   ): Promise<void> {
     await adminSetProfileStatusBreaker.fire({ userId, status });
   },

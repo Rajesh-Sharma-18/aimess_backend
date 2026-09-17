@@ -116,7 +116,6 @@ function buildActor(actor: RequestAdmin): Actor {
   return { actorId: actor.id, at: Date.now() };
 }
 
-
 /**
  * Read a user's status BEFORE this request changes anything, and materialize
  * the admin_db mirror row from that reading.
@@ -186,17 +185,26 @@ function toIso(ms: number): string {
  * community-service and chat-service, so invites, group adds and DM invite
  * cards keep targeting an account that can never act on them.
  *
+ * The exact status is forwarded rather than a restricted/not-restricted
+ * boolean. Collapsing both onto SUSPENDED is what left user-service unable to
+ * tell a permanent ban from a three-day suspension, and people search could
+ * therefore exclude neither without also excluding the other — which is how a
+ * banned account stayed discoverable to every normal user.
+ *
  * Best-effort, exactly like the space cascade: the restriction has already
  * landed in auth-service and must not be rolled back because user-service
  * blipped.
  */
-function mirrorProfileStatus(userId: string, restricted: boolean): void {
+function mirrorProfileStatus(
+  userId: string,
+  status: "ACTIVE" | "SUSPENDED" | "BANNED"
+): void {
   void userClient
-    .adminSetProfileStatus(userId, restricted ? "SUSPENDED" : "ACTIVE")
+    .adminSetProfileStatus(userId, status)
     .catch((err: unknown) => {
       logger.error("user-service profile status mirror failed", {
         userId,
-        restricted,
+        status,
         err,
       });
     });
@@ -691,7 +699,9 @@ export const userManagementService = {
       userId,
       timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
     );
-    mirrorProfileStatus(userId, true);
+    // Same split the status above already made: a `durationDays` ban is a
+    // suspension, and only the permanent one removes the user from discovery.
+    mirrorProfileStatus(userId, timeBoxed ? "SUSPENDED" : "BANNED");
 
     return result;
   },
@@ -751,7 +761,7 @@ export const userManagementService = {
     });
     // Best-effort — see banUser's identical call for why.
     void streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
-    mirrorProfileStatus(userId, true);
+    mirrorProfileStatus(userId, "SUSPENDED");
 
     return result;
   },
@@ -853,7 +863,7 @@ export const userManagementService = {
       at: toIso(ref.at),
       banType: "SYSTEM",
     });
-    mirrorProfileStatus(userId, false);
+    mirrorProfileStatus(userId, "ACTIVE");
 
     return result;
   },
@@ -987,7 +997,7 @@ export const userManagementService = {
     // Puts the user-service profile status mirror back to ACTIVE. The
     // `user.restored` event has already cleared the profile's own deletedAt;
     // this is the same suspended/active mirror the ban and unban maintain.
-    mirrorProfileStatus(userId, false);
+    mirrorProfileStatus(userId, "ACTIVE");
 
     return result;
   },
@@ -1070,7 +1080,7 @@ export const userManagementService = {
         item.userId,
         timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
       );
-      mirrorProfileStatus(item.userId, true);
+      mirrorProfileStatus(item.userId, timeBoxed ? "SUSPENDED" : "BANNED");
     }
 
     return result;
@@ -1121,7 +1131,7 @@ export const userManagementService = {
         actorId: ref.actorId,
         at: toIso(ref.at),
       });
-      mirrorProfileStatus(item.userId, false);
+      mirrorProfileStatus(item.userId, "ACTIVE");
     }
 
     return result;
