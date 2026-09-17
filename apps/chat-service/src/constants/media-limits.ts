@@ -96,6 +96,13 @@ const DOCUMENT_MAX_BYTES = env.CHAT_DOCUMENT_MAX_BYTES; // 25 MB document cap
 const MAX_IMAGES_PER_MESSAGE = 10;
 
 /**
+ * Upper bound for a reaction's `mediaIndex` (0-based attachment position). The
+ * per-message cap is the real gate — the service rejects an index the message has
+ * no attachment at — so this only keeps an absurd value out of the handler.
+ */
+export const CHAT_MEDIA_INDEX_MAX = MAX_IMAGES_PER_MESSAGE - 1;
+
+/**
  * Per-message-type media limits. `maxCount` caps the number of files in the
  * attachment array; `maxBytes` caps each file's size.
  */

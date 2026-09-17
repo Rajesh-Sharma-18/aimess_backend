@@ -14,6 +14,7 @@ import {
   markGroupReadBodySchema,
   reactionBodySchema,
   reactionParamSchema,
+  reactionRemoveQuerySchema,
 } from "../validators/group-message.validator.js";
 import {
   messageTimelineQuerySchema,
@@ -193,6 +194,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     authenticate,
     limits.interact,
     validateParams(reactionParamSchema),
+    validateQuery(reactionRemoveQuerySchema),
     ctrl.removeReaction
   );
 

@@ -80,6 +80,7 @@ export interface ChatClient {
     communityId: string;
     userId: string;
     emoji: string;
+    mediaIndex?: number;
   }): Promise<unknown>;
   editCommunityMessage(params: {
     messageId: string;
@@ -103,6 +104,16 @@ export interface ChatClient {
     messageId: string;
     communityId: string;
     requesterId: string;
+    mediaIndex?: number;
+  }): Promise<unknown>;
+  getCommunityMessageReactionsPage(params: {
+    messageId: string;
+    communityId: string;
+    requesterId: string;
+    emoji?: string;
+    cursor?: string;
+    limit?: number;
+    siblingMessageIds?: string[];
   }): Promise<unknown>;
   forwardCommunityMessage(params: {
     sourceMessageId: string;
@@ -423,6 +434,7 @@ export function createChatClient(): ChatClient {
       communityId: string;
       userId: string;
       emoji: string;
+      mediaIndex?: number;
     }) => makeGrpcCall<unknown, unknown>(client, "reactToCommunityMessage", p)
   );
   const editMessageBreaker = makeBreaker(
@@ -465,9 +477,31 @@ export function createChatClient(): ChatClient {
         { ok?: boolean; communityId?: string; readAt?: string | number }
       >(client, "markCommunityMessageRead", p)
   );
+  const getReactionsPageBreaker = makeBreaker(
+    "chat.getCommunityMessageReactionsPage",
+    (p: {
+      messageId: string;
+      communityId: string;
+      requesterId: string;
+      emoji?: string;
+      cursor?: string;
+      limit?: number;
+      siblingMessageIds?: string[];
+    }) =>
+      makeGrpcCall<unknown, unknown>(
+        client,
+        "getCommunityMessageReactionsPage",
+        p
+      )
+  );
   const getReactionsBreaker = makeBreaker(
     "chat.getCommunityMessageReactions",
-    (p: { messageId: string; communityId: string; requesterId: string }) =>
+    (p: {
+      messageId: string;
+      communityId: string;
+      requesterId: string;
+      mediaIndex?: number;
+    }) =>
       makeGrpcCall<unknown, unknown>(client, "getCommunityMessageReactions", p)
   );
   const forwardMessageBreaker = makeBreaker(
@@ -668,6 +702,8 @@ export function createChatClient(): ChatClient {
       };
     },
     getCommunityMessageReactions: (params) => getReactionsBreaker.fire(params),
+    getCommunityMessageReactionsPage: (params) =>
+      getReactionsPageBreaker.fire(params),
     forwardCommunityMessage: (params) => forwardMessageBreaker.fire(params),
     markCommunityMessageDelivered: async (params) => {
       const res = await markDeliveredBreaker.fire(params);

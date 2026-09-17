@@ -487,10 +487,11 @@ export class CommunityMessageController {
   reactToMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { emoji, mode } = req.body as {
+    const { emoji, mode, mediaIndex } = req.body as {
       communityId: string;
       emoji: string;
       mode?: string;
+      mediaIndex?: number;
     };
 
     const result = await this.service.reactToMessage({
@@ -498,6 +499,7 @@ export class CommunityMessageController {
       userId,
       emoji,
       mode,
+      mediaIndex,
     });
 
     this.redis
@@ -509,6 +511,11 @@ export class CommunityMessageController {
             messageId: result.messageId,
             communityId: result.roomId,
             reactions: result.reactions,
+            // Present only for a per-attachment reaction; a client that does not
+            // know the field reads the event exactly as it always did.
+            ...(result.mediaIndex !== null
+              ? { mediaIndex: result.mediaIndex }
+              : {}),
             // Zero-loss CHANGE cursor for live gap detection.
             revision: result.revision,
           },
