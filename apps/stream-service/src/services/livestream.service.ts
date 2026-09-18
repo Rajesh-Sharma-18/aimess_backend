@@ -1091,6 +1091,9 @@ export class LivestreamService {
       // MALB's StopLivestreaming (POST /api/live/stop, type=publish) is the
       // disconnect we can call. Best-effort and rate-limited (1/5min), so only
       // fired from the explicit end paths — see kickCdnPublisher above.
+      logger.info(
+        `AIMESS_CDN_END stream=${stream.id} name=${resolveSrsName(stream)} reason=${reason} kickCdnPublisher=${kickCdnPublisher} — ${kickCdnPublisher ? "calling StopLivestreaming" : "NOT kicking (natural end)"}`
+      );
       if (kickCdnPublisher) {
         void this.cdnService.stopPublishing(resolveSrsName(stream));
       }
