@@ -28,6 +28,11 @@ export function markAlbumIdempotentReplay<T extends object>(
 
 const ALBUM_ID_PREFIX = "album-";
 
+/** A reply aimed at a whole collage carries `album-<id>`; a bare id quotes that one photo. */
+export function isAlbumRowId(id: string | null | undefined): boolean {
+  return !!id && id.startsWith(ALBUM_ID_PREFIX);
+}
+
 /**
  * Resolve an album ID or a plain message ID to the underlying MongoDB ObjectId
  * string. Album IDs are client-facing composite keys of the form

@@ -87,6 +87,7 @@ import {
   markAlbumIdempotentReplay,
   resolveParentMessageId,
   resolveReplyAttachmentCount,
+  isAlbumRowId,
 } from "../lib/album-messages.js";
 import { splitDirectMediaAlbum } from "../lib/split-media-album.js";
 import {
@@ -313,7 +314,11 @@ export class PrivateMessageService {
         // Album sends are split one-row-per-file (lib/split-media-album.ts),
         // so the parent row's own content.files can never reveal the true
         // album size — look up its sibling batch for IMAGE/VIDEO parents.
-        const attachmentCountOverride = ["IMAGE", "VIDEO"].includes(
+        // Only a reply to the whole collage (`album-<id>`) quotes the album
+        // size; a bare id quotes that one photo.
+        const attachmentCountOverride =
+          isAlbumRowId(params.parentMessageId) &&
+          ["IMAGE", "VIDEO"].includes(
           normalizeMessageType(originalMsg.messageType)
         )
           ? await resolveReplyAttachmentCount(
