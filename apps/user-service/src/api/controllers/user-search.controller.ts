@@ -77,10 +77,12 @@ export const searchUsersUnified = asyncHandler(
  * on the unified search because the two page differently: people walk a keyset,
  * groups walk an offset over the caller's own membership rows.
  */
-export const searchGroups = asyncHandler(async (req: Request, res: Response) => {
-  const query = req.query as unknown as GroupSearchQuery;
-  const result = await userSearchService.searchGroups(req.auth.userId, query);
-  return res
-    .status(HTTP_STATUS.OK)
-    .json(new ApiResponse(result, t("USERS_FETCHED", req.locale)));
-});
+export const searchGroups = asyncHandler(
+  async (req: Request, res: Response) => {
+    const query = req.query as unknown as GroupSearchQuery;
+    const result = await userSearchService.searchGroups(req.auth.userId, query);
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("USERS_FETCHED", req.locale)));
+  }
+);
