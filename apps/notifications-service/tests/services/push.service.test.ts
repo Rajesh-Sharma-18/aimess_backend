@@ -506,3 +506,97 @@ describe("pushToUser — ACTIVE community membership gate", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("pushToUser — livestream rows reach the Notification Center", () => {
+  const LIVE_TYPES = [
+    CommunityEvents.LIVESTREAM_STARTED,
+    CommunityEvents.LIVESTREAM_ENDED,
+  ];
+  const liveInput = (type: string) => ({
+    userId: USER_ID,
+    category: "liveStreamEnabled" as const,
+    type,
+    title: "Community",
+    body: "Host went live",
+    data: { communityId: COMMUNITY_ID, livestreamId: "s".repeat(24) },
+  });
+
+  it.each(LIVE_TYPES)(
+    "writes exactly one inbox row and one push for %s",
+    async (type) => {
+      await pushToUser(liveInput(type));
+
+      expect(chatNotificationClient.createNotification).toHaveBeenCalledTimes(
+        1
+      );
+      expect(chatNotificationClient.createNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type,
+          data: expect.objectContaining({
+            communityId: COMMUNITY_ID,
+            livestreamId: "s".repeat(24),
+          }),
+        })
+      );
+      expect(send).toHaveBeenCalledTimes(1);
+      // Gated on the community's STREAM toggle, not its announcement one.
+      expect(checkPref).toHaveBeenCalledWith(
+        expect.objectContaining({ field: "streamEnabled" })
+      );
+    }
+  );
+
+  it.each(LIVE_TYPES)(
+    "writes nothing for %s when the user turned livestream off",
+    async (type) => {
+      userSettingsClient.getNotificationSettings.mockResolvedValue({
+        ...(await userSettingsClient.getNotificationSettings()),
+        liveStreamEnabled: false,
+      });
+
+      await pushToUser(liveInput(type));
+
+      expect(chatNotificationClient.createNotification).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(LIVE_TYPES)(
+    "writes nothing for %s to a non-ACTIVE member",
+    async (type) => {
+      checkMembership.mockResolvedValue({
+        isMember: false,
+        isBanned: true,
+        status: "BANNED",
+        role: "",
+      });
+
+      await pushToUser(liveInput(type));
+
+      expect(chatNotificationClient.createNotification).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(LIVE_TYPES)(
+    "writes nothing for %s when the community's stream toggle is off",
+    async (type) => {
+      checkPref.mockResolvedValue({ enabled: false });
+
+      await pushToUser(liveInput(type));
+
+      expect(chatNotificationClient.createNotification).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    }
+  );
+
+  it("still keeps ordinary community events out of the inbox", async () => {
+    await pushToUser({
+      ...liveInput(CommunityEvents.MEMBER_ROLE_CHANGED),
+      category: "communityEnabled",
+    });
+
+    expect(chatNotificationClient.createNotification).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});

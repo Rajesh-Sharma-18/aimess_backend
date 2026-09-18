@@ -40,9 +40,9 @@
  * the coalesced MESSAGE with skipInbox), and `chat.mention_retracted` removes it
  * on delete-for-everyone or an edit that drops the mention. `community.mention`
  * is still reserved — community chat has no mention pipeline.
- * LIVE_NOW is push-only: the livestream types below are published as push
- * only, so the bucket is defined and filterable but empty until a producer
- * writes one to the inbox.
+ * LIVE_NOW is keyed on the livestream EVENT type, never on where the stream
+ * runs: a community stream today and a group stream later both land here by
+ * adding their type to LIVE_TYPES.
  */
 /**
  * The one notification type that carries the Terminate / It's Me actions.
@@ -220,15 +220,17 @@ const isCallType = (type: string): boolean =>
 const MENTION_TYPES = ["chat.mention", "community.mention"] as const;
 
 /**
- * Livestream announcements. Published as push today (they are not in
- * `INBOX_ALLOWED_TYPES`), so this bucket lists nothing yet — but the mapping
- * is here so the day one is written to the inbox it lands under LIVE_NOW
- * instead of being swallowed by the `community.` prefix.
+ * Livestream notification types — the whole LIVE_NOW bucket. Every type here
+ * must also be in notifications-service `INBOX_ALLOWED_TYPES`, or it is pushed
+ * but never listed. A future group stream adds its own type to this list.
  */
 const LIVE_TYPES = [
   "community.livestream_started",
   "community.livestream_ended",
 ] as const;
+
+export const isLiveType = (type: string): boolean =>
+  (LIVE_TYPES as readonly string[]).includes(type);
 
 /**
  * Verbatim type strings that belong to the SYSTEM category but don't carry an
@@ -310,7 +312,7 @@ export function categorizeId(type: string): NotificationCategoryId {
   if (isCallType(type)) return "CALLS";
   // Same precedence reason as mentions — livestream types carry the
   // `community.` prefix.
-  if ((LIVE_TYPES as readonly string[]).includes(type)) return "LIVE_NOW";
+  if (isLiveType(type)) return "LIVE_NOW";
   if (type.startsWith("friend.")) return "FRIEND_REQUEST";
   if (type.startsWith("community.")) return "COMMUNITY";
   if (

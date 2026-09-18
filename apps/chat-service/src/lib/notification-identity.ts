@@ -1,3 +1,5 @@
+import { isLiveType } from "./notification-category.js";
+
 const DELETE_ON_ARRIVAL = new Set<string>([
   "friend.cancelled",
   // Group @mention removed (message deleted for everyone, or edited away).
@@ -60,6 +62,15 @@ export function resolveGroupKey(
   if (type === "auth.security_new_login") {
     const sessionId = nonEmpty(data.sessionId);
     return sessionId ? `auth:login:${sessionId}` : null;
+  }
+
+  // One card per stream per event, wherever the stream runs. Without this a
+  // community stream fell into `community:<id>:<type>` below, so the NEXT
+  // stream in the same community rewrote the previous card in place
+  // (`notification:updated`, not resurfaced) instead of arriving as new.
+  const livestreamId = nonEmpty(data.livestreamId);
+  if (livestreamId && isLiveType(type)) {
+    return `livestream:${livestreamId}:${type}`;
   }
 
   const communityId = nonEmpty(data.communityId);
