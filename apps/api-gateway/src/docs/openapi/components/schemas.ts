@@ -9178,8 +9178,8 @@ export const openApiSchemas = {
         description:
           "`@all`: notifies the whole group. No `userId`/`username` (sent ones are ignored). " +
           "Recipients are resolved by the server when the push is published: ACTIVE members at that moment, minus the sender and deleted accounts. Like a USER mention it bypasses a group mute; members who set `notifications.mentionAll: false` get no @all push. Several `@all` tokens in one message are separate entities for rendering but notify once. " +
-          "Rate limited per sender per group (default 5 per 10 minutes): over the limit the send is rejected with 429 `CHAT_MENTION_ALL_RATE_LIMITED` (with `retryAfter`) and nothing is stored. " +
-          "Edit: adding `@all` to a message that did not have it is charged the same way (over the limit → 429, edit not saved) and notifies at most once per message, skipping members already mentioned individually in the previous version; keeping or removing it notifies nobody. " +
+          "Rate limited per sender per group (default 5 per 10 minutes): over the limit the message is still stored and delivered (and individual @username mentions still push) — only the @all push is skipped. The send is never rejected for it. " +
+          "Edit: adding `@all` to a message that did not have it is charged the same way (over the limit the edit is saved, the @all push skipped) and notifies at most once per message, skipping members already mentioned individually in the previous version; keeping or removing it notifies nobody. " +
           "Forward: ALL entries are removed from the forwarded copy.",
         properties: {
           type: { type: "string", enum: ["ALL"] },
@@ -11969,7 +11969,7 @@ export const openApiSchemas = {
             type: "array",
             maxItems: 200,
             description:
-              "GROUP edits only. Re-validated against the NEW text (see ChatMessageMention). Omit to keep the previous message's still-valid mentions; send `[]` to clear them. Only members newly mentioned by the edit are notified. Adding `@all` is rate limited (429 `CHAT_MENTION_ALL_RATE_LIMITED`, edit not saved) and notifies at most once per message. More than 50 → 400 `CHAT_MENTION_LIMIT_EXCEEDED`.",
+              "GROUP edits only. Re-validated against the NEW text (see ChatMessageMention). Omit to keep the previous message's still-valid mentions; send `[]` to clear them. Only members newly mentioned by the edit are notified. Adding `@all` is rate limited (over the limit the edit is saved, only the @all push is skipped) and notifies at most once per message. More than 50 → 400 `CHAT_MENTION_LIMIT_EXCEEDED`.",
             items: { $ref: "#/components/schemas/ChatMessageMention" },
           },
         },

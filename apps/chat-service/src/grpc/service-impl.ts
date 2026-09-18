@@ -86,7 +86,11 @@ import {
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
-import { hasMentionAll, mentionedUserIdsOf } from "../lib/group-mentions.js";
+import {
+  hasMentionAll,
+  isMentionAllSuppressed,
+  mentionedUserIdsOf,
+} from "../lib/group-mentions.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { adminMentions, adminReactionCounts } from "../lib/admin-wire.js";
@@ -159,11 +163,20 @@ const APP_ERROR_STATUS_TO_GRPC: Record<number, grpc.status> = {
 function toGrpcCallbackError(err: unknown): {
   code: grpc.status;
   message: string;
+  metadata?: grpc.Metadata;
 } {
   if (isAppError(err)) {
+    // A throttle carries its wait as `retry-after` metadata so the socket ack
+    // can hand the client real seconds instead of a guess.
+    let metadata: grpc.Metadata | undefined;
+    if (err.retryAfterSec !== undefined) {
+      metadata = new grpc.Metadata();
+      metadata.set("retry-after", String(err.retryAfterSec));
+    }
     return {
       code: APP_ERROR_STATUS_TO_GRPC[err.statusCode] ?? grpc.status.INTERNAL,
       message: err.messageKey ?? "INTERNAL_ERROR",
+      ...(metadata ? { metadata } : {}),
     };
   }
   return { code: grpc.status.INTERNAL, message: "INTERNAL_ERROR" };
@@ -647,7 +660,7 @@ export function createMessagingImpl(
                   albumContents,
                   req.senderId
                 ),
-                ...(hasMentionAll(albumContents)
+                ...(hasMentionAll(albumContents) && !isMentionAllSuppressed(msg)
                   ? {
                       fetchMentionAllUserIds: () =>
                         groupRecipients().then((ids) =>

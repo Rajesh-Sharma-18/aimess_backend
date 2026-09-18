@@ -203,6 +203,23 @@ export function hasMentionAll(contents: unknown[]): boolean {
   });
 }
 
+const MENTION_ALL_SUPPRESSED = Symbol.for("aimess.chat.mentionAllSuppressed");
+
+/** Tag a sent message whose @all push the @all rate limit skipped. */
+export function markMentionAllSuppressed<T extends object>(msg: T): T {
+  (msg as Record<symbol, unknown>)[MENTION_ALL_SUPPRESSED] = true;
+  return msg;
+}
+
+/** True when this send's @all still renders but must notify nobody. */
+export function isMentionAllSuppressed(msg: unknown): boolean {
+  return (
+    typeof msg === "object" &&
+    msg !== null &&
+    (msg as Record<symbol, unknown>)[MENTION_ALL_SUPPRESSED] === true
+  );
+}
+
 /** Distinct mentioned userIds across `contents[*].mentions`, minus `excludeUserId`. */
 export function mentionedUserIdsOf(
   contents: unknown[],

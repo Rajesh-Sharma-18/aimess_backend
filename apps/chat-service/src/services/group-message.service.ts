@@ -46,10 +46,11 @@ import {
 } from "../events/publish-message-sent.js";
 import {
   hasMentionAll,
+  markMentionAllSuppressed,
   mentionedUserIdsOf,
   resolveGroupMentions,
 } from "../lib/group-mentions.js";
-import { assertMentionAllAllowed } from "../middleware/rate-limit.js";
+import { mentionAllAllowed } from "../middleware/rate-limit.js";
 import { once } from "../lib/once.js";
 import {
   normalizeMessageType,
@@ -301,11 +302,12 @@ export class GroupMessageService {
     const content: typeof params.content = { ...params.content };
     if (mentions.length > 0) content.mentions = mentions;
     else delete content.mentions;
-    // An @all pushes the whole roster: metered per (room, sender) before
-    // anything is persisted. Replays returned above and are never charged.
-    if (hasMentionAll([content])) {
-      await assertMentionAllAllowed(params.senderId, params.roomId);
-    }
+    // An @all pushes the whole roster: metered per (room, sender). Over the
+    // limit the message is still stored and delivered — only the @all push is
+    // skipped (see mentionAllAllowed). Replays returned above are never charged.
+    const mentionAllSuppressed =
+      hasMentionAll([content]) &&
+      !(await mentionAllAllowed(params.senderId, params.roomId));
 
     const parts = splitDirectMediaAlbum(
       params.messageType,
@@ -476,6 +478,7 @@ export class GroupMessageService {
     }
 
     const message = created[created.length - 1]!;
+    if (mentionAllSuppressed) markMentionAllSuppressed(message);
 
     if (params.clientMessageId) {
       const idemKey = `${params.roomId}:${params.senderId}:${params.clientMessageId}`;
@@ -1691,13 +1694,12 @@ export class GroupMessageService {
       urls: params.content.urls ?? [],
       ...(mentions.length > 0 ? { mentions } : {}),
     };
-    // Newly adding @all is charged like a send, BEFORE persisting, so a
-    // rate-limited edit changes nothing.
+    // Newly adding @all is charged like a send. Over the limit the edit is
+    // still saved; only the @all push (and its inbox row) is skipped.
     const addedAll =
-      hasMentionAll([nextContent]) && !hasMentionAll([previousContent]);
-    if (addedAll) {
-      await assertMentionAllAllowed(params.userId, message.roomId);
-    }
+      hasMentionAll([nextContent]) &&
+      !hasMentionAll([previousContent]) &&
+      (await mentionAllAllowed(params.userId, message.roomId));
     const updated = await this.messageRepo.editMessage(
       params.messageId,
       message.roomId,

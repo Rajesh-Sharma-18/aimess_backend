@@ -11,7 +11,7 @@ jest.mock("../../src/events/publish-message-sent.js", () => ({
 }));
 jest.mock("../../src/middleware/rate-limit.js", () => ({
   ...jest.requireActual("../../src/middleware/rate-limit.js"),
-  assertMentionAllAllowed: jest.fn(async () => undefined),
+  mentionAllAllowed: jest.fn(async () => true),
 }));
 
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";

@@ -81,7 +81,8 @@ export interface UserMentionDto {
 /**
  * "@all" (case-insensitive, `length = 4`): notifies every active member. No
  * userId/username — recipients are resolved by the server at publish time.
- * Rate limited per sender per room (CHAT_MENTION_ALL_RATE_LIMITED); a forward
+ * Push rate limited per sender per room (over it the message still sends, the
+ * @all push is skipped); a forward
  * strips it; an edit notifies only when it newly adds @all.
  */
 export interface AllMentionDto {

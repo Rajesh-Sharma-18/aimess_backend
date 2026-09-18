@@ -205,9 +205,16 @@ const MESSAGE_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 export function resolveGrpcAckError(err: unknown): {
   code: AckErrorCode;
   detailKey?: string;
+  /** Seconds from chat-service's `retry-after` metadata, on RATE_LIMITED. */
+  retryAfter?: number;
 } {
   const grpcErr = err as
-    | { code?: number; details?: string; message?: string }
+    | {
+        code?: number;
+        details?: string;
+        message?: string;
+        metadata?: { get?: (key: string) => unknown[] };
+      }
     | null
     | undefined;
   const mappedCode =
@@ -226,5 +233,10 @@ export function resolveGrpcAckError(err: unknown): {
   if (detailKey === "USER_BANNED") {
     return { code: "USER_BANNED", detailKey };
   }
-  return { code: mappedCode, detailKey };
+  const retryAfter = Number(grpcErr?.metadata?.get?.("retry-after")?.[0]);
+  return {
+    code: mappedCode,
+    detailKey,
+    ...(Number.isFinite(retryAfter) && retryAfter >= 0 ? { retryAfter } : {}),
+  };
 }

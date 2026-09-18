@@ -295,7 +295,7 @@ describe("gRPC editMessage — mentions", () => {
       sendRequest("grp_room")
     );
 
-    expect(editErr).toEqual({
+    expect(editErr).toMatchObject({
       code: grpc.status.RESOURCE_EXHAUSTED,
       message: "RATE_LIMITED",
     });
@@ -320,10 +320,10 @@ describe("gRPC editMessage — mentions", () => {
     };
     await expect(
       rawError(impl.editMessage as Handler, editRequest("grp_room"))
-    ).resolves.toEqual(expected);
+    ).resolves.toMatchObject(expected);
     await expect(
       rawError(impl.sendMessage as Handler, sendRequest("grp_room"))
-    ).resolves.toEqual(expected);
+    ).resolves.toMatchObject(expected);
   });
 
   it("any other edit error keeps the INTERNAL mapping", async () => {

@@ -231,6 +231,17 @@ const envSchema = z.object({
    * (local runs and CI), which is exactly where it looked like a client bug.
    */
   GLOBAL_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(200),
+  /**
+   * Outermost per-session backstop for READS (GET/HEAD and
+   * `POST /media/download-url`), per GLOBAL_RATE_LIMIT_WINDOW_MINUTES window.
+   *
+   * Reads used to share GLOBAL_RATE_LIMIT_MAX with writes, so opening a few
+   * media-heavy rooms (history + inbox + one download-url per attachment)
+   * spent the allowance the next SEND needed, and the reverse. A throttled
+   * history read is what painted an empty room. Separate buckets: reading can
+   * never block sending, and a read flood is still capped.
+   */
+  GLOBAL_READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(600),
   SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES: z.coerce
     .number()
     .int()
@@ -296,6 +307,13 @@ const envSchema = z.object({
   OTP_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(15),
   /** Per-session ceiling for read/poll endpoints. Generous by design. */
   READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
+  /**
+   * Per-session ceiling for media READS (`/media/download-url`,
+   * `/media/scan-status`, `/media/usage`). Own bucket: a room with many
+   * attachments mints one download URL each, which must not spend the budget
+   * history and inbox reads (READ_RATE_LIMIT_MAX) need, nor the upload bucket.
+   */
+  MEDIA_READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(600),
   /**
    * Per-session ceiling for presigned upload-URL minting and the calls that
    * complete an upload (`/media/upload-url`, `/media/confirm`,

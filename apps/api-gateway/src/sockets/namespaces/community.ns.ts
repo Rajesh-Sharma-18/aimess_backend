@@ -1104,8 +1104,8 @@ export function registerCommunityNamespace(
             // images, unsupported type, community not found, muted/banned,
             // etc.) when chat-service mapped it from an AppError; anything
             // unrecognized falls back to the generic SERVICE_ERROR message.
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
+            const { code, detailKey, retryAfter } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey, retryAfter);
           });
       }
     );

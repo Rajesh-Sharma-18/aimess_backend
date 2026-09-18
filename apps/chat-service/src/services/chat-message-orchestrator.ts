@@ -44,7 +44,11 @@ import {
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
-import { hasMentionAll, mentionedUserIdsOf } from "../lib/group-mentions.js";
+import {
+  hasMentionAll,
+  isMentionAllSuppressed,
+  mentionedUserIdsOf,
+} from "../lib/group-mentions.js";
 import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
 
 import type { PrivateMessageService } from "./private-message.service.js";
@@ -588,7 +592,7 @@ export class ChatMessageOrchestrator {
             : {}),
           fetchRecipients: groupRecipients,
           mentionedUserIds: mentionedUserIdsOf(albumContents, params.senderId),
-          ...(hasMentionAll(albumContents)
+          ...(hasMentionAll(albumContents) && !isMentionAllSuppressed(msg)
             ? {
                 fetchMentionAllUserIds: () =>
                   groupRecipients().then((ids) =>
