@@ -62,6 +62,7 @@ import type { CommunityMessageService } from "../services/community-message.serv
 import { resolveConversationType } from "../lib/conversation-type.js";
 import { parsePlatform } from "../lib/notification-category.js";
 import type { CommunityPinService } from "../services/community-pin.service.js";
+import type { GroupPinService } from "../services/group-pin.service.js";
 import type { NotificationRepository } from "../repositories/notification.repository.js";
 import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
 import { resolveSenderIdentity } from "../lib/resolve-sender-identity.js";
@@ -85,9 +86,14 @@ import {
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
-import { hasMentionAll, mentionedUserIdsOf } from "../lib/group-mentions.js";
+import {
+  hasMentionAll,
+  isMentionAllSuppressed,
+  mentionedUserIdsOf,
+} from "../lib/group-mentions.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
+import { adminMentions, adminReactionCounts } from "../lib/admin-wire.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { serializeNotification } from "../lib/notification-serializer.js";
 import { resolveAvatarRefresh } from "../services/notification.service.js";
@@ -157,11 +163,20 @@ const APP_ERROR_STATUS_TO_GRPC: Record<number, grpc.status> = {
 function toGrpcCallbackError(err: unknown): {
   code: grpc.status;
   message: string;
+  metadata?: grpc.Metadata;
 } {
   if (isAppError(err)) {
+    // A throttle carries its wait as `retry-after` metadata so the socket ack
+    // can hand the client real seconds instead of a guess.
+    let metadata: grpc.Metadata | undefined;
+    if (err.retryAfterSec !== undefined) {
+      metadata = new grpc.Metadata();
+      metadata.set("retry-after", String(err.retryAfterSec));
+    }
     return {
       code: APP_ERROR_STATUS_TO_GRPC[err.statusCode] ?? grpc.status.INTERNAL,
       message: err.messageKey ?? "INTERNAL_ERROR",
+      ...(metadata ? { metadata } : {}),
     };
   }
   return { code: grpc.status.INTERNAL, message: "INTERNAL_ERROR" };
@@ -189,6 +204,8 @@ export interface GrpcDeps {
   presenceService: PresenceService;
   communityMessageService: CommunityMessageService;
   communityPinService: CommunityPinService;
+  /** Active-pin summary for the read-only Backoffice group viewer's banner. */
+  groupPinService: GroupPinService;
   notificationRepo: NotificationRepository;
   chatMessageOrchestrator: ChatMessageOrchestrator;
   privateRoomService: PrivateRoomService;
@@ -643,7 +660,7 @@ export function createMessagingImpl(
                   albumContents,
                   req.senderId
                 ),
-                ...(hasMentionAll(albumContents)
+                ...(hasMentionAll(albumContents) && !isMentionAllSuppressed(msg)
                   ? {
                       fetchMentionAllUserIds: () =>
                         groupRecipients().then((ids) =>
@@ -1119,7 +1136,19 @@ export function createMessagingImpl(
             emoji: string;
             conversationType?: string;
             mode?: string;
+            /** proto3 int32 — -1 (or the 0-default from a client that omits it
+             *  entirely alongside no other media) means "the message as a whole". */
+            mediaIndex?: number;
           };
+          // Only a NON-NEGATIVE index addresses an attachment. proto3 scalars are
+          // never absent on the wire, so a client that does not know the field
+          // sends 0 — which would silently retarget every legacy reaction at
+          // photo #0. The gateway therefore sends -1 for "message-level", and
+          // anything below zero is normalized back to undefined here.
+          const reactMediaIndex =
+            typeof req.mediaIndex === "number" && req.mediaIndex >= 0
+              ? req.mediaIndex
+              : undefined;
 
           // §2.4: route group reactions to the group collection. The two services
           // expose identical react/getMessageReactions signatures.
@@ -1174,6 +1203,7 @@ export function createMessagingImpl(
             messageId: req.messageId,
             userId: req.userId,
             emoji: req.emoji,
+            mediaIndex: reactMediaIndex,
           });
 
           // V2 §2.4: broadcast the full ChatReactionGroup[] shape (emoji, count,
@@ -1193,6 +1223,9 @@ export function createMessagingImpl(
               messageId: req.messageId,
               roomId: req.conversationId,
               requesterId: req.userId,
+              // The SERVICE decides the bucket — a single-attachment message is
+              // message-level however the caller addressed it.
+              mediaIndex: toggled.mediaIndex,
             });
             reactionGroups = Object.entries(grouped.reactions).map(
               ([emoji, d]) => ({
@@ -1256,6 +1289,9 @@ export function createMessagingImpl(
                   messageId: req.messageId,
                   conversationId: req.conversationId,
                   reactions: resolvedReactionGroups,
+                  ...(toggled.mediaIndex !== null
+                    ? { mediaIndex: toggled.mediaIndex }
+                    : {}),
                 },
               })
             );
@@ -1288,6 +1324,7 @@ export function createMessagingImpl(
               userId: r.userId,
               emoji: r.emoji,
             })),
+            mediaIndex: toggled.mediaIndex ?? -1,
           });
         } catch (err) {
           logger.error(`gRPC sendReaction error: ${String(err)}`);
@@ -1602,12 +1639,18 @@ export function createMessagingImpl(
             conversationId?: string;
             conversationType?: string;
             requesterId?: string;
+            mediaIndex?: number;
           };
 
           const conversationType =
             typeof req.conversationType === "string"
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
+          // See sendReaction — proto3 sends 0 for an omitted int32.
+          const mediaIndex =
+            typeof req.mediaIndex === "number" && req.mediaIndex >= 0
+              ? req.mediaIndex
+              : undefined;
 
           // Authorize the caller against the room before reading reactor
           // identities: without this, any authenticated user who learns a
@@ -1631,11 +1674,13 @@ export function createMessagingImpl(
                   messageId: req.messageId ?? "",
                   roomId: req.conversationId ?? "",
                   requesterId: req.requesterId ?? "",
+                  mediaIndex,
                 })
               : await deps.privateMessageService.getMessageReactions({
                   messageId: req.messageId ?? "",
                   roomId: req.conversationId ?? "",
                   requesterId: req.requesterId ?? "",
+                  mediaIndex,
                 });
 
           const reactionList = Object.entries(result.reactions).map(
@@ -1680,11 +1725,17 @@ export function createMessagingImpl(
             emoji?: string;
             cursor?: string;
             limit?: number;
+            siblingMessageIds?: string[];
           };
           const conversationType =
             typeof req.conversationType === "string"
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
+          const siblingMessageIds = Array.isArray(req.siblingMessageIds)
+            ? req.siblingMessageIds.filter(
+                (id): id is string => typeof id === "string" && id.length > 0
+              )
+            : null;
 
           // Identical guard to the unpaginated read — paging must not become a
           // second, softer door onto the same reactor identities.
@@ -1697,6 +1748,7 @@ export function createMessagingImpl(
                   emoji: req.emoji || null,
                   cursor: req.cursor || null,
                   limit: req.limit || null,
+                  siblingMessageIds,
                 })
               : await deps.privateMessageService.getMessageReactionsPage({
                   messageId: req.messageId ?? "",
@@ -1705,10 +1757,16 @@ export function createMessagingImpl(
                   emoji: req.emoji || null,
                   cursor: req.cursor || null,
                   limit: req.limit || null,
+                  siblingMessageIds,
                 });
 
           callback(null, {
-            users: page.users,
+            // proto3 has no null int32, so the message/collage-level rows travel
+            // as -1 and the client maps it back — see ReactionDetailUserDto.
+            users: page.users.map((user) => ({
+              ...user,
+              mediaIndex: user.mediaIndex ?? -1,
+            })),
             nextCursor: page.nextCursor ?? "",
             hasMore: page.hasMore,
             counts: page.counts,
@@ -1718,6 +1776,58 @@ export function createMessagingImpl(
         } catch (err) {
           logger.error(`gRPC getMessageReactionsPage error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    /**
+     * Reaction details for the read-only Backoffice viewer.
+     *
+     * Same page, same aggregates and the same bounded fan-out as
+     * `getMessageReactionsPage` — the ONLY difference is that there is no
+     * requester: the Super Admin is never a room member, so there is no
+     * membership guard to pass (authorization happened at the admin API
+     * boundary, which gates this on the same permission as the transcript) and
+     * `selfEmoji` comes back empty, so the popup never renders "You" or a
+     * remove affordance. This is an inspection read and can mutate nothing.
+     */
+    adminGetMessageReactionsPage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId?: string;
+            conversationId?: string;
+            emoji?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          // GROUP only. There is no admin viewer for private DMs, so the
+          // private read keeps its participant guard with no admin bypass at
+          // all — the most privacy-sensitive surface gets no second door.
+          const page = await deps.groupMessageService.getMessageReactionsPage({
+            messageId: req.messageId ?? "",
+            roomId: req.conversationId ?? "",
+            requesterId: "",
+            emoji: req.emoji || null,
+            cursor: req.cursor || null,
+            limit: req.limit || null,
+            asAdmin: true,
+          });
+
+          callback(null, {
+            users: page.users,
+            nextCursor: page.nextCursor ?? "",
+            hasMore: page.hasMore,
+            counts: page.counts,
+            total: page.total,
+            selfEmoji: "",
+          });
+        } catch (err) {
+          logger.error(`gRPC adminGetMessageReactionsPage error: ${String(err)}`);
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -2462,6 +2572,23 @@ export function createMessagingImpl(
             req.actorAdminId ?? "",
             req.reason || undefined
           );
+          // Every 1:1 peer's open chat must drop its composer now, not on the
+          // next refetch. `self:` so presence watchers of the peer never see
+          // it; the payload says "unavailable", never "banned".
+          if (req.userId) {
+            const peers = await deps.privateRoomRepo
+              // ponytail: 1000 most recent rooms; older ones see it on refetch.
+              .findPeersForUser(req.userId, 1000)
+              .catch(() => []);
+            for (const p of peers) {
+              publishRealtimeSafe(
+                `self:${p.peerId}`,
+                "peer:unavailable",
+                { userId: req.userId, roomId: p.roomId },
+                "adminApplySystemBan"
+              );
+            }
+          }
           callback(null, {
             ok: true,
             closedGroupIds: result.closedGroupIds,
@@ -2573,16 +2700,28 @@ export function createMessagingImpl(
             groupId: string;
             cursor: string;
             limit: number;
+            aroundMessageId?: string;
+            direction?: string;
           };
           const limit = req.limit || 30;
           const parsedSeq = req.cursor ? Number(req.cursor) : NaN;
           const seq = Number.isFinite(parsedSeq) ? parsedSeq : null;
 
-          const page = await deps.groupMessageService.getMessagesForModeration({
-            roomId: req.groupId,
-            seq,
-            limit,
-          });
+          // The pin banner is read alongside every page, not just the first:
+          // the viewer can rebuild its transcript at any time (reload, jump,
+          // reconnect) and must never paint a stale pin under a fresh page.
+          const [page, pinnedMessage] = await Promise.all([
+            deps.groupMessageService.getMessagesForModeration({
+              roomId: req.groupId,
+              seq,
+              limit,
+              direction: req.direction === "after" ? "after" : "before",
+              aroundMessageId: req.aroundMessageId || null,
+            }),
+            // No userId: the admin is not a member, so no per-member Clear Chat
+            // cutoff applies to what they are allowed to see pinned.
+            deps.groupPinService.getActivePinSummary(req.groupId),
+          ]);
 
           // `page.items` are canonical enriched wire messages: attachments,
           // avatars and quote thumbnails are already presigned download URLs.
@@ -2618,10 +2757,13 @@ export function createMessagingImpl(
                   str(firstFile?.url) ||
                   str(firstFile?.objectKey),
                 attachmentsJson: JSON.stringify(files),
+                // Counts only — the reactor identities come from the paginated
+                // admin reaction-details RPC, never inline on the transcript.
                 reactionsJson: JSON.stringify(
-                  m.reactionGroups ?? m.reactions ?? []
+                  adminReactionCounts(m.reactionGroups ?? m.reactions ?? [])
                 ),
                 quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
+                mentionsJson: JSON.stringify(adminMentions(content)),
                 sentAt: Number(m.serverTs) || 0,
                 systemMessageType: str(m.systemEvent),
                 systemMetadata: m.systemData
@@ -2632,6 +2774,11 @@ export function createMessagingImpl(
             }),
             nextCursor: page.nextCursor ?? "",
             hasMore: page.hasMore,
+            newerCursor: page.newerCursor ?? "",
+            hasMoreNewer: page.hasMoreNewer,
+            pinnedMessageJson: pinnedMessage
+              ? JSON.stringify(pinnedMessage)
+              : "",
           });
         } catch (err) {
           logger.error(`gRPC adminGetGroupMessages error: ${String(err)}`);
@@ -3675,6 +3822,8 @@ export function createCommunityImpl(
             roomId: string;
             cursor: string;
             limit: number;
+            aroundMessageId?: string;
+            direction?: string;
           };
 
           const limit = req.limit || 30;
@@ -3683,6 +3832,8 @@ export function createCommunityImpl(
               roomId: req.roomId,
               cursor: req.cursor || undefined,
               limit,
+              direction: req.direction === "after" ? "after" : "before",
+              aroundMessageId: req.aroundMessageId || null,
             }),
             deps.communityPinService.getActivePinSummary(req.roomId, ""),
           ]);
@@ -3738,7 +3889,11 @@ export function createCommunityImpl(
                 const merged = sticker ? [...base, sticker] : base;
                 return JSON.stringify(merged);
               })(),
-              reactionsJson: JSON.stringify(m.reactions ?? []),
+              // Counts only — see the group viewer's equivalent. Community
+              // messages carry no mentions: @username / @all is a GROUP feature.
+              reactionsJson: JSON.stringify(
+                adminReactionCounts(m.reactionGroups ?? m.reactions)
+              ),
               quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
               sentAt:
                 m.createdAt instanceof Date
@@ -3755,6 +3910,8 @@ export function createCommunityImpl(
             })),
             nextCursor,
             hasMore,
+            newerCursor: page.newerCursor ?? "",
+            hasMoreNewer: page.hasMoreNewer,
             pinnedMessageJson: pinnedMessage
               ? JSON.stringify(pinnedMessage)
               : "",
@@ -3996,12 +4153,19 @@ export function createCommunityImpl(
             communityId: string;
             userId: string;
             emoji: string;
+            mediaIndex?: number;
           };
 
           const result = await deps.communityMessageService.reactToMessage({
             messageId: req.messageId,
             userId: req.userId,
             emoji: req.emoji,
+            // See sendReaction: proto3 sends 0 for an omitted int32, so only a
+            // non-negative index from a client that knows the field counts.
+            mediaIndex:
+              typeof req.mediaIndex === "number" && req.mediaIndex >= 0
+                ? req.mediaIndex
+                : undefined,
           });
 
           // reactToMessage already resolves avatar URLs before returning, so
@@ -4014,6 +4178,9 @@ export function createCommunityImpl(
                 messageId: result.messageId,
                 communityId: result.roomId,
                 reactions: result.reactions,
+                ...(result.mediaIndex !== null
+                  ? { mediaIndex: result.mediaIndex }
+                  : {}),
                 revision: result.revision,
               },
             })
@@ -4669,12 +4836,17 @@ export function createCommunityImpl(
             messageId: string;
             communityId: string;
             requesterId: string;
+            mediaIndex?: number;
           };
           const result = await deps.communityMessageService.getMessageReactions(
             {
               messageId: req.messageId,
               communityId: req.communityId,
               requesterId: req.requesterId,
+              mediaIndex:
+                typeof req.mediaIndex === "number" && req.mediaIndex >= 0
+                  ? req.mediaIndex
+                  : undefined,
             }
           );
           callback(null, {
@@ -4713,6 +4885,7 @@ export function createCommunityImpl(
             emoji?: string;
             cursor?: string;
             limit?: number;
+            siblingMessageIds?: string[];
           };
           const page =
             await deps.communityMessageService.getMessageReactionsPage({
@@ -4722,9 +4895,18 @@ export function createCommunityImpl(
               emoji: req.emoji || null,
               cursor: req.cursor || null,
               limit: req.limit || null,
+              siblingMessageIds: Array.isArray(req.siblingMessageIds)
+                ? req.siblingMessageIds.filter(
+                    (id): id is string => typeof id === "string" && id.length > 0
+                  )
+                : null,
             });
           callback(null, {
-            users: page.users,
+            // -1 for a message/collage-level row — see ReactionDetailUserDto.
+            users: page.users.map((user) => ({
+              ...user,
+              mediaIndex: user.mediaIndex ?? -1,
+            })),
             nextCursor: page.nextCursor ?? "",
             hasMore: page.hasMore,
             counts: page.counts,
@@ -4736,6 +4918,47 @@ export function createCommunityImpl(
             `gRPC getCommunityMessageReactionsPage error: ${String(err)}`
           );
           callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    /** Read-only Backoffice reaction details — see adminGetMessageReactionsPage. */
+    adminGetCommunityMessageReactionsPage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId?: string;
+            communityId?: string;
+            emoji?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          const page =
+            await deps.communityMessageService.getMessageReactionsPage({
+              messageId: req.messageId ?? "",
+              communityId: req.communityId ?? "",
+              requesterId: "",
+              emoji: req.emoji || null,
+              cursor: req.cursor || null,
+              limit: req.limit || null,
+              asAdmin: true,
+            });
+          callback(null, {
+            users: page.users,
+            nextCursor: page.nextCursor ?? "",
+            hasMore: page.hasMore,
+            counts: page.counts,
+            total: page.total,
+            selfEmoji: "",
+          });
+        } catch (err) {
+          logger.error(
+            `gRPC adminGetCommunityMessageReactionsPage error: ${String(err)}`
+          );
+          callback(toGrpcCallbackError(err));
         }
       })();
     },

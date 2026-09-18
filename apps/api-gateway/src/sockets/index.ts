@@ -10,6 +10,7 @@ import {
   registerUserBanListener,
 } from "./session-revoke.js";
 import { registerSessionCreatedListener } from "./session-created-listener.js";
+import { registerUserDirectoryListener } from "./user-directory-listener.js";
 import { registerChatNamespace } from "./namespaces/chat.ns.js";
 import { registerCommunityNamespace } from "./namespaces/community.ns.js";
 import { registerNotifyNamespace } from "./namespaces/notify.ns.js";
@@ -117,6 +118,9 @@ export async function setupSockets(
   // Reuses the same durable PSUBSCRIBE connection (filters by channel prefix).
   registerSessionCreatedListener(io, sessionRevokeSub);
   registerUserBanListener(io, sessionRevokeSub);
+  // Same shared connection again: a Super Admin moderation action tells every
+  // signed-in client to re-read people discovery.
+  registerUserDirectoryListener(io, sessionRevokeSub);
 
   io.engine.on(
     "connection_error",

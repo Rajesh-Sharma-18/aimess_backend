@@ -52,11 +52,18 @@ import type {
   StatusChange,
   UserDetail,
   UserDeviceRow,
+  UserDirectoryRow,
   UserListItem,
   UserStatus,
   UserStatusResult,
 } from "../types/user-management.types.js";
+import {
+  ADMIN_USERS_CHANGED,
+  publishAdminBroadcastSafe,
+  publishUserDirectoryChangedSafe,
+} from "../messaging/publish-admin-broadcast.js";
 import { auditService } from "./audit.service.js";
+import { invalidateOverviewCache } from "./dashboard.service.js";
 import { userAvatarService } from "./user-avatar.service.js";
 
 /** Audit/request context derived from `getRequestContext(req)`. */
@@ -115,6 +122,34 @@ function buildActor(actor: RequestAdmin): Actor {
   return { actorId: actor.id, at: Date.now() };
 }
 
+/**
+ * Read a user's status BEFORE this request changes anything, and materialize
+ * the admin_db mirror row from that reading.
+ *
+ * Every account mutation below writes auth-service FIRST and the mirror
+ * second, because auth-service is what actually enforces the restriction. The
+ * mirror row is created on demand for the users the ~40-row dev seed never
+ * covered, and that creation used to happen inside `setStatus` — i.e. after
+ * the auth-service write, from a live re-read that therefore returned the
+ * status this very request had just applied. The row was born already BANNED,
+ * `assertTransition` rejected BANNED→BANNED, and the ban half-landed: enforced
+ * in auth-service, mirrored without its reason or timestamp, and missing its
+ * ModerationAction, AuditLog, `admin.user_banned` event and space cascade,
+ * while the admin got "This user is already banned." on a row still rendered
+ * Active.
+ *
+ * Seeding here — from pre-mutation state, before auth-service is touched —
+ * removes that window: the transition is judged against the status the user
+ * actually had when the admin clicked.
+ */
+async function preflightStatus(
+  userId: string
+): Promise<UserDirectoryRow | null> {
+  const before = await userDirectoryRepository.getById(userId);
+  if (before) await userDirectoryRepository.ensureMirrored(before);
+  return before;
+}
+
 /** Add N days to an epoch-ms timestamp (UTC). */
 function addDays(ms: number, days: number): Date {
   const d = new Date(ms);
@@ -156,20 +191,57 @@ function toIso(ms: number): string {
  * community-service and chat-service, so invites, group adds and DM invite
  * cards keep targeting an account that can never act on them.
  *
+ * The exact status is forwarded rather than a restricted/not-restricted
+ * boolean. Collapsing both onto SUSPENDED is what left user-service unable to
+ * tell a permanent ban from a three-day suspension, and people search could
+ * therefore exclude neither without also excluding the other — which is how a
+ * banned account stayed discoverable to every normal user.
+ *
  * Best-effort, exactly like the space cascade: the restriction has already
  * landed in auth-service and must not be rolled back because user-service
  * blipped.
  */
-function mirrorProfileStatus(userId: string, restricted: boolean): void {
+function mirrorProfileStatus(
+  userId: string,
+  status: "ACTIVE" | "SUSPENDED" | "BANNED"
+): void {
   void userClient
-    .adminSetProfileStatus(userId, restricted ? "SUSPENDED" : "ACTIVE")
+    .adminSetProfileStatus(userId, status)
     .catch((err: unknown) => {
       logger.error("user-service profile status mirror failed", {
         userId,
-        restricted,
+        status,
         err,
       });
     });
+}
+
+/**
+ * Tell every OPEN admin session — and every signed-in reader — that the user
+ * directory moved, and drop the server-side stat-card snapshot the cards would
+ * otherwise be answered from.
+ *
+ * The acting panel already invalidates its own React Query cache on the
+ * mutation's response, so this is for the sessions that did NOT click: a second
+ * Super Admin with the list on screen, this admin's other tab, the Dashboard in
+ * the background. None of them poll (`refetchOnWindowFocus` is off panel-wide),
+ * so before this the only way they learned about a ban was a manual reload.
+ *
+ * Called ONCE per admin operation — including once after a bulk loop, not once
+ * per target, because the payload is empty and 100 identical bumps would buy
+ * exactly one refetch's worth of truth at 100x the cost.
+ *
+ * Both halves are best-effort and deliberately un-awaited: the moderation write
+ * has already committed and must not be rolled back because Redis blipped.
+ */
+function announceUserDirectoryChange(): void {
+  publishAdminBroadcastSafe(ADMIN_USERS_CHANGED);
+  // The website leg: a banned account is filtered out of people search by the
+  // query itself, but a reader whose search panel was already open holds a
+  // cached page that nothing on the client would otherwise re-read. This is the
+  // signal that makes it re-read.
+  publishUserDirectoryChangedSafe();
+  void invalidateOverviewCache();
 }
 
 export const userManagementService = {
@@ -525,7 +597,7 @@ export const userManagementService = {
     }
 
     const ref = buildActor(actor);
-    const before = await userDirectoryRepository.getById(userId);
+    const before = await preflightStatus(userId);
 
     const timeBoxed = input.durationDays != null && input.durationDays > 0;
     const change: StatusChange = timeBoxed
@@ -661,7 +733,10 @@ export const userManagementService = {
       userId,
       timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
     );
-    mirrorProfileStatus(userId, true);
+    // Same split the status above already made: a `durationDays` ban is a
+    // suspension, and only the permanent one removes the user from discovery.
+    mirrorProfileStatus(userId, timeBoxed ? "SUSPENDED" : "BANNED");
+    announceUserDirectoryChange();
 
     return result;
   },
@@ -673,7 +748,7 @@ export const userManagementService = {
     ctx: RequestCtx
   ): Promise<UserStatusResult> {
     const ref = buildActor(actor);
-    const before = await userDirectoryRepository.getById(userId);
+    const before = await preflightStatus(userId);
     const suspendedUntil = addDays(ref.at, input.durationDays);
 
     const result = await userDirectoryRepository.setStatus(userId, {
@@ -721,7 +796,8 @@ export const userManagementService = {
     });
     // Best-effort — see banUser's identical call for why.
     void streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
-    mirrorProfileStatus(userId, true);
+    mirrorProfileStatus(userId, "SUSPENDED");
+    announceUserDirectoryChange();
 
     return result;
   },
@@ -749,7 +825,7 @@ export const userManagementService = {
     }
 
     const ref = buildActor(actor);
-    const before = await userDirectoryRepository.getById(userId);
+    const before = await preflightStatus(userId);
 
     // Same pre-flight as the ban, for the same reason: the mirror rejects
     // ACTIVE -> ACTIVE, and that rejection must not land after auth-service has
@@ -823,7 +899,8 @@ export const userManagementService = {
       at: toIso(ref.at),
       banType: "SYSTEM",
     });
-    mirrorProfileStatus(userId, false);
+    mirrorProfileStatus(userId, "ACTIVE");
+    announceUserDirectoryChange();
 
     return result;
   },
@@ -867,7 +944,7 @@ export const userManagementService = {
     ctx: RequestCtx
   ): Promise<UserStatusResult> {
     const ref = buildActor(actor);
-    const before = await userDirectoryRepository.getById(userId);
+    const before = await preflightStatus(userId);
 
     if (!before) {
       throw new NotFoundError("USER_NOT_FOUND");
@@ -957,7 +1034,8 @@ export const userManagementService = {
     // Puts the user-service profile status mirror back to ACTIVE. The
     // `user.restored` event has already cleared the profile's own deletedAt;
     // this is the same suspended/active mirror the ban and unban maintain.
-    mirrorProfileStatus(userId, false);
+    mirrorProfileStatus(userId, "ACTIVE");
+    announceUserDirectoryChange();
 
     return result;
   },
@@ -1040,8 +1118,9 @@ export const userManagementService = {
         item.userId,
         timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
       );
-      mirrorProfileStatus(item.userId, true);
+      mirrorProfileStatus(item.userId, timeBoxed ? "SUSPENDED" : "BANNED");
     }
+    announceUserDirectoryChange();
 
     return result;
   },
@@ -1091,8 +1170,9 @@ export const userManagementService = {
         actorId: ref.actorId,
         at: toIso(ref.at),
       });
-      mirrorProfileStatus(item.userId, false);
+      mirrorProfileStatus(item.userId, "ACTIVE");
     }
+    announceUserDirectoryChange();
 
     return result;
   },

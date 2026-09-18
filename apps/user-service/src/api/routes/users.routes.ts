@@ -5,7 +5,10 @@ import { getPublicProfile } from "../controllers/profile.controller.js";
 import { validateParams } from "../middleware/validate-params.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
-import { publicProfileParamsSchema } from "../validators/profile.validator.js";
+import {
+  publicProfileParamsSchema,
+  publicProfileQuerySchema,
+} from "../validators/profile.validator.js";
 import { searchUsersQuerySchema } from "../validators/user-discovery.validator.js";
 
 export const usersRoutes: IRouter = Router();
@@ -24,5 +27,6 @@ usersRoutes.get(
   "/:userId",
   authenticateAccessToken,
   validateParams(publicProfileParamsSchema),
+  validateQuery(publicProfileQuerySchema),
   getPublicProfile
 );

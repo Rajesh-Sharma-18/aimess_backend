@@ -121,6 +121,8 @@ export interface SendReactionParams {
   conversationType?: string;
   /** "set" => caller ends up with exactly `emoji`; default "toggle" is the legacy per-emoji flip. */
   mode?: string;
+  /** -1 = the message as a whole; 0-based attachment index otherwise. */
+  mediaIndex?: number;
 }
 export interface SendReactionResult {
   messageId: string;
@@ -252,6 +254,8 @@ export interface GetMessageReactionsParams {
   conversationId: string;
   conversationType?: string;
   requesterId: string;
+  /** -1 = the message as a whole; 0-based attachment index otherwise. */
+  mediaIndex?: number;
 }
 export interface ReactionUserDto {
   userId: string;
@@ -281,12 +285,22 @@ export interface GetMessageReactionsPageParams {
   emoji?: string;
   cursor?: string;
   limit?: number;
+  /** The collage's other members, when the popup was opened on one. */
+  siblingMessageIds?: string[];
 }
 export interface ReactionDetailUserDto {
   userId: string;
   displayName: string;
   avatar: string;
   emoji: string;
+  /** The message this reaction sits on — a collage's page spans several. */
+  messageId: string;
+  /**
+   * The attachment it names, or null for the message/collage as a whole. The
+   * wire carries -1 for null (proto3 has no absent int32); normalized here so no
+   * consumer has to know that.
+   */
+  mediaIndex: number | null;
 }
 export interface ReactionCountDto {
   emoji: string;
@@ -305,7 +319,15 @@ export interface GetMessageReactionsPageResult {
 const normalizeReactionPage = (
   raw: GetMessageReactionsPageResult
 ): GetMessageReactionsPageResult => ({
-  users: raw.users ?? [],
+  users: (raw.users ?? []).map((user) => ({
+    ...user,
+    messageId: user.messageId ?? "",
+    // -1 on the wire means "the message as a whole" — see ReactionDetailUserDto.
+    mediaIndex:
+      typeof user.mediaIndex === "number" && user.mediaIndex >= 0
+        ? user.mediaIndex
+        : null,
+  })),
   nextCursor: raw.nextCursor ?? "",
   hasMore: Boolean(raw.hasMore),
   counts: (raw.counts ?? []).map((c) => ({
@@ -632,6 +654,11 @@ export function createMessagingClient(): MessagingClient {
         emoji: p.emoji,
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
         mode: String(p.mode ?? "").toLowerCase() === "set" ? "set" : "toggle",
+        // Which attachment the reaction names. This payload is built field by
+        // field, so omitting it does not mean "message-level" — proto3 would
+        // decode the absent int32 as 0 and every reaction would land on the
+        // FIRST photo. -1 is the sentinel the contract defines for the message.
+        mediaIndex: p.mediaIndex ?? -1,
       });
     }
   );
@@ -724,6 +751,8 @@ export function createMessagingClient(): MessagingClient {
         conversationId: p.conversationId,
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
         requesterId: p.requesterId,
+        // -1 = the message as a whole; see the reaction breaker above.
+        mediaIndex: p.mediaIndex ?? -1,
       });
     }
   );
@@ -744,6 +773,9 @@ export function createMessagingClient(): MessagingClient {
           emoji: p.emoji ?? "",
           cursor: p.cursor ?? "",
           limit: p.limit ?? 0,
+          // The collage's other members. This payload is built field by field,
+          // so anything not named here never reaches chat-service.
+          siblingMessageIds: p.siblingMessageIds ?? [],
         }
       );
       return normalizeReactionPage(raw);

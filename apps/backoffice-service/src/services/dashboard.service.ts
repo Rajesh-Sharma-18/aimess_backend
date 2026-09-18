@@ -96,6 +96,34 @@ async function writeCache(key: string, value: unknown): Promise<void> {
 }
 
 /**
+ * Drop the cached stat-card snapshot so the NEXT read recomputes it.
+ *
+ * The 10s TTL is a thundering-herd guard for a fan-out across five services,
+ * not a staleness budget for moderation: `bannedUsers` and `totalUsers` move
+ * the instant an admin clicks Ban, and the panel invalidates its own query on
+ * that same click. Without this, that refetch is answered from the pre-ban
+ * snapshot and the cards keep the old numbers for up to another 10s — for the
+ * admin who just watched the row flip to Banned.
+ *
+ * Targeted: one key, and only the key whose inputs actually changed. The charts
+ * keys are deliberately left alone — they are day-bucketed series that a single
+ * ban does not move.
+ *
+ * Best-effort, like every other cache touch here: a failed DEL costs the TTL,
+ * never the write that preceded it.
+ */
+export async function invalidateOverviewCache(): Promise<void> {
+  try {
+    await redis.del(OVERVIEW_CACHE_KEY);
+  } catch (err) {
+    logger.warn(
+      `dashboard cache invalidate failed (${OVERVIEW_CACHE_KEY})`,
+      err
+    );
+  }
+}
+
+/**
  * Map a dashboard `period` to an inclusive [startDate, endDate] UTC date range
  * (YYYY-MM-DD, DAY granularity).
  *   - daily:   the last 15 days ending today      → 15 daily points

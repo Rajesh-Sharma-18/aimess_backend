@@ -226,11 +226,23 @@ const envSchema = z.object({
    * user action. Sending one 10-item album costs 20 requests in the media write
    * bucket and, whenever ClamAV is on, roughly a dozen scan-status polls per
    * item on top — so a backstop of 100 rejected the album itself, not a flood.
-   * Every deployment config in the repo already sets 200 explicitly; the
-   * default now agrees with them instead of tripping only where nobody set it
-   * (local runs and CI), which is exactly where it looked like a client bug.
+   *
+   * Now WRITES only (reads have GLOBAL_READ_RATE_LIMIT_MAX) and 300, not 200:
+   * it sits outside chat-service's 300/min send bucket, and at 200 the REST
+   * send path was capped by the backstop before the send bucket could apply.
    */
-  GLOBAL_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(200),
+  GLOBAL_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
+  /**
+   * Outermost per-session backstop for READS (GET/HEAD and
+   * `POST /media/download-url`), per GLOBAL_RATE_LIMIT_WINDOW_MINUTES window.
+   *
+   * Reads used to share GLOBAL_RATE_LIMIT_MAX with writes, so opening a few
+   * media-heavy rooms (history + inbox + one download-url per attachment)
+   * spent the allowance the next SEND needed, and the reverse. A throttled
+   * history read is what painted an empty room. Separate buckets: reading can
+   * never block sending, and a read flood is still capped.
+   */
+  GLOBAL_READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(600),
   SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES: z.coerce
     .number()
     .int()
@@ -296,6 +308,13 @@ const envSchema = z.object({
   OTP_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(15),
   /** Per-session ceiling for read/poll endpoints. Generous by design. */
   READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
+  /**
+   * Per-session ceiling for media READS (`/media/download-url`,
+   * `/media/scan-status`, `/media/usage`). Own bucket: a room with many
+   * attachments mints one download URL each, which must not spend the budget
+   * history and inbox reads (READ_RATE_LIMIT_MAX) need, nor the upload bucket.
+   */
+  MEDIA_READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(600),
   /**
    * Per-session ceiling for presigned upload-URL minting and the calls that
    * complete an upload (`/media/upload-url`, `/media/confirm`,

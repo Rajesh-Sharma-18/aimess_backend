@@ -120,6 +120,12 @@ export type PublicUserProfileData = {
    * Both flags are true under a mutual block.
    */
   isBlockedByPeer: boolean;
+  /**
+   * The account is platform-banned. Only ever true for a viewer who already
+   * has a private conversation with it (everyone else gets 404). Clients show
+   * the profile read-only: no message, call, add-friend or presence.
+   */
+  isBanned: boolean;
   relationship: {
     friendshipId: string | null;
     status: string;

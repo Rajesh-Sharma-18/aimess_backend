@@ -5,6 +5,7 @@ import {
   disbandGroup,
   getGroupConversationMessages,
   getGroupDetails,
+  getGroupMessageReactions,
   listGroupMembers,
   listGroups,
   removeGroupMember,
@@ -20,8 +21,10 @@ import {
   disbandGroupSchema,
   groupIdParamSchema,
   groupMemberParamSchema,
+  groupMessageParamSchema,
   groupMessagesQuerySchema,
   listGroupMembersQuerySchema,
+  messageReactionsQuerySchema,
   listGroupsQuerySchema,
   removeGroupMemberSchema,
 } from "../validators/index.js";
@@ -65,6 +68,18 @@ groupRoutes.get(
   validateParams(groupIdParamSchema),
   validateQuery(groupMessagesQuerySchema),
   getGroupConversationMessages
+);
+
+// Reaction Details popup — one keyset page of the reactor list plus aggregate
+// counts. Same permission as the transcript itself: the reactor identities are
+// part of the same conversation the viewer is already authorized to read, and
+// there is no write counterpart anywhere on this router.
+groupRoutes.get(
+  "/groups/:groupId/messages/:messageId/reactions",
+  requirePermission(PERMISSIONS.GROUPS_VIEW),
+  validateParams(groupMessageParamSchema),
+  validateQuery(messageReactionsQuerySchema),
+  getGroupMessageReactions
 );
 
 // Moderate. Destructive lifecycle actions are POST /<resource>/:id/<verb>.

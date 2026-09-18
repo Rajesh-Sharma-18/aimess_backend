@@ -6,6 +6,7 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import { filterBannedUserIds } from "@aimess/redis";
 
 import { RECALC_CAS_ATTEMPTS } from "../lib/last-activity-guard.js";
 import {
@@ -46,10 +47,11 @@ import {
 } from "../events/publish-message-sent.js";
 import {
   hasMentionAll,
+  markMentionAllSuppressed,
   mentionedUserIdsOf,
   resolveGroupMentions,
 } from "../lib/group-mentions.js";
-import { assertMentionAllAllowed } from "../middleware/rate-limit.js";
+import { mentionAllAllowed } from "../middleware/rate-limit.js";
 import { once } from "../lib/once.js";
 import {
   normalizeMessageType,
@@ -58,9 +60,14 @@ import {
   buildReplyQuoteSnapshot,
   buildReplyPreviewText,
   buildReactionGroups,
+  buildMediaReactionGroups,
   reactionUserIdMap,
   toggleStoredReaction,
   setStoredReaction,
+  toggleStoredMediaReaction,
+  setStoredMediaReaction,
+  mediaReactionBucket,
+  resolveMediaReactionIndex,
   toWireMessage,
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
@@ -107,6 +114,7 @@ import {
   markAlbumIdempotentReplay,
   resolveParentMessageId,
   resolveReplyAttachmentCount,
+  isAlbumRowId,
 } from "../lib/album-messages.js";
 import { splitDirectMediaAlbum } from "../lib/split-media-album.js";
 import {
@@ -144,6 +152,10 @@ import {
   buildReactionDetailsPage,
   type ReactionDetailsPage,
 } from "../lib/reaction-index.js";
+import {
+  EMPTY_MODERATION_PAGE,
+  type ModerationMessagePage,
+} from "../lib/moderation-page.js";
 
 /** Claim-key suffix recording that a message's @all already pushed. */
 const MENTION_ALL_CLAIM = "ALL";
@@ -292,11 +304,12 @@ export class GroupMessageService {
     const content: typeof params.content = { ...params.content };
     if (mentions.length > 0) content.mentions = mentions;
     else delete content.mentions;
-    // An @all pushes the whole roster: metered per (room, sender) before
-    // anything is persisted. Replays returned above and are never charged.
-    if (hasMentionAll([content])) {
-      await assertMentionAllAllowed(params.senderId, params.roomId);
-    }
+    // An @all pushes the whole roster: metered per (room, sender). Over the
+    // limit the message is still stored and delivered — only the @all push is
+    // skipped (see mentionAllAllowed). Replays returned above are never charged.
+    const mentionAllSuppressed =
+      hasMentionAll([content]) &&
+      !(await mentionAllAllowed(params.senderId, params.roomId));
 
     const parts = splitDirectMediaAlbum(
       params.messageType,
@@ -315,7 +328,11 @@ export class GroupMessageService {
         // Album sends are split one-row-per-file (lib/split-media-album.ts),
         // so the parent row's own content.files can never reveal the true
         // album size — look up its sibling batch for IMAGE/VIDEO parents.
-        const attachmentCountOverride = ["IMAGE", "VIDEO"].includes(
+        // Only a reply to the whole collage (`album-<id>`) quotes the album
+        // size; a bare id quotes that one photo.
+        const attachmentCountOverride =
+          isAlbumRowId(params.parentMessageId) &&
+          ["IMAGE", "VIDEO"].includes(
           normalizeMessageType(originalMsg.messageType)
         )
           ? await resolveReplyAttachmentCount(
@@ -467,6 +484,7 @@ export class GroupMessageService {
     }
 
     const message = created[created.length - 1]!;
+    if (mentionAllSuppressed) markMentionAllSuppressed(message);
 
     if (params.clientMessageId) {
       const idemKey = `${params.roomId}:${params.senderId}:${params.clientMessageId}`;
@@ -935,30 +953,81 @@ export class GroupMessageService {
    */
   async getMessagesForModeration(params: {
     roomId: string;
-    /** before_seq boundary; null = newest page. */
+    /** Seq boundary; null = newest page. */
     seq: number | null;
     limit: number;
-  }): Promise<{
-    items: Array<Record<string, unknown>>;
-    hasMore: boolean;
-    nextCursor: string | null;
-  }> {
+    /** "after" walks forward (newer); default "before". */
+    direction?: "before" | "after";
+    /**
+     * Jump-to-message: return a window CENTRED on this message instead of a
+     * page, with continuation cursors both ways. Overrides seq/direction.
+     */
+    aroundMessageId?: string | null;
+  }): Promise<ModerationMessagePage> {
+    // Reuse the canonical resolve-on-read hydrator so attachments, sender/reaction
+    // avatars and quote thumbnails come back as presigned download URLs (not raw
+    // object keys) — same wire shape the member read + socket use, no viewer.
+    if (params.aroundMessageId) {
+      const anchor = await this.messageRepo.findById(params.aroundMessageId);
+      // A deleted-for-everyone anchor is absent from the window query too, so
+      // there would be nothing to scroll to — report it as not found and let
+      // the viewer show its "message unavailable" state.
+      if (!anchor || anchor.roomId !== params.roomId || anchor.isDeleted) {
+        return { ...EMPTY_MODERATION_PAGE, found: false };
+      }
+      const rows = await this.messageRepo.findAroundSeq({
+        userId: "",
+        roomId: params.roomId,
+        anchorSeq: anchor.sequenceNumber,
+        limit: params.limit,
+      });
+      const cursors = await computeSeqAroundCursors(rows, (direction, seq) =>
+        this.messageRepo.findByRoomIdSeq({
+          userId: "",
+          roomId: params.roomId,
+          direction,
+          seq,
+          limit: 1,
+        })
+      );
+      return {
+        items: await this.enrichForWire(rows),
+        hasMore: cursors.hasMoreOlder,
+        nextCursor: cursors.olderCursor,
+        hasMoreNewer: cursors.hasMoreNewer,
+        newerCursor: cursors.newerCursor,
+        found: true,
+      };
+    }
+
+    const direction = params.direction === "after" ? "after" : "before";
     const rows = await this.messageRepo.findByRoomIdSeq({
       userId: "",
       roomId: params.roomId,
-      direction: "before",
+      direction,
       seq: params.seq,
       limit: params.limit,
     });
     const hasMore = rows.length > params.limit;
     const page = rows.slice(0, params.limit);
     const last = page[page.length - 1];
-    const nextCursor = hasMore && last ? String(last.sequenceNumber) : null;
-    // Reuse the canonical resolve-on-read hydrator so attachments, sender/reaction
-    // avatars and quote thumbnails come back as presigned download URLs (not raw
-    // object keys) — same wire shape the member read + socket use, no viewer.
+    const boundary = hasMore && last ? String(last.sequenceNumber) : null;
     const items = await this.enrichForWire(page);
-    return { items, hasMore, nextCursor };
+    return direction === "after"
+      ? {
+          items,
+          hasMore: false,
+          nextCursor: null,
+          hasMoreNewer: hasMore,
+          newerCursor: boundary,
+        }
+      : {
+          items,
+          hasMore,
+          nextCursor: boundary,
+          hasMoreNewer: false,
+          newerCursor: null,
+        };
   }
 
   /** Raw message lookup — the path-param delete route resolves its room from the message. */
@@ -1631,13 +1700,12 @@ export class GroupMessageService {
       urls: params.content.urls ?? [],
       ...(mentions.length > 0 ? { mentions } : {}),
     };
-    // Newly adding @all is charged like a send, BEFORE persisting, so a
-    // rate-limited edit changes nothing.
+    // Newly adding @all is charged like a send. Over the limit the edit is
+    // still saved; only the @all push (and its inbox row) is skipped.
     const addedAll =
-      hasMentionAll([nextContent]) && !hasMentionAll([previousContent]);
-    if (addedAll) {
-      await assertMentionAllAllowed(params.userId, message.roomId);
-    }
+      hasMentionAll([nextContent]) &&
+      !hasMentionAll([previousContent]) &&
+      (await mentionAllAllowed(params.userId, message.roomId));
     const updated = await this.messageRepo.editMessage(
       params.messageId,
       message.roomId,
@@ -1827,36 +1895,65 @@ export class GroupMessageService {
   private async reactCas(
     messageId: string,
     userId: string,
-    emoji: string
-  ): Promise<{ message: GroupMessage; added: boolean }> {
+    emoji: string,
+    mediaIndex?: number | null
+  ): Promise<{ message: GroupMessage; added: boolean; mediaIndex: number | null }> {
     const MAX_ATTEMPTS = 5;
     let message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     let added = false;
+    let scoped: number | null = null;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
         const refetched = await this.messageRepo.findById(messageId);
         if (!refetched) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
         message = refetched;
       }
+      // Which bucket this toggle owns — one attachment of a collage, or the
+      // whole message. Re-resolved per attempt because a lost CAS refetches the
+      // row, and an edit between attempts could change the attachment count.
+      const target = resolveMediaReactionIndex(message.content, mediaIndex);
+      if (target === false)
+        throw new BadRequestError("CHAT_MEDIA_INDEX_OUT_OF_RANGE");
+      scoped = target;
+      const currentBucket =
+        target === null
+          ? message.reactions
+          : mediaReactionBucket(message.mediaReactions, target);
       const wasReactedByUser = (
-        reactionUserIdMap(message.reactions)[emoji] ?? []
+        reactionUserIdMap(currentBucket)[emoji] ?? []
       ).includes(userId);
       added = !wasReactedByUser;
-      const updated = toggleStoredReaction(message.reactions, userId, emoji);
-      const applied = await this.messageRepo.updateReactionsCas(
-        messageId,
-        message.roomId,
-        updated,
-        message.revision,
-        { userId, emoji: added ? emoji : null }
-      );
+      const applied =
+        target === null
+          ? await this.messageRepo.updateReactionsCas(
+              messageId,
+              message.roomId,
+              toggleStoredReaction(message.reactions, userId, emoji),
+              message.revision,
+              { userId, emoji: added ? emoji : null }
+            )
+          : await this.messageRepo.updateMediaReactionsCas(
+              messageId,
+              message.roomId,
+              toggleStoredMediaReaction(
+                message.mediaReactions,
+                target,
+                userId,
+                emoji
+              ),
+              message.revision,
+              // The index now carries the attachment, so a per-photo toggle is
+              // projected like any other — that is what lets the details popup
+              // say WHICH photo a reactor pointed at.
+              { userId, emoji: added ? emoji : null, mediaIndex: target }
+            );
       if (applied) break;
       if (attempt === MAX_ATTEMPTS - 1)
         throw new ConflictError("CHAT_REACTION_CONFLICT");
     }
     const after = await this.messageRepo.findById(messageId);
-    return { message: after ?? message, added };
+    return { message: after ?? message, added, mediaIndex: scoped };
   }
 
   /**
@@ -1867,9 +1964,15 @@ export class GroupMessageService {
   async react(
     messageId: string,
     userId: string,
-    emoji: string
+    emoji: string,
+    mediaIndex?: number | null
   ): Promise<GroupMessage | null> {
-    const { message } = await this.reactCas(messageId, userId, emoji);
+    const { message } = await this.reactCas(
+      messageId,
+      userId,
+      emoji,
+      mediaIndex
+    );
     return message;
   }
 
@@ -1882,20 +1985,24 @@ export class GroupMessageService {
     messageId: string;
     userId: string;
     emoji: string;
+    mediaIndex?: number | null;
   }): Promise<{
     roomId: string;
     added: boolean;
     targetUserId: string;
     targetMessagePreview: string;
+    mediaIndex: number | null;
   }> {
-    const { message, added } = await this.reactCas(
+    const { message, added, mediaIndex } = await this.reactCas(
       params.messageId,
       params.userId,
-      params.emoji
+      params.emoji,
+      params.mediaIndex
     );
     return {
       roomId: message.roomId,
       added,
+      mediaIndex,
       targetUserId: message.senderId ?? "",
       targetMessagePreview: buildReactionTargetPreview(
         normalizeMessageType(message.messageType),
@@ -1912,12 +2019,27 @@ export class GroupMessageService {
   async setReaction(
     messageId: string,
     userId: string,
-    emoji: string
+    emoji: string,
+    mediaIndex?: number | null
   ): Promise<GroupMessage | null> {
-    const raw = await this.messageRepo.getReactions(messageId);
-    if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    const updated = setStoredReaction(raw.reactions, userId, emoji);
-    return this.messageRepo.addReactions(messageId, raw.roomId, updated);
+    const message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const target = resolveMediaReactionIndex(message.content, mediaIndex);
+    if (target === false)
+      throw new BadRequestError("CHAT_MEDIA_INDEX_OUT_OF_RANGE");
+    if (target !== null) {
+      // Per-media SET needs the CAS — see PrivateMessageService.setReaction.
+      const applied = await this.messageRepo.updateMediaReactionsCas(
+        messageId,
+        message.roomId,
+        setStoredMediaReaction(message.mediaReactions, target, userId, emoji),
+        message.revision
+      );
+      if (!applied) throw new ConflictError("CHAT_REACTION_CONFLICT");
+      return this.messageRepo.findById(messageId);
+    }
+    const updated = setStoredReaction(message.reactions, userId, emoji);
+    return this.messageRepo.addReactions(messageId, message.roomId, updated);
   }
 
   /** {@link setReaction} in {@link reactToMessage}'s return shape, for the REST orchestrator. */
@@ -1925,21 +2047,26 @@ export class GroupMessageService {
     messageId: string;
     userId: string;
     emoji: string;
+    mediaIndex?: number | null;
   }): Promise<{
     roomId: string;
     added: boolean;
     targetUserId: string;
     targetMessagePreview: string;
+    mediaIndex: number | null;
   }> {
     const message = await this.setReaction(
       params.messageId,
       params.userId,
-      params.emoji
+      params.emoji,
+      params.mediaIndex
     );
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const target = resolveMediaReactionIndex(message.content, params.mediaIndex);
     return {
       roomId: message.roomId,
       added: true,
+      mediaIndex: target === false ? null : target,
       targetUserId: message.senderId ?? "",
       targetMessagePreview: buildReactionTargetPreview(
         normalizeMessageType(message.messageType),
@@ -2187,6 +2314,10 @@ export class GroupMessageService {
       memberRepo: this.memberRepo,
       userSnapshotService: this.userSnapshotService,
       cacheRepo: this.cacheRepo,
+      bannedAmong: (ids) =>
+        this.redis
+          ? filterBannedUserIds(this.redis, ids).catch(() => new Set<string>())
+          : Promise.resolve(new Set<string>()),
     });
   }
 
@@ -2890,6 +3021,40 @@ export class GroupMessageService {
    * `emoji` narrows to one filter chip; omit it for "All". Authorization is the
    * same guard the unpaginated read uses — paging is not a way around it.
    */
+  /**
+   * Load the messages a reaction-details page may span, each bound to the room.
+   *
+   * The sibling ids arrive from the CLIENT (they are the collage's other members
+   * as the transcript grouped them), so every one is re-checked against the room
+   * here — without that, a caller could name any message id in the system and
+   * read its reactor list through a room they happen to be in.
+   */
+  private async collectReactionTargets(
+    roomId: string,
+    anchor: { id: string; roomId: string },
+    siblingIds: string[] | null | undefined,
+    readCutoffBefore: Date | null | undefined
+  ) {
+    const extra = (siblingIds ?? []).filter((id) => id !== anchor.id);
+    const rows = extra.length
+      ? await this.messageRepo.findManyByIds([anchor.id, ...extra])
+      : await this.messageRepo.findManyByIds([anchor.id]);
+    return rows
+      .filter(
+        (row) =>
+          row.roomId === roomId &&
+          !(readCutoffBefore && row.createdAt > readCutoffBefore)
+      )
+      .map((row) => ({
+        id: row.id,
+        roomId: row.roomId,
+        reactions: row.reactions,
+        mediaReactions: row.mediaReactions,
+        createdAt: row.createdAt,
+        reactionsIndexedAt: row.reactionsIndexedAt,
+      }));
+  }
+
   async getMessageReactionsPage(params: {
     messageId: string;
     roomId: string;
@@ -2897,13 +3062,26 @@ export class GroupMessageService {
     emoji?: string | null;
     cursor?: string | null;
     limit?: number | null;
+    /**
+     * Backoffice read-only viewer. The Super Admin is not (and never becomes) a
+     * member, so there is no membership to assert and no read cutoff to apply —
+     * authorization happened at the admin API boundary. Set ONLY by
+     * `adminGetMessageReactionsPage`; every user-facing caller leaves it unset
+     * and keeps the member guard. `requesterId` is "" on this path, so the
+     * response's `selfEmoji` is empty and the popup shows no "You".
+     */
+    asAdmin?: boolean;
+    /** The other members of a collage, when the popup was opened on one. */
+    siblingMessageIds?: string[] | null;
   }): Promise<ReactionDetailsPage> {
-    const { readCutoffBefore } = await assertGroupReadAccess(
-      this.memberRepo,
-      params.roomId,
-      params.requesterId,
-      this.roomRepo
-    );
+    const { readCutoffBefore } = params.asAdmin
+      ? { readCutoffBefore: null as Date | null }
+      : await assertGroupReadAccess(
+          this.memberRepo,
+          params.roomId,
+          params.requesterId,
+          this.roomRepo
+        );
     const message = await this.messageRepo.findById(params.messageId);
     // NotFound, never Forbidden — a foreign message's existence isn't leaked.
     if (!message || message.roomId !== params.roomId)
@@ -2911,14 +3089,15 @@ export class GroupMessageService {
     if (readCutoffBefore && message.createdAt > readCutoffBefore)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
+    const messages = await this.collectReactionTargets(
+      params.roomId,
+      message,
+      params.siblingMessageIds,
+      readCutoffBefore
+    );
+
     const slice = await this.messageRepo.readReactionDetails({
-      message: {
-        id: message.id,
-        roomId: message.roomId,
-        reactions: message.reactions,
-        createdAt: message.createdAt,
-        reactionsIndexedAt: message.reactionsIndexedAt,
-      },
+      messages,
       requesterId: params.requesterId,
       emoji: params.emoji,
       cursor: params.cursor,
@@ -2939,6 +3118,8 @@ export class GroupMessageService {
     messageId: string;
     roomId: string;
     requesterId: string;
+    /** Read ONE attachment's bucket instead of the message's own reactions. */
+    mediaIndex?: number | null;
   }): Promise<{
     reactions: Record<
       string,
@@ -2967,7 +3148,11 @@ export class GroupMessageService {
 
     // Stored entries are reactor OBJECTS; reduce to { emoji: userId[] } so the
     // grouped result carries the plain id string in users[].userId (not the object).
-    const reactions = reactionUserIdMap(raw.reactions);
+    const reactions = reactionUserIdMap(
+      params.mediaIndex == null
+        ? raw.reactions
+        : mediaReactionBucket(raw.mediaReactions, params.mediaIndex)
+    );
     const allUserIds = [...new Set(Object.values(reactions).flat())];
 
     const snapshots =
@@ -3131,6 +3316,12 @@ export class GroupMessageService {
       // raw `reactions` map resolved below is kept for backward compat but deprecated.
       wire.reactionGroups = buildReactionGroups(wire.reactions, (key) =>
         urlFromMap(urlMap, key)
+      );
+
+      // Per-attachment reactions for a collage — see PrivateMessageService.
+      wire.mediaReactionGroups = buildMediaReactionGroups(
+        (message as unknown as { mediaReactions?: unknown }).mediaReactions,
+        (key) => urlFromMap(urlMap, key)
       );
 
       // Stamp reaction-user avatars in place, preserving the stored map shape

@@ -259,6 +259,14 @@ export type MemberModerationInput = {
 export type ConversationMessagesQuery = {
   cursor?: string;
   limit: number;
+  /**
+   * Jump to a message the viewer does not have loaded (a pinned banner tap, a
+   * reply tap): returns a window CENTRED on it with cursors both ways, instead
+   * of paging history one page at a time. Overrides cursor/direction.
+   */
+  aroundMessageId?: string;
+  /** "after" pages newer (walking back down after a jump); default older. */
+  direction?: "before" | "after";
 };
 
 /** One message row in the Community Conversation viewer. */
@@ -281,6 +289,9 @@ export type ConversationMessagesResult = {
   messages: ConversationMessageItem[];
   nextCursor: string | null;
   hasMore: boolean;
+  /** Continuation toward newer messages — only set after a jump. */
+  newerCursor: string | null;
+  hasMoreNewer: boolean;
   pinnedMessage: unknown | null;
 };
 

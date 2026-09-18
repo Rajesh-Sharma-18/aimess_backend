@@ -90,6 +90,13 @@ const ADMIN_VIEWABLE_COMMUNITY_EVENTS = new Set([
   "community:message:edited",
   "community:message:deleted",
   "community:member:removed",
+  // Pin banner and reaction chips, so the viewer reflects a pin/unpin or a
+  // reaction without a manual Refresh. Both carry FULL state (the current pin,
+  // the message's whole reaction set), never a delta, so a socket retry or a
+  // reconnect replay re-applies the same truth instead of double-counting.
+  "community:message:pinned",
+  "community:message:unpinned",
+  "community:message:reaction",
 ]);
 
 /**
@@ -119,7 +126,44 @@ const ADMIN_VIEWABLE_GROUP_EVENTS = new Set([
   "message:delete",
   "group:member:removed",
   "group:closed",
+  // See the community set: full-state pin and reaction updates, so the banner
+  // and the reaction chips stay live without a Refresh.
+  "pin:updated",
+  "message:reaction",
 ]);
+
+/**
+ * Reaction broadcasts carry the full reactor list inline (`users[]` under each
+ * emoji). The read-only viewer renders counts only and pages the reactor list
+ * through the admin reaction-details endpoint, so the identities and avatar URLs
+ * are dropped before the event ever reaches the panel — a monitoring socket
+ * should not be a firehose of every reactor on every message.
+ *
+ * Returns the payload unchanged when it is not reaction-shaped.
+ */
+function stripReactors(event: string, data: unknown): unknown {
+  if (event !== "message:reaction" && event !== "community:message:reaction") {
+    return data;
+  }
+  if (!data || typeof data !== "object") return data;
+  const payload = data as Record<string, unknown>;
+  if (!Array.isArray(payload.reactions)) return data;
+  return {
+    ...payload,
+    reactions: payload.reactions.map((group) => {
+      const g = (group ?? {}) as Record<string, unknown>;
+      return {
+        emoji: g.emoji,
+        count:
+          typeof g.count === "number"
+            ? g.count
+            : Array.isArray(g.users)
+              ? g.users.length
+              : 0,
+      };
+    }),
+  };
+}
 
 const ADMIN_VIEWABLE_STREAM_EVENTS = new Set([
   "stream:comment:new",
@@ -249,7 +293,9 @@ export function registerAdminNamespace(
         try {
           const parsed = JSON.parse(message) as RedisSocketEvent;
           if (ADMIN_VIEWABLE_COMMUNITY_EVENTS.has(parsed.event)) {
-            admin.local.to(channel).emit(parsed.event, parsed.data);
+            admin.local
+              .to(channel)
+              .emit(parsed.event, stripReactors(parsed.event, parsed.data));
           }
         } catch (err) {
           logger.warn(
@@ -269,7 +315,9 @@ export function registerAdminNamespace(
         try {
           const parsed = JSON.parse(message) as RedisSocketEvent;
           if (ADMIN_VIEWABLE_GROUP_EVENTS.has(parsed.event)) {
-            admin.local.to(channel).emit(parsed.event, parsed.data);
+            admin.local
+              .to(channel)
+              .emit(parsed.event, stripReactors(parsed.event, parsed.data));
           }
         } catch (err) {
           logger.warn(

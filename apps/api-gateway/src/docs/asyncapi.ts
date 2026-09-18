@@ -29,12 +29,17 @@ const SPEC_PATH = resolve(GATEWAY_ROOT, "asyncapi/asyncapi.yaml");
  * third-party dependency, but it means a new release cannot silently become
  * what this page loads.
  *
- * The page is now also non-production only (see app.ts) and covered by the
- * gateway's CSP, so this is defence in depth rather than the only control.
- * Vendoring the bundle into the gateway's own static assets would remove the
- * off-origin load entirely; recorded as residual rather than done here.
+ * The page is now also non-production only (see app.ts), so this is defence in
+ * depth rather than the only control. Vendoring the bundle into the gateway's
+ * own static assets would remove the off-origin load entirely; recorded as
+ * residual rather than done here.
+ *
+ * The pin must be a version that was actually published: `2.7.5` never existed
+ * (the 2.x line stops at 2.6.5), so both the bundle and the stylesheet 404'd on
+ * unpkg and the viewer rendered a blank page. Check
+ * https://registry.npmjs.org/@asyncapi/react-component before bumping this.
  */
-const REACT_COMPONENT_VERSION = "2.7.5";
+const REACT_COMPONENT_VERSION = "3.2.0";
 
 function loadSpec(path: string, label: string): string | null {
   try {

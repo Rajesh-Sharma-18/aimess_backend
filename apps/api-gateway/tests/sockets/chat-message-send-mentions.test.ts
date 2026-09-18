@@ -272,4 +272,22 @@ describe("message:send mentions — gateway schema + contentJson", () => {
       });
     }
   );
+
+  it("a send throttle carries chat-service's retry-after seconds into the ack", () => {
+    const metadata = new grpc.Metadata();
+    metadata.set("retry-after", "12");
+    const calls: unknown[] = [];
+    const { code, detailKey, retryAfter } = resolveGrpcAckError({
+      code: grpc.status.RESOURCE_EXHAUSTED,
+      details: "RATE_LIMITED",
+      metadata,
+    });
+    ackError((res) => calls.push(res), code, "en", detailKey, retryAfter);
+    expect(calls[0]).toMatchObject({
+      success: false,
+      error: "RATE_LIMITED",
+      retryable: true,
+      retryAfter: 12,
+    });
+  });
 });

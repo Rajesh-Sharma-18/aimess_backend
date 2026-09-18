@@ -281,6 +281,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         communityId?: string;
         userId?: string;
         emoji?: string;
+        mediaIndex?: number;
       };
       try {
         const res = await getChatClient().reactToCommunityMessage({
@@ -288,6 +289,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           communityId: req.communityId ?? "",
           userId: req.userId ?? "",
           emoji: req.emoji ?? "",
+          // Pure relay — chat-service owns the -1 = "message as a whole" rule.
+          mediaIndex: req.mediaIndex ?? -1,
         });
         callback(null, res);
       } catch (err) {
@@ -461,6 +464,58 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  /**
+   * Pure relay for the paginated reaction-details popup, mirroring
+   * getCommunityMessageReactions. It was missing entirely, so every community
+   * popup got UNIMPLEMENTED from this service while private and group worked.
+   */
+  getCommunityMessageReactionsPage: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        messageId?: string;
+        communityId?: string;
+        requesterId?: string;
+        emoji?: string;
+        cursor?: string;
+        limit?: number;
+        siblingMessageIds?: string[];
+      };
+      try {
+        const res = await getChatClient().getCommunityMessageReactionsPage({
+          messageId: req.messageId ?? "",
+          communityId: req.communityId ?? "",
+          requesterId: req.requesterId ?? "",
+          emoji: req.emoji ?? "",
+          cursor: req.cursor ?? "",
+          limit: req.limit ?? 0,
+          siblingMessageIds: req.siblingMessageIds ?? [],
+        });
+        callback(null, res);
+      } catch (err) {
+        const e = err as { code?: number; details?: string; message?: string };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error(
+          "getCommunityMessageReactionsPage gRPC forward failed",
+          err
+        );
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "getCommunityMessageReactionsPage failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
   getCommunityMessageReactions: (
     call: grpc.ServerUnaryCall<unknown, unknown>,
     callback: grpc.sendUnaryData<unknown>
@@ -470,12 +525,15 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         messageId?: string;
         communityId?: string;
         requesterId?: string;
+        mediaIndex?: number;
       };
       try {
         const res = await getChatClient().getCommunityMessageReactions({
           messageId: req.messageId ?? "",
           communityId: req.communityId ?? "",
           requesterId: req.requesterId ?? "",
+          // Pure relay — chat-service owns the -1 = "message as a whole" rule.
+          mediaIndex: req.mediaIndex ?? -1,
         });
         callback(null, res);
       } catch (err) {

@@ -289,6 +289,12 @@ const MessageReactSchemaBase = z.object({
     (v) => (typeof v === "string" ? v.toLowerCase() : v),
     z.enum(["toggle", "set"]).default("toggle")
   ),
+  // 0-based index of the attachment being reacted to, for a message carrying
+  // several (a collage). Absent = the message as a whole. Defaults to -1 rather
+  // than being omitted because proto3 has no absent int32: a client that never
+  // sends this would otherwise reach chat-service as index 0 and retarget every
+  // legacy reaction at the first photo.
+  mediaIndex: z.number().int().min(-1).max(9).default(-1),
 });
 const MessagesFetchSchemaBase = z.object({
   conversationId: z.string().min(1),
@@ -1120,6 +1126,8 @@ export function registerChatNamespace(
       (v) => (typeof v === "string" ? v.toLowerCase() : v),
       z.enum(["private", "group"]).default("private")
     ),
+    /** -1 = the message's own reactions; otherwise ONE attachment's bucket. */
+    mediaIndex: z.number().int().min(-1).max(9).default(-1),
   });
   // Paginated sibling of MessageReactionsGetSchemaBase. Separate event rather
   // than extra optional fields on the old one, so an existing client that emits
@@ -1136,6 +1144,11 @@ export function registerChatNamespace(
     cursor: z.string().max(128).optional(),
     // Advisory: chat-service clamps to its own page ceiling regardless.
     limit: z.coerce.number().int().positive().max(100).optional(),
+    // The collage's other members, when the popup was opened on one. A web-sent
+    // album is N separate messages rendered as one row, so its reactor list spans
+    // them; chat-service re-binds every id to the room before reading it. Capped
+    // at the album ceiling so the fan-out stays bounded.
+    siblingMessageIds: z.array(z.string().min(1)).max(20).optional(),
   });
   const MessageEditSchemaBase = z.object({
     messageId: z.string().min(1),
@@ -1542,8 +1555,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:send gRPC error: ${String(err)}`);
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
+            const { code, detailKey, retryAfter } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey, retryAfter);
           });
       }
     );

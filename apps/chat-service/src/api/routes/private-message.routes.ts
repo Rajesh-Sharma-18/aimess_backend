@@ -17,6 +17,7 @@ import {
   markReadBodySchema,
   reactionBodySchema,
   reactionParamSchema,
+  reactionRemoveQuerySchema,
 } from "../validators/private-message.validator.js";
 import {
   messageTimelineQuerySchema,
@@ -264,6 +265,7 @@ export function createPrivateMessageRoutes(
     authenticate,
     interactLimit,
     validateParams(reactionParamSchema),
+    validateQuery(reactionRemoveQuerySchema),
     messageCtrl.removeReaction
   );
 

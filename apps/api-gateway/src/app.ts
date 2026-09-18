@@ -67,25 +67,41 @@ export function createApp(
     "/docs",
     helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false })
   );
-  app.use(
-    helmet({
-      crossOriginEmbedderPolicy: false,
-      contentSecurityPolicy: {
-        useDefaults: true,
-        directives: {
-          // An API origin should never be framed, never load third-party
-          // script, and never be a form target.
-          "default-src": ["'none'"],
-          "frame-ancestors": ["'none'"],
-          "form-action": ["'none'"],
-          "base-uri": ["'none'"],
-          "img-src": ["'self'", "data:"],
-          "connect-src": ["'self'"],
-          upgradeInsecureRequests: [],
-        },
+  // The `/docs` mount above only declines to SET the header — it cannot stop a
+  // later middleware from setting it. Mounting the strict policy unconditionally
+  // therefore re-applied it to `/docs` as well, and the AsyncAPI and Swagger
+  // viewers rendered blank: their bundle and inline bootstrap both violate
+  // `script-src 'self'`. The strict policy has to skip the docs paths outright.
+  const strictSecurityHeaders = helmet({
+    crossOriginEmbedderPolicy: false,
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        // An API origin should never be framed, never load third-party
+        // script, and never be a form target.
+        "default-src": ["'none'"],
+        "frame-ancestors": ["'none'"],
+        "form-action": ["'none'"],
+        "base-uri": ["'none'"],
+        "img-src": ["'self'", "data:"],
+        "connect-src": ["'self'"],
+        upgradeInsecureRequests: [],
       },
-    })
-  );
+    },
+  });
+  // The docs are mounted non-production only, so in production every path —
+  // including the `/docs` 404s — keeps the strict policy.
+  const docsMounted = env.NODE_ENV !== "production";
+  app.use((req, res, next) => {
+    if (
+      docsMounted &&
+      (req.path === "/docs" || req.path.startsWith("/docs/"))
+    ) {
+      next();
+      return;
+    }
+    strictSecurityHeaders(req, res, next);
+  });
   app.use(cors(corsOptions));
 
   app.use(requestIdMiddleware);

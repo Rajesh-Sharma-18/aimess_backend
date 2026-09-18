@@ -9,6 +9,7 @@ import {
 import {
   CHAT_TEXT_MAX_CHARS,
   enforceMediaLimits,
+  CHAT_MEDIA_INDEX_MAX,
 } from "../../constants/media-limits.js";
 
 export const sendCommunityMessageSchema = z
@@ -157,6 +158,10 @@ export const reactCommunityMessageBodySchema = z.object({
     (v) => (typeof v === "string" ? v.toLowerCase() : v),
     z.enum(["toggle", "set"]).default("toggle")
   ),
+  // 0-based index of the attachment being reacted to, for a message carrying
+  // several (a collage). Omitted = the message as a whole — what every text and
+  // single-attachment message uses, unchanged.
+  mediaIndex: z.coerce.number().int().min(0).max(CHAT_MEDIA_INDEX_MAX).optional(),
 });
 
 export const reportMessageSchema = z.object({

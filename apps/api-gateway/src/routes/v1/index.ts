@@ -12,6 +12,7 @@ import {
   deviceTokenRateLimiter,
   forgotPasswordRateLimiter,
   mediaRateLimiter,
+  mediaReadRateLimiter,
   readRateLimiter,
   searchRateLimiter,
   streamRateLimiter,
@@ -201,7 +202,7 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
     "/media/scan-status",
     "/media/usage",
   ]) {
-    v1Router.use(mediaReadPath, readRateLimiter);
+    v1Router.use(mediaReadPath, mediaReadRateLimiter);
   }
 
   // Livestream REST had no limiter of its own — only the global backstop. Must

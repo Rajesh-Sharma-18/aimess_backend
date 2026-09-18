@@ -29,6 +29,13 @@ service MessagingService {
   // returns EVERY reactor, which a message with a large reaction count cannot
   // afford; this bounds the response to one page plus aggregate counts.
   rpc GetMessageReactionsPage (GetMessageReactionsPageRequest) returns (GetMessageReactionsPageResponse);
+  // Backoffice read-only reaction details for a GROUP message. Same page shape as
+  // GetMessageReactionsPage, but with no requester: the Super Admin is never a
+  // room member, so there is no membership guard to pass and no self_emoji to
+  // report. Reachable only from backoffice-service, which gates it on the same
+  // permission as the conversation transcript itself. Private DMs are absent on
+  // purpose: there is no admin DM viewer, so that guard keeps no bypass.
+  rpc AdminGetMessageReactionsPage (AdminGetMessageReactionsPageRequest) returns (GetMessageReactionsPageResponse);
   rpc InitiateCall            (InitiateCallRequest)            returns (InitiateCallResponse);
   rpc AnswerCall              (AnswerCallRequest)              returns (AnswerCallResponse);
   rpc DeclineCall             (DeclineCallRequest)             returns (DeclineCallResponse);
@@ -349,9 +356,18 @@ message AdminGroupBanResult {
 
 message AdminGetGroupMessagesRequest {
   string group_id = 1;
-  // before_seq boundary (a sequenceNumber as a string). "" = newest page.
+  // seq boundary (a sequenceNumber as a string). "" = newest page.
   string cursor   = 2;
   int32  limit    = 3;
+  // Jump-to-message: when set, cursor/direction are ignored and a window
+  // CENTRED on this message is returned, with continuation cursors both ways.
+  // This is how the viewer reaches a pinned or replied-to message that is not
+  // in the loaded page, without walking history one page at a time.
+  string around_message_id = 4;
+  // "after" pages forward (newer) from cursor; "" / "before" pages back.
+  // Forward paging exists so the viewer can walk back DOWN to the live head
+  // after a jump.
+  string direction = 5;
 }
 message AdminGroupMessageDto {
   string message_id          = 1;
@@ -370,12 +386,36 @@ message AdminGroupMessageDto {
   string system_message_type = 13;  // systemEvent
   string system_metadata     = 14;  // JSON.stringify(systemData)
   bool   is_deleted          = 15;
+  // JSON.stringify(content.mentions ?? []) — the @username / @all entities the
+  // SERVER resolved at send time. Render-only: the admin viewer highlights the
+  // spans and is never itself a mention recipient.
+  string mentions_json       = 16;
 }
 message AdminGetGroupMessagesResponse {
   repeated AdminGroupMessageDto messages = 1;
   // Next before_seq boundary; "" when there is no older page.
   string next_cursor = 2;
   bool   has_more    = 3;
+  // JSON-encoded PinnedMessageSummary (chat-service GroupPinService), or ""
+  // when the room has no active pin. Same field the community read already
+  // carries — the banner must not depend on the PINNED system line, which
+  // scrolls out of view as newer messages arrive.
+  string pinned_message_json = 4;
+  // after_seq boundary; "" when the window already reaches the live head. Only
+  // meaningful for an around_message_id / direction=after read.
+  string newer_cursor        = 5;
+  bool   has_more_newer      = 6;
+}
+
+// Reaction details for the read-only admin viewer. No requester_id: there is no
+// membership to check and no "you reacted" state to report, so the response's
+// self_emoji is always empty.
+message AdminGetMessageReactionsPageRequest {
+  string message_id      = 1;
+  string conversation_id = 2; // group room id — GROUP only, see the RPC comment
+  string emoji           = 3; // empty = the "All" filter
+  string cursor          = 4; // empty = first page
+  int32  limit           = 5; // 0 = server default; server clamps
 }
 
 // ---------------------------------------------------------------------------
@@ -554,10 +594,16 @@ message SendReactionRequest {
   // "set" => caller ends up with exactly `emoji` (re-sending the same one clears it).
   // Empty/"toggle" (default) keeps the legacy per-emoji toggle, so existing clients are unaffected.
   string           mode               = 6;
+  // 0-based index of the attachment being reacted to, for a message carrying
+  // several (a collage). -1 / absent = the message as a whole, which is what a
+  // text message and a single-attachment one always use. proto3 has no optional
+  // int32 here, so -1 is the "unset" value every existing client already sends.
+  int32            media_index        = 7;
 }
 message SendReactionResponse {
   string message_id        = 1;
   repeated ReactionDto reactions = 2;
+  int32  media_index       = 3;
 }
 
 message ForwardMessageRequest {
@@ -621,6 +667,10 @@ message GetMessageReactionsRequest {
   string           conversation_id    = 2;
   ConversationType conversation_type  = 3;
   string           requester_id       = 4;
+  // 0-based index of the attachment being reacted to, for a message carrying
+  // several (a collage). -1 / absent = the message as a whole. proto3 has no
+  // optional int32 here, so -1 is the "unset" value existing clients send.
+  int32            media_index        = 5;
 }
 message ReactionUserDto {
   string user_id      = 1;
@@ -644,6 +694,11 @@ message ReactionDetailUserDto {
   string display_name = 2;
   string avatar       = 3; // resolved download URL, never a raw object key
   string emoji        = 4;
+  // Which message and attachment this reactor pointed at. `media_index` is -1 for
+  // the message (or collage) as a whole and 0-based for one of its photos, which
+  // is what lets the popup draw the exact thumbnail that was reacted to.
+  string message_id   = 5;
+  int32  media_index  = 6;
 }
 message ReactionCountDto {
   string emoji = 1;
@@ -657,6 +712,10 @@ message GetMessageReactionsPageRequest {
   string           emoji             = 5; // empty = the "All" filter
   string           cursor            = 6; // empty = first page
   int32            limit             = 7; // 0 = server default; server clamps
+  // The collage's other members. A web-sent album is N separate messages rendered
+  // as one row, so its reactor list spans them; empty for an ordinary message.
+  // Every id is re-bound to the room server-side before it is read.
+  repeated string  sibling_message_ids = 8;
 }
 message GetMessageReactionsPageResponse {
   repeated ReactionDetailUserDto users  = 1;

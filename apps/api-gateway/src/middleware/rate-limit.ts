@@ -304,18 +304,43 @@ function skipStreamRateLimit(req: Request): boolean {
 }
 
 /**
- * Global HTTP rate limit — the outermost backstop, not the operation limit.
+ * Read-shaped traffic for the global split: GET/HEAD, plus
+ * `POST /media/download-url` — a POST only because it takes a body; it mints a
+ * read grant for bytes the caller may already see. EXACT path match, not a
+ * substring, so no other POST can pose as a read.
+ */
+export function isReadTraffic(req: Request): boolean {
+  if (req.method === "GET" || req.method === "HEAD") return true;
+  return req.method === "POST" && req.path === "/api/v1/media/download-url";
+}
+
+/**
+ * Global HTTP rate limit for WRITES — the outermost backstop, not the
+ * operation limit. Reads have their own backstop below, so browsing can never
+ * spend the allowance a send needs, and a send flood never blanks a room.
  *
  * Session-scoped, so a shared egress IP no longer collapses every user in an
  * office into one bucket. Anonymous traffic still falls back to per-IP.
  */
-export const rateLimiter = createLimiter({
+const globalWriteRateLimiter = createLimiter({
   rule: "global",
   windowMs: env.GLOBAL_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
   max: env.GLOBAL_RATE_LIMIT_MAX,
   scope: "session",
-  skip: skipRateLimit,
+  skip: (req) => skipRateLimit(req) || isReadTraffic(req),
 });
+
+/** Global backstop for READS — see GLOBAL_READ_RATE_LIMIT_MAX. */
+const globalReadRateLimiter = createLimiter({
+  rule: "global.read",
+  windowMs: env.GLOBAL_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
+  max: env.GLOBAL_READ_RATE_LIMIT_MAX,
+  scope: "session",
+  skip: (req) => skipRateLimit(req) || !isReadTraffic(req),
+});
+
+/** Both global backstops; each request is counted by exactly one. */
+export const rateLimiter = [globalReadRateLimiter, globalWriteRateLimiter];
 
 /**
  * Sensitive auth endpoints (registration, password reset, social sign-in,
@@ -553,6 +578,19 @@ export const mediaRateLimiter = createLimiter({
   rule: "media.upload-url",
   windowMs: 60 * 1000,
   max: env.MEDIA_UPLOAD_RATE_LIMIT_MAX,
+  scope: "session",
+});
+
+/**
+ * Media reads (`/media/download-url`, `/media/scan-status`, `/media/usage`).
+ * Own bucket — see MEDIA_READ_RATE_LIMIT_MAX. They used to share
+ * `read.generous` with conversation listing, so opening one attachment-heavy
+ * room could throttle the next history/inbox fetch.
+ */
+export const mediaReadRateLimiter = createLimiter({
+  rule: "media.read",
+  windowMs: 60 * 1000,
+  max: env.MEDIA_READ_RATE_LIMIT_MAX,
   scope: "session",
 });
 

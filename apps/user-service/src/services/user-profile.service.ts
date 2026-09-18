@@ -54,6 +54,8 @@ import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { messagingGrpcClient } from "../grpc/messaging.client.js";
+import { communityGrpcClient } from "../grpc/community.client.js";
+import { bannedAmong } from "../lib/banned-users.js";
 import { avatarService } from "./avatar.service.js";
 import { usernameService } from "./username.service.js";
 import { publishProfileUpdatedSafe } from "../messaging/publish-profile-updated.js";
@@ -262,6 +264,26 @@ async function loadProfileRecord(userId: string): Promise<ProfileRecord> {
   return profile;
 }
 
+/** True when viewer and target share a private room, or both are ACTIVE members of `via`. */
+async function sharesSpace(
+  viewerId: string,
+  targetUserId: string,
+  via: { groupId?: string; communityId?: string }
+): Promise<boolean> {
+  if (
+    (await messagingGrpcClient.resolvePrivateRooms(viewerId, [targetUserId]))
+      .length > 0
+  ) {
+    return true;
+  }
+  const roster = via.groupId
+    ? await messagingGrpcClient.getGroupMemberIds(via.groupId)
+    : via.communityId
+      ? await communityGrpcClient.getActiveMemberIds(via.communityId)
+      : [];
+  return roster.includes(viewerId) && roster.includes(targetUserId);
+}
+
 export const userProfileService = {
   /**
    * Another user's profile, viewer-scoped. Blocks 404 (never 403 — a 403 would
@@ -271,7 +293,8 @@ export const userProfileService = {
    */
   async getPublicProfile(
     viewerId: string,
-    targetUserId: string
+    targetUserId: string,
+    via: { groupId?: string; communityId?: string } = {}
   ): Promise<PublicUserProfileData> {
     const notFound = () => new NotFoundError("USER_PROFILE_NOT_FOUND");
 
@@ -286,6 +309,21 @@ export const userProfileService = {
     ]);
 
     if (!profile || profile.deletedAt) throw notFound();
+    // Platform-banned: hidden from discovery everywhere, but a ban does not
+    // erase history. A viewer who still shares a space with the account keeps
+    // its profile (read-only): a private conversation, or the group/community
+    // the profile was opened from (a ban keeps those memberships). Anyone else
+    // gets the same 404 as a missing user. `via` is only a hint — both ids are
+    // re-checked against that space's ACTIVE roster server-side, so naming a
+    // space the pair does not share widens nothing — and a chat/community
+    // outage resolves to an empty roster, i.e. fails closed.
+    const isBanned =
+      viewerId !== targetUserId &&
+      (profile.status === ProfileStatus.BANNED ||
+        (await bannedAmong([targetUserId])).size > 0);
+    if (isBanned && !(await sharesSpace(viewerId, targetUserId, via))) {
+      throw notFound();
+    }
     // One-way, matching search (`lib/block-visibility.ts`): the TARGET's block
     // hides them from this viewer. The viewer's OWN block does not — a blocker
     // has to be able to open the profile of someone they blocked to review and
@@ -371,6 +409,7 @@ export const userProfileService = {
 
     const canSeePresence =
       canViewProfile &&
+      !isBanned &&
       scopeAdmits(
         // Missing row → FRIENDS (the schema default), NOT EVERYONE.
         profile.privacySettings?.whoCanSeeOnlineStatus ??
@@ -410,6 +449,7 @@ export const userProfileService = {
        * declined friend request.
        */
       isBlockedByPeer: Boolean(blockedByTarget),
+      isBanned,
       // Search vocabulary (FRIEND/PENDING/NONE), not the raw ACCEPTED/... view —
       // it is what every existing client relationship parser already speaks.
       relationship: {
@@ -420,6 +460,7 @@ export const userProfileService = {
         // account can never receive one, whatever its stored scope says.
         canSendRequest:
           !isDeletedUser &&
+          !isBanned &&
           canSendFriendRequest(profile, relation, {
             status: searchRelationship.status,
             // BOTH directions. A block by the target no longer always 404s —

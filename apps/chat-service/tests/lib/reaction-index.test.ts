@@ -19,7 +19,13 @@ import {
   readReactionDetailsSlice,
 } from "../../src/lib/reaction-index.js";
 
-type Row = { userId: string; emoji: string; createdAt: Date };
+type Row = {
+  userId: string;
+  emoji: string;
+  createdAt: Date;
+  messageId: string;
+  mediaIndex: number | null;
+};
 
 const BASE = new Date("2026-01-01T00:00:00.000Z");
 const at = (offset: number) => new Date(BASE.getTime() + offset);
@@ -30,6 +36,8 @@ const reactors = (count: number, emojis = ["👍"]): Row[] =>
     userId: `u${i}`,
     emoji: emojis[i % emojis.length],
     createdAt: at(i),
+    messageId: "m1",
+    mediaIndex: null,
   }));
 
 /**
@@ -54,11 +62,13 @@ const fakePrisma = (rows: Row[]) => {
           const where = args.where ?? {};
           let out = store.filter((r) => !where.emoji || r.emoji === where.emoji);
           if (where.OR) {
-            const gt = where.OR[0].createdAt.gt as Date;
+            // The keyset is (createdAt, userId, messageId, mediaIndex); the fake
+            // compares the same tuple so a cursor bug cannot pass here.
+            const gt = where.OR[0].createdAt as { gt: Date };
             const tie = where.OR[1];
             out = out.filter(
               (r) =>
-                r.createdAt.getTime() > gt.getTime() ||
+                r.createdAt.getTime() > gt.gt.getTime() ||
                 (r.createdAt.getTime() === tie.createdAt.getTime() &&
                   r.userId > tie.userId.gt)
             );
@@ -66,7 +76,9 @@ const fakePrisma = (rows: Row[]) => {
           out.sort(
             (a, b) =>
               a.createdAt.getTime() - b.createdAt.getTime() ||
-              a.userId.localeCompare(b.userId)
+              a.userId.localeCompare(b.userId) ||
+              a.messageId.localeCompare(b.messageId) ||
+              (a.mediaIndex ?? -1) - (b.mediaIndex ?? -1)
           );
           return out.slice(0, args.take);
         }),
@@ -80,21 +92,36 @@ const fakePrisma = (rows: Row[]) => {
             _count: { _all: count },
           }));
         }),
-        findUnique: jest.fn(async (args: Record<string, any>) => {
-          const { userId } = args.where.messageId_conversationType_userId;
-          const hit = store.find((r) => r.userId === userId);
+        findFirst: jest.fn(async (args: Record<string, any>) => {
+          const where = args.where ?? {};
+          const hit = store.find(
+            (r) =>
+              r.userId === where.userId &&
+              (r.mediaIndex ?? null) === (where.mediaIndex ?? null)
+          );
           return hit ? { emoji: hit.emoji } : null;
         }),
-        upsert: jest.fn(async (args: Record<string, any>) => {
-          const { userId } = args.where.messageId_conversationType_userId;
-          const hit = store.find((r) => r.userId === userId);
-          if (hit) hit.emoji = args.update.emoji;
-          else
-            store.push({
-              userId,
-              emoji: args.create.emoji,
-              createdAt: at(store.length),
-            });
+        // The compound unique key contains a nullable column, so the repository
+        // writes with updateMany-then-create rather than upsert; the fake mirrors
+        // that, including leaving `createdAt` alone on an update.
+        updateMany: jest.fn(async (args: Record<string, any>) => {
+          const where = args.where ?? {};
+          const hits = store.filter(
+            (r) =>
+              r.userId === where.userId &&
+              (r.mediaIndex ?? null) === (where.mediaIndex ?? null)
+          );
+          for (const hit of hits) hit.emoji = args.data.emoji;
+          return { count: hits.length };
+        }),
+        create: jest.fn(async (args: Record<string, any>) => {
+          store.push({
+            userId: args.data.userId,
+            emoji: args.data.emoji,
+            createdAt: at(store.length),
+            messageId: args.data.messageId ?? "m1",
+            mediaIndex: args.data.mediaIndex ?? null,
+          });
           return {};
         }),
         deleteMany: jest.fn(async (args: Record<string, any>) => {
@@ -131,7 +158,7 @@ const repoFor = (rows: Row[]) => {
 };
 
 const PAGE_ARGS = {
-  messageId: "m1",
+  messageIds: ["m1"],
   conversationType: "COMMUNITY" as const,
 };
 
@@ -155,7 +182,9 @@ describe("MessageReactionRepository.page", () => {
 
     expect(page.rows).toHaveLength(10);
     expect(page.hasMore).toBe(true);
-    expect(page.nextCursor).toBe(`${at(9).getTime()}:u9`);
+    // messageId and mediaIndex joined the tuple so a page can span a whole album
+    // without two same-millisecond rows becoming ambiguous.
+    expect(page.nextCursor).toBe(`${at(9).getTime()}|u9|m1|-1`);
   });
 
   it("asks for exactly one row past the page instead of a second count query", async () => {
@@ -164,7 +193,12 @@ describe("MessageReactionRepository.page", () => {
 
     const args = fake.calls.findMany[0] as Record<string, any>;
     expect(args.take).toBe(11);
-    expect(args.orderBy).toEqual([{ createdAt: "asc" }, { userId: "asc" }]);
+    expect(args.orderBy).toEqual([
+      { createdAt: "asc" },
+      { userId: "asc" },
+      { messageId: "asc" },
+      { mediaIndex: "asc" },
+    ]);
   });
 
   it("resumes from the cursor without re-walking earlier pages", async () => {
@@ -248,7 +282,7 @@ describe("MessageReactionRepository.countsFor", () => {
       ...reactors(5, ["❤️"]),
       ...reactors(3, ["👍"]).map((r) => ({ ...r, userId: `a${r.userId}` })),
     ]);
-    const counts = await repo.countsFor("m1", "COMMUNITY");
+    const counts = await repo.countsFor(["m1"], "COMMUNITY");
 
     expect(counts.total).toBe(8);
     expect(counts.byEmoji[0]).toEqual({ emoji: "❤️", count: 5 });
@@ -430,7 +464,7 @@ describe("materializeFromStoredMap — no double counting", () => {
     ensureReactionIndex(repo, "COMMUNITY", source, async () => ({}));
 
   const totals = async (repo: MessageReactionRepository) =>
-    repo.countsFor("m1", "COMMUNITY");
+    repo.countsFor(["m1"], "COMMUNITY");
 
   it("counts each reactor once when the index starts empty", async () => {
     const { repo } = repoFor([]);

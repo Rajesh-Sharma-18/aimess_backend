@@ -16,20 +16,19 @@ jest.mock("../../src/events/publish-message-sent.js", () => ({
 // and when it is charged matters.
 jest.mock("../../src/middleware/rate-limit.js", () => ({
   ...jest.requireActual("../../src/middleware/rate-limit.js"),
-  assertMentionAllAllowed: jest.fn(async () => undefined),
+  mentionAllAllowed: jest.fn(async () => true),
 }));
 
 import request from "supertest";
-import { TooManyRequestsError } from "@aimess/errors";
 
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 import { publishMessageSentSafe } from "../../src/events/publish-message-sent.js";
-import { assertMentionAllAllowed } from "../../src/middleware/rate-limit.js";
+import { mentionAllAllowed } from "../../src/middleware/rate-limit.js";
 import { GroupMessageService } from "../../src/services/group-message.service.js";
 
 const pushMock = publishMessageSentSafe as jest.Mock;
-const mentionAllMock = assertMentionAllAllowed as jest.Mock;
+const mentionAllMock = mentionAllAllowed as jest.Mock;
 
 let app: import("express").Express;
 let mocks: BuiltMocks;
@@ -327,18 +326,44 @@ describe("send — @all", () => {
     expect(mocks.groupMemberRepo.findActiveMembers).toHaveBeenCalledWith(ROOM);
   });
 
-  it("over the @all limit → 429 CHAT_MENTION_ALL_RATE_LIMITED, nothing persisted or pushed", async () => {
-    mentionAllMock.mockRejectedValueOnce(
-      new TooManyRequestsError("CHAT_MENTION_ALL_RATE_LIMITED", 42)
-    );
-    const text = "@all";
-    const res = await sendAll({ text, mentions: [all(text)] });
+  it("over the @all limit → message still stored and delivered, only the @all push is skipped", async () => {
+    mentionAllMock.mockResolvedValueOnce(false);
+    const text = "@all hi @kristi";
+    const res = await sendAll({
+      text,
+      mentions: [all(text), at("u_kristi", text, "@kristi")],
+    });
 
-    expect(res.status).toBe(429);
-    expect(res.body.code).toBe("CHAT_MENTION_ALL_RATE_LIMITED");
-    expect(mocks.groupMessageRepo.create).not.toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    expect(mocks.groupMessageRepo.create).toHaveBeenCalledTimes(1);
+    // The entity is kept so the token still renders as a mention.
+    expect(createdContents()[0]!.mentions).toContainEqual(all(text));
     await flush();
-    expect(pushMock).not.toHaveBeenCalled();
+    const push = pushMock.mock.calls[0]![0];
+    // Ordinary delivery + the individual @kristi push still happen…
+    expect(push.mentionedUserIds).toEqual(["u_kristi"]);
+    // …only the roster-wide @all fan-out is dropped.
+    expect(push.fetchMentionAllUserIds).toBeUndefined();
+  });
+
+  it("10 @all sends over the limit → 10 stored messages, zero @all pushes", async () => {
+    mentionAllMock.mockResolvedValue(false);
+    try {
+      for (let i = 0; i < 10; i += 1) {
+        const res = await sendAll(
+          { text: "@all", mentions: [all("@all")] },
+          { clientMessageId: `cmid-flood-${i}` }
+        );
+        expect(res.status).toBe(201);
+      }
+      expect(mocks.groupMessageRepo.create).toHaveBeenCalledTimes(10);
+      await flush();
+      for (const [p] of pushMock.mock.calls) {
+        expect(p.fetchMentionAllUserIds).toBeUndefined();
+      }
+    } finally {
+      mentionAllMock.mockResolvedValue(true);
+    }
   });
 
   it("USER-only mentions and a forged ALL on another token are never charged", async () => {
@@ -630,16 +655,14 @@ describe("edit", () => {
       expect(pushMock).not.toHaveBeenCalled();
     });
 
-    it("a rate-limited @all edit is rejected and nothing is persisted", async () => {
-      mentionAllMock.mockRejectedValueOnce(
-        new TooManyRequestsError("CHAT_MENTION_ALL_RATE_LIMITED", 42)
-      );
+    it("a rate-limited @all edit is saved, but pushes nobody", async () => {
+      mentionAllMock.mockResolvedValueOnce(false);
       mocks.groupMessageRepo.findById.mockResolvedValue(row({ text: "hi" }));
       const res = await patch({ text: "hi @all", mentions: [all("hi @all")] });
 
-      expect(res.status).toBe(429);
-      expect(res.body.code).toBe("CHAT_MENTION_ALL_RATE_LIMITED");
-      expect(mocks.groupMessageRepo.editMessage).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(mocks.groupMessageRepo.editMessage).toHaveBeenCalledTimes(1);
+      await flush();
       expect(pushMock).not.toHaveBeenCalled();
     });
   });

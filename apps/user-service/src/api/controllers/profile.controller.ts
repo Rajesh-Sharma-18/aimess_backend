@@ -3,7 +3,10 @@ import type { Request, Response } from "express";
 import { HTTP_STATUS, t } from "@aimess/constants";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
-import type { UpdateProfileInput } from "../validators/profile.validator.js";
+import type {
+  PublicProfileQuery,
+  UpdateProfileInput,
+} from "../validators/profile.validator.js";
 import { userProfileService } from "../../services/user-profile.service.js";
 
 export const getMyProfile = asyncHandler(
@@ -44,9 +47,11 @@ export const updateProfile = asyncHandler(
 export const getPublicProfile = asyncHandler(
   async (req: Request, res: Response) => {
     const requested = req.params.userId as string;
+    const { groupId, communityId } = req.query as PublicProfileQuery;
     const profile = await userProfileService.getPublicProfile(
       req.auth.userId,
-      requested === "me" ? req.auth.userId : requested
+      requested === "me" ? req.auth.userId : requested,
+      { groupId, communityId }
     );
 
     return res

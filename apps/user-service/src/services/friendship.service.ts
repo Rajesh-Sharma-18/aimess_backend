@@ -36,6 +36,7 @@ import { userProfileRepository } from "../repositories/user-profile.repository.j
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { userCache } from "../lib/user-cache.js";
 import { messagingGrpcClient } from "../grpc/messaging.client.js";
+import { bannedAmong } from "../lib/banned-users.js";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { avatarService } from "./avatar.service.js";
@@ -398,7 +399,10 @@ export const friendshipService = {
     const peerIds = rows.map((r) =>
       r.requesterId === me ? r.addresseeId : r.requesterId
     );
-    const profiles = await userProfileRepository.findManyByUserIds(peerIds);
+    const [profiles, banned] = await Promise.all([
+      userProfileRepository.findManyByUserIds(peerIds),
+      bannedAmong(peerIds),
+    ]);
     const profileById = new Map(profiles.map((p) => [p.userId, p]));
 
     const items = await Promise.all(
@@ -410,7 +414,7 @@ export const friendshipService = {
         // deleted rows (it feeds BulkGetUserSnapshots); a pending friend request
         // is a discovery/action surface, so a deleted account belongs nowhere in
         // it — not even as "Deleted Account".
-        if (!profile || profile.deletedAt) return null;
+        if (!profile || profile.deletedAt || banned.has(peerId)) return null;
 
         const avatarView = await avatarService.resolveViewUrlForClient(
           profile.avatarUrl
@@ -471,6 +475,10 @@ export const friendshipService = {
     }
 
     if (!addresseeProfile || addresseeProfile.deletedAt) {
+      throw new NotFoundError("USER_PROFILE_NOT_FOUND");
+    }
+    // A platform-banned account answers exactly like a missing one.
+    if ((await bannedAmong([addresseeId])).size > 0) {
       throw new NotFoundError("USER_PROFILE_NOT_FOUND");
     }
 
@@ -603,6 +611,11 @@ export const friendshipService = {
       friendship.addresseeId !== userId ||
       friendship.status !== "PENDING"
     ) {
+      throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
+    }
+    // Accepting a banned requester's request would mint a friendship with an
+    // account no peer can reach; it reads as a request that no longer exists.
+    if ((await bannedAmong([friendship.requesterId])).size > 0) {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
 

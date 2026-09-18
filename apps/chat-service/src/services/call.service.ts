@@ -13,6 +13,7 @@ import {
 import { logger } from "@aimess/logger";
 import { env } from "../config/env.js";
 import type { Redis, Cluster } from "ioredis";
+import { filterBannedUserIds } from "@aimess/redis";
 import type { Call } from "../generated/prisma/index.js";
 import type { CallRepository } from "../repositories/call.repository.js";
 import type { FriendshipRepository } from "../repositories/friendship.repository.js";
@@ -371,6 +372,12 @@ export class CallService {
         getCallPrivacy: this.getCallPrivacy,
         getUserSnapshot: this.getUserSnapshot,
         callFlags: this.callFlags,
+        isUserBanned: async (id) =>
+          (
+            await filterBannedUserIds(this.redis, [id]).catch(
+              () => new Set<string>()
+            )
+          ).has(id),
       },
       params
     );
@@ -691,7 +698,13 @@ export class CallService {
         )
       ).filter((id): id is string => id !== null)
     );
-    const calleeIds = rosterIds.filter((id) => !optedOut.has(id));
+    // Platform-banned members stay on the roster but are never rung.
+    const banned = await filterBannedUserIds(this.redis, rosterIds).catch(
+      () => new Set<string>()
+    );
+    const calleeIds = rosterIds.filter(
+      (id) => !optedOut.has(id) && !banned.has(id)
+    );
     if (calleeIds.length === 0) {
       throw new BadRequestError("CALL_SELF_NOT_ALLOWED");
     }

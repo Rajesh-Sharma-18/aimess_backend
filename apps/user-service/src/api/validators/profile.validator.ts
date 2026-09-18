@@ -48,6 +48,17 @@ export const publicProfileParamsSchema = z.object({
 
 export type PublicProfileParams = z.infer<typeof publicProfileParamsSchema>;
 
+// The shared space a profile was opened from (a group or community member
+// list). Only consulted for a platform-banned target, and only as a HINT: the
+// service re-checks that viewer and target are both ACTIVE members of it, so
+// naming a space the viewer does not share with the target opens nothing.
+export const publicProfileQuerySchema = z.object({
+  groupId: z.string().trim().min(1).max(64).optional(),
+  communityId: z.string().trim().min(1).max(64).optional(),
+});
+
+export type PublicProfileQuery = z.infer<typeof publicProfileQuerySchema>;
+
 export const updateProfileSchema = z
   .object({
     firstName: z

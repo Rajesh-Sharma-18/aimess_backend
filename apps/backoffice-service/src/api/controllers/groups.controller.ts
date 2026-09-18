@@ -12,7 +12,9 @@ import type {
 } from "../../types/group.types.js";
 import type {
   DisbandGroupInput,
+  GroupMessageParam,
   GroupMessagesQueryInput,
+  MessageReactionsQueryInput,
   ListGroupMembersQueryInput,
   ListGroupsQueryInput,
   RemoveGroupMemberInput,
@@ -112,6 +114,31 @@ export const getGroupConversationMessages: RequestHandler = (
         success: true,
         data: result,
       });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * GET /v1/groups/:groupId/messages/:messageId/reactions — one page of the
+ * reactor list for the read-only Reaction Details popup.
+ *
+ * Read-only by construction: there is no admin endpoint that adds, removes or
+ * changes a reaction, on this router or any other.
+ */
+export const getGroupMessageReactions: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by groupMessageParamSchema + messageReactionsQuerySchema.
+      const { groupId, messageId } = req.params as unknown as GroupMessageParam;
+      const query = req.query as unknown as MessageReactionsQueryInput;
+      const result = await groupService.getMessageReactions(
+        groupId,
+        messageId,
+        query
+      );
+      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
     } catch (error) {
       next(error);
     }

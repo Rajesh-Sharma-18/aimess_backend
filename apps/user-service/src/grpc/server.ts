@@ -387,8 +387,13 @@ export function startUserGrpcServer(): grpc.Server {
                 isDeleted,
                 // Admin ban/suspend mirror. Not anonymized (history must still
                 // render the name) — it exists so ACTION paths (invites, group
-                // adds) can refuse a recipient who cannot log in.
-                isSuspended: p.status === ProfileStatus.SUSPENDED,
+                // adds) can refuse a recipient who cannot log in. BANNED counts
+                // too: it is the STRONGER restriction, so a caller gating on
+                // this flag must not start letting banned recipients through
+                // just because the ban now has a status of its own.
+                isSuspended:
+                  p.status === ProfileStatus.SUSPENDED ||
+                  p.status === ProfileStatus.BANNED,
               };
             }),
           });
@@ -410,9 +415,13 @@ export function startUserGrpcServer(): grpc.Server {
           const req = call.request as { userId?: string; status?: string };
           const userId = req.userId ?? "";
           const status = (req.status ?? "").toUpperCase();
+          // DELETED stays unsettable: account deletion has its own
+          // pipeline, and accepting it here would let a moderation action
+          // anonymize an account nobody asked to remove.
           if (
             status !== ProfileStatus.ACTIVE &&
-            status !== ProfileStatus.SUSPENDED
+            status !== ProfileStatus.SUSPENDED &&
+            status !== ProfileStatus.BANNED
           ) {
             callback(null, {
               ok: false,

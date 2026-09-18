@@ -977,6 +977,7 @@ const startServer = async () => {
       presenceService,
       communityMessageService,
       communityPinService,
+      groupPinService,
       notificationRepo,
       chatMessageOrchestrator,
       privateRoomService,

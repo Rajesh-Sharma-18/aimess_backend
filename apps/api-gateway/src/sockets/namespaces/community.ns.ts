@@ -147,6 +147,11 @@ const CommunityMsgReactSchema = z.object({
   messageId: z.string().min(1),
   communityId: z.string().min(1),
   emoji: z.string().min(1).max(MAX_EMOJI_LEN),
+  // 0-based index of the attachment being reacted to, for a message carrying
+  // several (a collage). -1 = the message as a whole. Defaulted rather than
+  // omitted because proto3 has no absent int32 — a client that never sends this
+  // would otherwise reach chat-service as index 0.
+  mediaIndex: z.number().int().min(-1).max(9).default(-1),
 });
 const CommunityCatchupRoomSchema = z.object({
   roomId: z.string().min(1),
@@ -252,6 +257,8 @@ const CommunityMsgReadSchema = z.object({
 const CommunityMsgReactionsGetSchema = z.object({
   messageId: z.string().min(1),
   communityId: z.string().min(1),
+  /** -1 = the message's own reactions; otherwise ONE attachment's bucket. */
+  mediaIndex: z.number().int().min(-1).max(9).default(-1),
 });
 // Paginated sibling of CommunityMsgReactionsGetSchema — see chat.ns.ts.
 const CommunityMsgReactionsPageSchema = z.object({
@@ -262,6 +269,8 @@ const CommunityMsgReactionsPageSchema = z.object({
   cursor: z.string().max(128).optional(),
   // Advisory: chat-service clamps to its own page ceiling regardless.
   limit: z.coerce.number().int().positive().max(100).optional(),
+  // The collage's other members — see the /chat namespace's equivalent.
+  siblingMessageIds: z.array(z.string().min(1)).max(20).optional(),
 });
 
 const CommunityMsgForwardSchema = z.object({
@@ -1095,8 +1104,8 @@ export function registerCommunityNamespace(
             // images, unsupported type, community not found, muted/banned,
             // etc.) when chat-service mapped it from an AppError; anything
             // unrecognized falls back to the generic SERVICE_ERROR message.
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
+            const { code, detailKey, retryAfter } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey, retryAfter);
           });
       }
     );

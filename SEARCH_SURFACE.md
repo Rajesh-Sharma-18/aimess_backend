@@ -171,7 +171,7 @@ hit, and is ordered only by the page's keyset (`firstName asc` for people,
 | Blocks | `splitBlocks` | One-way. A user the **viewer** blocked stays in the viewer's results carrying `isBlockedByMe`. A user who blocked the **viewer** is subtracted (`hiddenIds`) **unless** the pair already has a private room, in which case the row survives flagged `isBlockedByPeer` with every action off and presence forced false. |
 | Community visibility | `listDiscoverable` | PUBLIC, or a community the caller is an ACTIVE/BANNED member of. A PRIVATE community the caller is not in is invisible — consistent with `/by-handle` 404ing it. |
 | Group visibility | `searchInRoomIds` | Only rooms derived from the caller's own memberships. There is no global group index. |
-| `ProfileStatus` / `deletedAt` | `discoverableWhere` | Banned and deleted profiles never surface. |
+| `ProfileStatus` / `deletedAt` | `user-profile.repository.ts#DISCOVERABLE_ACCOUNT_WHERE`, merged into every discovery query | BANNED and deleted profiles never surface. SUSPENDED still does — nothing in user-service expires a suspension, so hiding it would make a time-boxed restriction permanent. Not applied to the admin surfaces or to `BulkGetUserSnapshots`. (Until 2026-09-17 this row described an intent, not the code: the queries filtered `deletedAt` alone, and a banned account stayed searchable under "Other People".) |
 
 ---
 
