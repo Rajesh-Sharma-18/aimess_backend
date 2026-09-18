@@ -100,6 +100,59 @@ describe("CdnService — URL minting", () => {
     // null, NOT an empty map — the reconciler treats an empty map as "these
     // streams are gone".
     await expect(cdn.listPublishing()).resolves.toBeNull();
+    // The disconnect API is a no-op without credentials — never a spurious
+    // "kicked" that the end path might act on.
+    await expect(cdn.stopPublishing("anything")).resolves.toBe(false);
+  });
+
+  it("posts the bare push URL (no secret) to the StopLivestreaming API", async () => {
+    const { CdnService } = loadCdnService({
+      CDN_API_USERNAME: "u",
+      CDN_API_KEY: "k",
+    });
+    const calls: { url: string; body: unknown }[] = [];
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: init?.body });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '{"code":"0","message":"Success"}',
+      } as never;
+    }) as never;
+    try {
+      const ok = await new CdnService().stopPublishing("public-name");
+      expect(ok).toBe(true);
+      expect(calls[0].url).toBe("https://api.cdnetworks.com/api/live/stop");
+      // liveUrl is the bare push URL — no ?secret= — and type=publish kicks
+      // the encoder, not a viewer.
+      expect(JSON.parse(calls[0].body as string)).toEqual({
+        liveUrl: "rtmp://push.example.com/live/public-name",
+        type: "publish",
+      });
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  it("reports failure when the API answers a non-zero code", async () => {
+    // The vendor returns HTTP 200 with a failure body (rate-limited, bad URL),
+    // so success must be read from the body, not the status line.
+    const { CdnService } = loadCdnService({
+      CDN_API_USERNAME: "u",
+      CDN_API_KEY: "k",
+    });
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '{"code":"1","message":"too many urls today"}',
+    })) as never;
+    try {
+      await expect(new CdnService().stopPublishing("x")).resolves.toBe(false);
+    } finally {
+      global.fetch = realFetch;
+    }
   });
 
   it("round-trips the publisher marker and ignores SRS client ids", () => {
@@ -150,6 +203,7 @@ function makeService(stream: Record<string, unknown> | null) {
     listPublishing: jest.fn().mockResolvedValue(null),
     isProbeEnabled: jest.fn().mockReturnValue(false),
     probeLive: jest.fn().mockResolvedValue(false),
+    stopPublishing: jest.fn().mockResolvedValue(true),
   };
   const service = new LivestreamService(
     streamRepo as never,

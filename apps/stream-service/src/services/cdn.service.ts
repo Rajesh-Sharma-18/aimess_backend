@@ -3,6 +3,7 @@ import { createHash, createHmac } from "node:crypto";
 import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
+import { streamKeyRef } from "../lib/stream-key-ref.js";
 import type { IngestEndpoints, PlaybackUrls } from "./srs.service.js";
 
 /**
@@ -306,6 +307,61 @@ export class CdnService {
     } catch (error) {
       logStreamStatusBanner(`FAILED — ${String(error)}`);
       return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Force a publisher off the CDN — the MALB `StopLivestreaming` API
+   * (`POST /api/live/stop`, `type=publish`). This is the disconnect we thought
+   * MALB lacked: it cuts an encoder that is still pushing after we have ended a
+   * stream on our side (host left OBS running, admin force-end, ban).
+   *
+   * Two hard limits, both from the vendor, both the caller's problem to respect:
+   * - **1 call per 5 minutes** (plus a daily cap). So this is wired ONLY into
+   *   the explicit end paths, never the sweeper's natural-end path — a stream
+   *   that ended because OBS already dropped has nothing to kick and must not
+   *   spend the budget.
+   * - It registers a **forbid** (see `QueryForbidLivestreamRecord`), so the
+   *   stream may be blocked from re-publishing for a period. Fine for the
+   *   moderation/force-end intent; do not call it where the same host is
+   *   expected to go live again immediately.
+   *
+   * The `liveUrl` is the bare push URL with NO query string — the API reads
+   * only the part before `?`, so the publish secret is neither needed nor sent.
+   * Best-effort: logs and returns false on any failure, never throws into the
+   * end path.
+   */
+  async stopPublishing(name: string): Promise<boolean> {
+    if (!this.isConfigured() || !this.isApiConfigured()) return false;
+
+    const liveUrl = `rtmp://${env.CDN_PUSH_DOMAIN}/${env.CDN_APP}/${name}`;
+    const url = `${env.CDN_API_BASE.replace(/\/+$/, "")}/api/live/stop`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { ...this.apiHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ liveUrl, type: "publish" }),
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      // The vendor answers 200 with a `{code,message}` body even on a logical
+      // failure (bad URL, rate-limited, "too many urls today"), so surface the
+      // body, not just the HTTP status. `code: "0"` / message "Success" = ok.
+      const ok = res.ok && /"code"\s*:\s*"?0"?|success/i.test(text);
+      logger.info(
+        `CDN stopPublishing name=${streamKeyRef(name)} httpStatus=${res.status} ok=${ok} body=${text.slice(0, 200)}`
+      );
+      return ok;
+    } catch (error) {
+      logger.warn(
+        `CDN stopPublishing failed for name=${streamKeyRef(name)}: ${String(error)}`
+      );
+      return false;
     } finally {
       clearTimeout(timeout);
     }

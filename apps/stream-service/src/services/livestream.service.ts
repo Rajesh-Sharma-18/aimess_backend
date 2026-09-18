@@ -1072,18 +1072,29 @@ export class LivestreamService {
     // Set by the platform-admin force-end, where backoffice-service already
     // audited `livestream.ended` against the admin who ordered it. Mirroring
     // here as well would land two rows for one force-end.
-    skipAdminActivity = false
+    skipAdminActivity = false,
+    // Whether to force-disconnect a CDN publisher that may still be pushing.
+    // OFF by default because the CDN's StopLivestreaming API is limited to ONE
+    // call per 5 minutes: only the explicit end paths (host End Live, admin
+    // force-end, ban, community close) — where the encoder is likely still live
+    // — set this true. The natural-end paths (a PENDING timeout, the
+    // reconnect-grace sweeper) leave it false: the publisher is already gone, so
+    // there is nothing to kick and no reason to spend the scarce budget.
+    kickCdnPublisher = false
   ): Promise<Livestream> {
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "ENDED",
       endedAt: new Date(),
     });
 
-    // CDNetworks exposes no disconnect API, so there is nothing to call for a
-    // CDN row: the encoder keeps pushing until it stops or its next reconnect
-    // is refused by the remote-auth endpoint (the stream is ENDED by then).
-    // The reconciler logs any name still publishing with no active row.
-    if (!isCdnStream(stream)) {
+    if (isCdnStream(stream)) {
+      // MALB's StopLivestreaming (POST /api/live/stop, type=publish) is the
+      // disconnect we can call. Best-effort and rate-limited (1/5min), so only
+      // fired from the explicit end paths — see kickCdnPublisher above.
+      if (kickCdnPublisher) {
+        void this.cdnService.stopPublishing(resolveSrsName(stream));
+      }
+    } else {
       await this.srsService.kickStream(
         resolveSrsName(stream),
         stream.sourceType
@@ -1181,7 +1192,11 @@ export class LivestreamService {
       return toView(stream);
     }
 
-    return toView(await this.finalizeAsEnded(stream));
+    // Host clicked End Live. The encoder (OBS) may still be pushing, so kick it
+    // off the CDN — this is the whole point of the feature.
+    return toView(
+      await this.finalizeAsEnded(stream, "HOST_ENDED", false, true)
+    );
   }
 
   /**
@@ -1304,7 +1319,7 @@ export class LivestreamService {
 
     // The reason was accepted and then dropped, so a force-end was indistinguishable
     // from the host ending their own broadcast in every downstream event.
-    await this.finalizeAsEnded(stream, reason || "ADMIN_FORCE_ENDED", true);
+    await this.finalizeAsEnded(stream, reason || "ADMIN_FORCE_ENDED", true, true);
 
     return { success: true, status: "ENDED" };
   }
@@ -1369,7 +1384,7 @@ export class LivestreamService {
     for (const stream of active) {
       if (!streamIds.includes(stream.id)) continue;
       try {
-        await this.finalizeAsEnded(stream, "SESSION_ENDED");
+        await this.finalizeAsEnded(stream, "SESSION_ENDED", false, true);
         endedCount++;
         logger.info(
           `endStreamsOfRevokedSession: ended stream=${stream.id} creator=${userId} session=${sessionId}`
@@ -1417,7 +1432,7 @@ export class LivestreamService {
     let endedCount = 0;
     for (const stream of streams) {
       try {
-        await this.finalizeAsEnded(stream, reason);
+        await this.finalizeAsEnded(stream, reason, false, true);
         endedCount++;
         logger.info(
           `forceEndStreamsByCreator: ended stream=${stream.id} creator=${creatorId} community=${stream.communityId} reason=${reason}`
@@ -1456,7 +1471,7 @@ export class LivestreamService {
     let endedCount = 0;
     for (const stream of streams) {
       try {
-        await this.finalizeAsEnded(stream, reason);
+        await this.finalizeAsEnded(stream, reason, false, true);
         endedCount++;
         logger.info(
           `forceEndStreamsByCommunity: ended stream=${stream.id} creator=${stream.creatorId} community=${communityId} reason=${reason}`
