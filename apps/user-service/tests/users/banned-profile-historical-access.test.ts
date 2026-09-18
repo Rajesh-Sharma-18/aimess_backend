@@ -28,11 +28,16 @@ import { app } from "../../src/app.js";
 import { userProfileRepository } from "../../src/repositories/user-profile.repository.js";
 import { friendshipRepository } from "../../src/repositories/friendship.repository.js";
 import { messagingGrpcClient } from "../../src/grpc/messaging.client.js";
+import { communityGrpcClient } from "../../src/grpc/community.client.js";
 import { TEST_USER_ID, bearer, makeAccessToken } from "../helpers/auth.js";
 
 const pRepo = userProfileRepository as unknown as Record<string, jest.Mock>;
 const friendRepo = friendshipRepository as unknown as Record<string, jest.Mock>;
 const grpc = messagingGrpcClient as unknown as Record<string, jest.Mock>;
+const communityGrpc = communityGrpcClient as unknown as Record<
+  string,
+  jest.Mock
+>;
 
 const MIND_FLAYER = "1b98aed5-cc15-41d6-95bb-bef47a44f063";
 const ROOM = "prv_PP3Zn6RX8d-YYwhY";
@@ -67,6 +72,8 @@ beforeEach(() => {
   friendRepo.findBlock.mockResolvedValue(null);
   friendRepo.findByPair.mockResolvedValue(null);
   grpc.resolvePrivateRooms.mockResolvedValue([]);
+  grpc.getGroupMemberIds.mockResolvedValue([]);
+  communityGrpc.getActiveMemberIds.mockResolvedValue([]);
 });
 
 describe("GET /api/v1/users/:userId — banned target", () => {
@@ -140,5 +147,75 @@ describe("GET /api/v1/users/:userId — banned target", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.isBanned).toBe(false);
     expect(res.body.data.relationship.canSendRequest).toBe(true);
+  });
+});
+
+describe("GET /api/v1/users/:userId — banned target opened from a shared group/community", () => {
+  const GROUP = "grp_cftzaOYZkp1vmL1w";
+  const COMMUNITY = "6a321d35afccb246b6e80b6b";
+  const OTHER = "0f0f0f0f-0000-4000-8000-000000000001";
+
+  beforeEach(() => {
+    pRepo.findPublicProfileByUserId.mockResolvedValue(publicProfile("BANNED"));
+  });
+
+  it("co-member of the group: profile viewable, read-only", async () => {
+    grpc.getGroupMemberIds.mockResolvedValue([
+      TEST_USER_ID,
+      MIND_FLAYER,
+      OTHER,
+    ]);
+    const res = await get(`/api/v1/users/${MIND_FLAYER}?groupId=${GROUP}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.isBanned).toBe(true);
+    expect(res.body.data.isOnline).toBeNull();
+    expect(res.body.data.relationship.canSendRequest).toBe(false);
+    expect(grpc.getGroupMemberIds).toHaveBeenCalledWith(GROUP);
+  });
+
+  it("co-member of the community: profile viewable", async () => {
+    communityGrpc.getActiveMemberIds.mockResolvedValue([
+      TEST_USER_ID,
+      MIND_FLAYER,
+    ]);
+    const res = await get(
+      `/api/v1/users/${MIND_FLAYER}?communityId=${COMMUNITY}`
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.data.isBanned).toBe(true);
+    expect(communityGrpc.getActiveMemberIds).toHaveBeenCalledWith(COMMUNITY);
+  });
+
+  it("viewer not in the named group: 404", async () => {
+    grpc.getGroupMemberIds.mockResolvedValue([MIND_FLAYER, OTHER]);
+    expect(
+      (await get(`/api/v1/users/${MIND_FLAYER}?groupId=${GROUP}`)).status
+    ).toBe(404);
+  });
+
+  it("target not in the named community: 404", async () => {
+    communityGrpc.getActiveMemberIds.mockResolvedValue([TEST_USER_ID, OTHER]);
+    expect(
+      (await get(`/api/v1/users/${MIND_FLAYER}?communityId=${COMMUNITY}`))
+        .status
+    ).toBe(404);
+  });
+
+  it("group/community service outage fails closed", async () => {
+    // Breaker fallbacks resolve to an empty roster.
+    expect(
+      (await get(`/api/v1/users/${MIND_FLAYER}?groupId=${GROUP}`)).status
+    ).toBe(404);
+    expect(
+      (await get(`/api/v1/users/${MIND_FLAYER}?communityId=${COMMUNITY}`))
+        .status
+    ).toBe(404);
+  });
+
+  it("an active (not banned) target never consults the roster", async () => {
+    pRepo.findPublicProfileByUserId.mockResolvedValue(publicProfile("ACTIVE"));
+    const res = await get(`/api/v1/users/${MIND_FLAYER}?groupId=${GROUP}`);
+    expect(res.status).toBe(200);
+    expect(grpc.getGroupMemberIds).not.toHaveBeenCalled();
   });
 });
