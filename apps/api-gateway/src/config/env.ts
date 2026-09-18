@@ -226,11 +226,12 @@ const envSchema = z.object({
    * user action. Sending one 10-item album costs 20 requests in the media write
    * bucket and, whenever ClamAV is on, roughly a dozen scan-status polls per
    * item on top — so a backstop of 100 rejected the album itself, not a flood.
-   * Every deployment config in the repo already sets 200 explicitly; the
-   * default now agrees with them instead of tripping only where nobody set it
-   * (local runs and CI), which is exactly where it looked like a client bug.
+   *
+   * Now WRITES only (reads have GLOBAL_READ_RATE_LIMIT_MAX) and 300, not 200:
+   * it sits outside chat-service's 300/min send bucket, and at 200 the REST
+   * send path was capped by the backstop before the send bucket could apply.
    */
-  GLOBAL_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(200),
+  GLOBAL_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
   /**
    * Outermost per-session backstop for READS (GET/HEAD and
    * `POST /media/download-url`), per GLOBAL_RATE_LIMIT_WINDOW_MINUTES window.

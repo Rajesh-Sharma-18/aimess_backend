@@ -27,7 +27,7 @@ The Redis store fails open (`redis-rate-limit-store.ts`).
 | Rule (Redis key `rl:gw:<rule>:`) | Scope | Default | Mounted on |
 |---|---|---|---|
 | `global.read` **(new)** | session | `GLOBAL_READ_RATE_LIMIT_MAX` 600/min | app-wide, GET/HEAD + `POST /api/v1/media/download-url` (`isReadTraffic`) |
-| `global` (now writes only) | session | `GLOBAL_RATE_LIMIT_MAX` 200/min | app-wide, everything else |
+| `global` (now writes only) | session | `GLOBAL_RATE_LIMIT_MAX` 300/min | app-wide, everything else |
 | `read.generous` | session | `READ_RATE_LIMIT_MAX` 300/min | `/users/friends`, `/chat/conversations` |
 | `media.read` **(new, split from read.generous)** | session | `MEDIA_READ_RATE_LIMIT_MAX` 600/min | `/media/download-url`, `/media/scan-status`, `/media/usage` |
 | `media.upload-url` (media write) | session | `MEDIA_UPLOAD_RATE_LIMIT_MAX` 90/min | `/media/upload-url`, `/media/confirm`, `/media/uploads` |
@@ -83,21 +83,25 @@ Over the limit, a gRPC `TooManyRequestsError` becomes `RESOURCE_EXHAUSTED` with 
 | `useChatMedia.resolveMediaDownloadUrl` | a failed URL is suppressed for 1 min and affects that tile only. It never touches the thread |
 | `useSignupProof`, `QrCodeScanUsingApp`, `CallContext` | honour `retryAfter` (unchanged) |
 
-## Scenario table
+The client's generic toast no longer fires for a GET/HEAD 429 (`BaseService.ts`). A read throttle is never shown as a red error.
 
-| # | Scenario | Expected | Covered by |
+## Plan scenarios 1–14 (`AIMESS_RATE_LIMIT_PLAN.md`)
+
+| # | Scenario | Result | Covered by |
 |---|---|---|---|
-| 1 | New user opens the app: inbox, history and catch-up burst | never an empty room. Reads sit in `global.read` (600), separate from writes | gateway `read-write-split.test.ts` |
-| 2 | 30× GET history | no 429 | `read-write-split` "30x GET history" |
-| 3 | History 429s anyway (sustained) | loader stays up and the seed retries after `Retry-After` | client hooks, `retryPolicy.spec.ts` |
-| 4 | Inbox 429 | loader stays up and refetches | `MessageThreadsContext` |
-| 5 | 10× `@all` in 10 min | 10 rows stored, 5 `@all` pushes, never a 429 | chat `group-message-mentions` "10 @all sends over the limit" |
-| 6 | `@all` + `@kristi` over the limit | message stored, `@kristi` pushed, `@all` skipped | chat "over the @all limit" |
-| 7 | Edit adds `@all` over the limit | edit saved, nobody pushed | chat "rate-limited @all edit is saved" |
-| 8 | `@user` only | ordinary send, never charged to `@all` | existing "USER-only mentions" test |
-| 9 | Send flood over 300/min | send 429 with `retryAfter`. Reads unaffected | `read-write-split` "write flood"; `send-limit-shared` |
-| 10 | Socket send throttled | ack `RATE_LIMITED` + `retryAfter`. Outbox waits it, no Retry badge | gateway ack test, client `outboxDrain` "throttled send" |
-| 11 | REST and socket sends | one bucket `{scope}:send` per user | `send-limit-shared.test.ts` |
-| 12 | Media: open an attachment-heavy room (download-url burst) | no history 429. download-url uses `media.read` | `read-write-split` "download-url burst" |
-| 13 | Media upload flood | only `media.upload-url` 429s. download-url still served | `media-limiter.test.ts` |
-| 14 | Redis down | gateway fails open. chat-service reads fail open and sends fall back to the in-process counter | `redis-store.test.ts`, chat `rate-limit.test.ts` |
+| 1 | Brand-new account, first login, Message tab | Pass. The inbox sits in `global.read` (600). A transient error keeps the loader and refetches, so there is no empty list | `read-write-split.test.ts`; `MessageThreadsContext` |
+| 2 | First tap on a group, community or DM | Pass. History has no service limiter, and a seed that fails transiently keeps the loader and re-seeds | `read-write-split` "30x GET history"; the three transcript hooks |
+| 3 | Cold start: inbox + avatars + unread + history | Pass. Reads never share a bucket with writes, and download-url has its own `media.read` 600 | `read-write-split` "download-url burst" |
+| 4 | App and web in the same minute | Pass. Both land in the same `u:<id>` bucket, which has 600 reads | `credentialKey` |
+| 5 | Duplicate GETs on a slow network | Pass. React Query deduplicates queries and a 429 retry waits `Retry-After` | `retryPolicy.spec.ts` |
+| 6 | 429 on history | Pass. Skeleton plus retry, and `messages` is never committed empty | `useGroupTranscript`/`useDmTranscript` reseed, `useCommunityChatTranscript` refetch |
+| 7 | 429 on inbox | Pass. The loader stays and it refetches. Cached rows are never wiped | `MessageThreadsContext` |
+| 8 | Deep link `/message/:id` on a cold start | Pass. It uses the same seed path as #2 | (as #2) |
+| 9 | Invited into a group, opened from the notification | Pass. It uses the same seed path as #2 | (as #2) |
+| 10 | Kill and reopen, catch-up | Pass. Catch-up and join have no limiter, and REST sync reads get the 429 retry | `chat.ns.ts` (no limiter on join/catch-up) |
+| 11 | `@all` 3–10 times in a group of 8 | Pass. Every message is stored and nothing fails with Retry; the notify pauses past 5 per 10 minutes | chat "10 @all sends over the limit → 10 stored" |
+| 12 | "Wait a few minutes" toast | Pass. The server no longer emits `CHAT_MENTION_ALL_RATE_LIMITED` | chat "over the @all limit" |
+| 13 | `@all` then a plain `hy` | Pass. `hy` uses the send bucket, which is separate from mention.all | `send-limit-shared` "never spends the send bucket" |
+| 14 | `Hey @all` mixed with text | Pass. The body and any `@user` pushes are saved, and only the @all push is skipped | chat "over the @all limit → message still stored" |
+
+The other checks from the plan: send flood (#54) 429s writes only; socket and REST share one send quota (#38); Redis down (#55) keeps reads working; login and OTP abuse (#51, #52) stay IP-limited. Their tests are `read-write-split`, `send-limit-shared`, `redis-store.test.ts`, and the auth limiter tests.
