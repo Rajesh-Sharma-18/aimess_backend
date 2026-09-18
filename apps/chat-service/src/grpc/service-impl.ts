@@ -2572,6 +2572,23 @@ export function createMessagingImpl(
             req.actorAdminId ?? "",
             req.reason || undefined
           );
+          // Every 1:1 peer's open chat must drop its composer now, not on the
+          // next refetch. `self:` so presence watchers of the peer never see
+          // it; the payload says "unavailable", never "banned".
+          if (req.userId) {
+            const peers = await deps.privateRoomRepo
+              // ponytail: 1000 most recent rooms; older ones see it on refetch.
+              .findPeersForUser(req.userId, 1000)
+              .catch(() => []);
+            for (const p of peers) {
+              publishRealtimeSafe(
+                `self:${p.peerId}`,
+                "peer:unavailable",
+                { userId: req.userId, roomId: p.roomId },
+                "adminApplySystemBan"
+              );
+            }
+          }
           callback(null, {
             ok: true,
             closedGroupIds: result.closedGroupIds,

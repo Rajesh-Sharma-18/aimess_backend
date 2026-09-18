@@ -556,6 +556,12 @@ export type CommunityMemberData = {
    * member action (promote, mute, ban, report, message) for the row.
    */
   isDeleted?: boolean;
+  /**
+   * Platform (Super Admin) ban on the ACCOUNT — not `status: BANNED`, which is
+   * this community's own ban. The row stays; clients close the profile and give
+   * admins/mods Remove as the only action.
+   */
+  isUnavailable?: boolean;
   /** ISO-8601 timestamp of when the member was banned; null when not banned. */
   bannedAt: string | null;
   /** AuthUser.id of the admin who banned the member; null when not banned. */

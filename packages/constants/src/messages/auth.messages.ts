@@ -45,13 +45,14 @@ export const AUTH_MESSAGES = {
   // Permanent Super Admin system ban. Deliberately NOT the community-scoped
   // USER_BANNED key (community.messages.ts), which reads "You are banned from
   // this community" and would be the wrong sentence on a login screen.
+  // Product copy: the banned user is told "suspended", never "banned".
   // Returned as HTTP 403 with error.code === "ACCOUNT_BANNED" by every
   // authentication surface (password, Google, Apple, refresh, forgot-password,
   // password reset, QR device link) and by the shared authenticated-route guard.
   ACCOUNT_BANNED: {
-    vi: "Tài khoản của bạn đã bị Quản trị viên cấp cao cấm. Bạn không thể truy cập AIMess trừ khi lệnh cấm được gỡ bỏ",
-    en: "Your account has been banned by a Super Admin. You cannot access AIMess unless the ban is removed.",
-    th: "บัญชีของคุณถูกแบนโดยผู้ดูแลระบบระดับสูง คุณจะไม่สามารถเข้าใช้ AIMess ได้จนกว่าจะมีการปลดแบน",
+    vi: "Tài khoản này đã bị đình chỉ.",
+    en: "This account has been suspended.",
+    th: "บัญชีนี้ถูกระงับการใช้งาน",
   },
   // A soft-deleted account (auth_users.deletedAt set, status PENDING_DELETION).
   // Deliberately NOT AUTH_ACCOUNT_NOT_ACTIVE above: "disabled, contact support"

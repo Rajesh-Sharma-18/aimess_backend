@@ -30,7 +30,7 @@ const forbidden = {
       schema: { $ref: "#/components/schemas/ApiErrorResponse" },
       example: {
         success: false,
-        message: "Your account has been banned.",
+        message: "This account has been suspended.",
         code: "ACCOUNT_BANNED",
       },
     },

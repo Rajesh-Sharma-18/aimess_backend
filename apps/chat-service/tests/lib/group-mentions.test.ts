@@ -550,3 +550,17 @@ describe("mentionedUserIdsOf", () => {
     ).toEqual(["a", "b"]);
   });
 });
+
+describe("resolveGroupMentions — platform-banned member", () => {
+  it("drops an active member whose account is unavailable", async () => {
+    const text = "hi @kristi and @bob";
+    const out = await resolveGroupMentions({
+      raw: [entity("u_kristi", text, "@kristi"), entity("u_bob", text, "@bob")],
+      text,
+      roomId: "grp_1",
+      ...deps,
+      bannedAmong: async (ids) => new Set(ids.filter((id) => id === "u_bob")),
+    });
+    expect(out.map((m) => m.userId)).toEqual(["u_kristi"]);
+  });
+});

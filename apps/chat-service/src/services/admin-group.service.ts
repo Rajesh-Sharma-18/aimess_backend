@@ -403,9 +403,8 @@ export class AdminGroupService {
    * Groups the user OWNS are CLOSED, not disbanded: a disband ends every
    * membership and hides the room, punishing the members for the owner's ban —
    * a close leaves the roster intact so the group stays in everyone's list,
-   * readable, write-refused, with a banner. Every OTHER membership is ended
-   * through the normal kick path so the user is evicted from those rooms and
-   * their rosters update live.
+   * readable, write-refused, with a banner. Every OTHER membership is kept;
+   * `removedGroupIds` stays in the wire shape and is always empty.
    *
    * Ownership is the `role: "ADMIN"` membership row, never `GroupRoom.createdBy`
    * — the creator can have transferred ownership or left long ago.
@@ -425,7 +424,6 @@ export class AdminGroupService {
     const ownedRoomIds = await this.groupMemberRepo.findRoomIdsByOwnerUserIds([
       userId,
     ]);
-    const owned = new Set(ownedRoomIds);
 
     for (const roomId of ownedRoomIds) {
       try {
@@ -443,24 +441,10 @@ export class AdminGroupService {
       }
     }
 
-    const memberships = await this.groupMemberRepo.getActiveRoomIds(userId);
-    for (const roomId of memberships) {
-      if (owned.has(roomId)) continue;
-      try {
-        await this.groupMemberService.kick({
-          roomId,
-          targetUserId: userId,
-          kickedBy: actorAdminId,
-          reason: "ACCOUNT_BANNED",
-          asPlatformAdmin: true,
-        });
-        removedGroupIds.push(roomId);
-      } catch (err) {
-        logger.error(
-          `AdminGroupService|adminApplySystemBan|remove failed room=${roomId} user=${userId}: ${String(err)}`
-        );
-      }
-    }
+    // Every OTHER membership is deliberately left ACTIVE: the banned account
+    // stays on the roster as an unavailable member (profile closed, admins may
+    // only Remove), and an unban restores it with nothing to rebuild. The ban
+    // flag + revoked sessions already refuse every read and write.
 
     logger.info(
       `AdminGroupService|adminApplySystemBan|user=${userId} closed=${closedGroupIds.length} removed=${removedGroupIds.length}`

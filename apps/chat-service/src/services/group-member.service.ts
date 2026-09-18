@@ -5,7 +5,7 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 
-import { publishChatUserEvent } from "@aimess/redis";
+import { filterBannedUserIds, publishChatUserEvent } from "@aimess/redis";
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
@@ -45,6 +45,12 @@ export type EnrichedGroupMember = GroupMember & {
   username: string;
   avatarUrl: string;
   isDeletedUser: boolean;
+  /**
+   * Platform (Super Admin) ban — NOT the group-level `status: "BANNED"`. The
+   * member stays on the roster; clients close the profile, drop them from the
+   * mention picker, and offer admins/mods Remove only.
+   */
+  isUnavailable: boolean;
   isMuted: boolean;
 };
 
@@ -187,6 +193,20 @@ export class GroupMemberService {
     }
 
     // Friend-gate direct adds — parity with private DM's friendship check.
+    // A platform-banned account cannot be added by anyone (friendships
+    // survive a ban, so the friend gate below would let it through).
+    if (
+      params.invitedBy &&
+      params.invitedBy !== params.userId &&
+      (
+        await filterBannedUserIds(this.redis, [params.userId]).catch(
+          () => new Set<string>()
+        )
+      ).size > 0
+    ) {
+      throw new ForbiddenError("CHAT_PEER_BANNED");
+    }
+
     // Skipped for invite-link self-joins (skipActorAuthz) and for the
     // creator-onboards-themselves creation path (invitedBy == userId).
     if (
@@ -1302,10 +1322,13 @@ export class GroupMemberService {
         isMuted: isGroupMemberMuted(member),
       }));
     }
-    const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
-      members.map((m) => m.userId),
-      this.cacheRepo
-    );
+    const userIds = members.map((m) => m.userId);
+    const [snapshots, unavailable] = await Promise.all([
+      this.userSnapshotService.getUserSnapshotsMap(userIds, this.cacheRepo),
+      // Straight off the ban key — the snapshot cache has no ban field and a 1h
+      // TTL. Fails open (nobody flagged), like every other ban read.
+      filterBannedUserIds(this.redis, userIds).catch(() => new Set<string>()),
+    ]);
     const avatarKeys: string[] = [];
     for (const snap of snapshots.values()) {
       const avatar = (snap as Record<string, unknown>).avatar;
@@ -1323,6 +1346,7 @@ export class GroupMemberService {
         username: (snap.memberId as string) || "",
         avatarUrl: urlFromMap(urlMap, (snap.avatar as string) || ""),
         isDeletedUser: snap.isDeletedUser === true,
+        isUnavailable: unavailable.has(member.userId),
         isMuted: isGroupMemberMuted(member),
       };
     });

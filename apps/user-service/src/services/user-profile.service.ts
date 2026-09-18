@@ -54,6 +54,7 @@ import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { messagingGrpcClient } from "../grpc/messaging.client.js";
+import { bannedAmong } from "../lib/banned-users.js";
 import { avatarService } from "./avatar.service.js";
 import { usernameService } from "./username.service.js";
 import { publishProfileUpdatedSafe } from "../messaging/publish-profile-updated.js";
@@ -286,6 +287,16 @@ export const userProfileService = {
     ]);
 
     if (!profile || profile.deletedAt) throw notFound();
+    // Platform-banned: the profile is gone for everyone but backoffice (which
+    // never calls this). Same 404 as a missing user, so the client renders
+    // "User profile is not available." and nothing says why.
+    if (
+      viewerId !== targetUserId &&
+      (profile.status === ProfileStatus.BANNED ||
+        (await bannedAmong([targetUserId])).size > 0)
+    ) {
+      throw notFound();
+    }
     // One-way, matching search (`lib/block-visibility.ts`): the TARGET's block
     // hides them from this viewer. The viewer's OWN block does not — a blocker
     // has to be able to open the profile of someone they blocked to review and

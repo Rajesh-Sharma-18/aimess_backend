@@ -36,6 +36,8 @@ export interface GroupMentionDeps {
   memberRepo: Pick<GroupMemberRepository, "findActiveUserIds">;
   userSnapshotService: Pick<UserSnapshotService, "getUserSnapshotsMap">;
   cacheRepo: CacheRepository;
+  /** Platform-banned subset of ids. Absent means no ban check. */
+  bannedAmong?: (userIds: string[]) => Promise<Set<string>>;
 }
 
 type UserCandidate = {
@@ -153,13 +155,15 @@ export async function resolveGroupMentions(
   if (users.length > 0) {
     const ids = [...new Set(users.map((c) => c.userId))];
     try {
-      const [activeIds, snapshots] = await Promise.all([
+      const [activeIds, snapshots, banned] = await Promise.all([
         params.memberRepo.findActiveUserIds(roomId, ids),
         params.userSnapshotService.getUserSnapshotsMap(ids, params.cacheRepo),
+        params.bannedAmong?.(ids) ?? new Set<string>(),
       ]);
       const active = new Set(activeIds);
       resolveUser = (c) => {
-        if (!active.has(c.userId)) return null;
+        // A platform-banned member stays on the roster but is not mentionable.
+        if (!active.has(c.userId) || banned.has(c.userId)) return null;
         const snapshot = snapshots.get(c.userId);
         if (snapshot?.isDeletedUser === true) return null;
         const handle =

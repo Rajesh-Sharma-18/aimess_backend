@@ -6,6 +6,7 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import { filterBannedUserIds } from "@aimess/redis";
 
 import { RECALC_CAS_ATTEMPTS } from "../lib/last-activity-guard.js";
 import {
@@ -2308,6 +2309,10 @@ export class GroupMessageService {
       memberRepo: this.memberRepo,
       userSnapshotService: this.userSnapshotService,
       cacheRepo: this.cacheRepo,
+      bannedAmong: (ids) =>
+        this.redis
+          ? filterBannedUserIds(this.redis, ids).catch(() => new Set<string>())
+          : Promise.resolve(new Set<string>()),
     });
   }
 
