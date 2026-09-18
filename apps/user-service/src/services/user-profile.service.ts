@@ -287,13 +287,20 @@ export const userProfileService = {
     ]);
 
     if (!profile || profile.deletedAt) throw notFound();
-    // Platform-banned: the profile is gone for everyone but backoffice (which
-    // never calls this). Same 404 as a missing user, so the client renders
-    // "User profile is not available." and nothing says why.
-    if (
+    // Platform-banned: hidden from discovery everywhere, but a ban does not
+    // erase history. A viewer who already shares a private conversation with
+    // the account keeps its profile (read-only); anyone else gets the same 404
+    // as a missing user. The room is resolved server-side from the JWT viewer
+    // id — nothing the client sends can widen this — and a chat-service outage
+    // resolves to "no room", i.e. fails closed.
+    const isBanned =
       viewerId !== targetUserId &&
       (profile.status === ProfileStatus.BANNED ||
-        (await bannedAmong([targetUserId])).size > 0)
+        (await bannedAmong([targetUserId])).size > 0);
+    if (
+      isBanned &&
+      (await messagingGrpcClient.resolvePrivateRooms(viewerId, [targetUserId]))
+        .length === 0
     ) {
       throw notFound();
     }
@@ -382,6 +389,7 @@ export const userProfileService = {
 
     const canSeePresence =
       canViewProfile &&
+      !isBanned &&
       scopeAdmits(
         // Missing row → FRIENDS (the schema default), NOT EVERYONE.
         profile.privacySettings?.whoCanSeeOnlineStatus ??
@@ -421,6 +429,7 @@ export const userProfileService = {
        * declined friend request.
        */
       isBlockedByPeer: Boolean(blockedByTarget),
+      isBanned,
       // Search vocabulary (FRIEND/PENDING/NONE), not the raw ACCEPTED/... view —
       // it is what every existing client relationship parser already speaks.
       relationship: {
@@ -431,6 +440,7 @@ export const userProfileService = {
         // account can never receive one, whatever its stored scope says.
         canSendRequest:
           !isDeletedUser &&
+          !isBanned &&
           canSendFriendRequest(profile, relation, {
             status: searchRelationship.status,
             // BOTH directions. A block by the target no longer always 404s —
