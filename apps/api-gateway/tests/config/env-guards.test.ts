@@ -77,6 +77,52 @@ const VALID_PRODUCTION: EnvPatch = {
   ADMIN_IP_WHITELIST: "203.0.113.10",
 };
 
+describe("gateway env — SOCKET_DOCS_ENABLED", () => {
+  it("defaults off in production", async () => {
+    const { module } = await loadEnv({
+      ...VALID_PRODUCTION,
+      SOCKET_DOCS_ENABLED: "",
+    });
+    expect(module?.socketDocsEnabled).toBe(false);
+    expect(module?.swaggerDocsEnabled).toBe(false);
+  });
+
+  it("defaults on outside production", async () => {
+    const { module } = await loadEnv({
+      NODE_ENV: "development",
+      SOCKET_DOCS_ENABLED: "",
+    });
+    expect(module?.socketDocsEnabled).toBe(true);
+    expect(module?.swaggerDocsEnabled).toBe(true);
+  });
+
+  it("can be enabled in production without enabling Swagger", async () => {
+    const { exited, module } = await loadEnv({
+      ...VALID_PRODUCTION,
+      SOCKET_DOCS_ENABLED: "true",
+    });
+    expect(exited).toBe(false);
+    expect(module?.socketDocsEnabled).toBe(true);
+    expect(module?.swaggerDocsEnabled).toBe(false);
+  });
+
+  it("can be disabled outside production", async () => {
+    const { module } = await loadEnv({
+      NODE_ENV: "development",
+      SOCKET_DOCS_ENABLED: "false",
+    });
+    expect(module?.socketDocsEnabled).toBe(false);
+  });
+
+  it("refuses a value that is not exactly true/false", async () => {
+    const { exited } = await loadEnv({
+      ...VALID_PRODUCTION,
+      SOCKET_DOCS_ENABLED: "yes",
+    });
+    expect(exited).toBe(true);
+  });
+});
+
 describe("gateway env — production boot assertions", () => {
   it("boots when every control is configured", async () => {
     const { exited } = await loadEnv(VALID_PRODUCTION);

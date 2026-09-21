@@ -5,7 +5,12 @@ import { auditContextMiddleware } from "@aimess/constants";
 import { localeMiddleware } from "@aimess/utils";
 import { NotFoundError } from "@aimess/errors";
 
-import { env, isCorsOriginAllowed } from "./config/env.js";
+import {
+  env,
+  isCorsOriginAllowed,
+  socketDocsEnabled,
+  swaggerDocsEnabled,
+} from "./config/env.js";
 import { setupAsyncApiDocs } from "./docs/asyncapi.js";
 import { setupSwagger } from "./docs/swagger.js";
 import { createBodySizeLimit } from "./middleware/body-size-limit.js";
@@ -89,14 +94,16 @@ export function createApp(
       },
     },
   });
-  // The docs are mounted non-production only, so in production every path —
-  // including the `/docs` 404s — keeps the strict policy.
-  const docsMounted = env.NODE_ENV !== "production";
+  // Only a MOUNTED docs page is exempt, so every unmounted docs path — the
+  // production `/docs` 404s included — keeps the strict policy. Socket docs
+  // can be enabled on their own and must not widen the exemption to Swagger.
+  const isUnder = (path: string, base: string) =>
+    path === base || path.startsWith(`${base}/`);
+  const isMountedDocsPath = (path: string) =>
+    (swaggerDocsEnabled && isUnder(path, "/docs")) ||
+    (socketDocsEnabled && isUnder(path, "/docs/socket"));
   app.use((req, res, next) => {
-    if (
-      docsMounted &&
-      (req.path === "/docs" || req.path.startsWith("/docs/"))
-    ) {
+    if (isMountedDocsPath(req.path)) {
       next();
       return;
     }
@@ -136,10 +143,10 @@ export function createApp(
   // is a reconnaissance gift, and the document is rebuilt per request, which
   // made an unauthenticated CPU and bandwidth amplifier out of the only public
   // edge. Non-production only.
-  if (env.NODE_ENV !== "production") {
-    setupSwagger(app);
-    setupAsyncApiDocs(app);
-  }
+  if (swaggerDocsEnabled) setupSwagger(app);
+  // The Socket.IO contract is switchable on its own (SOCKET_DOCS_ENABLED): off
+  // in production unless explicitly enabled.
+  if (socketDocsEnabled) setupAsyncApiDocs(app);
 
   app.use("/health", healthRouter);
 

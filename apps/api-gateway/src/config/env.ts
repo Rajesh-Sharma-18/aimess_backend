@@ -201,6 +201,21 @@ const envSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
   /**
+   * Serve the Socket.IO contract (AsyncAPI viewer + raw spec) at /docs/socket.
+   *
+   * Unset or blank keeps the old rule: on outside production, off in
+   * production. Production can opt in explicitly without also exposing Swagger,
+   * which stays non-production only — the OpenAPI document includes the admin
+   * surface, the socket contract is what every client already speaks.
+   *
+   * Strict `true`/`false` for the same reason as ADMIN_IP_WHITELIST_ENABLED: a
+   * typo fails the boot instead of silently resolving either way.
+   */
+  SOCKET_DOCS_ENABLED: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.enum(["true", "false"]).optional()
+  ),
+  /**
    * Where rate-limit counters live.
    *
    * `redis` shares them across replicas and survives a restart, which is what
@@ -420,6 +435,15 @@ if (!parsed.success) {
 
 export const env = parsed.data;
 
+/** Swagger/OpenAPI docs: non-production only (see app.ts for why). */
+export const swaggerDocsEnabled = env.NODE_ENV !== "production";
+
+/** Socket.IO/AsyncAPI docs: see SOCKET_DOCS_ENABLED above. */
+export const socketDocsEnabled =
+  env.SOCKET_DOCS_ENABLED === undefined
+    ? env.NODE_ENV !== "production"
+    : env.SOCKET_DOCS_ENABLED === "true";
+
 // Refuse to start a production deployment whose credentials are values
 // published in this repository. The schema can see that a string is present and
 // long enough; it cannot see that everyone already knows what it says. Matched
@@ -434,7 +458,6 @@ try {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
-
 
 /**
  * How this service verifies access tokens.

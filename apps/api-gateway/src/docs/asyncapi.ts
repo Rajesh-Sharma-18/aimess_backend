@@ -29,7 +29,8 @@ const SPEC_PATH = resolve(GATEWAY_ROOT, "asyncapi/asyncapi.yaml");
  * third-party dependency, but it means a new release cannot silently become
  * what this page loads.
  *
- * The page is now also non-production only (see app.ts), so this is defence in
+ * The page is off in production unless SOCKET_DOCS_ENABLED=true (see app.ts
+ * and config/env.ts), so this is defence in
  * depth rather than the only control. Vendoring the bundle into the gateway's
  * own static assets would remove the off-origin load entirely; recorded as
  * residual rather than done here.
