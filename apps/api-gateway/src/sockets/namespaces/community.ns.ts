@@ -9,7 +9,7 @@ import type { CommunityClient } from "../../grpc/clients/community.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
 import {
-  resolveSocketUserDetails,
+  createSocketIdentity,
   buildTypingBroadcast,
 } from "../user-details.js";
 import {
@@ -65,8 +65,8 @@ const CommunityTypingSchema = z.object({
   communityId: z.string().min(1),
   // roomId is accepted for forward-compat/contract symmetry but is intentionally
   // NOT used for fan-out: typing is community-scoped and broadcasts to the whole
-  // `community:<communityId>` room (the only room clients join). senderName is a
-  // legacy display fallback only — never an identity source (userId is server-side).
+  // `community:<communityId>` room (the only room clients join). senderName is
+  // still accepted from shipped clients but ignored — the name is server-side.
   roomId: z.string().min(1).optional(),
   senderName: z.string().max(100).optional(),
 });
@@ -698,7 +698,10 @@ export function registerCommunityNamespace(
       socket.handshake.auth?.batch === "1" ||
       socket.handshake.query?.batch === "1";
 
-    void resolveSocketUserDetails(userClient, mediaClient, userId).then(
+    const identity = createSocketIdentity(
+      userClient,
+      mediaClient,
+      userId,
       (ud) => {
         socket.data.userDetails = ud;
       }
@@ -846,21 +849,16 @@ export function registerCommunityNamespace(
     // presence events are byte-for-byte the same shape (roomId === communityId,
     // because the community GeneralRoom id === communityId).
     //
-    // The client-supplied `senderName` is carried as a LAST-RESORT display
-    // fallback (identical to /chat's typingHints): buildTypingBroadcast only
-    // reaches for it when the server-side snapshot has neither a displayName
-    // nor a username — i.e. the gRPC identity lookup degraded. It is never an
-    // identity source; `userId` stays server-authoritative. Without this the
-    // schema accepted a field that was then thrown away, and a degraded
-    // snapshot left peers with nothing but "Someone is typing…".
-    const senderNameHints = new Map<string, string | undefined>();
-    const communityTypingPayload = (communityId: string) =>
+    // Name and avatar come from the per-socket identity cache (awaited only
+    // until a name is known), never from the client — a client-supplied
+    // `senderName` is still accepted by the schema but ignored.
+    const communityTypingPayload = async (communityId: string) =>
       buildTypingBroadcast(
         userId,
-        socket.data.userDetails,
+        await identity.get(),
         communityId,
         Date.now(),
-        { communityId, senderName: senderNameHints.get(communityId) }
+        { communityId }
       );
 
     // Room-independent typing, now driven by the SHARED presence engine that
@@ -889,16 +887,12 @@ export function registerCommunityNamespace(
     const handleTypingStart = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
-      // Remembered so the TTL-expiry and disconnect-flush stops — which carry
-      // no client payload — keep the same fallback name the start had.
-      senderNameHints.set(r.data.communityId, r.data.senderName);
       typing.start(r.data.communityId);
     };
 
     const handleTypingStop = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
-      senderNameHints.set(r.data.communityId, r.data.senderName);
       typing.stop(r.data.communityId);
     };
 
@@ -916,15 +910,6 @@ export function registerCommunityNamespace(
     // Broadcasts to both community:<id> (open-chat) AND community-typing:<id>
     // (always-on membership) rooms so sidebar recording indicators work even when
     // chat is not open. Socket.IO de-duplicates recipients.
-    const communityRecordingPayload = (communityId: string) =>
-      buildTypingBroadcast(
-        userId,
-        socket.data.userDetails,
-        communityId,
-        Date.now(),
-        { communityId }
-      );
-
     const recording = createPresenceIndicator({
       startEvent: "recording:start",
       stopEvent: "recording:stop",
@@ -936,7 +921,7 @@ export function registerCommunityNamespace(
           `community:${communityId}`,
           `community-typing:${communityId}`,
         ],
-        buildPayload: communityRecordingPayload,
+        buildPayload: communityTypingPayload,
         isAuthorized: isAuthorizedForCommunity,
       }),
     });

@@ -4,6 +4,7 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import { logger } from "@aimess/logger";
 import { env, isCorsOriginAllowed } from "../config/env.js";
 import { createGatewayRedisClients } from "./redis.js";
+import { dropDuplicateNamespaceConnect } from "./duplicate-connect-guard.js";
 import { registerAuthNamespace } from "./namespaces/auth.ns.js";
 import {
   registerSessionRevokeListener,
@@ -57,6 +58,13 @@ export async function setupSockets(
 
   io.adapter(createAdapter(pub, sub));
   logger.info("Socket.IO Redis adapter attached");
+
+  // Must run before each namespace's auth middleware (registered below), so a
+  // duplicate CONNECT never reaches the session check or a connection handler.
+  // (/admin is guarded where it is conditionally registered below.)
+  for (const name of ["/chat", "/community", "/notify", "/stream", "/auth"]) {
+    io.of(name).use(dropDuplicateNamespaceConnect);
+  }
 
   // Each namespace gets its own dedicated sub client.
   // ioredis does not support mixing psubscribe and subscribe on the same connection,
@@ -112,6 +120,7 @@ export async function setupSockets(
   if (env.JWT_ADMIN_SECRET) {
     const { sub: adminSub } = createGatewayRedisClients();
     await adminSub.connect();
+    io.of("/admin").use(dropDuplicateNamespaceConnect);
     registerAdminNamespace(io, adminSub, pub);
   }
   registerSessionRevokeListener(io, sessionRevokeSub);

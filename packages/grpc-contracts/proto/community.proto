@@ -749,6 +749,9 @@ message GetCommunityMessagesRequest {
   string around_message_id = 5;
   // "after" pages forward (newer) from cursor; "" / "before" pages back.
   string direction         = 6;
+  // Admin viewer only. "media" = only IMAGE/VIDEO messages, newest first,
+  // cursor = createdAt ISO (the media viewer's room-wide gallery).
+  string type              = 7;
 }
 message GetCommunityMessagesResponse {
   repeated CommunityMessageDto messages   = 1;

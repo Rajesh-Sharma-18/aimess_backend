@@ -1,3 +1,8 @@
+import {
+  runWithLocale,
+  STORED_TEXT_LOCALE,
+  type SupportedLocale,
+} from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
@@ -146,15 +151,21 @@ export const communityService = {
    */
   async getConversationMessages(
     communityId: string,
-    query: ConversationMessagesQuery
+    query: ConversationMessagesQuery,
+    locale: SupportedLocale = STORED_TEXT_LOCALE
   ): Promise<ConversationMessagesResult> {
-    const res = await chatClient.adminGetCommunityMessages({
-      roomId: communityId,
-      cursor: query.cursor ?? "",
-      limit: query.limit,
-      aroundMessageId: query.aroundMessageId ?? "",
-      direction: query.direction ?? "",
-    });
+    // SYSTEM lines are rebuilt on read in the caller's language with no viewer
+    // (factual actor, never "You …") — see groupService.getConversationMessages.
+    const res = await runWithLocale(locale, () =>
+      chatClient.adminGetCommunityMessages({
+        roomId: communityId,
+        cursor: query.cursor ?? "",
+        limit: query.limit,
+        aroundMessageId: query.aroundMessageId ?? "",
+        direction: query.direction ?? "",
+        type: query.type ?? "",
+      })
+    );
 
     const messages = (res.messages ?? []).map((m) => ({
       messageId: m.messageId,

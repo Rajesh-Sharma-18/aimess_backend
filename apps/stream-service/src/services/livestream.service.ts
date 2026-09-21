@@ -2,6 +2,7 @@ import { streamKeyRef } from "../lib/stream-key-ref.js";
 import { randomBytes } from "node:crypto";
 
 import {
+  extractPublishSecret,
   generatePlaybackId,
   generateStreamKey,
   publishSecretMatches,
@@ -31,7 +32,19 @@ import { LIVE_STATUSES } from "../repositories/livestream.repository.js";
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
 import type { LivestreamViewerSessionRepository } from "../repositories/livestream-viewer-session.repository.js";
 import { buildHlsQualityUrls, buildFlvQualityUrls } from "./srs.service.js";
-import type { SrsService, IngestEndpoints } from "./srs.service.js";
+import type {
+  SrsService,
+  IngestEndpoints,
+  PlaybackUrls,
+} from "./srs.service.js";
+import {
+  CdnService,
+  CDN_PROVIDER,
+  SRS_PROVIDER,
+  cdnPublisherId,
+  cdnPublisherMs,
+  isCdnStream,
+} from "./cdn.service.js";
 import type { CommunityGrpcClient } from "../grpc/community.client.js";
 import type { redis as RedisClient } from "../config/redis.js";
 import { publishStreamEvent } from "../events/index.js";
@@ -62,6 +75,12 @@ export interface StreamView {
   thumbnail: string | null;
   sourceType: string;
   sourceUrl: string | null;
+  /**
+   * Which media provider serves this stream: "SRS" or "CDN". Clients do not
+   * branch on it — every URL they need is already on this view — but it is the
+   * first thing worth knowing in the admin table when one provider misbehaves.
+   */
+  provider: string;
   status: string;
   commentStatus: boolean;
   hlsUrl: string | null;
@@ -245,7 +264,9 @@ function extractYoutubeVideoId(url: string | null): string | null {
   return null;
 }
 
-function toView(s: Livestream & { dashUrl?: string | null }): StreamView {
+function toView(
+  s: Livestream & { dashUrl?: string | null; provider?: string | null }
+): StreamView {
   return {
     id: s.id,
     communityId: s.communityId,
@@ -255,6 +276,8 @@ function toView(s: Livestream & { dashUrl?: string | null }): StreamView {
     thumbnail: s.thumbnail,
     sourceType: s.sourceType,
     sourceUrl: s.sourceUrl,
+    // Rows created before the CDN split carry no provider and are SRS.
+    provider: s.provider ?? SRS_PROVIDER,
     status: s.status,
     commentStatus: s.commentStatus,
     hlsUrl: s.hlsUrl,
@@ -319,8 +342,24 @@ export class LivestreamService {
     // Resolves the host's display-name/avatar snapshot for enriched community
     // livestream socket payloads. Defaults to the shared singleton; injectable
     // for tests. Best-effort — a failure degrades to an empty host name.
-    private readonly userClient: typeof userGrpcClient = userGrpcClient
+    private readonly userClient: typeof userGrpcClient = userGrpcClient,
+    // CDNetworks (RTMP ingest + HLS/FLV delivery) for OBS/mobile streams.
+    // Stateless and dependency-free, so it defaults in place rather than being
+    // threaded through server.ts.
+    private readonly cdnService: CdnService = new CdnService()
   ) {}
+
+  /**
+   * First tick at which the CDN's status API stopped reporting a stream that we
+   * still believe is LIVE. Recovers a dropped end callback: the CDN documents
+   * no retry, so a lost callback would otherwise pin the row LIVE forever and
+   * block that creator's one-active-stream slot.
+   *
+   * ponytail: per-process and reset on restart — worst case is one extra
+   * absence window before an end. Move to Redis if several replicas ever need
+   * to agree on the timing.
+   */
+  private readonly cdnAbsentSince = new Map<string, number>();
 
   /**
    * Go-live: authorize the creator (membership gate, optional), enforce the
@@ -338,6 +377,10 @@ export class LivestreamService {
     thumbnail?: string;
     sourceType: string;
     sourceUrl?: string;
+    /** Protocol the caller will publish with — "whip" (or absent) keeps SRS. */
+    ingest?: "whip" | "rtmp";
+    /** Test override of STREAM_PROVIDER_DEFAULT. */
+    provider?: "SRS" | "CDN";
   }): Promise<CreateStreamResult> {
     // Before anything else: force-ending a banned host's stream is pointless if
     // they can immediately mint another key here.
@@ -376,6 +419,12 @@ export class LivestreamService {
     if ((params.sourceType === "URL" || isYoutube) && !params.sourceUrl) {
       throw new BadRequestError("STREAM_SOURCE_URL_REQUIRED");
     }
+
+    const provider = this.resolveProvider(
+      params.sourceType,
+      params.ingest,
+      params.provider
+    );
 
     // Rate gate BEFORE the lock: creating a stream writes a row and fans a
     // `stream.created` event out to the whole community, so an unthrottled
@@ -422,10 +471,12 @@ export class LivestreamService {
         const streamKey = generateStreamKey();
         const playbackId = generatePlaybackId();
 
-        // YouTube streams embed a remote source — no SRS ingest/playback.
+        // YouTube streams embed a remote source — no ingest/playback of ours.
         const playback = isYoutube
           ? null
-          : this.srsService.buildPlaybackUrls(playbackId);
+          : provider === CDN_PROVIDER
+            ? this.cdnService.buildPlaybackUrls(playbackId)
+            : this.srsService.buildPlaybackUrls(playbackId);
 
         const created = await this.streamRepo.create({
           playbackId,
@@ -437,6 +488,7 @@ export class LivestreamService {
           sourceType: params.sourceType,
           sourceUrl: params.sourceUrl ?? null,
           streamKey,
+          provider,
           status: "PENDING",
           hlsUrl: playback?.hlsUrl ?? null,
           flvUrl: playback?.flvUrl ?? null,
@@ -488,11 +540,127 @@ export class LivestreamService {
       streamKey,
       ingest: isYoutube
         ? {}
-        : this.srsService.buildIngestEndpoints(
-            resolveSrsName(created),
-            streamKey
-          ),
+        : this.ingestEndpointsFor(created, streamKey),
     };
+  }
+
+  /**
+   * Picks the media provider for a new stream. Runs once, at create: the row's
+   * ingest and playback URLs are minted against the answer, so it can never
+   * change afterwards.
+   *
+   * `sourceType` alone is not enough. PHONE_CAMERA is both the website's
+   * WebRTC/WHIP camera and the mobile apps' RTMP camera, and only RTMP can go
+   * to the CDN — hence the `ingest` hint. Clients that do not send it (every
+   * shipped mobile build) keep landing on SRS.
+   */
+  private resolveProvider(
+    sourceType: string,
+    ingest?: "whip" | "rtmp",
+    requested?: "SRS" | "CDN"
+  ): string {
+    // URL/YOUTUBE embeds never touch an ingest server; the CDN has nothing to
+    // do for them, and claiming otherwise would mint URLs nobody publishes to.
+    const rtmpCapable =
+      sourceType === "OBS_RTMP" ||
+      (sourceType === "PHONE_CAMERA" && ingest === "rtmp");
+    if (!rtmpCapable) {
+      if (requested === CDN_PROVIDER) {
+        throw new BadRequestError("STREAM_PROVIDER_UNSUPPORTED");
+      }
+      return SRS_PROVIDER;
+    }
+
+    const want = requested ?? env.STREAM_PROVIDER_DEFAULT;
+    if (want !== CDN_PROVIDER) return SRS_PROVIDER;
+    if (!this.cdnService.isConfigured()) {
+      // An explicit request fails loudly; a default that cannot be honoured
+      // falls back, so a half-configured environment still streams.
+      if (requested === CDN_PROVIDER) {
+        throw new BadRequestError("STREAM_PROVIDER_UNAVAILABLE");
+      }
+      logger.warn(
+        "STREAM_PROVIDER_DEFAULT=CDN but CDN_PUSH_DOMAIN/CDN_PLAYBACK_BASE are unset — falling back to SRS"
+      );
+      return SRS_PROVIDER;
+    }
+    return CDN_PROVIDER;
+  }
+
+  /** Playback URLs minted by the provider that actually serves this row. */
+  private playbackUrlsFor(stream: Livestream): PlaybackUrls {
+    const name = resolveSrsName(stream);
+    return isCdnStream(stream)
+      ? this.cdnService.buildPlaybackUrls(name)
+      : this.srsService.buildPlaybackUrls(name);
+  }
+
+  /** Ingest endpoints minted by the provider that actually serves this row. */
+  private ingestEndpointsFor(
+    stream: Livestream,
+    streamKey: string
+  ): IngestEndpoints {
+    const name = resolveSrsName(stream);
+    return isCdnStream(stream)
+      ? this.cdnService.buildIngestEndpoints(name, streamKey)
+      : this.srsService.buildIngestEndpoints(name, streamKey);
+  }
+
+  /**
+   * Everything that can refuse a publish, other than the publish secret itself.
+   * Returns a log-safe reason, or null when the publish may proceed.
+   *
+   * Extracted so the CDN's remote-authentication endpoint answers with exactly
+   * the same rules as the SRS `on_publish` hook — a second copy of these four
+   * checks would drift the moment one of them changes.
+   */
+  private async denyPublishReason(stream: Livestream): Promise<string | null> {
+    // The hook carries no JWT — it authenticates by stream key alone, so a
+    // banned host still holding a key would otherwise re-publish from OBS.
+    // Checked before the already-LIVE short-circuit, which allows.
+    if (
+      await isSystemBanned(this.redis, stream.creatorId, { denyOnError: true })
+    ) {
+      return `creator=${stream.creatorId} is system-banned`;
+    }
+    if (stream.status === "ENDED") return "stream is ENDED";
+
+    // Already on air: the caller's own short-circuit handles the bookkeeping,
+    // and the two concurrency guards below would otherwise count this very
+    // stream against itself.
+    if (stream.status === "LIVE") return null;
+
+    const otherActiveStreams =
+      await this.streamRepo.countActiveByCommunityAndCreator(
+        stream.communityId,
+        stream.creatorId,
+        stream.id
+      );
+    if (otherActiveStreams > 0) {
+      return `creator=${stream.creatorId} already has an active stream in community=${stream.communityId}`;
+    }
+
+    // The community-wide cap, enforced HERE rather than only at create.
+    //
+    // `createStream` checks it, but a fresh row is PENDING and PENDING never
+    // occupies a slot by design — so N different creators could each hold a
+    // PENDING row and all publish, putting the community over the cap while
+    // `publishCommunityStreamStarted` capped the *reported* count and hid it.
+    // PENDING → LIVE is the transition that actually takes the slot.
+    //
+    // `stream.id` is excluded because a RECONNECTING row already counts itself:
+    // without that, resuming a stream in a community at cap would be denied by
+    // its own presence in the count.
+    //
+    // ponytail: count-then-write, like the guard above it. Losing the race needs
+    // two publishes inside one DB round trip at exactly the cap; a Redis
+    // INCR-with-ceiling keyed on the community and released in finalizeAsEnded
+    // is the upgrade if that ever bites.
+    if (!(await this.isUnderCommunityCap(stream))) {
+      return `community=${stream.communityId} is at its concurrent-stream cap`;
+    }
+
+    return null;
   }
 
   /**
@@ -587,21 +755,9 @@ export class LivestreamService {
         return false;
       }
     }
-    // The webhook carries no JWT — it authenticates by streamKey alone, so a
-    // banned host still holding a key would otherwise re-publish from OBS.
-    // Checked before the already-LIVE short-circuit, which returns allow.
-    if (
-      await isSystemBanned(this.redis, stream.creatorId, { denyOnError: true })
-    ) {
-      logger.warn(
-        `on_publish denied for stream id=${stream.id}: creator=${stream.creatorId} is system-banned`
-      );
-      return false;
-    }
-    if (stream.status === "ENDED") {
-      logger.warn(
-        `on_publish for ${stream.status} stream id=${stream.id} — denying`
-      );
+    const denial = await this.denyPublishReason(stream);
+    if (denial) {
+      logger.warn(`on_publish denied for stream id=${stream.id}: ${denial}`);
       return false;
     }
 
@@ -624,38 +780,7 @@ export class LivestreamService {
 
     const isResume = stream.status === "RECONNECTING";
 
-    const otherActiveStreams =
-      await this.streamRepo.countActiveByCommunityAndCreator(
-        stream.communityId,
-        stream.creatorId,
-        stream.id
-      );
-    if (otherActiveStreams > 0) {
-      logger.warn(
-        `on_publish denied for stream id=${stream.id}: creator=${stream.creatorId} already has an active stream in community=${stream.communityId}`
-      );
-      return false;
-    }
-
-    // The community-wide cap, enforced HERE rather than only at create.
-    //
-    // `createStream` checks it, but a fresh row is PENDING and PENDING never
-    // occupies a slot by design — so N different creators could each hold a
-    // PENDING row and all publish, putting the community over the cap while
-    // `publishCommunityStreamStarted` capped the *reported* count and hid it.
-    // PENDING → LIVE is the transition that actually takes the slot.
-    //
-    // `stream.id` is excluded because a RECONNECTING row already counts itself:
-    // without that, resuming a stream in a community at cap would be denied by
-    // its own presence in the count.
-    //
-    // ponytail: count-then-write, like the guard above it. Losing the race needs
-    // two publishes inside one DB round trip at exactly the cap; a Redis
-    // INCR-with-ceiling keyed on the community and released in finalizeAsEnded
-    // is the upgrade if that ever bites.
-    if (!(await this.isUnderCommunityCap(stream))) return false;
-
-    const playback = this.srsService.buildPlaybackUrls(resolveSrsName(stream));
+    const playback = this.playbackUrlsFor(stream);
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "LIVE",
       disconnectedAt: null,
@@ -790,6 +915,127 @@ export class LivestreamService {
   }
 
   /**
+   * CDN "stream start" callback → the same transition SRS's on_publish drives.
+   *
+   * `"trusted"` because this callback carries no publish secret: the CDN's
+   * documented parameters are the stream name, host, app, client IP, edge IP,
+   * port and timestamps. Authorisation happens earlier, at
+   * {@link authorizeCdnPublish}, which the CDN calls before accepting the
+   * publisher — exactly the split SRS has between its hook and this method.
+   *
+   * `eventMs` is stored as the publisher marker so a late end callback from a
+   * superseded session can be told apart from the current one.
+   */
+  async handleCdnStart(streamName: string, eventMs: number): Promise<boolean> {
+    const stream = await this.streamRepo.findBySrsName(streamName);
+    if (!stream) {
+      logger.warn(
+        `CDN start for unknown stream name=${streamKeyRef(streamName)} — ignoring`
+      );
+      return false;
+    }
+    if (!isCdnStream(stream)) {
+      logger.warn(
+        `CDN start for non-CDN stream id=${stream.id} (provider=${stream.provider ?? SRS_PROVIDER}) — ignoring`
+      );
+      return false;
+    }
+    this.cdnAbsentSince.delete(stream.id);
+    const wasLive = stream.status === "LIVE";
+    const allowed = await this.handlePublish(
+      streamName,
+      cdnPublisherId(eventMs),
+      "trusted"
+    );
+    if (allowed && !wasLive) {
+      logger.info(
+        `AIMESS_CDN_WENT_LIVE by=HOOK stream=${stream.id} — vendor stream-start callback`
+      );
+    }
+    return allowed;
+  }
+
+  /**
+   * CDN "stream end" callback → the same transition SRS's on_unpublish drives
+   * (LIVE → RECONNECTING with a grace window, PENDING → ENDED).
+   *
+   * Staleness is decided HERE and not by `handleUnpublish`'s client-id check.
+   * `milltime` is an event timestamp, not a connection id, so it differs
+   * between the start and end of the very same session — feeding it into that
+   * equality check would drop every end callback and nothing would ever end.
+   * Instead the end is compared against the marker the start stored, and
+   * `handleUnpublish` is then called with no client id so its own check is
+   * skipped.
+   */
+  async handleCdnEnd(streamName: string, eventMs: number): Promise<void> {
+    const stream = await this.streamRepo.findBySrsName(streamName);
+    if (!stream) {
+      logger.warn(
+        `CDN end for unknown stream name=${streamKeyRef(streamName)} — ignoring`
+      );
+      return;
+    }
+    if (!isCdnStream(stream)) return;
+
+    const startedMs = cdnPublisherMs(stream.publisherClientId);
+    if (startedMs !== null && eventMs < startedMs) {
+      logger.info(
+        `CDN end: ignoring stale callback for stream id=${stream.id} — event=${eventMs} predates publisher=${startedMs}`
+      );
+      return;
+    }
+    this.cdnAbsentSince.delete(stream.id);
+    await this.handleUnpublish(streamName, undefined);
+  }
+
+  /**
+   * CDN remote authentication → allow or deny a publish before the edge accepts
+   * it. The CDN's only enforcement point: there is no kick API, so refusing
+   * here is also how an ended or banned broadcast is eventually evicted (on the
+   * encoder's next reconnect).
+   *
+   * Runs the same checks as the SRS `on_publish` path via
+   * {@link denyPublishReason}; the publish secret is only required once
+   * `CDN_REQUIRE_PUBLISH_SECRET` is on, because whether the CDN forwards our
+   * query string in `url` has to be confirmed against the live service first.
+   */
+  async authorizeCdnPublish(params: {
+    streamName: string;
+    url?: string;
+  }): Promise<boolean> {
+    const stream = await this.streamRepo.findBySrsName(params.streamName);
+    if (!stream) {
+      logger.warn(
+        `CDN auth denied: unknown stream name=${streamKeyRef(params.streamName)}`
+      );
+      return false;
+    }
+    if (!isCdnStream(stream)) {
+      logger.warn(`CDN auth denied: stream id=${stream.id} is not a CDN stream`);
+      return false;
+    }
+
+    if (env.CDN_REQUIRE_PUBLISH_SECRET) {
+      const queryStart = params.url?.indexOf("?") ?? -1;
+      const secret =
+        queryStart >= 0 ? extractPublishSecret(params.url?.slice(queryStart)) : "";
+      if (!publishSecretMatches(secret, stream.streamKey)) {
+        logger.warn(
+          `CDN auth denied for stream id=${stream.id}: missing or wrong publish secret`
+        );
+        return false;
+      }
+    }
+
+    const denial = await this.denyPublishReason(stream);
+    if (denial) {
+      logger.warn(`CDN auth denied for stream id=${stream.id}: ${denial}`);
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Coarse DB viewer-count nudge from SRS on_play/on_stop. The authoritative
    * live count is Redis-owned by the gateway; this just keeps a rough DB number
    * for history. Best-effort — never throws into the hook handler.
@@ -826,14 +1072,37 @@ export class LivestreamService {
     // Set by the platform-admin force-end, where backoffice-service already
     // audited `livestream.ended` against the admin who ordered it. Mirroring
     // here as well would land two rows for one force-end.
-    skipAdminActivity = false
+    skipAdminActivity = false,
+    // Whether to force-disconnect a CDN publisher that may still be pushing.
+    // OFF by default because the CDN's StopLivestreaming API is limited to ONE
+    // call per 5 minutes: only the explicit end paths (host End Live, admin
+    // force-end, ban, community close) — where the encoder is likely still live
+    // — set this true. The natural-end paths (a PENDING timeout, the
+    // reconnect-grace sweeper) leave it false: the publisher is already gone, so
+    // there is nothing to kick and no reason to spend the scarce budget.
+    kickCdnPublisher = false
   ): Promise<Livestream> {
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "ENDED",
       endedAt: new Date(),
     });
 
-    await this.srsService.kickStream(resolveSrsName(stream), stream.sourceType);
+    if (isCdnStream(stream)) {
+      // MALB's StopLivestreaming (POST /api/live/stop, type=publish) is the
+      // disconnect we can call. Best-effort and rate-limited (1/5min), so only
+      // fired from the explicit end paths — see kickCdnPublisher above.
+      logger.info(
+        `AIMESS_CDN_END stream=${stream.id} name=${resolveSrsName(stream)} reason=${reason} kickCdnPublisher=${kickCdnPublisher} — ${kickCdnPublisher ? "calling StopLivestreaming" : "NOT kicking (natural end)"}`
+      );
+      if (kickCdnPublisher) {
+        void this.cdnService.stopPublishing(resolveSrsName(stream));
+      }
+    } else {
+      await this.srsService.kickStream(
+        resolveSrsName(stream),
+        stream.sourceType
+      );
+    }
 
     const liveStreamCount = await this.streamRepo.countLiveByCommunity(
       updated.communityId
@@ -911,10 +1180,7 @@ export class LivestreamService {
 
     return {
       streamKey: stream.streamKey,
-      ingest: this.srsService.buildIngestEndpoints(
-        resolveSrsName(stream),
-        stream.streamKey
-      ),
+      ingest: this.ingestEndpointsFor(stream, stream.streamKey),
     };
   }
 
@@ -929,7 +1195,11 @@ export class LivestreamService {
       return toView(stream);
     }
 
-    return toView(await this.finalizeAsEnded(stream));
+    // Host clicked End Live. The encoder (OBS) may still be pushing, so kick it
+    // off the CDN — this is the whole point of the feature.
+    return toView(
+      await this.finalizeAsEnded(stream, "HOST_ENDED", false, true)
+    );
   }
 
   /**
@@ -976,7 +1246,7 @@ export class LivestreamService {
       throw new ConflictError("STREAM_COMMUNITY_CONCURRENCY_LIMIT");
     }
 
-    const playback = this.srsService.buildPlaybackUrls(resolveSrsName(stream));
+    const playback = this.playbackUrlsFor(stream);
     const updated = await this.streamRepo.updateById(id, {
       status: "LIVE",
       disconnectedAt: null,
@@ -1052,7 +1322,7 @@ export class LivestreamService {
 
     // The reason was accepted and then dropped, so a force-end was indistinguishable
     // from the host ending their own broadcast in every downstream event.
-    await this.finalizeAsEnded(stream, reason || "ADMIN_FORCE_ENDED", true);
+    await this.finalizeAsEnded(stream, reason || "ADMIN_FORCE_ENDED", true, true);
 
     return { success: true, status: "ENDED" };
   }
@@ -1117,7 +1387,7 @@ export class LivestreamService {
     for (const stream of active) {
       if (!streamIds.includes(stream.id)) continue;
       try {
-        await this.finalizeAsEnded(stream, "SESSION_ENDED");
+        await this.finalizeAsEnded(stream, "SESSION_ENDED", false, true);
         endedCount++;
         logger.info(
           `endStreamsOfRevokedSession: ended stream=${stream.id} creator=${userId} session=${sessionId}`
@@ -1165,7 +1435,7 @@ export class LivestreamService {
     let endedCount = 0;
     for (const stream of streams) {
       try {
-        await this.finalizeAsEnded(stream, reason);
+        await this.finalizeAsEnded(stream, reason, false, true);
         endedCount++;
         logger.info(
           `forceEndStreamsByCreator: ended stream=${stream.id} creator=${creatorId} community=${stream.communityId} reason=${reason}`
@@ -1204,7 +1474,7 @@ export class LivestreamService {
     let endedCount = 0;
     for (const stream of streams) {
       try {
-        await this.finalizeAsEnded(stream, reason);
+        await this.finalizeAsEnded(stream, reason, false, true);
         endedCount++;
         logger.info(
           `forceEndStreamsByCommunity: ended stream=${stream.id} creator=${stream.creatorId} community=${communityId} reason=${reason}`
@@ -1593,6 +1863,9 @@ export class LivestreamService {
   async pollObsStreamQuality(): Promise<void> {
     const streams = await this.streamRepo.findLiveBySourceType("OBS_RTMP");
     for (const stream of streams) {
+      // CDN rows get their quality from reconcileCdn's single domain-wide
+      // call; asking SRS about a stream it never saw would just log noise.
+      if (isCdnStream(stream)) continue;
       try {
         const stats = await this.srsService.getStreamStats(
           resolveSrsName(stream)
@@ -1629,8 +1902,184 @@ export class LivestreamService {
     // Reconcile first so a publisher SRS is carrying resumes its RECONNECTING
     // row before the grace sweep could end it.
     await this.reconcileWithSrs();
+    // Same ordering rule for the CDN half, and for the same reason.
+    await this.reconcileCdn();
     await this.sweepStaleReconnectingStreams();
     await this.sweepStalePendingStreams();
+  }
+
+  /**
+   * CDN counterpart of {@link reconcileWithSrs}, and the only place CDN stream
+   * quality is read.
+   *
+   * The CDN's lifecycle callbacks have no documented retry and no signature, so
+   * this pass is the safety net at both ends:
+   * - listed but not LIVE → a start callback was dropped; resume the row.
+   * - LIVE but absent for `CDN_ABSENT_TIMEOUT_MS` → an end callback was
+   *   dropped; end the row. Absence is trusted here (unlike the SRS pass) only
+   *   because it must persist across several ticks AND `listPublishing()`
+   *   returns null — not an empty map — whenever the API is unusable.
+   *
+   * One request per tick covers every stream on the domain: the vendor limit is
+   * 100 per 5 minutes and the sweeper ticks every 30 s.
+   */
+  private async reconcileCdn(): Promise<void> {
+    const stats = await this.cdnService.listPublishing();
+    // null = no API credentials, or the call failed. Either way the API tells
+    // us nothing — fall back to probing each stream's own playback URL if that
+    // is switched on, otherwise act on nothing.
+    const probing = stats === null && this.cdnService.isProbeEnabled();
+    if (stats === null && !probing) return;
+
+    let streams: Livestream[];
+    try {
+      streams = await this.streamRepo.findActiveByProvider(CDN_PROVIDER);
+    } catch (err) {
+      logger.warn(`reconcileCdn: DB query failed — ${String(err)}`);
+      return;
+    }
+
+    const now = Date.now();
+    const seen = new Set<string>();
+
+    for (const stream of streams) {
+      const name = resolveSrsName(stream);
+      seen.add(name);
+
+      try {
+        // Two sources, same downstream logic: the API's own list when we have
+        // credentials, otherwise one request per stream against its playback
+        // URL. `stat` carries quality only in the API case.
+        const stat = stats?.get(name) ?? null;
+        const publishing = stats
+          ? stat !== null
+          : await this.cdnService.probeLive(stream.hlsUrl);
+
+        if (publishing) {
+          this.cdnAbsentSince.delete(stream.id);
+          // RECONNECTING is deliberately NOT resumed from here.
+          //
+          // After a publisher stops, the CDN status API (and the HLS playlist)
+          // keep reporting the stream as "publishing" for 30s–2min — cached
+          // segments plus the CDN's own session grace. Trusting that stale
+          // "present" to flip RECONNECTING → LIVE fought the reliable end
+          // callback and reset the reconnect-grace timer every 30s tick, so an
+          // ended stream flapped LIVE↔reconnecting for minutes before finally
+          // ending. The end callback is fast (~1s) and authoritative; a genuine
+          // reconnect fires its own START callback (handleCdnStart) which
+          // resumes LIVE. So a RECONNECTING row is left to those two signals —
+          // the start callback resumes it, or the reconnect-grace sweeper ends
+          // it. The status API only RECOVERS a dropped FIRST start here, which
+          // is unambiguous: a PENDING row never received a start at all.
+          if (stream.status === "PENDING") {
+            // "trusted" for the same reason the SRS reconciler passes it: the
+            // CDN has already accepted this publisher, so there is no publish
+            // URL here to read a secret out of.
+            await this.handlePublish(name, undefined, "trusted");
+            logger.info(
+              `AIMESS_CDN_WENT_LIVE by=POLL stream=${stream.id} — status API recovered a missed start callback`
+            );
+            continue;
+          }
+          if (stream.status !== "LIVE") {
+            // RECONNECTING (or any non-LIVE, non-PENDING) — ignore the status
+            // API's presence; wait for a start callback or the grace sweeper.
+            continue;
+          }
+          // Both fields or neither: reportQuality writes what it is given, so
+          // a partial sample would blank out the last good reading. The probe
+          // path has no quality data at all — only the API reports it.
+          if (stat?.resolution && stat.bitrateKbps !== null) {
+            await this.reportQuality(stream.id, {
+              resolution: stat.resolution,
+              bitrateKbps: stat.bitrateKbps,
+              ...(stat.fps !== null ? { fps: stat.fps } : {}),
+            });
+          }
+          if (stat?.viewers !== null && stat?.viewers !== undefined) {
+            await this.publishCdnViewerCount(stream.id, stat.viewers);
+          }
+          continue;
+        }
+
+        // PENDING rows are the pending sweeper's business — a stream that has
+        // never published is absent by definition.
+        if (stream.status !== "LIVE") {
+          this.cdnAbsentSince.delete(stream.id);
+          continue;
+        }
+
+        const since = this.cdnAbsentSince.get(stream.id) ?? now;
+        this.cdnAbsentSince.set(stream.id, since);
+        if (now - since >= env.CDN_ABSENT_TIMEOUT_MS) {
+          this.cdnAbsentSince.delete(stream.id);
+          logger.warn(
+            `reconcileCdn: stream=${stream.id} absent from the CDN for ${now - since}ms — ending (lost end callback)`
+          );
+          await this.handleCdnEnd(name, now);
+        }
+      } catch (err) {
+        logger.warn(
+          `reconcileCdn: failed for stream=${stream.id} — ${String(err)}`
+        );
+      }
+    }
+
+    // Publishing with no active row: the encoder is burning bandwidth against a
+    // stream we consider over, and there is no API to kick it. Logging is the
+    // only visibility, and the next reconnect is refused by remote auth. Only
+    // the API can see this — the probe path knows nothing beyond our own rows.
+    for (const name of stats?.keys() ?? []) {
+      if (!seen.has(name)) {
+        logger.warn(
+          `reconcileCdn: CDN reports name=${streamKeyRef(name)} publishing with no active stream row`
+        );
+      }
+    }
+  }
+
+  /**
+   * Viewer count as the CDN itself counts it, from the same status response the
+   * reconciler already fetches — no extra API call.
+   *
+   * Published on the stream's Redis channel, which the gateway relays to the
+   * room as `stream:viewer_count`: the exact event and shape clients already
+   * render, so nothing changes on the frontend. Also persisted so REST reads
+   * and the admin table agree with what viewers see.
+   *
+   * The gateway's own presence-based broadcast must be switched off for this to
+   * be the visible number — see VIEWER_COUNT_SOURCE in
+   * `api-gateway/src/sockets/namespaces/stream.ns.ts`. With both on, they race
+   * and the count flickers between two different answers.
+   *
+   * Trade-off, measured: this figure lags roughly two minutes behind reality
+   * (0 viewers reported at t+65s, correct 5 at t+143s), but it counts EVERY
+   * viewer the CDN serves, including anyone playing the raw .m3u8 outside our
+   * apps. The socket count is instant but only sees our own clients.
+   */
+  private async publishCdnViewerCount(
+    streamId: string,
+    viewers: number
+  ): Promise<void> {
+    try {
+      await this.streamRepo.updateById(streamId, {
+        viewerCount: Math.max(0, viewers),
+      });
+      await this.redis.publish(
+        `stream:${streamId}`,
+        JSON.stringify({
+          event: "stream:viewer_count",
+          data: { streamId, viewerCount: Math.max(0, viewers) },
+        })
+      );
+      logger.info(
+        `AIMESS_CDN_VIEWERS streamId=${streamId} count=${Math.max(0, viewers)} (source=CDN api hists, 30s poll)`
+      );
+    } catch (error) {
+      logger.warn(
+        `CDN viewer count publish failed for stream=${streamId}: ${String(error)}`
+      );
+    }
   }
 
   /**
@@ -1801,6 +2250,22 @@ export class LivestreamService {
     for (const stream of stale) {
       try {
         const srsName = resolveSrsName(stream);
+        // CDN reconnect grace. A RECONNECTING CDN row is resumed ONLY by a real
+        // start callback (a genuine reconnect) — never by the status API, whose
+        // stale "still publishing" would otherwise keep an ended stream alive
+        // (see reconcileCdn). So here we simply end it once the grace since
+        // disconnect has elapsed with no reconnect. No presence re-check: the
+        // status API cannot distinguish "reconnected" from "hasn't caught up
+        // yet", and the start callback already covers the real reconnect.
+        if (isCdnStream(stream)) {
+          const downMs = Date.now() - (stream.disconnectedAt?.getTime() ?? 0);
+          if (downMs < env.STREAM_CDN_RECONNECT_GRACE_MS) continue;
+          await this.finalizeAsEnded(stream);
+          logger.info(
+            `sweepStaleReconnectingStreams: ended CDN stream=${stream.id} community=${stream.communityId}`
+          );
+          continue;
+        }
         const clientId = publishingClientIds.get(srsName);
         // "trusted", for the same reason reconcileWithSrs passes it: SRS has
         // ALREADY accepted this publisher — `listPublishers()` is where the
@@ -1856,11 +2321,14 @@ export class LivestreamService {
           endedAt: new Date(),
         });
         // Best-effort — a PENDING stream never published, but a client may have
-        // gotten as far as opening the ingest connection.
-        await this.srsService.kickStream(
-          resolveSrsName(stream),
-          stream.sourceType
-        );
+        // gotten as far as opening the ingest connection. No-op for CDN rows:
+        // that provider has no disconnect API.
+        if (!isCdnStream(stream)) {
+          await this.srsService.kickStream(
+            resolveSrsName(stream),
+            stream.sourceType
+          );
+        }
         const liveStreamCount = await this.streamRepo.countLiveByCommunity(
           updated.communityId
         );
@@ -3036,6 +3504,10 @@ export class LivestreamService {
    */
   private notifyWhenPlayable(stream: Livestream): void {
     if (stream.sourceType === "URL" || stream.sourceType === "YOUTUBE") return;
+    // The CDN has no "has the first frame arrived yet" probe, and its status
+    // API lags ~30s — far longer than this poll's budget. Players fall back to
+    // their own retry/backoff, which is what this event only nudges anyway.
+    if (isCdnStream(stream)) return;
     void (async () => {
       for (let attempt = 0; attempt < PLAYABLE_POLL_MAX_ATTEMPTS; attempt++) {
         let ready = false;

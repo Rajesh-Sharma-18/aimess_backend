@@ -108,7 +108,8 @@ export const getGroupConversationMessages: RequestHandler = (
       const query = req.query as unknown as GroupMessagesQueryInput;
       const result = await groupService.getConversationMessages(
         groupId,
-        query as GroupConversationMessagesQuery
+        query as GroupConversationMessagesQuery,
+        req.locale
       );
       res.status(HTTP_STATUS.OK).json({
         success: true,

@@ -16,7 +16,7 @@
     "typecheck": "prisma generate && tsc --noEmit",
     "lint": "eslint .",
     "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs",
-    "db:resync:profile-status": "tsx scripts/resync-profile-status-mirror.ts"
+    "db:resync:profile-status": "tsx src/scripts/resync-profile-status-mirror.ts"
   },
   "keywords": [],
   "author": "",

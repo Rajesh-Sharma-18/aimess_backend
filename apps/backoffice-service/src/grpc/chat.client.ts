@@ -363,6 +363,8 @@ export interface AdminGetCommunityMessagesReq {
   aroundMessageId?: string;
   /** "after" pages newer; ""/"before" pages older. */
   direction?: string;
+  /** "media" = IMAGE/VIDEO only, createdAt cursor. */
+  type?: string;
 }
 
 export interface AdminGetCommunityMessagesRes {
@@ -405,6 +407,7 @@ export interface RawAdminGroupMessageDto {
   systemMetadata: string;
   isDeleted: boolean;
   mentionsJson: string;
+  sequenceNumber: string | number;
 }
 export interface AdminGetGroupMessagesReq {
   groupId: string;
@@ -414,6 +417,8 @@ export interface AdminGetGroupMessagesReq {
   aroundMessageId?: string;
   /** "after" pages newer; ""/"before" pages older. */
   direction?: string;
+  /** "media" = IMAGE/VIDEO only, createdAt cursor. */
+  type?: string;
 }
 export interface AdminGetGroupMessagesRes {
   messages: RawAdminGroupMessageDto[];

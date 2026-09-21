@@ -170,10 +170,13 @@ export const userClient = {
    * invite cards) can refuse a banned recipient. Best-effort by design — same
    * rule as the space cascade: the ban itself already landed in auth-service.
    */
+  // `ok: false` is an ANSWER, not an error — e.g. USER_NOT_FOUND when there is
+  // no live profile to write. Callers that need to know whether the row was
+  // written (the resync script) read it; fire-and-forget callers ignore it.
   async adminSetProfileStatus(
     userId: string,
     status: "ACTIVE" | "SUSPENDED" | "BANNED"
-  ): Promise<void> {
-    await adminSetProfileStatusBreaker.fire({ userId, status });
+  ): Promise<AdminSetProfileStatusResponse> {
+    return adminSetProfileStatusBreaker.fire({ userId, status });
   },
 };

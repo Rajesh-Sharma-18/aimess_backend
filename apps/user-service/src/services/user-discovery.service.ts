@@ -51,6 +51,8 @@ export type UserDiscoveryResult = {
   friendshipId?: string | null;
   /** Who sent the PENDING request; null/absent when FRIEND/NONE. */
   requesterId?: string | null;
+  /** Already an active member of the `groupRoomId`/`communityId` query target; false when none given. */
+  isMember?: boolean;
 };
 
 async function resolveAvatarUrl(
@@ -82,15 +84,9 @@ export interface AddTargetRef {
 
 export const userDiscoveryService = {
   /**
-   * The people an "Add Members" picker must NOT offer: everyone already an
-   * ACTIVE member of the target group / community.
-   *
-   * Both lookups are owned by other services (chat-service holds group
-   * membership, community-service holds community membership) and both already
-   * expose the roster over gRPC, so this is a read, not a mirror. Both clients
-   * fail OPEN — an outage degrades the picker to "shows everyone", and the add
-   * endpoints still reject duplicates (`ALREADY_MEMBER`), so the worst case is
-   * a wasted tap rather than an empty list.
+   * Active members of the target group / community, used to flag `isMember`.
+   * Both gRPC clients fail OPEN (empty list), and the add endpoints still reject
+   * duplicates with `ALREADY_MEMBER`.
    */
   async resolveExistingMemberIds(target: AddTargetRef): Promise<string[]> {
     const { groupRoomId, communityId } = target;
@@ -112,8 +108,7 @@ export const userDiscoveryService = {
    */
   async searchUsersSplit(
     viewerId: string,
-    q: string | undefined,
-    excludeUserIds: string[] = []
+    q: string | undefined
   ): Promise<{
     friends: UserDiscoveryResult[];
     otherPeople: UserDiscoveryResult[];
@@ -123,15 +118,13 @@ export const userDiscoveryService = {
         viewerId,
         q,
         0,
-        SPLIT_LIMIT,
-        excludeUserIds
+        SPLIT_LIMIT
       ),
       userDiscoveryService._queryOthers(
         viewerId,
         q,
         0,
-        SPLIT_LIMIT,
-        excludeUserIds
+        SPLIT_LIMIT
       ),
     ]);
     return { friends: friendsResult.users, otherPeople: othersResult.users };
@@ -268,8 +261,7 @@ export const userDiscoveryService = {
     viewerId: string,
     q: string | undefined,
     skip: number,
-    limit: number,
-    excludeUserIds: string[] = []
+    limit: number
   ): Promise<{ users: UserDiscoveryResult[]; total: number }> {
     const friendships =
       await friendshipRepository.findAcceptedFriends(viewerId);
@@ -277,15 +269,9 @@ export const userDiscoveryService = {
       return { users: [], total: 0 };
     }
 
-    // Subtracted from the CANDIDATE set, not from the page: `total` and every
-    // page boundary below are then computed over addable friends only.
-    const excluded = new Set(excludeUserIds);
-    const friendIds = friendships
-      .map((f) => (f.requesterId === viewerId ? f.addresseeId : f.requesterId))
-      .filter((id) => !excluded.has(id));
-    if (friendIds.length === 0) {
-      return { users: [], total: 0 };
-    }
+    const friendIds = friendships.map((f) =>
+      f.requesterId === viewerId ? f.addresseeId : f.requesterId
+    );
 
     const friendshipIdByPeer = new Map(
       friendships.map((f) => {
@@ -332,8 +318,7 @@ export const userDiscoveryService = {
     viewerId: string,
     q: string | undefined,
     skip: number,
-    limit: number,
-    excludeUserIds: string[] = []
+    limit: number
   ): Promise<{ users: UserDiscoveryResult[]; total: number }> {
     const [allRelationships, allBlocks] = await Promise.all([
       friendshipRepository.findAllForUser(viewerId),
@@ -366,15 +351,7 @@ export const userDiscoveryService = {
       viewerFriendIds
     );
     const fofIds = new Set(viewerGraph.friendOfFriendIds);
-    // `excludeUserIds` (existing members of an "Add Members" target) joins the
-    // same id-set the query already subtracts, so exclusion costs nothing extra
-    // and `total`/`hasNext` stay honest.
-    const excludeIds = [
-      viewerId,
-      ...viewerFriendIds,
-      ...hiddenIds,
-      ...excludeUserIds,
-    ];
+    const excludeIds = [viewerId, ...viewerFriendIds, ...hiddenIds];
 
     const [profiles, total] = await Promise.all([
       userProfileRepository.findUsersNotInList(

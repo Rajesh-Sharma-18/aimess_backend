@@ -1030,6 +1030,38 @@ export class GroupMessageService {
         };
   }
 
+  /**
+   * The read-only viewer's media gallery: one newest-first page of IMAGE/VIDEO
+   * messages, same query the member Media tab uses, minus the membership gate
+   * and per-user cutoff (the admin is never a member; authorization happens at
+   * the admin API boundary). `cursor` is the previous page's createdAt ISO.
+   */
+  async listMediaForModeration(params: {
+    roomId: string;
+    cursor?: string | null;
+    limit: number;
+  }): Promise<ModerationMessagePage> {
+    const rows = await this.messageRepo.listMedia({
+      roomId: params.roomId,
+      userId: "",
+      type: "media",
+      cursor: params.cursor || null,
+      limit: params.limit + 1,
+    });
+    const hasMore = rows.length > params.limit;
+    const page = rows.slice(0, params.limit);
+    const last = page[page.length - 1];
+    return {
+      items: await this.enrichForWire(page),
+      hasMore,
+      // ponytail: createdAt `lt` keyset — media sharing one millisecond across a
+      // page edge can be skipped; add an id tiebreaker if that ever shows up.
+      nextCursor: hasMore && last ? last.createdAt.toISOString() : null,
+      hasMoreNewer: false,
+      newerCursor: null,
+    };
+  }
+
   /** Raw message lookup — the path-param delete route resolves its room from the message. */
   findMessageById(messageId: string): Promise<GroupMessage | null> {
     return this.messageRepo.findById(messageId);

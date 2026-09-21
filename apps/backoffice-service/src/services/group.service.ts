@@ -1,3 +1,8 @@
+import {
+  runWithLocale,
+  STORED_TEXT_LOCALE,
+  type SupportedLocale,
+} from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
@@ -140,15 +145,23 @@ export const groupService = {
   // so no audit row (parity with the community viewer).
   async getConversationMessages(
     groupId: string,
-    query: GroupConversationMessagesQuery
+    query: GroupConversationMessagesQuery,
+    locale: SupportedLocale = STORED_TEXT_LOCALE
   ): Promise<GroupConversationMessagesResult> {
-    const res = await chatClient.adminGetGroupMessages({
-      groupId,
-      cursor: query.cursor ?? "",
-      limit: query.limit,
-      aroundMessageId: query.aroundMessageId ?? "",
-      direction: query.direction ?? "",
-    });
+    // chat-service rebuilds every SYSTEM line on read through the canonical
+    // builder — with NO viewer here, so the admin gets the factual third-person
+    // sentence ("Smiley Creatures created the group", never "You …") — in the
+    // caller's `x-lang`, which rides the gRPC hop from this ambient locale.
+    const res = await runWithLocale(locale, () =>
+      chatClient.adminGetGroupMessages({
+        groupId,
+        cursor: query.cursor ?? "",
+        limit: query.limit,
+        aroundMessageId: query.aroundMessageId ?? "",
+        direction: query.direction ?? "",
+        type: query.type ?? "",
+      })
+    );
 
     const messages: GroupConversationMessageItem[] = (res.messages ?? []).map(
       (m) => ({
@@ -163,6 +176,7 @@ export const groupService = {
         reactions: m.reactionsJson ? JSON.parse(m.reactionsJson) : [],
         quoteData: m.quoteDataJson ? JSON.parse(m.quoteDataJson) : null,
         mentions: m.mentionsJson ? JSON.parse(m.mentionsJson) : [],
+        sequenceNumber: Number(m.sequenceNumber) || 0,
         sentAt: Number(m.sentAt) || 0,
         systemMessageType: m.systemMessageType || null,
         isDeleted: Boolean(m.isDeleted),

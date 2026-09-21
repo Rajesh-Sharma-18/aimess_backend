@@ -178,10 +178,11 @@ export const AUTH_MESSAGES = {
     en: "A verification code has been sent to your email.",
     th: "ส่งรหัสยืนยันไปยังอีเมลของคุณแล้ว",
   },
+  // Shown under the Email field of Forgot Password on every client.
   AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND: {
-    vi: "Nếu email này tồn tại, bạn sẽ nhận được mã đặt lại mật khẩu",
-    en: "If this email is registered, you will receive a password reset code.",
-    th: "หากอีเมลนี้ลงทะเบียนไว้ คุณจะได้รับรหัสสำหรับรีเซ็ตรหัสผ่าน",
+    vi: "Email này chưa được đăng ký hoặc liên kết với bất kỳ tài khoản nào.",
+    en: "This email is not registered or linked to any account.",
+    th: "อีเมลนี้ยังไม่ได้ลงทะเบียนหรือเชื่อมโยงกับบัญชีใด",
   },
   AUTH_PASSWORD_RESET_OTP_VERIFIED: {
     vi: "Xác minh mã thành công",

@@ -9,6 +9,7 @@ import type { StreamController } from "./api/controllers/index.js";
 import type { LivestreamService } from "./services/livestream.service.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { healthRouter } from "./routes/health.routes.js";
+import { createInternalCdnRoutes } from "./routes/internal-cdn.routes.js";
 import { createInternalRoutes } from "./routes/internal.routes.js";
 
 export interface AppDeps {
@@ -33,6 +34,10 @@ export function createApp(deps: AppDeps): Express {
   app.use("/health", healthRouter);
   // Un-authenticated SRS callbacks — NOT routed through the gateway.
   app.use("/internal", createInternalRoutes(deps.livestreamService));
+  // Un-authenticated CDNetworks stream-status callbacks + publish auth. Same
+  // trust model as the SRS hooks: a shared secret in the URL, checked before
+  // anything request-controlled is logged.
+  app.use("/internal", createInternalCdnRoutes(deps.livestreamService));
   app.use("/api/v1", createServiceRoutes(deps.controller));
 
   // Terminates the chain so an unmatched path answers with the JSON envelope

@@ -13,7 +13,8 @@ export interface IngestEndpoints {
 export interface PlaybackUrls {
   flvUrl: string;
   hlsUrl: string;
-  dashUrl: string;
+  /** Null for providers with no DASH output (CDNetworks); always set by SRS. */
+  dashUrl: string | null;
 }
 
 /**

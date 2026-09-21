@@ -31,7 +31,7 @@ import type {
 import type { UserClient } from "../../grpc/clients/user.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
 import {
-  resolveSocketUserDetails,
+  createSocketIdentity,
   buildTypingBroadcast,
 } from "../user-details.js";
 import {
@@ -154,8 +154,8 @@ const ConvLeaveSchema = withCommunityAliases(
 const TypingSchema = withCommunityAliases(
   z.object({
     conversationId: z.string().min(1),
-    // V2 §2.8: client supplies its own display name so recipients can show
-    // "Alice is typing…" without an extra profile fetch.
+    // Still accepted so shipped clients that send it keep validating, but
+    // IGNORED: the broadcast name comes from the authenticated socket identity.
     senderName: z.string().max(100).optional(),
     // Additive and optional: lets the gateway resolve the participant roster
     // through the right branch (private participants vs. group members) for
@@ -1342,7 +1342,10 @@ export function registerChatNamespace(
       socket.handshake.auth?.batch === true ||
       socket.handshake.auth?.batch === "1" ||
       socket.handshake.query?.batch === "1";
-    void resolveSocketUserDetails(userClient, mediaClient, userId).then(
+    const identity = createSocketIdentity(
+      userClient,
+      mediaClient,
+      userId,
       (ud) => {
         socket.data.userDetails = ud;
       }
@@ -1916,23 +1919,19 @@ export function registerChatNamespace(
     //
     // The wire event names (`typing:start` / `typing:stop`) and the payload
     // (buildTypingBroadcast) are unchanged — shipped clients see no difference.
-    const typingPayload = (conversationId: string, senderName?: string) =>
+    // Identity is the per-socket cache: awaited only until a name is known.
+    const typingPayload = async (conversationId: string) =>
       buildTypingBroadcast(
         userId,
-        socket.data.userDetails,
+        await identity.get(),
         conversationId,
-        Date.now(),
-        { senderName }
+        Date.now()
       );
 
     // Remembers what the client last told us about a room, so the TTL-expiry
     // and disconnect-flush stops — which carry no client payload — resolve the
-    // roster through the same branch the start did and keep the same
-    // senderName fallback in the payload.
-    const typingHints = new Map<
-      string,
-      { kind: "private" | "group"; senderName?: string }
-    >();
+    // roster through the same branch the start did.
+    const typingHints = new Map<string, { kind: "private" | "group" }>();
 
     const typing = createPresenceIndicator({
       startEvent: "typing:start",
@@ -1966,11 +1965,7 @@ export function registerChatNamespace(
             return [];
           }
         },
-        buildPayload: (conversationId) =>
-          typingPayload(
-            conversationId,
-            typingHints.get(conversationId)?.senderName
-          ),
+        buildPayload: typingPayload,
         // Reciprocal: a peer who turned their own indicator off doesn't see mine.
         filterRecipients: typingViewerFilter(userClient),
       }),
@@ -1991,7 +1986,6 @@ export function registerChatNamespace(
     const rememberTypingHint = (d: {
       conversationId: string;
       conversationType: "private" | "group";
-      senderName?: string;
     }): boolean => {
       if (
         !typingHints.has(d.conversationId) &&
@@ -2002,10 +1996,7 @@ export function registerChatNamespace(
         );
         return false;
       }
-      typingHints.set(d.conversationId, {
-        kind: d.conversationType,
-        senderName: d.senderName,
-      });
+      typingHints.set(d.conversationId, { kind: d.conversationType });
       return true;
     };
 
@@ -2036,8 +2027,6 @@ export function registerChatNamespace(
     // leave/kick/ban (see conv:join handler above), so "currently in the room"
     // is already the authoritative membership signal; no extra gRPC call
     // needed here.
-    const recordingNames = new Map<string, string | undefined>();
-
     const recording = createPresenceIndicator({
       startEvent: "recording:start",
       stopEvent: "recording:stop",
@@ -2045,14 +2034,7 @@ export function registerChatNamespace(
         namespace: chat,
         socket,
         rooms: (conversationId) => [`conv:${conversationId}`],
-        buildPayload: (conversationId) =>
-          buildTypingBroadcast(
-            userId,
-            socket.data.userDetails,
-            conversationId,
-            Date.now(),
-            { senderName: recordingNames.get(conversationId) }
-          ),
+        buildPayload: typingPayload,
         // Both kinds consult the same roster typing uses. PRIVATE: it returns
         // an empty roster once either side has blocked the other, so a blocked
         // DM never leaks a "recording…" indicator in either direction. GROUP:
@@ -2088,7 +2070,6 @@ export function registerChatNamespace(
     socket.on("recording:start", (payload: unknown) => {
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
-      recordingNames.set(r.data.conversationId, r.data.senderName);
       rememberTypingHint(r.data);
       recording.start(r.data.conversationId);
     });
@@ -2096,7 +2077,6 @@ export function registerChatNamespace(
     socket.on("recording:stop", (payload: unknown) => {
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
-      recordingNames.set(r.data.conversationId, r.data.senderName);
       rememberTypingHint(r.data);
       recording.stop(r.data.conversationId);
     });

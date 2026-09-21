@@ -102,6 +102,8 @@ export type GroupConversationMessagesQuery = {
   aroundMessageId?: string;
   /** "after" pages newer (walking back down after a jump); default older. */
   direction?: "before" | "after";
+  /** "media" = IMAGE/VIDEO messages only (the media viewer gallery). */
+  type?: "media";
 };
 
 /** One message row in the Group Conversation viewer (mirrors the community one). */
@@ -116,6 +118,8 @@ export type GroupConversationMessageItem = {
   attachments: unknown[];
   reactions: unknown[];
   quoteData: unknown | null;
+  /** Per-room sequence — the order member clients render a group in. */
+  sequenceNumber: number;
   sentAt: number;
   systemMessageType: string | null;
   isDeleted: boolean;

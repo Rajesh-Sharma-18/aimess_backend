@@ -267,6 +267,8 @@ export type ConversationMessagesQuery = {
   aroundMessageId?: string;
   /** "after" pages newer (walking back down after a jump); default older. */
   direction?: "before" | "after";
+  /** "media" = IMAGE/VIDEO messages only (the media viewer gallery). */
+  type?: "media";
 };
 
 /** One message row in the Community Conversation viewer. */

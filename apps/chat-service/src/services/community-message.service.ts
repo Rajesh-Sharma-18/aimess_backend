@@ -1754,6 +1754,47 @@ export class CommunityMessageService {
   }
 
   /**
+   * The read-only viewer's media gallery: one newest-first page of IMAGE/VIDEO
+   * messages — the member Media tab's query without the read-access gate (the
+   * admin is never a member; authorization happens at the admin API boundary,
+   * as in {@link getMessagesForModeration}). `cursor` is createdAt ISO.
+   */
+  async listMediaForModeration(params: {
+    roomId: string;
+    cursor?: string | null;
+    limit: number;
+  }): Promise<{
+    items: CommunityMessageWire[];
+    hasMore: boolean;
+    nextCursor: string | null;
+    hasMoreNewer: boolean;
+    newerCursor: string | null;
+  }> {
+    const rows = await this.messageRepo.listMedia({
+      roomId: params.roomId,
+      userId: "",
+      type: "media",
+      cursor: params.cursor || null,
+      limit: params.limit + 1,
+    });
+    const hasMore = rows.length > params.limit;
+    const page = rows.slice(0, params.limit);
+    const last = page[page.length - 1];
+    const { urlMap, deletedUserIds, identities } =
+      await this.resolveRowsWireContext(page);
+    return {
+      items: page.map((m) =>
+        this.toWire(m, urlMap, undefined, "", deletedUserIds, identities)
+      ),
+      hasMore,
+      // ponytail: createdAt `lt` keyset, same as the member Media tab.
+      nextCursor: hasMore && last ? last.createdAt.toISOString() : null,
+      hasMoreNewer: false,
+      newerCursor: null,
+    };
+  }
+
+  /**
    * Jump-to-message window for the read-only Backoffice viewer — the admin
    * counterpart of {@link getMessagesAround}.
    *

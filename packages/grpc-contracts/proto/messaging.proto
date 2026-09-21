@@ -368,6 +368,9 @@ message AdminGetGroupMessagesRequest {
   // Forward paging exists so the viewer can walk back DOWN to the live head
   // after a jump.
   string direction = 5;
+  // "media" = only IMAGE/VIDEO messages, newest first, cursor = createdAt ISO
+  // (the media viewer's room-wide gallery). "" = the normal transcript read.
+  string type = 6;
 }
 message AdminGroupMessageDto {
   string message_id          = 1;
@@ -390,6 +393,9 @@ message AdminGroupMessageDto {
   // SERVER resolved at send time. Render-only: the admin viewer highlights the
   // spans and is never itself a mention recipient.
   string mentions_json       = 16;
+  // Per-room sequence — the ordering contract the member clients sort a group
+  // by. createdAt is not monotonic with it (call rows are backdated).
+  int64  sequence_number     = 17;
 }
 message AdminGetGroupMessagesResponse {
   repeated AdminGroupMessageDto messages = 1;

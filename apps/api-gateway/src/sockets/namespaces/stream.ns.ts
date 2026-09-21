@@ -142,6 +142,23 @@ async function enrichCommentAvatar(
   return { ...comment, senderAvatar: url ?? key };
 }
 
+/**
+ * Which side owns the live viewer count. See broadcastViewerCount below for the
+ * trade-off; change this one value to switch, no env var and no redeploy of
+ * stream-service required.
+ */
+const VIEWER_COUNT_SOURCE: "SOCKET" | "CDN" = "CDN";
+
+/**
+ * Last viewer count the CDN reported per stream, cached from the
+ * `stream:viewer_count` events stream-service publishes off the CDN's `hists`.
+ * In CDN mode the join ack reads THIS instead of the socket presence count, so
+ * a joiner and everyone already in the room see the same number — otherwise the
+ * newcomer gets the (different, socket-based) join count and the badge disagrees
+ * across viewers until the next 30s CDN tick.
+ */
+const lastCdnViewerCount = new Map<string, number>();
+
 export function registerStreamNamespace(
   io: SocketIOServer,
   streamClient: StreamClient,
@@ -162,6 +179,20 @@ export function registerStreamNamespace(
   // env guard is the same condition index.ts registers the namespace on, so when
   // /admin is absent nothing is created at all.
   const broadcastViewerCount = (streamId: string, count: number): void => {
+    // Only one source may own this number. With both on, the gateway's instant
+    // presence count and stream-service's CDN count race on the same event and
+    // the badge flickers between two different answers.
+    //
+    // "SOCKET" — our own Redis presence hash. Instant, exact for our clients,
+    //            blind to anyone watching the raw .m3u8 outside our apps.
+    // "CDN"    — the vendor's own `hists`, published by stream-service's
+    //            reconciler (see LivestreamService.publishCdnViewerCount).
+    //            Counts every viewer the CDN serves, HLS included (verified:
+    //            3 HLS + 2 FLV reported as 5), but lags ~2 minutes.
+    //
+    // Flip this constant to switch; nothing below is deleted, so "SOCKET"
+    // restores the previous behaviour exactly.
+    if (VIEWER_COUNT_SOURCE !== "SOCKET") return;
     const payload = { streamId, viewerCount: Math.max(0, count) };
     streamNs.to(roomKey(streamId)).emit("stream:viewer_count", payload);
     if (!env.JWT_ADMIN_SECRET) return;
@@ -325,6 +356,23 @@ export function registerStreamNamespace(
         // socket's canComment cache so the stream:react gate stops accepting
         // reactions the instant the broadcaster freezes chat — without waiting
         // for the viewer to rejoin.
+        // The other half of VIEWER_COUNT_SOURCE. stream-service publishes
+        // `stream:viewer_count` from the CDN's own `hists`; in SOCKET mode that
+        // must be dropped here, or it races the gateway's presence broadcast
+        // and the badge flickers between two different answers.
+        if (parsed.event === "stream:viewer_count") {
+          // In SOCKET mode the gateway owns this number from presence; drop the
+          // CDN copy so the two don't race and flicker.
+          if (VIEWER_COUNT_SOURCE !== "CDN") return;
+          // CDN mode: remember it so the join ack can report the same value.
+          const d = (parsed.data ?? {}) as {
+            streamId?: string;
+            viewerCount?: number;
+          };
+          if (d.streamId && typeof d.viewerCount === "number") {
+            lastCdnViewerCount.set(d.streamId, Math.max(0, d.viewerCount));
+          }
+        }
         if (parsed.event === "stream:comment_status") {
           void applyCommentStatus(channel, parsed.data);
           streamNs.to(channel).emit(parsed.event, parsed.data);
@@ -605,6 +653,10 @@ export function registerStreamNamespace(
           const streamId = room.slice("stream:".length);
           void incrementPresence(streamId).then((count) => {
             if (count === null) return;
+            // Presence bookkeeping runs regardless, but only SOCKET mode may
+            // emit a socket-derived count — in CDN mode the number comes solely
+            // from the sweeper's relayed CDN ticks.
+            if (VIEWER_COUNT_SOURCE !== "SOCKET") return;
             streamNs.to(roomKey(streamId)).emit("stream:viewer_count", {
               streamId,
               viewerCount: Math.max(0, count),
@@ -824,8 +876,16 @@ export function registerStreamNamespace(
             );
           }
 
+          // In CDN mode the reported number is the CDN's own count (from the
+          // last relayed tick), not this socket's presence read — so the joiner
+          // matches everyone already in the room. Falls back to the presence
+          // count until the first CDN tick lands.
+          const reportedCount =
+            VIEWER_COUNT_SOURCE === "CDN"
+              ? (lastCdnViewerCount.get(streamId) ?? viewerCount)
+              : viewerCount;
           ackOk(callback, "SOCKET_STREAM_JOINED", locale, {
-            viewerCount: Math.max(0, viewerCount),
+            viewerCount: Math.max(0, reportedCount),
             recentComments,
             nextCursor,
             hasMore,

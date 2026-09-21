@@ -72,6 +72,7 @@ jest.mock("../../src/lib/profile-socket.js", () => ({
 import request from "supertest";
 
 import { app } from "../../src/app.js";
+import { Prisma } from "../../src/generated/prisma/client.js";
 import { userProfileRepository } from "../../src/repositories/user-profile.repository.js";
 import { usernameService } from "../../src/services/username.service.js";
 import {
@@ -378,6 +379,46 @@ describe("PATCH /api/v1/users/profiles/me", () => {
 
     expect(res.status).toBe(409);
     expect(repo.updateProfile).not.toHaveBeenCalled();
+  });
+
+  // Onboarding contract: the handle the user typed is either stored exactly
+  // (after canonical trim + lowercase) or refused — never swapped for `_2`.
+  it("stores the requested username exactly, lowercased — no suffix", async () => {
+    const res = await request(app)
+      .patch("/api/v1/users/profiles/me")
+      .set(auth())
+      .send({ username: "  NewHandle " });
+
+    expect(res.status).toBe(200);
+    expect(repo.updateProfile).toHaveBeenCalledWith(
+      TEST_USER_ID,
+      expect.objectContaining({ username: "newhandle" })
+    );
+  });
+
+  it("maps a lost race (DB unique violation) to 409 USER_USERNAME_TAKEN", async () => {
+    // Availability check passed, but another account claimed the handle
+    // before this write — the unique index is the authority.
+    repo.updateProfile.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002",
+        clientVersion: "test",
+        meta: { target: ["username"] },
+      })
+    );
+
+    const res = await request(app)
+      .patch("/api/v1/users/profiles/me")
+      .set(auth())
+      .send({ username: "newhandle" });
+
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(res.body)).toContain("USER_USERNAME_TAKEN");
+    expect(repo.updateProfile).toHaveBeenCalledTimes(1);
+    expect(repo.updateProfile).toHaveBeenCalledWith(
+      TEST_USER_ID,
+      expect.objectContaining({ username: "newhandle" })
+    );
   });
 
   it("returns 400 when changing username within the 30-day cooldown", async () => {

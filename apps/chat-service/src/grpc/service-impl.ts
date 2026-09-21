@@ -2702,6 +2702,7 @@ export function createMessagingImpl(
             limit: number;
             aroundMessageId?: string;
             direction?: string;
+            type?: string;
           };
           const limit = req.limit || 30;
           const parsedSeq = req.cursor ? Number(req.cursor) : NaN;
@@ -2711,13 +2712,19 @@ export function createMessagingImpl(
           // the viewer can rebuild its transcript at any time (reload, jump,
           // reconnect) and must never paint a stale pin under a fresh page.
           const [page, pinnedMessage] = await Promise.all([
-            deps.groupMessageService.getMessagesForModeration({
-              roomId: req.groupId,
-              seq,
-              limit,
-              direction: req.direction === "after" ? "after" : "before",
-              aroundMessageId: req.aroundMessageId || null,
-            }),
+            req.type === "media"
+              ? deps.groupMessageService.listMediaForModeration({
+                  roomId: req.groupId,
+                  cursor: req.cursor || null,
+                  limit,
+                })
+              : deps.groupMessageService.getMessagesForModeration({
+                  roomId: req.groupId,
+                  seq,
+                  limit,
+                  direction: req.direction === "after" ? "after" : "before",
+                  aroundMessageId: req.aroundMessageId || null,
+                }),
             // No userId: the admin is not a member, so no per-member Clear Chat
             // cutoff applies to what they are allowed to see pinned.
             deps.groupPinService.getActivePinSummary(req.groupId),
@@ -2764,6 +2771,7 @@ export function createMessagingImpl(
                 ),
                 quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
                 mentionsJson: JSON.stringify(adminMentions(content)),
+                sequenceNumber: Number(m.sequenceNumber) || 0,
                 sentAt: Number(m.serverTs) || 0,
                 systemMessageType: str(m.systemEvent),
                 systemMetadata: m.systemData
@@ -3824,17 +3832,24 @@ export function createCommunityImpl(
             limit: number;
             aroundMessageId?: string;
             direction?: string;
+            type?: string;
           };
 
           const limit = req.limit || 30;
           const [page, pinnedMessage] = await Promise.all([
-            deps.communityMessageService.getMessagesForModeration({
-              roomId: req.roomId,
-              cursor: req.cursor || undefined,
-              limit,
-              direction: req.direction === "after" ? "after" : "before",
-              aroundMessageId: req.aroundMessageId || null,
-            }),
+            req.type === "media"
+              ? deps.communityMessageService.listMediaForModeration({
+                  roomId: req.roomId,
+                  cursor: req.cursor || null,
+                  limit,
+                })
+              : deps.communityMessageService.getMessagesForModeration({
+                  roomId: req.roomId,
+                  cursor: req.cursor || undefined,
+                  limit,
+                  direction: req.direction === "after" ? "after" : "before",
+                  aroundMessageId: req.aroundMessageId || null,
+                }),
             deps.communityPinService.getActivePinSummary(req.roomId, ""),
           ]);
 

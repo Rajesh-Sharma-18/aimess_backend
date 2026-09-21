@@ -277,7 +277,8 @@ export const getCommunityConversationMessages: RequestHandler = (
       const query = req.query as unknown as CommunityMessagesQueryInput;
       const result = await communityService.getConversationMessages(
         communityId,
-        query
+        query,
+        req.locale
       );
       res
         .status(HTTP_STATUS.OK)

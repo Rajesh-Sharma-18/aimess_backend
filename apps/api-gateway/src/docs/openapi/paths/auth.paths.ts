@@ -1091,8 +1091,8 @@ export const authPaths = {
       summary: "Request password reset OTP",
       operationId: "requestPasswordReset",
       description:
-        "Sends a 6-digit OTP to the email if an account exists. In development, OTP is logged to the auth-service console (fixed code via OTP_DEV_FIXED_CODE).\n\n" +
-        "**Security:** The response is identical whether or not an account exists for the email. This prevents account enumeration attacks.\n\n" +
+        "Sends a 6-digit OTP when the email is the registered or linked email of an ACTIVE account. In development, OTP is logged to the auth-service console (fixed code via OTP_DEV_FIXED_CODE).\n\n" +
+        "**Unknown email:** 404 `AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND`; no OTP is created or sent. Clients stay on the email screen and show the message under the Email field. This reveals whether an address has an account (product decision); the rate limit below is what prices that probe.\n\n" +
         "**Rate limiting:** Maximum 5 OTP requests per 15 minutes per email address.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -1106,15 +1106,14 @@ export const authPaths = {
       },
       responses: {
         "200": {
-          description:
-            "Generic success response (identical whether or not account exists — prevents account enumeration)",
+          description: "OTP created and sent — open the OTP screen",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
               example: {
                 success: true,
-                message:
-                  "If an account exists for that email, a reset code has been sent.",
+                message: "A verification code has been sent to your email.",
+                data: { email: "john@example.com" },
               },
             },
           },
@@ -1128,6 +1127,20 @@ export const authPaths = {
                 success: false,
                 message: "Validation error",
                 errors: { email: "Must be a valid email address" },
+              },
+            },
+          },
+        },
+        "404": {
+          description:
+            "No eligible account (unknown, deleted, suspended or banned) uses this email. No OTP is created or sent.",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "This email is not registered or linked to any account.",
+                code: "AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND",
               },
             },
           },
