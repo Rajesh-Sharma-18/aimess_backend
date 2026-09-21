@@ -28,6 +28,23 @@ export const createStreamSchema = z.object({
       { message: "sourceUrl must be an http(s) URL" }
     )
     .optional(),
+  /**
+   * Which protocol the caller is about to publish with. PHONE_CAMERA covers
+   * both the website (WebRTC/WHIP) and the mobile apps (RTMP), and only the
+   * RTMP half can be served by the CDN — so the source type alone cannot pick
+   * a provider.
+   *
+   * Absent means WHIP/SRS: shipped mobile builds do not send this field yet,
+   * and they must keep landing on the provider they were built against.
+   */
+  ingest: z.enum(["whip", "rtmp"]).optional(),
+  /**
+   * Test-only override of the server-side provider default
+   * (STREAM_PROVIDER_DEFAULT). Rejected with 400 when the requested provider
+   * cannot serve this stream, rather than silently falling back — a test that
+   * asks for the CDN and quietly gets SRS proves nothing.
+   */
+  provider: z.enum(["SRS", "CDN"]).optional(),
 });
 
 /**

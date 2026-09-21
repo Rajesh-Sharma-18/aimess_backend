@@ -39,9 +39,18 @@ export const sessionRepository = {
     });
   },
 
+  // Active = not revoked AND still holding a live refresh token. A client that
+  // signed out locally (refresh expired/rejected) never revokes its row, and
+  // treating it as active kept pushing calls to a logged-out phone.
   isSessionActive(sessionId: string) {
     return prisma.session.findFirst({
-      where: { id: sessionId, revokedAt: null },
+      where: {
+        id: sessionId,
+        revokedAt: null,
+        refreshTokens: {
+          some: { revokedAt: null, expiresAt: { gt: new Date() } },
+        },
+      },
       select: { id: true },
     });
   },

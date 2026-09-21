@@ -30,6 +30,8 @@ export class LivestreamRepository {
     streamKey: string;
     /** Public name the stream is published/played under. */
     playbackId?: string;
+    /** "SRS" | "CDN" — which provider this row's URLs were minted against. */
+    provider?: string | null;
     status?: string;
     hlsUrl?: string | null;
     flvUrl?: string | null;
@@ -51,6 +53,10 @@ export class LivestreamRepository {
         // concerned, so writing null here would make the second such row a
         // duplicate-key failure.
         ...(data.playbackId ? { playbackId: data.playbackId } : {}),
+        // Omitted when absent, like playbackId: a stored null and a missing
+        // field read the same through `isCdnStream`, and omitting keeps
+        // pre-CDN rows and new SRS rows shaped identically.
+        ...(data.provider ? { provider: data.provider } : {}),
         status: data.status ?? "PENDING",
         hlsUrl: data.hlsUrl ?? null,
         flvUrl: data.flvUrl ?? null,
@@ -393,6 +399,21 @@ export class LivestreamRepository {
   async findLiveBySourceType(sourceType: string): Promise<Livestream[]> {
     return this.prisma.livestream.findMany({
       where: { status: "LIVE", sourceType },
+    });
+  }
+
+  /**
+   * Every non-terminal stream belonging to one media provider — the CDN
+   * reconciler's input. PENDING is included so a stream whose start callback
+   * never arrived can still be recovered from the provider's own view of who
+   * is publishing.
+   */
+  async findActiveByProvider(provider: string): Promise<Livestream[]> {
+    return this.prisma.livestream.findMany({
+      where: {
+        provider,
+        status: { in: [...ACTIVE_STATUSES] },
+      },
     });
   }
 

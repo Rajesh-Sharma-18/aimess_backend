@@ -157,6 +157,92 @@ const envSchema = z.object({
   SRS_API_USERNAME: z.string().optional(),
   SRS_API_PASSWORD: z.string().optional(),
 
+  // ---- CDNetworks Media Acceleration Live Broadcast (RTMP ingest + HLS/FLV delivery) ----
+  //
+  // Every var here is blank-safe: with none of them set the CDN provider is
+  // simply unavailable and every stream keeps going to SRS. `z.string()` and
+  // not `z.string().url()` for that reason — `.url()` rejects "" and would
+  // fail boot on an unset var.
+  /** CDN ingest (push) domain, e.g. `push.ai5stream.tech`. Blank = CDN off. */
+  CDN_PUSH_DOMAIN: z.string().default(""),
+  /**
+   * CDN delivery (playback) origin, e.g. `https://playback.ai5stream.tech`.
+   * NEVER point this at localhost: the website treats a local playback URL as
+   * a misconfiguration and rebuilds it against the SRS base (utils/srs.ts).
+   */
+  CDN_PLAYBACK_BASE: z.string().default(""),
+  /** Application name configured on both CDN domains — the `/live/` path segment. */
+  CDN_APP: z.string().default("live"),
+  /**
+   * Shared secret embedded in the CDN callback/remote-auth URLs configured in
+   * the vendor console. Blank = those endpoints reject everything: CDN edge
+   * IPs are not stable, so this secret is the entire gate and failing open
+   * would let anyone drive our stream state machine.
+   */
+  CDN_CALLBACK_SECRET: z.string().default(""),
+  /** Timestamp anti-hotlinking key. Blank = URLs are minted without wsSecret/wsTime. */
+  CDN_TOKEN_KEY: z.string().default(""),
+  /** Seconds added to the signing timestamp; must match the console's expiry mode. */
+  CDN_TOKEN_TTL_SEC: z.coerce.number().nonnegative().default(0),
+  /** Encryption time format: hex (console default) vs decimal UNIX seconds. */
+  CDN_TOKEN_TIME_HEX: z
+    .string()
+    .default("true")
+    .transform((v) => v === "true"),
+  /**
+   * Require `?secret=<streamKey>` in the remote-auth `url` parameter. Off until
+   * a live test proves the CDN forwards our query string — turning it on
+   * before that would deny every publish.
+   */
+  CDN_REQUIRE_PUBLISH_SECRET: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
+  /** CDNetworks OpenAPI base. */
+  CDN_API_BASE: z.string().default("https://api.cdnetworks.com"),
+  /**
+   * OpenAPI credentials (username + API key from the CDNetworks console).
+   * Blank = the CDN reconciler no-ops, leaving callbacks as the only liveness
+   * signal. The account has no API access yet, so blank is the current state.
+   */
+  CDN_API_USERNAME: z.string().default(""),
+  CDN_API_KEY: z.string().default(""),
+  /**
+   * Detect CDN liveness by fetching the stream's own playback URL instead of
+   * asking an API. Off by default: it exists because the vendor has no
+   * on-demand status API and their start/end callbacks may not fire, which
+   * otherwise leaves a stream stuck PENDING with nothing to recover it.
+   *
+   * Turn it off again once callbacks are reliable — nothing else depends on it.
+   */
+  CDN_PLAYBACK_PROBE: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
+  /** Per-probe timeout. A live playlist answers in well under a second. */
+  CDN_PLAYBACK_PROBE_TIMEOUT_MS: z.coerce.number().positive().default(4000),
+  /**
+   * How long a CDN stream may sit RECONNECTING (publisher dropped, per the end
+   * callback) before the sweeper ends it. A genuine reconnect resumes it via a
+   * fresh start callback within this window; nothing else does — the status API
+   * is NOT used to resume, so this no longer needs to absorb its ~30s lag.
+   * 30s covers a typical OBS/mobile auto-reconnect after a brief blip while
+   * keeping an intentional stop from lingering. Default: 30s.
+   */
+  STREAM_CDN_RECONNECT_GRACE_MS: z.coerce.number().positive().default(30_000),
+  /**
+   * How long a CDN stream may stay LIVE while the status API says it is not
+   * publishing before the reconciler ends it. Recovers a dropped end callback
+   * (the CDN documents no retry). Only effective once API credentials exist.
+   */
+  CDN_ABSENT_TIMEOUT_MS: z.coerce.number().positive().default(120_000),
+  /**
+   * Which provider RTMP-capable streams (OBS, mobile camera) are created
+   * against. Server-side so the rollout — and the rollback — is an env change
+   * rather than a client release.
+   */
+  STREAM_PROVIDER_DEFAULT: z.enum(["SRS", "CDN"]).default("SRS"),
+
   /** ffmpeg binary path for URL re-stream ingest (host prerequisite in dev). */
   FFMPEG_PATH: z.string().default("ffmpeg"),
 

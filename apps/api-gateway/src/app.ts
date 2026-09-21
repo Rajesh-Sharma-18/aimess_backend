@@ -21,6 +21,7 @@ import { createAdminRouter } from "./routes/admin.routes.js";
 import { createApiRouter } from "./routes/api.routes.js";
 import { createLinkHostRouter } from "./routes/linkhost.routes.js";
 import { healthRouter } from "./routes/health.routes.js";
+import { createInternalCdnRouter } from "./routes/internal-cdn.routes.js";
 import { createInternalSrsRouter } from "./routes/internal-srs.routes.js";
 import { createLiveKitWebhookRouter } from "./routes/livekit-webhook.routes.js";
 import type { MessagingClient } from "./grpc/clients/messaging.client.js";
@@ -137,6 +138,12 @@ export function createApp(
 
   // SRS server callbacks. No user JWT; stream-service validates SRS_HOOK_SECRET.
   app.use("/internal", createInternalSrsRouter());
+
+  // CDNetworks live callbacks (stream start/end) and publish authorization. No
+  // user JWT either; stream-service validates CDN_CALLBACK_SECRET. Mounted here,
+  // before express.json, so the raw body is forwarded untouched whichever method
+  // the vendor console is configured to send.
+  app.use("/internal", createInternalCdnRouter());
 
   // API documentation. Publishing the complete private API surface — every
   // path, parameter and schema, including the admin paths — to anyone who asks
