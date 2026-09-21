@@ -216,11 +216,19 @@ export function createInternalCdnRoutes(
       const params = authorize(req, res, "auth");
       if (!params) return;
 
-      // `streamName` is the documented variable name; `id` is accepted too so
-      // the endpoint still works if the console is set to send callback-style
-      // parameter names.
-      const name = str(params.streamName) || str(params.id);
-      const appName = str(params.appName) || str(params.appname);
+      // The stream identifier's parameter name differs by console feature:
+      // Origin Authentication (this dialog) sends it as `channel`, the status
+      // callbacks send `id`, and the public docs call it `streamName`. Accept
+      // all three. `channel` is often the full path (`push…/live/<name>` or an
+      // `rtmp://…/<name>?secret=…` URL), so drop any query string and take the
+      // last path segment — leaving the bare playbackId `findBySrsName` expects.
+      const rawName =
+        str(params.streamName) || str(params.id) || str(params.channel);
+      const name = rawName.split("?")[0].split("/").filter(Boolean).pop() ?? "";
+      // Application name arrives as `app` under Origin Authentication but as
+      // `appname` under the status callbacks — read whichever is present.
+      const appName =
+        str(params.appName) || str(params.app) || str(params.appname);
       logger.info(
         `AIMESS_CDN_CALLBACK auth ${req.method} — ${dumpParams(params)}`
       );
