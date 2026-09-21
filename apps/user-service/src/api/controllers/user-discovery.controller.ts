@@ -4,19 +4,31 @@ import { HTTP_STATUS, t } from "@aimess/constants";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import type { SearchUsersQuery } from "../validators/user-discovery.validator.js";
-import { userDiscoveryService } from "../../services/user-discovery.service.js";
+import {
+  userDiscoveryService,
+  type UserDiscoveryResult,
+} from "../../services/user-discovery.service.js";
 
 export const searchUsers = asyncHandler(async (req: Request, res: Response) => {
   const query = req.query as unknown as SearchUsersQuery;
-  const { q, type, page, limit, excludeGroupRoomId, excludeCommunityId } =
-    query;
+  const {
+    q,
+    type,
+    page,
+    limit,
+    groupRoomId,
+    communityId,
+  } = query;
 
-  // "Add Members" pickers pass the target conversation; everyone already in it
-  // is subtracted server-side so the picker can never offer them (issue #48).
-  const excludeUserIds = await userDiscoveryService.resolveExistingMemberIds({
-    groupRoomId: excludeGroupRoomId,
-    communityId: excludeCommunityId,
-  });
+  // Pickers keep existing members in the list but disabled, so tag rather than drop.
+  const memberIds = new Set(
+    await userDiscoveryService.resolveExistingMemberIds({
+      groupRoomId,
+      communityId,
+    })
+  );
+  const withIsMember = (users: UserDiscoveryResult[]) =>
+    users.map((user) => ({ ...user, isMember: memberIds.has(user.userId) }));
 
   // Paginated mode: type=friends or type=others
   if (type === "friends" || type === "others") {
@@ -27,21 +39,19 @@ export const searchUsers = asyncHandler(async (req: Request, res: Response) => {
             req.auth.userId,
             q,
             skip,
-            limit,
-            excludeUserIds
+            limit
           )
         : await userDiscoveryService._queryOthers(
             req.auth.userId,
             q,
             skip,
-            limit,
-            excludeUserIds
+            limit
           );
     const totalPages = Math.ceil(result.total / limit);
     return res.status(HTTP_STATUS.OK).json(
       new ApiResponse(
         {
-          users: result.users,
+          users: withIsMember(result.users),
           pagination: {
             total: result.total,
             page,
@@ -59,14 +69,16 @@ export const searchUsers = asyncHandler(async (req: Request, res: Response) => {
   // Split mode (no type): max 5 per group, no pagination
   const result = await userDiscoveryService.searchUsersSplit(
     req.auth.userId,
-    q,
-    excludeUserIds
+    q
   );
   return res
     .status(HTTP_STATUS.OK)
     .json(
       new ApiResponse(
-        { friends: result.friends, otherPeople: result.otherPeople },
+        {
+          friends: withIsMember(result.friends),
+          otherPeople: withIsMember(result.otherPeople),
+        },
         t("USERS_FETCHED", req.locale)
       )
     );
