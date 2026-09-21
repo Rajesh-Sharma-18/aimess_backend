@@ -363,6 +363,8 @@ export interface AdminGetCommunityMessagesReq {
   aroundMessageId?: string;
   /** "after" pages newer; ""/"before" pages older. */
   direction?: string;
+  /** "media" = IMAGE/VIDEO only, createdAt cursor. */
+  type?: string;
 }
 
 export interface AdminGetCommunityMessagesRes {
@@ -414,6 +416,8 @@ export interface AdminGetGroupMessagesReq {
   aroundMessageId?: string;
   /** "after" pages newer; ""/"before" pages older. */
   direction?: string;
+  /** "media" = IMAGE/VIDEO only, createdAt cursor. */
+  type?: string;
 }
 export interface AdminGetGroupMessagesRes {
   messages: RawAdminGroupMessageDto[];

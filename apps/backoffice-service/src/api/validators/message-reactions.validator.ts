@@ -28,4 +28,7 @@ export type MessageReactionsQueryInput = z.infer<
 export const messageNavigationQueryFields = {
   aroundMessageId: z.string().trim().min(1).max(64).optional(),
   direction: z.enum(["before", "after"]).optional(),
+  // "media" = the media viewer's gallery walk: IMAGE/VIDEO messages only,
+  // newest first, `cursor` = the previous page's createdAt ISO.
+  type: z.literal("media").optional(),
 };

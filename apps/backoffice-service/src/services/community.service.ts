@@ -154,6 +154,7 @@ export const communityService = {
       limit: query.limit,
       aroundMessageId: query.aroundMessageId ?? "",
       direction: query.direction ?? "",
+      type: query.type ?? "",
     });
 
     const messages = (res.messages ?? []).map((m) => ({

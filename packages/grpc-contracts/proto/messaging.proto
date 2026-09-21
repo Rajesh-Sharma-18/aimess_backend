@@ -368,6 +368,9 @@ message AdminGetGroupMessagesRequest {
   // Forward paging exists so the viewer can walk back DOWN to the live head
   // after a jump.
   string direction = 5;
+  // "media" = only IMAGE/VIDEO messages, newest first, cursor = createdAt ISO
+  // (the media viewer's room-wide gallery). "" = the normal transcript read.
+  string type = 6;
 }
 message AdminGroupMessageDto {
   string message_id          = 1;

@@ -148,6 +148,7 @@ export const groupService = {
       limit: query.limit,
       aroundMessageId: query.aroundMessageId ?? "",
       direction: query.direction ?? "",
+      type: query.type ?? "",
     });
 
     const messages: GroupConversationMessageItem[] = (res.messages ?? []).map(
