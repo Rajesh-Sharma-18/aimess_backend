@@ -1,6 +1,7 @@
 /**
  * Forgot-password flow (all unauthenticated):
- *   POST /api/auth/forgot-password/request  → issues an OTP (404 if email unknown)
+ *   POST /api/auth/forgot-password/request  → issues an OTP only for a resettable
+ *     account; answers the same 200 either way (no account enumeration)
  *   POST /api/auth/forgot-password/verify   → verifies OTP, mints a reset token
  *   POST /api/auth/forgot-password/reset    → swaps the password for the token
  * Repositories + the OTP/reset-token crypto helpers are mocked so each guard is
@@ -70,6 +71,7 @@ import { otpRepository } from "../../src/repositories/otp.repository.js";
 import { passwordResetRepository } from "../../src/repositories/password-reset.repository.js";
 import { sessionRepository } from "../../src/repositories/session.repository.js";
 import { verifyOtpCode } from "../../src/lib/otp.js";
+import { publishPasswordResetOtpSafe } from "../../src/messaging/publish-password-reset-otp.js";
 
 const authRepo = authRepository as unknown as Record<string, jest.Mock>;
 const sessionRepo = sessionRepository as unknown as Record<string, jest.Mock>;
@@ -81,6 +83,13 @@ const resetRepo = passwordResetRepository as unknown as Record<
   jest.Mock
 >;
 const verifyCode = verifyOtpCode as unknown as jest.Mock;
+const publishOtp = publishPasswordResetOtpSafe as unknown as jest.Mock;
+
+function expectNoOtpSideEffects() {
+  expect(otpRepo.consumeActiveForIdentifier).not.toHaveBeenCalled();
+  expect(otpRepo.create).not.toHaveBeenCalled();
+  expect(publishOtp).not.toHaveBeenCalled();
+}
 
 function resettableUser(overrides: Record<string, unknown> = {}) {
   return {
@@ -118,6 +127,39 @@ describe("POST /api/auth/forgot-password/request", () => {
     expect(res.body.success).toBe(true);
     expect(res.body.data.email).toBe("john@example.com");
     expect(otpRepo.create).toHaveBeenCalledTimes(1);
+    expect(publishOtp).toHaveBeenCalledWith(
+      expect.objectContaining({ email: "john@example.com" })
+    );
+  });
+
+  it("looks up and issues for the trimmed, lowercased address", async () => {
+    const res = await request(app)
+      .post("/api/auth/forgot-password/request")
+      .send({ email: "  Mixed.Case@Example.COM  " });
+
+    expect(res.status).toBe(200);
+    expect(authRepo.findByEmailForPasswordReset).toHaveBeenCalledWith(
+      "mixed.case@example.com"
+    );
+    expect(otpRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ identifier: "mixed.case@example.com" })
+    );
+  });
+
+  it("issues for a hand-linked email on a password-less social account", async () => {
+    // AuthUser.email is the profile email, set by registration or by the
+    // email-link flow, so a linked address resolves through the same lookup.
+    authRepo.findByEmailForPasswordReset.mockResolvedValue(
+      resettableUser({ passwordHash: null, linkedAccounts: [{ id: "la-1" }] })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/forgot-password/request")
+      .send({ email: "linked-social@example.com" });
+
+    expect(res.status).toBe(200);
+    expect(otpRepo.create).toHaveBeenCalledTimes(1);
+    expect(publishOtp).toHaveBeenCalledTimes(1);
   });
 
   it("normalizes the email to lowercase in the response", async () => {
@@ -146,8 +188,27 @@ describe("POST /api/auth/forgot-password/request", () => {
       .send({ email: "ghost@example.com" });
 
     expect(res.status).toBe(200);
-    expect(otpRepo.create).not.toHaveBeenCalled();
+    expect(res.body.message).toBe(
+      "If an account exists for this email, a verification code has been sent."
+    );
+    expectNoOtpSideEffects();
   });
+
+  it.each([["BANNED"], ["SUSPENDED"], ["PENDING_DELETION"]])(
+    "answers 200 for a %s account, issuing no OTP",
+    async (status) => {
+      authRepo.findByEmailForPasswordReset.mockResolvedValue(
+        resettableUser({ status })
+      );
+
+      const res = await request(app)
+        .post("/api/auth/forgot-password/request")
+        .send({ email: `status-${status.toLowerCase()}@example.com` });
+
+      expect(res.status).toBe(200);
+      expectNoOtpSideEffects();
+    }
+  );
 
   it("answers 200 for a deleted account (cannot reset), issuing no OTP", async () => {
     authRepo.findByEmailForPasswordReset.mockResolvedValue(
@@ -156,10 +217,10 @@ describe("POST /api/auth/forgot-password/request", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/request")
-      .send({ email: "john@example.com" });
+      .send({ email: "deleted@example.com" });
 
     expect(res.status).toBe(200);
-    expect(otpRepo.create).not.toHaveBeenCalled();
+    expectNoOtpSideEffects();
   });
 
   it("is indistinguishable from a real request: same status and body", async () => {

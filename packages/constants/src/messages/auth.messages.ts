@@ -173,10 +173,13 @@ export const AUTH_MESSAGES = {
     en: "Signed out from all devices.",
     th: "ออกจากระบบทุกอุปกรณ์แล้ว",
   },
+  // Returned for EVERY forgot-password request, registered address or not, so
+  // the answer never reveals whether an account exists (AIM-07). The wording
+  // must stay conditional: an unknown address is sent no code.
   AUTH_PASSWORD_RESET_OTP_SENT: {
-    vi: "Mã xác minh đã được gửi tới email của bạn",
-    en: "A verification code has been sent to your email.",
-    th: "ส่งรหัสยืนยันไปยังอีเมลของคุณแล้ว",
+    vi: "Nếu có tài khoản dùng email này, mã xác minh đã được gửi tới email đó",
+    en: "If an account exists for this email, a verification code has been sent.",
+    th: "หากมีบัญชีที่ใช้อีเมลนี้ รหัสยืนยันได้ถูกส่งไปยังอีเมลนั้นแล้ว",
   },
   AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND: {
     vi: "Nếu email này tồn tại, bạn sẽ nhận được mã đặt lại mật khẩu",
