@@ -1,6 +1,6 @@
 import type { Request } from "express";
 
-import { BadRequestError } from "@aimess/errors";
+import { BadRequestError, NotFoundError } from "@aimess/errors";
 import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
@@ -62,18 +62,15 @@ export const passwordResetService = {
     const user = await authRepository.findByEmailForPasswordReset(email);
 
     if (!user || !canResetPassword(user)) {
-      // Return neutrally. This used to throw
-      // AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND, so the endpoint answered 404 for an
-      // unknown address and 200 for a registered one — a clean membership
-      // oracle over any email an attacker cares to try, and the input to
-      // targeted credential stuffing against login. The comment further down
-      // this file already claimed the answer was ambiguous; now it is. The
-      // backoffice twin has always done this.
+      // Product decision (2026-09-21): the client must keep the user on the
+      // email screen with an inline error rather than open the OTP screen for
+      // an address that will never get a code, so this answers 404.
       //
-      // The rate limiter above still runs first, so this is not a free probe
-      // either way, and no OTP is issued or emailed for an address that cannot
-      // reset.
-      return;
+      // That re-opens AIM-07: the status code tells a caller whether an
+      // address has an eligible account. The limiter above runs first and is
+      // the only thing pricing that probe, so do not loosen it. Nothing past
+      // this line — OTP, publish, audit — runs for an unknown address.
+      throw new NotFoundError("AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND");
     }
 
     const plainCode = generateOtpCode();
@@ -184,8 +181,7 @@ export const passwordResetService = {
 
     // Reset COMPLETION is the one password-reset step where the caller has
     // already proven ownership (a valid one-time token), so naming the ban here
-    // leaks nothing an attacker could enumerate — unlike requestOtp, which
-    // deliberately keeps its ambiguous "if this email is registered" answer.
+    // leaks nothing beyond what requestOtp's 404 already answers.
     if (account) {
       assertNotBanned(account.status);
     }
