@@ -185,6 +185,28 @@ describe("createDirectRosterBroadcast", () => {
     });
   });
 
+  it("awaits an async payload so the first frame after connect carries the resolved identity", async () => {
+    const peer = { id: "sp", emit: jest.fn() };
+    const { ns } = fakeNamespace([peer]);
+    const broadcast = createDirectRosterBroadcast({
+      namespace: ns,
+      senderId: "me",
+      resolveRoster: async () => ["me", "peer"],
+      buildPayload: async (roomId) => {
+        await flushAsync();
+        return { roomId, userId: "me", senderName: "Raj Jain" };
+      },
+    });
+
+    await broadcast("room-1", "typing:start", false);
+
+    expect(peer.emit).toHaveBeenCalledWith("typing:start", {
+      roomId: "room-1",
+      userId: "me",
+      senderName: "Raj Jain",
+    });
+  });
+
   it("drops the event when the sender is not in the roster (fail-closed gate)", async () => {
     const peer = { id: "sa", emit: jest.fn() };
     const { ns } = fakeNamespace([peer]);

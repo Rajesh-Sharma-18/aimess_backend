@@ -76,6 +76,83 @@ export async function resolveSocketUserDetails(
 }
 
 /**
+ * Re-resolve a good identity this often. Well under the 1 h avatar presign
+ * (MINIO_AVATAR_VIEW_EXPIRES_IN), so a long-lived socket never broadcasts an
+ * expired avatar URL, and a renamed / re-avatared user shows up within minutes
+ * without reconnecting. One gRPC call per socket per window — never per keystroke.
+ */
+export const SOCKET_IDENTITY_TTL_MS = 5 * 60_000;
+/** A degraded (nameless) lookup is retried this soon instead of kept for the whole connection. */
+export const SOCKET_IDENTITY_RETRY_MS = 5_000;
+
+export interface SocketIdentity {
+  /** Last resolved value (the nameless default until the first lookup lands). */
+  readonly current: SocketUserDetails;
+  /**
+   * Identity for a presence broadcast. Waits only while no usable name has ever
+   * been resolved (first frames after connect, or after a failed lookup) —
+   * otherwise returns the cached value at once and refreshes in the background.
+   */
+  get(): Promise<SocketUserDetails>;
+}
+
+const hasName = (d: SocketUserDetails) => Boolean(d.displayName || d.username);
+
+/**
+ * Per-socket cache around {@link resolveSocketUserDetails}. The identity comes
+ * only from the authenticated `userId` — nothing the client sends reaches it.
+ */
+export function createSocketIdentity(
+  userClient: UserClient,
+  mediaClient: MediaClient,
+  userId: string,
+  onResolved?: (details: SocketUserDetails) => void
+): SocketIdentity {
+  let current: SocketUserDetails = {
+    userId,
+    username: "",
+    displayName: "",
+    avatarUrl: null,
+  };
+  let expiresAt = 0;
+  let pending: Promise<SocketUserDetails> | null = null;
+
+  const refresh = (): Promise<SocketUserDetails> => {
+    pending ??= resolveSocketUserDetails(userClient, mediaClient, userId)
+      .then((d) => {
+        // A degraded refresh must not wipe a name we already had.
+        if (hasName(d) || !hasName(current)) current = d;
+        expiresAt =
+          Date.now() +
+          (hasName(d) ? SOCKET_IDENTITY_TTL_MS : SOCKET_IDENTITY_RETRY_MS);
+        onResolved?.(current);
+        return current;
+      })
+      .finally(() => {
+        pending = null;
+      });
+    return pending;
+  };
+
+  // Warm at connect so the first keystroke rarely has to wait.
+  void refresh();
+
+  return {
+    get current() {
+      return current;
+    },
+    get() {
+      if (Date.now() < expiresAt) return Promise.resolve(current);
+      if (hasName(current)) {
+        void refresh();
+        return Promise.resolve(current);
+      }
+      return refresh();
+    },
+  };
+}
+
+/**
  * Pure builder for the typing / recording presence broadcast body — the single
  * shape emitted by BOTH /chat (private + group) and /community.
  *
@@ -93,7 +170,7 @@ export function buildTypingBroadcast(
   userDetails: SocketUserDetails,
   conversationId: string,
   timestamp: number,
-  opts?: { senderName?: string; communityId?: string; eventId?: string }
+  opts?: { communityId?: string; eventId?: string }
 ) {
   return {
     // Idempotency/dedupe key — /community has always carried this; /chat now
@@ -107,9 +184,9 @@ export function buildTypingBroadcast(
     timestamp,
     // `displayName` is server-derived from firstName+lastName (buildDisplayName)
     // and is EMPTY for any user who never set a name — fall back to `username`
-    // (always set at signup) before an explicit caller-supplied senderName, so a
-    // nameless profile never leaves the client nothing but the raw userId to show.
-    senderName:
-      userDetails.displayName || userDetails.username || opts?.senderName || "",
+    // (always set at signup). Server-derived only: a client-supplied name used to
+    // fill in when the lookup degraded, which let any member broadcast
+    // "<someone else> is typing".
+    senderName: userDetails.displayName || userDetails.username || "",
   };
 }

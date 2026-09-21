@@ -6632,9 +6632,10 @@ components:
           type: string
           description: |
             Display name for "Alice is typing…" without a profile fetch. Resolved
-            server-side from `userDetails.displayName`; falls back to the
-            client-supplied `senderName` on the request, then `""`. Always
-            present (possibly empty) — never absent.
+            server-side from `userDetails.displayName`, then
+            `userDetails.username`, then `""`. A `senderName` sent by the
+            client on the request is accepted but ignored. Always present
+            (possibly empty) — never absent.
       required:
         [
           eventId,

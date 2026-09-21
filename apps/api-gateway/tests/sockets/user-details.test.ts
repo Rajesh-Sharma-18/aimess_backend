@@ -20,6 +20,9 @@
 import {
   resolveSocketUserDetails,
   buildTypingBroadcast,
+  createSocketIdentity,
+  SOCKET_IDENTITY_RETRY_MS,
+  SOCKET_IDENTITY_TTL_MS,
   type SocketUserDetails,
 } from "../../src/sockets/user-details.js";
 import type {
@@ -360,37 +363,24 @@ describe("buildTypingBroadcast", () => {
     expect("communityId" in out).toBe(false);
   });
 
-  it("senderName = displayName even when a client senderName is supplied", () => {
-    const out = buildTypingBroadcast(USER_ID, details, "conv1", TS, {
-      senderName: "ClientTyped",
-    });
-    expect(out.senderName).toBe("Alice");
+  it("senderName = displayName (firstName + lastName) when set", () => {
+    const out = buildTypingBroadcast(
+      USER_ID,
+      { ...details, displayName: "Raj Jain" },
+      "conv1",
+      TS
+    );
+    expect(out.senderName).toBe("Raj Jain");
+    expect(out.userDetails.displayName).toBe("Raj Jain");
   });
 
-  it("senderName falls back to username (not the client value) when displayName is empty", () => {
-    // username (always set at signup) must win over a client-supplied senderName —
-    // a nameless profile (empty firstName/lastName) should never surface a raw
-    // userId on the client, and username is the more authoritative real identity.
+  it("senderName falls back to username when displayName is empty", () => {
     const noName: SocketUserDetails = { ...details, displayName: "" };
-    const out = buildTypingBroadcast(USER_ID, noName, "conv1", TS, {
-      senderName: "ClientTyped",
-    });
+    const out = buildTypingBroadcast(USER_ID, noName, "conv1", TS);
     expect(out.senderName).toBe("alice");
   });
 
-  it("senderName falls back to the client value only when BOTH displayName and username are empty", () => {
-    const noName: SocketUserDetails = {
-      ...details,
-      displayName: "",
-      username: "",
-    };
-    const out = buildTypingBroadcast(USER_ID, noName, "conv1", TS, {
-      senderName: "ClientTyped",
-    });
-    expect(out.senderName).toBe("ClientTyped");
-  });
-
-  it("senderName is '' when displayName, username, and client senderName are all empty", () => {
+  it("senderName is '' when displayName and username are both empty", () => {
     const noName: SocketUserDetails = {
       ...details,
       displayName: "",
@@ -420,5 +410,96 @@ describe("buildTypingBroadcast", () => {
     const out = buildTypingBroadcast(USER_ID, details, "conv1", now);
     expect(out.timestamp).toBe(now);
     expect(typeof out.timestamp).toBe("number");
+  });
+});
+
+describe("createSocketIdentity", () => {
+  const flush = () => new Promise((r) => setImmediate(r));
+
+  afterEach(() => jest.useRealTimers());
+
+  it("first get() waits for the lookup instead of broadcasting a nameless identity", async () => {
+    let release!: (v: UserSnapshotRecord[]) => void;
+    const bulk = jest.fn(
+      () => new Promise<UserSnapshotRecord[]>((r) => (release = r))
+    );
+    const identity = createSocketIdentity(
+      { bulkGetUserSnapshots: bulk } as unknown as UserClient,
+      mediaClientReturning(null).client,
+      USER_ID
+    );
+    const got = identity.get();
+    release([snapshot({ displayName: "Raj Jain", avatarObjectKey: "" })]);
+    await expect(got).resolves.toMatchObject({
+      userId: USER_ID,
+      displayName: "Raj Jain",
+    });
+    // The connect-time warm-up and the first get() share one lookup.
+    expect(bulk).toHaveBeenCalledTimes(1);
+  });
+
+  it("serves the cache for every keystroke inside the TTL (no per-event lookup)", async () => {
+    const { client, bulk } = userClientReturning([snapshot()]);
+    const identity = createSocketIdentity(
+      client,
+      mediaClientReturning(downloadResult("https://x/a.jpg")).client,
+      USER_ID
+    );
+    for (let i = 0; i < 50; i++) await identity.get();
+    expect(bulk).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a degraded lookup on a later frame instead of keeping it for the connection", async () => {
+    jest.useFakeTimers({ doNotFake: ["setImmediate"] });
+    const bulk = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("user-service down"))
+      .mockResolvedValue([snapshot({ avatarObjectKey: "" })]);
+    const identity = createSocketIdentity(
+      { bulkGetUserSnapshots: bulk } as unknown as UserClient,
+      mediaClientReturning(null).client,
+      USER_ID
+    );
+    await flush();
+    expect(identity.current.displayName).toBe("");
+    jest.advanceTimersByTime(SOCKET_IDENTITY_RETRY_MS + 1);
+    await expect(identity.get()).resolves.toMatchObject({ displayName: "Alice" });
+  });
+
+  it("refreshes after the TTL (new avatar/name) and never downgrades to a degraded result", async () => {
+    jest.useFakeTimers({ doNotFake: ["setImmediate"] });
+    const bulk = jest
+      .fn()
+      .mockResolvedValueOnce([snapshot({ avatarObjectKey: "" })])
+      .mockResolvedValueOnce([
+        snapshot({ displayName: "Alice Renamed", avatarObjectKey: "", avatarUrl: "https://x/new.jpg" }),
+      ])
+      .mockRejectedValue(new Error("down"));
+    const onResolved = jest.fn();
+    const identity = createSocketIdentity(
+      { bulkGetUserSnapshots: bulk } as unknown as UserClient,
+      mediaClientReturning(null).client,
+      USER_ID,
+      onResolved
+    );
+    await flush();
+    expect(identity.current.displayName).toBe("Alice");
+
+    jest.advanceTimersByTime(SOCKET_IDENTITY_TTL_MS + 1);
+    // Stale-but-named: served immediately, refreshed in the background.
+    await expect(identity.get()).resolves.toMatchObject({ displayName: "Alice" });
+    await flush();
+    expect(identity.current).toMatchObject({
+      displayName: "Alice Renamed",
+      avatarUrl: "https://x/new.jpg",
+    });
+
+    jest.advanceTimersByTime(SOCKET_IDENTITY_TTL_MS + 1);
+    await identity.get();
+    await flush();
+    expect(identity.current.displayName).toBe("Alice Renamed");
+    expect(onResolved).toHaveBeenLastCalledWith(
+      expect.objectContaining({ displayName: "Alice Renamed" })
+    );
   });
 });

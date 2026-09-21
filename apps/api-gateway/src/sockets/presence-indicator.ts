@@ -255,7 +255,9 @@ export function createDirectRosterBroadcast(params: {
     const sockets = await namespace
       .in(recipientIds.map((id) => `user:${id}`))
       .fetchSockets();
-    const payload = buildPayload(roomId);
+    // May be async: the sender identity can still be resolving on the first
+    // frames after connect, and those must carry the real name, not a blank one.
+    const payload = await buildPayload(roomId);
     for (const s of sockets) s.emit(event, payload);
   };
 }
@@ -292,9 +294,10 @@ export function createRoomBroadcast(params: {
     // socket.to() excludes the sender; after the TTL fires the socket may be
     // gone, so emit namespace-scoped instead (the sender is disconnected or
     // idle by definition at that point, so no self-echo results).
+    const payload = await buildPayload(roomId);
     const emitter = fromTimer ? namespace : socket;
     let chain = emitter.to(targets[0]!);
     for (const room of targets.slice(1)) chain = chain.to(room);
-    chain.emit(event, buildPayload(roomId));
+    chain.emit(event, payload);
   };
 }
