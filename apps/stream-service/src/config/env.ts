@@ -222,11 +222,14 @@ const envSchema = z.object({
   /** Per-probe timeout. A live playlist answers in well under a second. */
   CDN_PLAYBACK_PROBE_TIMEOUT_MS: z.coerce.number().positive().default(4000),
   /**
-   * Reconnect grace for CDN streams. Longer than the SRS one because the CDN's
-   * status API lags ~30s, so a shorter window could end a stream the API has
-   * not yet reported as publishing again. Default: 90s.
+   * How long a CDN stream may sit RECONNECTING (publisher dropped, per the end
+   * callback) before the sweeper ends it. A genuine reconnect resumes it via a
+   * fresh start callback within this window; nothing else does — the status API
+   * is NOT used to resume, so this no longer needs to absorb its ~30s lag.
+   * 30s covers a typical OBS/mobile auto-reconnect after a brief blip while
+   * keeping an intentional stop from lingering. Default: 30s.
    */
-  STREAM_CDN_RECONNECT_GRACE_MS: z.coerce.number().positive().default(90_000),
+  STREAM_CDN_RECONNECT_GRACE_MS: z.coerce.number().positive().default(30_000),
   /**
    * How long a CDN stream may stay LIVE while the status API says it is not
    * publishing before the reconciler ends it. Recovers a dropped end callback

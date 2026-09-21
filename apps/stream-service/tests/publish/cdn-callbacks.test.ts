@@ -335,6 +335,46 @@ describe("CDN callbacks → stream state", () => {
 
     expect(cdnService.probeLive).not.toHaveBeenCalled();
   });
+
+  it("does NOT resume a RECONNECTING stream from the status API (flap fix)", async () => {
+    // After a publisher stops, the CDN status API keeps reporting the stream as
+    // publishing for 30s–2min (cached HLS + session grace). Trusting that to
+    // flip RECONNECTING → LIVE resets the grace every tick and drags the end out
+    // for minutes. Only a real start callback may resume a RECONNECTING row;
+    // reconcileCdn must leave it alone even when the API still lists it.
+    const { service, streamRepo, cdnService } = makeService(
+      cdnStream({ status: "RECONNECTING", disconnectedAt: new Date() })
+    );
+    cdnService.listPublishing.mockResolvedValue(
+      new Map([
+        ["public-name", { resolution: null, bitrateKbps: null, fps: null, viewers: null }],
+      ])
+    );
+
+    await (
+      service as unknown as { reconcileCdn(): Promise<void> }
+    ).reconcileCdn();
+
+    const flippedLive = streamRepo.updateById.mock.calls.some(
+      (c: unknown[]) => (c[1] as { status?: string }).status === "LIVE"
+    );
+    expect(flippedLive).toBe(false);
+  });
+
+  it("still recovers a PENDING stream from the status API (missed start callback)", async () => {
+    const { service, streamRepo, cdnService } = makeService(cdnStream());
+    cdnService.listPublishing.mockResolvedValue(
+      new Map([
+        ["public-name", { resolution: null, bitrateKbps: null, fps: null, viewers: null }],
+      ])
+    );
+
+    await (
+      service as unknown as { reconcileCdn(): Promise<void> }
+    ).reconcileCdn();
+
+    expect(streamRepo.updateById.mock.calls[0][1].status).toBe("LIVE");
+  });
 });
 
 describe("CDN publish authorization", () => {

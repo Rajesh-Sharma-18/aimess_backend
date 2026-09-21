@@ -1957,18 +1957,33 @@ export class LivestreamService {
 
         if (publishing) {
           this.cdnAbsentSince.delete(stream.id);
-          if (stream.status !== "LIVE") {
+          // RECONNECTING is deliberately NOT resumed from here.
+          //
+          // After a publisher stops, the CDN status API (and the HLS playlist)
+          // keep reporting the stream as "publishing" for 30s–2min — cached
+          // segments plus the CDN's own session grace. Trusting that stale
+          // "present" to flip RECONNECTING → LIVE fought the reliable end
+          // callback and reset the reconnect-grace timer every 30s tick, so an
+          // ended stream flapped LIVE↔reconnecting for minutes before finally
+          // ending. The end callback is fast (~1s) and authoritative; a genuine
+          // reconnect fires its own START callback (handleCdnStart) which
+          // resumes LIVE. So a RECONNECTING row is left to those two signals —
+          // the start callback resumes it, or the reconnect-grace sweeper ends
+          // it. The status API only RECOVERS a dropped FIRST start here, which
+          // is unambiguous: a PENDING row never received a start at all.
+          if (stream.status === "PENDING") {
             // "trusted" for the same reason the SRS reconciler passes it: the
             // CDN has already accepted this publisher, so there is no publish
             // URL here to read a secret out of.
             await this.handlePublish(name, undefined, "trusted");
-            // Tagged so a stuck-PENDING investigation can tell in one grep
-            // WHICH mechanism took the stream live: this poll, the vendor's
-            // callback, or a manual go-live. They race, and the 30s tick can
-            // land a second after OBS starts and look exactly like a callback.
             logger.info(
-              `AIMESS_CDN_WENT_LIVE by=POLL stream=${stream.id} — status API reports it publishing`
+              `AIMESS_CDN_WENT_LIVE by=POLL stream=${stream.id} — status API recovered a missed start callback`
             );
+            continue;
+          }
+          if (stream.status !== "LIVE") {
+            // RECONNECTING (or any non-LIVE, non-PENDING) — ignore the status
+            // API's presence; wait for a start callback or the grace sweeper.
             continue;
           }
           // Both fields or neither: reportQuality writes what it is given, so
@@ -2235,10 +2250,13 @@ export class LivestreamService {
     for (const stream of stale) {
       try {
         const srsName = resolveSrsName(stream);
-        // CDN rows get a longer grace than SRS ones because the CDN's status
-        // API lags ~30s: ending on the SRS window could kill a stream the CDN
-        // has simply not reported as publishing again yet. No presence re-check
-        // here — reconcileCdn already ran this tick and would have resumed it.
+        // CDN reconnect grace. A RECONNECTING CDN row is resumed ONLY by a real
+        // start callback (a genuine reconnect) — never by the status API, whose
+        // stale "still publishing" would otherwise keep an ended stream alive
+        // (see reconcileCdn). So here we simply end it once the grace since
+        // disconnect has elapsed with no reconnect. No presence re-check: the
+        // status API cannot distinguish "reconnected" from "hasn't caught up
+        // yet", and the start callback already covers the real reconnect.
         if (isCdnStream(stream)) {
           const downMs = Date.now() - (stream.disconnectedAt?.getTime() ?? 0);
           if (downMs < env.STREAM_CDN_RECONNECT_GRACE_MS) continue;
