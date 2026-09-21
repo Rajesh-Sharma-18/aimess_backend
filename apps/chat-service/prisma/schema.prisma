@@ -143,6 +143,13 @@ model PrivateMessage {
   /// row, which is how pre-existing messages self-heal on their first paginated
   /// reaction read instead of needing a backfill pass before the feature works.
   reactionsIndexedAt DateTime?
+  // Per-MEDIA reactions for a message carrying several attachments: keyed by the
+  // attachment's 0-based index in `content.files`, each bucket holding the same
+  // `{ emoji: reactor[] }` map `reactions` holds for the message as a whole. A
+  // collage is one row of N photos, so "react to photo #4" cannot be expressed by
+  // `reactions` alone. Single-attachment and text messages never write here and
+  // keep using `reactions`, so every existing row and client is unaffected.
+  mediaReactions   Json      @default("{}")
   inviteLinkData   Json?
   parentMessageId  String?   @db.ObjectId
   quoteData        Json?
@@ -349,6 +356,13 @@ model GroupMessage {
   /// row, which is how pre-existing messages self-heal on their first paginated
   /// reaction read instead of needing a backfill pass before the feature works.
   reactionsIndexedAt DateTime?
+  // Per-MEDIA reactions for a message carrying several attachments: keyed by the
+  // attachment's 0-based index in `content.files`, each bucket holding the same
+  // `{ emoji: reactor[] }` map `reactions` holds for the message as a whole. A
+  // collage is one row of N photos, so "react to photo #4" cannot be expressed by
+  // `reactions` alone. Single-attachment and text messages never write here and
+  // keep using `reactions`, so every existing row and client is unaffected.
+  mediaReactions     Json      @default("{}")
   isForwarded        Boolean   @default(false)
   forwardData        Json?
   isDeleted          Boolean   @default(false)
@@ -584,6 +598,13 @@ model GeneralRoomMessage {
   /// row, which is how pre-existing messages self-heal on their first paginated
   /// reaction read instead of needing a backfill pass before the feature works.
   reactionsIndexedAt DateTime?
+  // Per-MEDIA reactions for a message carrying several attachments: keyed by the
+  // attachment's 0-based index in `content.files`, each bucket holding the same
+  // `{ emoji: reactor[] }` map `reactions` holds for the message as a whole. A
+  // collage is one row of N photos, so "react to photo #4" cannot be expressed by
+  // `reactions` alone. Single-attachment and text messages never write here and
+  // keep using `reactions`, so every existing row and client is unaffected.
+  mediaReactions  Json     @default("{}")
   parentMessageId String?  @db.ObjectId
   quoteData       Json?
   messageType     String   @default("text")
@@ -972,11 +993,19 @@ model MessageReaction {
   roomId           String
   userId           String
   emoji            String
+  /// Which ATTACHMENT this reaction belongs to — the 0-based index into the
+  /// message's `content.files`. Null = the message (or collage) as a whole, which
+  /// is what every text message and every pre-existing row carries. Part of the
+  /// unique key, because one user may hold a reaction on several photos of the
+  /// same message AND one on the message itself; keying on the user alone made
+  /// those collide and overwrite each other.
+  mediaIndex       Int?
   /// Reaction order, and the keyset cursor's leading component. `userId` breaks
-  /// ties so the cursor is total even when two reactions land in the same ms.
+  /// ties so the cursor is total even when two reactions land in the same ms;
+  /// `messageId`/`mediaIndex` finish it for a page spanning a whole album.
   createdAt        DateTime @default(now())
 
-  @@unique([messageId, conversationType, userId])
+  @@unique([messageId, conversationType, mediaIndex, userId])
   @@index([messageId, conversationType, createdAt, userId])
   @@index([messageId, conversationType, emoji, createdAt, userId])
   @@map("message_reactions")

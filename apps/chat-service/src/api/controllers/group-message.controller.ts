@@ -928,6 +928,9 @@ export class GroupMessageController {
       messageId,
       roomId,
       requesterId: userId,
+      mediaIndex: (req.query as { mediaIndex?: string }).mediaIndex
+        ? Number((req.query as { mediaIndex?: string }).mediaIndex)
+        : undefined,
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
@@ -942,7 +945,10 @@ export class GroupMessageController {
   setReaction = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { emoji } = req.body as { emoji: string };
+    const { emoji, mediaIndex } = req.body as {
+      emoji: string;
+      mediaIndex?: number;
+    };
     const message = await this.messageService.findMessageById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     const { reactions } = await this.orchestrator.reactDirect({
@@ -951,6 +957,7 @@ export class GroupMessageController {
       messageId,
       userId,
       emoji,
+      mediaIndex,
       op: "set",
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
@@ -960,13 +967,17 @@ export class GroupMessageController {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const messageId = req.params.messageId as string;
-    const { emoji } = req.body as { emoji: string };
+    const { emoji, mediaIndex } = req.body as {
+      emoji: string;
+      mediaIndex?: number;
+    };
     const { reactions } = await this.orchestrator.reactDirect({
       conversationType: "GROUP",
       roomId,
       messageId,
       userId,
       emoji,
+      mediaIndex,
       op: "add",
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
@@ -983,12 +994,16 @@ export class GroupMessageController {
     const roomId = req.params.roomId as string;
     const messageId = req.params.messageId as string;
     const emoji = req.params.emoji as string;
+    // A DELETE carries no body, so the attachment the reaction is coming off
+    // rides the query string (validated by reactionRemoveQuerySchema).
+    const { mediaIndex } = req.query as unknown as { mediaIndex?: number };
     const { reactions } = await this.orchestrator.reactDirect({
       conversationType: "GROUP",
       roomId,
       messageId,
       userId,
       emoji,
+      mediaIndex,
       op: "remove",
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));

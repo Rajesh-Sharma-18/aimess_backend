@@ -194,6 +194,10 @@ service CommunityService {
   rpc GetCommunityMessageReactions (GetCommunityMessageReactionsRequest) returns (GetCommunityMessageReactionsResponse);
   // Keyset-paged reactor list — see messaging.proto GetMessageReactionsPage.
   rpc GetCommunityMessageReactionsPage (GetCommunityMessageReactionsPageRequest) returns (GetCommunityMessageReactionsPageResponse);
+  // Backoffice read-only reaction details — see messaging.proto
+  // AdminGetMessageReactionsPage. No requester: the Super Admin is never a room
+  // member, so there is no membership guard and no self_emoji.
+  rpc AdminGetCommunityMessageReactionsPage (AdminGetCommunityMessageReactionsPageRequest) returns (GetCommunityMessageReactionsPageResponse);
 
   // ---- Forward a community message to another community room ----
   rpc ForwardCommunityMessage (ForwardCommunityMessageRequest) returns (ForwardCommunityMessageResponse);
@@ -738,6 +742,13 @@ message GetCommunityMessagesRequest {
   string requester_id = 2;
   string cursor       = 3;
   int32  limit        = 4;
+  // Admin viewer only (AdminGetCommunityMessages ignores requester_id anyway).
+  // When set, a window CENTRED on this message is returned instead of a page,
+  // with continuation cursors both ways — the jump-to-message read behind a
+  // pinned-banner or reply tap.
+  string around_message_id = 5;
+  // "after" pages forward (newer) from cursor; "" / "before" pages back.
+  string direction         = 6;
 }
 message GetCommunityMessagesResponse {
   repeated CommunityMessageDto messages   = 1;
@@ -748,6 +759,10 @@ message GetCommunityMessagesResponse {
   // currently pinned message without depending on the PINNED_MESSAGE system
   // line, which scrolls out of view as newer messages arrive.
   string                       pinned_message_json = 4;
+  // after_ts boundary; "" when the window already reaches the live head. Only
+  // meaningful for an around_message_id / direction=after read.
+  string                       newer_cursor        = 5;
+  bool                         has_more_newer      = 6;
 }
 message CommunityMessageDto {
   string message_id          = 1;
@@ -916,6 +931,10 @@ message ReactToCommunityMessageRequest {
   string community_id = 2;
   string user_id      = 3;
   string emoji        = 4;
+  // 0-based index of the attachment being reacted to, for a message carrying
+  // several (a collage). -1 / absent = the message as a whole. proto3 has no
+  // optional int32 here, so -1 is the "unset" value existing clients send.
+  int32  media_index  = 5;
 }
 message CommunityReactionUserDto {
   string user_id      = 1;
@@ -1079,6 +1098,8 @@ message GetCommunityMessageReactionsRequest {
   string message_id    = 1;
   string community_id  = 2;
   string requester_id  = 3;
+  // -1 / absent = the message as a whole; otherwise ONE attachment's bucket.
+  int32  media_index   = 4;
 }
 message GetCommunityMessageReactionsResponse {
   string message_id   = 1;
@@ -1092,6 +1113,11 @@ message CommunityReactionDetailUserDto {
   string display_name = 2;
   string avatar       = 3; // resolved download URL, never a raw object key
   string emoji        = 4;
+  // Which message and attachment this reactor pointed at. `media_index` is -1 for
+  // the message (or collage) as a whole and 0-based for one of its photos, which
+  // is what lets the popup draw the exact thumbnail that was reacted to.
+  string message_id   = 5;
+  int32  media_index  = 6;
 }
 message CommunityReactionCountDto {
   string emoji = 1;
@@ -1104,6 +1130,18 @@ message GetCommunityMessageReactionsPageRequest {
   string emoji        = 4; // empty = the "All" filter
   string cursor       = 5; // empty = first page
   int32  limit        = 6; // 0 = server default; server clamps
+  // The collage's other members. A web-sent album is N separate messages rendered
+  // as one row, so its reactor list spans them; empty for an ordinary message.
+  // Every id is re-bound to the room server-side before it is read.
+  repeated string sibling_message_ids = 7;
+}
+// Reaction details for the read-only admin viewer — no requester_id.
+message AdminGetCommunityMessageReactionsPageRequest {
+  string message_id   = 1;
+  string community_id = 2;
+  string emoji        = 3; // empty = the "All" filter
+  string cursor       = 4; // empty = first page
+  int32  limit        = 5; // 0 = server default; server clamps
 }
 message GetCommunityMessageReactionsPageResponse {
   repeated CommunityReactionDetailUserDto users = 1;

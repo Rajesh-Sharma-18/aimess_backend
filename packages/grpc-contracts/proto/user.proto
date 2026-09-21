@@ -152,7 +152,9 @@ message UserSnapshotRecord {
   // callers that render history MUST render them.
   bool   is_deleted      = 6;
   // TRUE when the account is admin-suspended or admin-banned (ProfileStatus
-  // SUSPENDED, mirrored from backoffice via AdminSetProfileStatus). The profile
+  // SUSPENDED or BANNED, mirrored from backoffice via AdminSetProfileStatus).
+  // One flag covers both on purpose: every caller reads it to refuse an ACTION,
+  // and a ban is the stronger restriction, never a weaker one. The profile
   // is NOT anonymized — history still renders the real name — but every caller
   // gating an ACTION on the recipient (invite, group add, DM invite card) must
   // refuse: the account cannot log in to act on it.
@@ -298,8 +300,12 @@ message FilterPresenceViewersResponse {
   repeated string allowed_viewer_ids = 1;
 }
 
-// ACTIVE | SUSPENDED — the profile mirror of an admin ban/suspend. DELETED is
-// deliberately NOT settable here; account deletion has its own pipeline.
+// ACTIVE | SUSPENDED | BANNED — the profile mirror of an admin ban/suspend.
+// SUSPENDED (time-boxed) and BANNED (permanent) are kept apart because
+// user-service treats them differently: a banned account is removed from people
+// discovery, a suspended one is not, since nothing in user-service expires a
+// suspension. DELETED is deliberately NOT settable here; account deletion has
+// its own pipeline.
 message AdminSetProfileStatusRequest {
   string user_id = 1;
   string status  = 2;

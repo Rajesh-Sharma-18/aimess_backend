@@ -5,6 +5,7 @@ import {
   type FriendProfileRow,
 } from "../repositories/friends.repository.js";
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
+import { bannedAmong } from "../lib/banned-users.js";
 import type {
   FriendListItem,
   FriendsListResult,
@@ -49,7 +50,11 @@ export const friendsService = {
     me: string,
     params: { search?: string; cursor?: string; limit: number }
   ): Promise<FriendsListResult> {
-    const friendIds = await friendsRepository.listAcceptedFriendIds(me);
+    const acceptedIds = await friendsRepository.listAcceptedFriendIds(me);
+    // Platform-banned friends have no row anywhere a peer can see (the
+    // friendship itself is kept, so an unban restores it untouched).
+    const banned = await bannedAmong(acceptedIds);
+    const friendIds = acceptedIds.filter((id) => !banned.has(id));
 
     // No accepted friends → empty list, not an error.
     if (friendIds.length === 0) {

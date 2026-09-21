@@ -41,8 +41,8 @@ const PREFETCH = 10;
 const NOTIFY_COPY: Record<string, { title: string; body: string } | undefined> =
   {
     [AdminUserEvents.USER_BANNED]: {
-      title: "Account banned",
-      body: "Your account has been banned. Reach out to support if you think this is a mistake.",
+      title: "Account suspended",
+      body: "This account has been suspended.",
     },
     [AdminUserEvents.USER_SUSPENDED]: {
       title: "Account suspended",

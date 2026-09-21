@@ -47,6 +47,8 @@ export interface CallAuthorizationDeps {
   getUserSnapshot: (userId: string) => Promise<CallPeerSnapshot>;
   /** Absent means the platform kill-switch is not wired — calling is on. */
   callFlags?: Pick<CallFlagService, "isCallingEnabled">;
+  /** Platform-ban read (Redis flag). Absent means no ban check. */
+  isUserBanned?: (userId: string) => Promise<boolean>;
 }
 
 export interface CallAuthorization {
@@ -116,6 +118,11 @@ export async function assertCanStartCall(
   // Fails OPEN on a lookup miss — `isDeleted` is only trusted when it is `true`.
   const calleeSnapshot = await deps.getUserSnapshot(calleeId);
   if (calleeSnapshot.isDeleted === true) {
+    throw new NotFoundError("CALL_USER_UNAVAILABLE");
+  }
+  // A platform-banned account is unavailable in exactly the same words.
+  // Friendships survive a ban, so gate 2 would otherwise let the call ring.
+  if (deps.isUserBanned && (await deps.isUserBanned(calleeId))) {
     throw new NotFoundError("CALL_USER_UNAVAILABLE");
   }
 

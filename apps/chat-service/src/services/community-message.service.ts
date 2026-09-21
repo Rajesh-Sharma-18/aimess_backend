@@ -62,9 +62,13 @@ import type {
 import {
   normalizeMessageType,
   toggleStoredReaction,
+  replaceMediaReactionBucket,
+  mediaReactionBucket,
+  resolveMediaReactionIndex,
   // setStoredReaction,
   reactionUserIdMap,
   buildReactionGroups,
+  buildMediaReactionGroups,
   type ReactionGroup,
   type StoredReactor,
   toWireMessage,
@@ -111,6 +115,7 @@ import {
   markAlbumIdempotentReplay,
   resolveParentMessageId,
   resolveReplyAttachmentCount,
+  isAlbumRowId,
 } from "../lib/album-messages.js";
 import { splitCommunityMediaAlbum } from "../lib/split-media-album.js";
 import {
@@ -130,6 +135,10 @@ import {
   buildReactionDetailsPage,
   type ReactionDetailsPage,
 } from "../lib/reaction-index.js";
+import {
+  EMPTY_MODERATION_PAGE,
+  type ModerationMessagePage,
+} from "../lib/moderation-page.js";
 
 /**
  * Client-facing community message row: the raw Prisma entity with its
@@ -447,7 +456,11 @@ export class CommunityMessageService {
         // Album sends are split one-row-per-file (lib/split-media-album.ts),
         // so the parent row's own attachments can never reveal the true
         // album size — look up its sibling batch for IMAGE/VIDEO parents.
-        const attachmentCountOverride = ["IMAGE", "VIDEO"].includes(
+        // Only a reply to the whole collage (`album-<id>`) quotes the album
+        // size; a bare id quotes that one photo.
+        const attachmentCountOverride =
+          isAlbumRowId(params.parentMessageId) &&
+          ["IMAGE", "VIDEO"].includes(
           normalizeMessageType(originalMsg.messageType)
         )
           ? await resolveReplyAttachmentCount(
@@ -1521,6 +1534,13 @@ export class CommunityMessageService {
       resolveReactionUser
     );
 
+    // Per-attachment reactions for a collage — see PrivateMessageService.
+    wire.mediaReactionGroups = buildMediaReactionGroups(
+      (m as unknown as { mediaReactions?: unknown }).mediaReactions,
+      (key) => (urlMap ? urlFromMap(urlMap, key) : ""),
+      resolveReactionUser
+    );
+
     // Normalize editedAt → epoch ms and derive isEdited so all list/timeline
     // surfaces are consistent with the edit socket event and sync API.
     const editedMs =
@@ -1652,11 +1672,28 @@ export class CommunityMessageService {
     roomId: string;
     cursor?: string | null;
     limit: number;
+    /** "after" walks forward (newer); default "before". */
+    direction?: "before" | "after";
+    /**
+     * Jump-to-message: return a window CENTRED on this message instead of a
+     * page, with continuation cursors both ways. Overrides cursor/direction.
+     */
+    aroundMessageId?: string | null;
   }): Promise<{
     items: CommunityMessageWire[];
     hasMore: boolean;
     nextCursor: string | null;
+    hasMoreNewer: boolean;
+    newerCursor: string | null;
+    found?: boolean;
   }> {
+    if (params.aroundMessageId) {
+      return this.getAroundForModeration({
+        roomId: params.roomId,
+        messageId: params.aroundMessageId,
+        limit: params.limit,
+      });
+    }
     // Same compound `"<createdAtMs>_<id>"` keyset the member-facing timeline
     // uses. It MUST NOT be the legacy findByRoomIdWithTime path: that one
     // over-fetches only `limit + 10` and then drops hidden/personal rows in
@@ -1684,7 +1721,9 @@ export class CommunityMessageService {
       // which is what the moderation view wants — "You joined" lines addressed
       // to individual members are not part of the conversation.
       userId: "",
-      direction: "before",
+      direction: params.direction === "after" ? "after" : "before",
+      // Forward paging is always cursor-anchored: `Date.now()` as an after_ts
+      // boundary would ask for messages newer than now, i.e. nothing.
       ts: new Date(hasCursor ? parsedMs : Date.now()),
       boundaryId: idPart,
       // First page includes the newest message; a cursor is exclusive so it
@@ -1697,10 +1736,78 @@ export class CommunityMessageService {
       trustedAdmin: true,
     });
 
+    return params.direction === "after"
+      ? {
+          items: page.items,
+          hasMore: false,
+          nextCursor: null,
+          hasMoreNewer: page.hasMore,
+          newerCursor: page.nextCursor,
+        }
+      : {
+          items: page.items,
+          hasMore: page.hasMore,
+          nextCursor: page.nextCursor,
+          hasMoreNewer: false,
+          newerCursor: null,
+        };
+  }
+
+  /**
+   * Jump-to-message window for the read-only Backoffice viewer — the admin
+   * counterpart of {@link getMessagesAround}.
+   *
+   * Same window query and same bidirectional continuation cursors; what differs
+   * is that there is no viewer, so `assertCommunityReadAccess` is skipped (the
+   * admin is never a member) and `viewerIsActiveMember` is forced true so a
+   * PRIVATE community's history is visible. Authorization happened at the admin
+   * API boundary, exactly as in {@link getMessagesForModeration}.
+   */
+  private async getAroundForModeration(params: {
+    roomId: string;
+    messageId: string;
+    limit: number;
+  }): Promise<{
+    items: CommunityMessageWire[];
+    hasMore: boolean;
+    nextCursor: string | null;
+    hasMoreNewer: boolean;
+    newerCursor: string | null;
+    found: boolean;
+  }> {
+    const anchor = await this.messageRepo.findById(params.messageId);
+    // Wrong room, gone, or deleted for everyone: the window query would not
+    // return the anchor either, so there would be nothing to scroll to.
+    if (!anchor || anchor.roomId !== params.roomId) {
+      return { ...EMPTY_MODERATION_PAGE, items: [], found: false };
+    }
+    const adapter = makeTimelineAdapter(this.messageRepo, {
+      strategy: "TIMESTAMP",
+      ts: new Date(0),
+      boundaryId: null,
+      inclusive: false,
+    });
+    const { rows, cursors } = await adapter.around({
+      roomId: params.roomId,
+      userId: "",
+      anchor,
+      limit: params.limit,
+      viewerIsActiveMember: true,
+    });
+    if (!rows.some((row) => row.id === anchor.id)) {
+      return { ...EMPTY_MODERATION_PAGE, items: [], found: false };
+    }
+    const { urlMap, deletedUserIds, identities } =
+      await this.resolveRowsWireContext(rows);
     return {
-      items: page.items,
-      hasMore: page.hasMore,
-      nextCursor: page.nextCursor,
+      items: rows.map((m) =>
+        this.toWire(m, urlMap, undefined, "", deletedUserIds, identities)
+      ),
+      hasMore: cursors.hasMoreOlder,
+      nextCursor: cursors.olderCursor,
+      hasMoreNewer: cursors.hasMoreNewer,
+      newerCursor: cursors.newerCursor,
+      found: true,
     };
   }
 
@@ -2597,9 +2704,13 @@ export class CommunityMessageService {
      *  reaction CHANGE is ONE call instead of remove-then-add — no intermediate empty broadcast.
      *  Default/absent keeps the legacy per-emoji toggle. */
     mode?: string;
+    /** 0-based attachment index — react to ONE photo of a collage, not the row. */
+    mediaIndex?: number | null;
   }): Promise<{
     messageId: string;
     roomId: string;
+    /** Which attachment the reaction landed on; null = the message as a whole. */
+    mediaIndex: number | null;
     /** Room CHANGE revision assigned to this reaction mutation (zero-loss feed). */
     revision: number;
     reactions: Array<{
@@ -2644,6 +2755,7 @@ export class CommunityMessageService {
     let message = first;
     let added = false;
     let enrichedReactions: Record<string, StoredReactor[]> = {};
+    let scoped: number | null = null;
     let revision = message.revision;
     let snaps = new Map<string, Record<string, unknown>>();
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -2655,14 +2767,28 @@ export class CommunityMessageService {
 
       // Determine add vs remove BEFORE toggling — the lastActivity preview must
       // only bump on add (Telegram never shows a "removed their reaction" line).
+      // Which bucket this toggle owns — one attachment of a collage, or the
+      // message as a whole. Community keeps its files in `attachments`, not
+      // `content.files`, so the shared resolver is handed that shape.
+      const target = resolveMediaReactionIndex(
+        { files: message.attachments },
+        params.mediaIndex
+      );
+      if (target === false)
+        throw new BadRequestError("CHAT_MEDIA_INDEX_OUT_OF_RANGE");
+      scoped = target;
+      const currentBucket =
+        target === null
+          ? message.reactions
+          : mediaReactionBucket(message.mediaReactions, target);
       const wasReactedByUser = (
-        reactionUserIdMap(message.reactions)[params.emoji] ?? []
+        reactionUserIdMap(currentBucket)[params.emoji] ?? []
       ).includes(params.userId);
       added = !wasReactedByUser;
 
       // Toggle the reactor in/out of the emoji bucket (shared with private/group).
       const updatedReactions = toggleStoredReaction(
-        message.reactions,
+        currentBucket,
         params.userId,
         params.emoji
       );
@@ -2703,14 +2829,34 @@ export class CommunityMessageService {
       // Reaction change bumps the room CHANGE revision so the changes feed
       // replays the message's current aggregate to offline clients.
       revision = await this.roomRepo.allocateRevision(message.roomId);
-      const applied = await this.messageRepo.updateReactionsCas(
-        params.messageId,
-        enrichedReactions,
-        message.revision,
-        revision,
-        message.roomId,
-        { userId: params.userId, emoji: added ? params.emoji : null }
-      );
+      const applied =
+        target === null
+          ? await this.messageRepo.updateReactionsCas(
+              params.messageId,
+              enrichedReactions,
+              message.revision,
+              revision,
+              message.roomId,
+              { userId: params.userId, emoji: added ? params.emoji : null }
+            )
+          : await this.messageRepo.updateMediaReactionsCas(
+              params.messageId,
+              // The enriched bucket replaces this attachment's slot only; the
+              // siblings are carried over untouched.
+              replaceMediaReactionBucket(
+                message.mediaReactions,
+                target,
+                enrichedReactions
+              ),
+              message.revision,
+              revision,
+              message.roomId,
+              {
+                userId: params.userId,
+                emoji: added ? params.emoji : null,
+                mediaIndex: target,
+              }
+            );
       if (applied) break;
       if (attempt === MAX_ATTEMPTS - 1)
         throw new ConflictError("CHAT_REACTION_CONFLICT");
@@ -2739,6 +2885,7 @@ export class CommunityMessageService {
     return {
       messageId: params.messageId,
       roomId: message.roomId,
+      mediaIndex: scoped,
       revision,
       reactions: reactionGroups,
       added,
@@ -3362,24 +3509,46 @@ export class CommunityMessageService {
     emoji?: string | null;
     cursor?: string | null;
     limit?: number | null;
+    /** Read-only Backoffice viewer — see the membership branch below. */
+    asAdmin?: boolean;
+    /** The other members of a collage, when the popup was opened on one. */
+    siblingMessageIds?: string[] | null;
   }): Promise<ReactionDetailsPage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
-    const member = await this.memberRepo.findByRoomAndUser(
-      message.roomId,
-      params.requesterId
+    // The Backoffice viewer is never a room member, so there is no membership
+    // to assert — authorization happened at the admin API boundary. Set ONLY by
+    // adminGetCommunityMessageReactionsPage; every user-facing caller leaves it
+    // unset and keeps the guard. requesterId is "" there, so selfEmoji comes
+    // back empty and the popup shows no "You".
+    if (!params.asAdmin) {
+      const member = await this.memberRepo.findByRoomAndUser(
+        message.roomId,
+        params.requesterId
+      );
+      assertRoomMemberActive(member);
+    }
+
+    const extra = (params.siblingMessageIds ?? []).filter(
+      (id) => id !== message.id
     );
-    assertRoomMemberActive(member);
+    const rows = await this.messageRepo.findManyByIds([message.id, ...extra]);
+    // Client-supplied sibling ids, so every one is re-bound to the room the
+    // caller was just authorized for — see PrivateMessageService for the rule.
+    const messages = rows
+      .filter((row) => row.roomId === message.roomId)
+      .map((row) => ({
+        id: row.id,
+        roomId: row.roomId,
+        reactions: row.reactions,
+        mediaReactions: row.mediaReactions,
+        createdAt: row.createdAt,
+        reactionsIndexedAt: row.reactionsIndexedAt,
+      }));
 
     const slice = await this.messageRepo.readReactionDetails({
-      message: {
-        id: message.id,
-        roomId: message.roomId,
-        reactions: message.reactions,
-        createdAt: message.createdAt,
-        reactionsIndexedAt: message.reactionsIndexedAt,
-      },
+      messages,
       requesterId: params.requesterId,
       emoji: params.emoji,
       cursor: params.cursor,
@@ -3400,6 +3569,8 @@ export class CommunityMessageService {
     messageId: string;
     communityId: string;
     requesterId: string;
+    /** Read ONE attachment's bucket instead of the message's own reactions. */
+    mediaIndex?: number | null;
   }): Promise<{
     messageId: string;
     communityId: string;
@@ -3419,7 +3590,11 @@ export class CommunityMessageService {
     );
     assertRoomMemberActive(member);
 
-    const raw = (message.reactions ?? {}) as Record<string, unknown>;
+    const raw = (
+      params.mediaIndex == null
+        ? (message.reactions ?? {})
+        : mediaReactionBucket(message.mediaReactions, params.mediaIndex)
+    ) as Record<string, unknown>;
     const allAvatarKeys: string[] = [];
     const grouped: Array<{
       emoji: string;

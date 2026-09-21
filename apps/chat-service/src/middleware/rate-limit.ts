@@ -401,16 +401,21 @@ export async function assertSendAllowed(
 }
 
 /**
- * Charge one group @all against (room, sender), or throw
- * `CHAT_MENTION_ALL_RATE_LIMITED`. Separate from the send bucket: an @all
- * pushes the whole roster, so its ceiling is far lower. Called from
- * GroupMessageService only for messages carrying an ALL entry, so it covers
- * REST and socket alike and never touches USER-only mentions.
+ * Charge one group @all against (room, sender). Returns false over the limit;
+ * never throws.
+ *
+ * @all is notify-only: over the limit the MESSAGE is still stored and
+ * delivered, only the roster push is skipped. This used to throw
+ * `CHAT_MENTION_ALL_RATE_LIMITED` and reject the whole send, so typing "@all"
+ * a few times turned ordinary messages into Retry badges — the limit caps push
+ * fan-out, it must not block chat (the send bucket still caps the write).
+ * Called from GroupMessageService only for messages carrying an ALL entry, so
+ * it covers REST and socket alike and never touches USER-only mentions.
  */
-export async function assertMentionAllAllowed(
+export async function mentionAllAllowed(
   userId: string,
   roomId: string
-): Promise<void> {
+): Promise<boolean> {
   const identifier = `${roomId}:${userId}`;
   const { allowed, retryAfterSec } = await consumeRateLimit({
     keyPrefix: "gm:mention-all",
@@ -420,19 +425,16 @@ export async function assertMentionAllAllowed(
     onCacheError: "fallback",
   });
 
-  if (allowed) return;
-
-  logger.warn("rate_limit_exceeded", {
-    service: "chat-service",
-    rule: "gm:mention-all",
-    scope: "room_user",
-    scopeKey: identifier,
-    limit: env.GROUP_MENTION_ALL_RATE_MAX,
-    retryAfter: retryAfterSec,
-  });
-
-  throw new TooManyRequestsError(
-    "CHAT_MENTION_ALL_RATE_LIMITED",
-    retryAfterSec
-  );
+  if (!allowed) {
+    logger.warn("rate_limit_exceeded", {
+      service: "chat-service",
+      rule: "gm:mention-all",
+      scope: "room_user",
+      scopeKey: identifier,
+      limit: env.GROUP_MENTION_ALL_RATE_MAX,
+      retryAfter: retryAfterSec,
+      action: "notify_skipped",
+    });
+  }
+  return allowed;
 }

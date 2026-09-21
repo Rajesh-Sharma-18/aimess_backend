@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { messageNavigationQueryFields } from "./message-reactions.validator.js";
+
 /**
  * Zod schemas + inferred types for the Group Management admin API.
  * Contract: docs/BACKOFFICE-API-SPEC.md (Group Management section).
@@ -72,7 +74,15 @@ export type RemoveGroupMemberInput = z.infer<typeof removeGroupMemberSchema>;
 export const groupMessagesQuerySchema = z.object({
   cursor: z.string().trim().max(32).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(30),
+  ...messageNavigationQueryFields,
 });
+
+/** Reaction-details path params: :groupId/messages/:messageId. */
+export const groupMessageParamSchema = z.object({
+  groupId: z.string().trim().min(1).max(64),
+  messageId: z.string().trim().min(1).max(64),
+});
+export type GroupMessageParam = z.infer<typeof groupMessageParamSchema>;
 export type GroupMessagesQueryInput = z.infer<typeof groupMessagesQuerySchema>;
 
 // ---------------------------------------------------------------------------

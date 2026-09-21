@@ -98,7 +98,7 @@ const NON_SUPPRESSIBLE_TYPES = new Set<string>([
  * inbox row (and therefore ever surface from `GET /api/v1/chat/notifications`
  * or the `notification:new`/`notification:count_update` socket events).
  * Everything else (community messages, member joined/left/added/removed,
- * role changes, mutes, reports, livestream, etc.) still gets FCM push same as
+ * role changes, mutes, reports, etc.) still gets FCM push same as
  * before — this only gates the Notification Center write. Extensible: add a
  * type here to enable it in the inbox without touching any producer.
  */
@@ -111,6 +111,11 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   CommunityEvents.MEMBER_BANNED,
   CommunityEvents.MEMBER_KICKED,
   CommunityEvents.DELETED,
+  // Livestream — listed under LIVE_NOW (chat-service notification-category.ts).
+  // Still gated like the push: liveStreamEnabled, the community's own
+  // streamEnabled toggle, and ACTIVE membership.
+  CommunityEvents.LIVESTREAM_STARTED,
+  CommunityEvents.LIVESTREAM_ENDED,
   // Call HISTORY — one row per call per participant, written by the
   // `call.activity` projection (consumers/call.consumer.ts) from the canonical
   // terminal CallTimelineStatus. The live ring (CALL_INCOMING) and the

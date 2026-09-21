@@ -113,7 +113,7 @@ describe("reply + media album", () => {
     expect(rows[0]?.quoteData).toMatchObject({ messageId: PARENT_ID });
   });
 
-  it("replies to a MEDIA parent as readily as to a text one (cross-type)", async () => {
+  const mockAlbumParent = () => {
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: PARENT_ID,
       senderId: PEER,
@@ -122,24 +122,47 @@ describe("reply + media album", () => {
       content: { files: [{ objectKey: "theirs/1.jpg" }] },
       isDeleted: false,
     });
-    // The parent is one row of a 3-photo album — the quote must count the whole
-    // batch, not the single file this row happens to hold.
+    // The parent is one row of a 3-photo album.
     mocks.privateMessageRepo.findAlbumBatchByClientMessageId.mockResolvedValue([
       { id: "p1" },
       { id: "p2" },
       { id: "p3" },
     ]);
+  };
+
+  it("quotes ONE photo when the reply names a bare album member id", async () => {
+    mockAlbumParent();
 
     const res = await send({
       messageType: "TEXT",
       content: { text: "the second one" },
       parentMessageId: PARENT_ID,
+      clientMessageId: "cmid-text-reply-to-photo",
+    });
+
+    expect(res.status).toBe(201);
+    const rows = createdEntities();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.quoteData).toMatchObject({
+      messageId: PARENT_ID,
+      attachmentCount: 1,
+    });
+  });
+
+  it("quotes the WHOLE album when the reply names album-<id>", async () => {
+    mockAlbumParent();
+
+    const res = await send({
+      messageType: "TEXT",
+      content: { text: "all of them" },
+      parentMessageId: `album-${PARENT_ID}`,
       clientMessageId: "cmid-text-reply-to-album",
     });
 
     expect(res.status).toBe(201);
     const rows = createdEntities();
     expect(rows).toHaveLength(1);
+    expect(rows[0]?.parentMessageId).toBe(PARENT_ID);
     expect(rows[0]?.quoteData).toMatchObject({
       messageId: PARENT_ID,
       attachmentCount: 3,

@@ -2,7 +2,10 @@ import { logger } from "@aimess/logger";
 import * as amqp from "amqplib";
 
 import { env } from "../config/env.js";
+import { filterBannedUserIds } from "@aimess/redis";
+
 import { prisma } from "../config/prisma.js";
+import { redis } from "../config/redis.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 
 /**
@@ -148,8 +151,13 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
   void (async () => {
     try {
       const recipients = p.recipientIds ?? (await p.fetchRecipients!());
+      // Platform-banned members stay on group rosters but get nothing: no
+      // push, no mention row, no @all. Fails open like every ban read.
+      const banned = await filterBannedUserIds(redis, recipients).catch(
+        () => new Set<string>()
+      );
       const targets = [...new Set(recipients)].filter(
-        (id) => id && id !== p.senderId
+        (id) => id && id !== p.senderId && !banned.has(id)
       );
       if (targets.length === 0) return;
       // A mention can only notify someone this push already targets (active

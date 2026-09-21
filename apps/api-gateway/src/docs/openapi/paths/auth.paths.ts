@@ -638,7 +638,7 @@ export const authPaths = {
                   summary: "Account banned",
                   value: {
                     success: false,
-                    message: "Your account has been banned",
+                    message: "This account has been suspended.",
                     code: "ACCOUNT_BANNED",
                   },
                 },

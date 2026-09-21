@@ -36,6 +36,8 @@ export interface GroupMentionDeps {
   memberRepo: Pick<GroupMemberRepository, "findActiveUserIds">;
   userSnapshotService: Pick<UserSnapshotService, "getUserSnapshotsMap">;
   cacheRepo: CacheRepository;
+  /** Platform-banned subset of ids. Absent means no ban check. */
+  bannedAmong?: (userIds: string[]) => Promise<Set<string>>;
 }
 
 type UserCandidate = {
@@ -153,13 +155,15 @@ export async function resolveGroupMentions(
   if (users.length > 0) {
     const ids = [...new Set(users.map((c) => c.userId))];
     try {
-      const [activeIds, snapshots] = await Promise.all([
+      const [activeIds, snapshots, banned] = await Promise.all([
         params.memberRepo.findActiveUserIds(roomId, ids),
         params.userSnapshotService.getUserSnapshotsMap(ids, params.cacheRepo),
+        params.bannedAmong?.(ids) ?? new Set<string>(),
       ]);
       const active = new Set(activeIds);
       resolveUser = (c) => {
-        if (!active.has(c.userId)) return null;
+        // A platform-banned member stays on the roster but is not mentionable.
+        if (!active.has(c.userId) || banned.has(c.userId)) return null;
         const snapshot = snapshots.get(c.userId);
         if (snapshot?.isDeletedUser === true) return null;
         const handle =
@@ -201,6 +205,23 @@ export function hasMentionAll(contents: unknown[]): boolean {
       mentions.some((m) => (m as { type?: unknown } | null)?.type === "ALL")
     );
   });
+}
+
+const MENTION_ALL_SUPPRESSED = Symbol.for("aimess.chat.mentionAllSuppressed");
+
+/** Tag a sent message whose @all push the @all rate limit skipped. */
+export function markMentionAllSuppressed<T extends object>(msg: T): T {
+  (msg as Record<symbol, unknown>)[MENTION_ALL_SUPPRESSED] = true;
+  return msg;
+}
+
+/** True when this send's @all still renders but must notify nobody. */
+export function isMentionAllSuppressed(msg: unknown): boolean {
+  return (
+    typeof msg === "object" &&
+    msg !== null &&
+    (msg as Record<symbol, unknown>)[MENTION_ALL_SUPPRESSED] === true
+  );
 }
 
 /** Distinct mentioned userIds across `contents[*].mentions`, minus `excludeUserId`. */

@@ -1077,24 +1077,35 @@ export class GroupMessageRepository {
    * has in total.
    */
   async readReactionDetails(params: {
-    message: ReactionIndexSource;
+    /**
+     * Every message the page spans, ALREADY authorized against the room by the
+     * caller. One for an ordinary message; a web-sent album is N messages
+     * rendered as one collage, and its popup reads across all of them. Each is
+     * materialized on demand, so a legacy member is indexed the first time its
+     * collage's popup opens rather than only the anchor.
+     */
+    messages: ReactionIndexSource[];
     requesterId: string;
     emoji?: string | null;
     cursor?: string | null;
     limit?: number | null;
   }): Promise<ReactionDetailsSlice> {
-    await ensureReactionIndex(
-      this.reactionIndex,
-      this.reactionConversationType,
-      params.message,
-      (messageId, at) =>
-        this.prisma.groupMessage.update({
-          where: { id: messageId },
-          data: { reactionsIndexedAt: at },
-        })
+    await Promise.all(
+      params.messages.map((message) =>
+        ensureReactionIndex(
+          this.reactionIndex,
+          this.reactionConversationType,
+          message,
+          (messageId, at) =>
+            this.prisma.groupMessage.update({
+              where: { id: messageId },
+              data: { reactionsIndexedAt: at },
+            })
+        )
+      )
     );
     return readReactionDetailsSlice(this.reactionIndex, {
-      messageId: params.message.id,
+      messageIds: [...new Set(params.messages.map((message) => message.id))],
       conversationType: this.reactionConversationType,
       requesterId: params.requesterId,
       emoji: params.emoji,
@@ -1129,6 +1140,41 @@ export class GroupMessageRepository {
     });
     const applied = result.count > 0;
     // See PrivateMessageRepository.updateReactionsCas — winning attempt only.
+    if (applied && delta) {
+      await applyReactionIndexDelta(this.reactionIndex, {
+        messageId,
+        conversationType: this.reactionConversationType,
+        roomId,
+        delta,
+      });
+    }
+    return applied;
+  }
+
+  /**
+   * {@link updateReactionsCas} for the PER-MEDIA map. Same revision CAS, same
+   * revision bump — a reaction on one photo of an album is a state change to the
+   * message like any other, so `/changes` replays it without a second cursor.
+   */
+  async updateMediaReactionsCas(
+    messageId: string,
+    roomId: string,
+    mediaReactions: Record<string, Record<string, unknown[]>>,
+    expectedRevision: number,
+    delta?: ReactionIndexDelta
+  ): Promise<boolean> {
+    const revision = await this.roomRepo.allocateRevision(roomId);
+    const result = await this.prisma.groupMessage.updateMany({
+      where: { id: messageId, revision: expectedRevision },
+      data: {
+        mediaReactions: mediaReactions as unknown as Prisma.InputJsonValue,
+        revision,
+      },
+    });
+    const applied = result.count > 0;
+    // Mirrored only on the winning attempt, exactly as the message-level CAS
+    // does — and the delta carries the attachment, so the reactor index can tell
+    // a reaction on photo #4 from one on the message.
     if (applied && delta) {
       await applyReactionIndexDelta(this.reactionIndex, {
         messageId,
@@ -1300,16 +1346,19 @@ export class GroupMessageRepository {
 
   /** Returns the stored reactor map plus the owning roomId — the caller needs the
    *  latter to allocate a revision, and it rides along on this same read for free. */
-  async getReactions(
-    messageId: string
-  ): Promise<{ reactions: Record<string, unknown>; roomId: string } | null> {
+  async getReactions(messageId: string): Promise<{
+    reactions: Record<string, unknown>;
+    mediaReactions: Record<string, unknown>;
+    roomId: string;
+  } | null> {
     const msg = await this.prisma.groupMessage.findUnique({
       where: { id: messageId },
-      select: { reactions: true, roomId: true },
+      select: { reactions: true, mediaReactions: true, roomId: true },
     });
     if (!msg) return null;
     return {
       reactions: msg.reactions as Record<string, unknown>,
+      mediaReactions: (msg.mediaReactions ?? {}) as Record<string, unknown>,
       roomId: msg.roomId,
     };
   }

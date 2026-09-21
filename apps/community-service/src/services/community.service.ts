@@ -23,7 +23,11 @@ import {
   type MessageKey,
   type SupportedLocale,
 } from "@aimess/constants";
-import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
+import {
+  filterBannedUserIds,
+  publishChatUserEvent,
+  publishCommunityRoomEvent,
+} from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type {
   CommunityAddedPayload,
@@ -74,7 +78,6 @@ import {
 import {
   CLOSE_REASON_ADMIN_BANNED,
   COMMUNITY_MEMBER_LIMIT,
-  REMOVED_REASON_SYSTEM_BANNED,
 } from "../constants/index.js";
 import { isCommunityMuted } from "../lib/community-notification-pref.js";
 import { env } from "../config/env.js";
@@ -1270,6 +1273,7 @@ async function toMemberData(member: {
   snapshotAvatarKey: string | null;
   profileUnavailable?: boolean;
   isDeleted?: boolean;
+  isUnavailable?: boolean;
   bannedAt?: Date | null;
   bannedBy?: string | null;
   banReason?: string | null;
@@ -1294,6 +1298,7 @@ async function toMemberData(member: {
     snapshotAvatar,
     profileUnavailable: member.profileUnavailable ?? false,
     isDeleted: member.isDeleted ?? false,
+    isUnavailable: member.isUnavailable ?? false,
     bannedAt: member.bannedAt ? member.bannedAt.toISOString() : null,
     bannedBy: member.bannedBy ?? null,
     banReason: member.banReason ?? null,
@@ -3235,9 +3240,11 @@ export const communityService = {
     // live profile when user-service resolves it and otherwise keep the stored
     // snapshot. This makes the list resilient: a user-service outage (or a
     // single unresolved id) never clobbers valid members' names with "Unknown".
-    const [liveSnapshots, muteMap] = await Promise.all([
+    const [liveSnapshots, muteMap, unavailable] = await Promise.all([
       fetchUserSnapshotHits(userIds),
       communityRepository.findActiveMemberMutesByUserIds(communityId, userIds),
+      // Platform ban, read off the ban key (fails open: nobody flagged).
+      filterBannedUserIds(redis, userIds).catch(() => new Set<string>()),
     ]);
 
     const enrichedRows = rows.map((r) => {
@@ -3260,6 +3267,7 @@ export const communityService = {
         snapshotAvatarKey: live ? live.avatarObjectKey : r.snapshotAvatarKey,
         profileUnavailable,
         isDeleted,
+        isUnavailable: unavailable.has(r.userId),
         mutedAt: mute?.createdAt ?? null,
         mutedBy: mute?.mutedBy ?? null,
         mutedUntil: mute?.mutedUntil ?? null,
@@ -6749,8 +6757,8 @@ export const communityService = {
   },
 
   // Community half of a permanent Super Admin system ban (gRPC-only, called by
-  // backoffice-service): owned communities are CLOSED, every other ACTIVE
-  // membership is revoked through the ordinary removal path.
+  // backoffice-service): owned communities are CLOSED; every other membership
+  // is kept (see below). `removedCommunityIds` stays in the wire shape, empty.
   // Never throws for business reasons — the ban is already applied upstream, so
   // one unreachable community must not abort the rest of the cascade.
   async adminApplySystemBan(
@@ -6779,37 +6787,10 @@ export const communityService = {
       }
     }
 
-    // Owned communities are skipped here (including ones already closed before
-    // this ban): their owner keeps the membership row that the CLOSED community
-    // is still built around.
-    const owned = new Set(ownedIds);
-    const memberships = await communityRepository.findUserMemberships(userId);
-    for (const membership of memberships) {
-      if (owned.has(membership.communityId)) continue;
-      try {
-        await this.removeActiveMember(membership.communityId, userId, {
-          actorId: actorAdminId,
-          status: CommunityMemberStatus.LEFT,
-          removedMeta: {
-            removedAt: new Date(),
-            removedBy: actorAdminId,
-            removedReason: REMOVED_REASON_SYSTEM_BANNED,
-          },
-          auditMetadata: {
-            reasonCode: CLOSE_REASON_ADMIN_BANNED,
-            ...(reason ? { reason } : {}),
-          },
-          reason,
-          eventAt: new Date().toISOString(),
-          skipAdminMirror: true,
-        });
-        removedCommunityIds.push(membership.communityId);
-      } catch (error) {
-        logger.error(
-          `system-ban membership removal failed: community=${membership.communityId} user=${userId}: ${String(error)}`
-        );
-      }
-    }
+    // Every OTHER membership is deliberately left ACTIVE. The banned account
+    // stays on those rosters as an unavailable member (profile closed, admins
+    // may only Remove), and an unban restores it with nothing to rebuild.
+    // Access is still refused everywhere by the ban flag + revoked sessions.
 
     logger.info(
       `System ban applied to communities: user=${userId} by=${actorAdminId} closed=${String(closedCommunityIds.length)} removed=${String(removedCommunityIds.length)}`

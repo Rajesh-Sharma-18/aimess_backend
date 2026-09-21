@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { messageNavigationQueryFields } from "./message-reactions.validator.js";
+
 /**
  * Zod schemas + inferred types for the Community Management admin API.
  * Contract: docs/COMMUNITY-MANAGEMENT-API-SPEC.md.
@@ -279,7 +281,17 @@ export type CommunityMemberParamInput = z.infer<
 export const communityMessagesQuerySchema = z.object({
   cursor: z.string().trim().max(64).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(30),
+  ...messageNavigationQueryFields,
 });
+
+/** Reaction-details path params: :communityId/messages/:messageId. */
+export const communityMessageParamSchema = z.object({
+  communityId: z.string().trim().min(1).max(64),
+  messageId: z.string().trim().min(1).max(64),
+});
+export type CommunityMessageParamInput = z.infer<
+  typeof communityMessageParamSchema
+>;
 export type CommunityMessagesQueryInput = z.infer<
   typeof communityMessagesQuerySchema
 >;

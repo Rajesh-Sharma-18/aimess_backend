@@ -61,6 +61,7 @@ export {
   bulkCloseCommunities,
   bulkReopenCommunities,
   getCommunityConversationMessages,
+  getCommunityMessageReactions,
   removeCommunityMember,
   banCommunityMember,
   unbanCommunityMember,
@@ -70,6 +71,7 @@ export {
   getGroupDetails,
   listGroupMembers,
   getGroupConversationMessages,
+  getGroupMessageReactions,
   disbandGroup,
   removeGroupMember,
 } from "./groups.controller.js";

@@ -298,9 +298,16 @@ enum RecentSearchTargetType {
   GROUP
 }
 
+// Mirror of the account state backoffice owns, written over gRPC by
+// `AdminSetProfileStatus`. SUSPENDED and BANNED are NOT interchangeable:
+// a suspension is time-boxed and nothing in this service expires it, so the
+// two must stay distinguishable or lifting one would have to lift the other.
 enum ProfileStatus {
   ACTIVE
+  // Time-boxed admin restriction. Still discoverable — the account comes back.
   SUSPENDED
+  // Permanent Super Admin system ban. Never discoverable.
+  BANNED
   DELETED
 }
 

@@ -91,16 +91,25 @@ export type MirrorModerationRow = {
 /**
  * Resolve the authoritative status for a row sourced live from auth-service.
  *
- * auth-service's `AuthUser.status` is authoritative ONLY for DELETED
- * (self-service account deletion writes it directly). It is NOT authoritative
- * for BANNED/SUSPENDED: the `admin.user.queue` consumer auth-service runs for
- * POST /ban|suspend|unban force-logs-out sessions and sends a notification,
- * but never persists the status there — no code path in auth-service ever
- * writes `AccountStatus.BANNED` or `AccountStatus.SUSPENDED`. The ONLY place
- * that status is actually persisted is backoffice's own `UserIndex` mirror
- * (admin_db), which is exactly what `setStatus`/`bulkSetStatus` write. So once
- * a user has been moderated at least once (a mirror row exists), the mirror
- * wins for anything except DELETED.
+ * The two stores split the job, and neither one alone can answer:
+ *
+ *   - auth-service's `AuthUser.status` owns DELETED (self-service deletion
+ *     writes it directly) and enforces BANNED (`accountBanService.apply` sets
+ *     the status, the Redis ban flag and revokes every session — it is what
+ *     actually stops a login).
+ *   - the `UserIndex` mirror (admin_db) owns the full moderation picture:
+ *     BANNED *and* SUSPENDED, plus `bannedAt`/`banReason`. SUSPENDED exists
+ *     here and nowhere else — `adminSetAccountStatus` accepts only
+ *     BANNED|ACTIVE, and neither POST /suspend nor a time-boxed ban calls
+ *     auth-service at all, so a suspended account is still ACTIVE over there.
+ *
+ * BANNED is written to both, as a pair: `banUser` materializes the mirror row
+ * before it writes auth-service (see `preflightStatus`). So the mirror is a
+ * superset of auth's restricted set, and it wins for everything except
+ * DELETED, which only auth-service knows about.
+ *
+ * `list`'s status filter (step 2b) has to resolve against the same rule, or the
+ * panel filters on one status and renders another.
  */
 export function resolveModerationStatus(
   liveStatus: UserStatus,
@@ -122,6 +131,19 @@ export function resolveModerationStatus(
 export interface UserDirectoryRepository {
   list(query: ListUsersQuery): Promise<Paginated<UserListItemRaw>>;
   getById(userId: string): Promise<UserDirectoryRow | null>;
+  /**
+   * Materialize the admin_db mirror row for a user that has none, seeding it
+   * from the row the caller has ALREADY read.
+   *
+   * Exists so a mutation can create the mirror from PRE-mutation state. The
+   * live-backed implementation otherwise self-heals the row inside `setStatus`
+   * by re-reading auth-service — and every account mutation writes
+   * auth-service first, so that late read returns the status this very request
+   * just set, the row is born in its post-mutation state, and the transition
+   * guard rejects the change as already applied. Call this immediately after
+   * the pre-flight `getById`, before touching auth-service.
+   */
+  ensureMirrored(row: UserDirectoryRow): Promise<void>;
   setStatus(userId: string, change: StatusChange): Promise<UserStatusResult>;
   bulkSetStatus(userIds: string[], change: StatusChange): Promise<BulkResult>;
 }
@@ -388,6 +410,14 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
     const row = await prisma.userIndex.findUnique({ where: { userId } });
     return row ? toRow(row) : null;
   }
+
+  /**
+   * No-op: this repository reads and writes the mirror and nothing else, so a
+   * row it cannot find genuinely does not exist and `applyStatus` is right to
+   * report USER_NOT_FOUND. Only the live-backed repository has a second source
+   * to seed from.
+   */
+  async ensureMirrored(): Promise<void> {}
 
   async setStatus(
     userId: string,
@@ -733,15 +763,91 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       req.userIds = reportedIds;
     }
 
-    // 2b. Status filter. auth-service's `AuthUser.status` is the source of
-    //     truth — the ban/suspend/unban flows in account-ban.service write
-    //     it directly. Just forward. BANNED implies SUSPENDED too (UI ban
-    //     filter covers both, matching deriveModerationStatus).
+    // 2b. Status filter (admin_db-aware). It must select the SAME rows that
+    //     `resolveModerationStatus` then labels, or the panel filters by one
+    //     status and renders another.
+    //
+    //     auth-service's `AuthUser.status` covers ACTIVE/BANNED/DELETED, but it
+    //     has no SUSPENDED: `adminSetAccountStatus` only accepts BANNED|ACTIVE,
+    //     and neither POST /suspend nor a time-boxed ban calls it at all — a
+    //     suspension is written to the UserIndex mirror and nowhere else. So
+    //     forwarding the filter straight through gets a suspended user exactly
+    //     backwards: absent from `status=BANNED` (auth has no such row) and
+    //     present in `status=ACTIVE` (auth still says ACTIVE) on a row this
+    //     same response marks `isBanned: true`.
+    //
+    //     The mirror does not have that blind spot. It carries SUSPENDED, and
+    //     it carries BANNED too — `banUser` materializes the mirror row before
+    //     it writes auth-service (see preflightStatus), so the two are always
+    //     written as a pair. Resolve the restricted set from the mirror and let
+    //     auth answer only for the statuses it genuinely owns.
+    let statusPostFilter: Set<UserStatus> | null = null;
     if (query.status && query.status.length > 0) {
-      const expanded = query.status.includes("BANNED")
-        ? [...new Set([...query.status, "SUSPENDED" as UserStatus])]
-        : query.status;
-      req.status = expanded;
+      // BANNED implies SUSPENDED (the UI's ban filter covers both, matching
+      // deriveModerationStatus); ACTIVE and DELETED are auth's to answer.
+      const wantsBanned = query.status.some(
+        (s) => s === "BANNED" || s === "SUSPENDED"
+      );
+      const reliable = query.status.filter(
+        (s) => s === "ACTIVE" || s === "DELETED"
+      );
+
+      if (wantsBanned && reliable.length === 0) {
+        // Banned-only filter: constrain to the mirror's restricted ids.
+        //
+        // ponytail: reads every restricted id to pass as an `IN (...)` list,
+        // which is fine at this table's size and is the same shape the
+        // reports-bucket prefilter above already uses. If the banned
+        // population ever gets large, this needs a joinable read model rather
+        // than a bigger id list.
+        const bannedIds = await this.mirrorIdsByStatus(["BANNED", "SUSPENDED"]);
+        const constrained = req.userIds
+          ? bannedIds.filter((id) => req.userIds!.includes(id))
+          : bannedIds;
+        if (constrained.length === 0) {
+          // Nothing matches → empty page, and skip the auth round-trip.
+          return {
+            data: [],
+            pagination: this.offsetMeta(page, limit, 0, 0, offset),
+          };
+        }
+        req.userIds = constrained;
+        // Deliberately NOT also forwarding status: `userIds` and `status` are
+        // ANDed upstream, so adding BANNED here would drop every SUSPENDED row
+        // this id set exists to include. Which also means this branch cannot
+        // union the two sources — it selects exactly the mirror's restricted
+        // set.
+        //
+        // That is complete for every ban this code can still produce, because
+        // `banUser` writes the mirror row first. It is NOT complete for an
+        // account banned back when the mirror write could be skipped: such a
+        // row is BANNED in auth-service with no mirror row, so it is missing
+        // here and (correctly) excluded from ACTIVE by auth's own status —
+        // filtered into neither bucket, though it still renders as BANNED
+        // unfiltered. Two dev accounts are in that state; they are the same
+        // remediation as the half-applied bans, and unbanning + rebanning one
+        // through the panel repairs it. Do not paper over it here with a
+        // second upstream query — fix the rows.
+      } else if (!wantsBanned && reliable.length > 0) {
+        req.status = reliable;
+        if (reliable.includes("ACTIVE")) {
+          // auth already excludes its own BANNED rows; this additionally drops
+          // the suspended ones, which are ACTIVE as far as auth can tell.
+          const bannedIds = await this.mirrorIdsByStatus([
+            "BANNED",
+            "SUSPENDED",
+          ]);
+          if (bannedIds.length > 0) req.excludeUserIds = bannedIds;
+        }
+      } else {
+        // Mixed selection (e.g. ACTIVE+BANNED together) — one upstream query
+        // cannot express it, since the two halves come from different columns
+        // in different databases. Leave it unfiltered upstream and narrow the
+        // page once each row's true status is resolved below: bounded to this
+        // page, so `total` is approximate — the same documented trade-off as
+        // `reports=none` above.
+        statusPostFilter = new Set(query.status);
+      }
     }
 
     // 2c. Display-name search. auth-service only knows `email` + `account` —
@@ -810,6 +916,19 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       if (data.length !== before) {
         logger.warn(
           "reports=none: dropped reported rows client-side; pagination total is approximate"
+        );
+      }
+    }
+
+    // 5b. Mixed status selection (see 2b): narrow to the resolved status set.
+    //     `status` here is already mirror-resolved, so SUSPENDED rows land in
+    //     the right bucket even though auth reported them ACTIVE.
+    if (statusPostFilter) {
+      const before = data.length;
+      data = data.filter((d) => statusPostFilter.has(d.status));
+      if (data.length !== before) {
+        logger.warn(
+          "status: mixed selection narrowed client-side; pagination total is approximate"
         );
       }
     }
@@ -931,39 +1050,65 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
   // `userId` the list returned does exist. Self-heal by mirroring the row from
   // the SAME live source (`this.getById`, already used by list/detail) on
   // first mutation, so ban/suspend/unban work for every user the panel shows.
+  //
+  // That self-heal is a LAST RESORT, not the normal path: by the time it runs
+  // the caller has usually already written auth-service, so the status it
+  // reads back is the one this request just applied. A mutation that writes
+  // auth-service first MUST call the public `ensureMirrored` with its
+  // pre-flight row instead — see the interface doc.
   async setStatus(
     userId: string,
     change: StatusChange
   ): Promise<UserStatusResult> {
-    await this.ensureMirrored(userId);
+    await this.ensureMirroredById(userId);
     return this.fallback.setStatus(userId, change);
   }
   async bulkSetStatus(
     userIds: string[],
     change: StatusChange
   ): Promise<BulkResult> {
-    await Promise.all(userIds.map((id) => this.ensureMirrored(id)));
+    await Promise.all(userIds.map((id) => this.ensureMirroredById(id)));
     return this.fallback.bulkSetStatus(userIds, change);
+  }
+
+  /**
+   * Seed the mirror from a row the caller read BEFORE it mutated anything —
+   * the ordering-safe half of the self-heal. See the interface doc for why the
+   * distinction matters.
+   */
+  async ensureMirrored(row: UserDirectoryRow): Promise<void> {
+    if (await this.isMirrored(row.userId)) return;
+    await this.createMirror(row);
   }
 
   /**
    * Create the `UserIndex` mirror row from the live source if it's missing.
    * A no-op when the row already exists (never overwrites local ban/suspend
    * state) or when the user truly doesn't exist anywhere (the fallback's own
-   * existence check then correctly reports `USER_NOT_FOUND`). Concurrent
-   * first-mutations racing to create the same row are resolved by swallowing
-   * the resulting P2002 — the row exists either way.
+   * existence check then correctly reports `USER_NOT_FOUND`).
    */
-  private async ensureMirrored(userId: string): Promise<void> {
-    const mirrored = await prisma.userIndex.findUnique({
-      where: { userId },
-      select: { userId: true },
-    });
-    if (mirrored) return;
+  private async ensureMirroredById(userId: string): Promise<void> {
+    if (await this.isMirrored(userId)) return;
 
     const live = await this.getById(userId);
     if (!live) return;
 
+    await this.createMirror(live);
+  }
+
+  private async isMirrored(userId: string): Promise<boolean> {
+    const mirrored = await prisma.userIndex.findUnique({
+      where: { userId },
+      select: { userId: true },
+    });
+    return mirrored !== null;
+  }
+
+  /**
+   * Concurrent first-mutations racing to create the same row are resolved by
+   * swallowing the resulting P2002 — the row exists either way.
+   */
+  private async createMirror(live: UserDirectoryRow): Promise<void> {
     try {
       await prisma.userIndex.create({
         data: {

@@ -359,6 +359,10 @@ export interface AdminGetCommunityMessagesReq {
   roomId: string;
   cursor: string;
   limit: number;
+  /** Jump-to-message window; overrides cursor/direction when set. */
+  aroundMessageId?: string;
+  /** "after" pages newer; ""/"before" pages older. */
+  direction?: string;
 }
 
 export interface AdminGetCommunityMessagesRes {
@@ -366,6 +370,8 @@ export interface AdminGetCommunityMessagesRes {
   nextCursor: string;
   hasMore: boolean;
   pinnedMessageJson: string;
+  newerCursor: string;
+  hasMoreNewer: boolean;
 }
 
 export const adminGetCommunityMessagesBreaker: Breaker<
@@ -398,17 +404,81 @@ export interface RawAdminGroupMessageDto {
   systemMessageType: string;
   systemMetadata: string;
   isDeleted: boolean;
+  mentionsJson: string;
 }
 export interface AdminGetGroupMessagesReq {
   groupId: string;
   cursor: string;
   limit: number;
+  /** Jump-to-message window; overrides cursor/direction when set. */
+  aroundMessageId?: string;
+  /** "after" pages newer; ""/"before" pages older. */
+  direction?: string;
 }
 export interface AdminGetGroupMessagesRes {
   messages: RawAdminGroupMessageDto[];
   nextCursor: string;
   hasMore: boolean;
+  pinnedMessageJson: string;
+  newerCursor: string;
+  hasMoreNewer: boolean;
 }
+
+// ---- Admin reaction details (read-only reactor list) ----------------------
+export interface AdminReactionsPageReq {
+  messageId: string;
+  conversationId: string;
+  emoji?: string;
+  cursor?: string;
+  limit?: number;
+}
+export interface RawReactionDetailUser {
+  userId: string;
+  displayName: string;
+  avatar: string;
+  emoji: string;
+}
+export interface RawReactionCount {
+  emoji: string;
+  count: string | number;
+}
+export interface AdminReactionsPageRes {
+  users: RawReactionDetailUser[];
+  nextCursor: string;
+  hasMore: boolean;
+  counts: RawReactionCount[];
+  total: string | number;
+}
+export const adminGetMessageReactionsPageBreaker: Breaker<
+  AdminReactionsPageReq,
+  AdminReactionsPageRes
+> = makeBreaker(
+  "chat.adminGetMessageReactionsPage",
+  (req: AdminReactionsPageReq) =>
+    call<AdminReactionsPageReq, AdminReactionsPageRes>(
+      "adminGetMessageReactionsPage",
+      req
+    )
+);
+
+export interface AdminCommunityReactionsPageReq {
+  messageId: string;
+  communityId: string;
+  emoji?: string;
+  cursor?: string;
+  limit?: number;
+}
+export const adminGetCommunityMessageReactionsPageBreaker: Breaker<
+  AdminCommunityReactionsPageReq,
+  AdminReactionsPageRes
+> = makeBreaker(
+  "chat.adminGetCommunityMessageReactionsPage",
+  (req: AdminCommunityReactionsPageReq) =>
+    callCommunityMessages<
+      AdminCommunityReactionsPageReq,
+      AdminReactionsPageRes
+    >("adminGetCommunityMessageReactionsPage", req)
+);
 export const adminGetGroupMessagesBreaker: Breaker<
   AdminGetGroupMessagesReq,
   AdminGetGroupMessagesRes
@@ -693,6 +763,16 @@ export const chatClient = {
     req: AdminGetGroupMessagesReq
   ): Promise<AdminGetGroupMessagesRes> {
     return adminGetGroupMessagesBreaker.fire(req);
+  },
+  adminGetMessageReactionsPage(
+    req: AdminReactionsPageReq
+  ): Promise<AdminReactionsPageRes> {
+    return adminGetMessageReactionsPageBreaker.fire(req);
+  },
+  adminGetCommunityMessageReactionsPage(
+    req: AdminCommunityReactionsPageReq
+  ): Promise<AdminReactionsPageRes> {
+    return adminGetCommunityMessageReactionsPageBreaker.fire(req);
   },
 
   async adminListNotificationCategories(): Promise<

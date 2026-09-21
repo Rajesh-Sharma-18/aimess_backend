@@ -545,14 +545,14 @@ export const NOTIFICATION_MESSAGES = {
   // precisely why the copy has to be localized — it is the one notification the
   // user cannot have opted out of.
   NOTIF_ACCOUNT_BANNED_TITLE: {
-    vi: "Tài khoản đã bị cấm",
-    en: "Account banned",
-    th: "บัญชีถูกแบน",
+    vi: "Tài khoản đã bị đình chỉ",
+    en: "Account suspended",
+    th: "บัญชีถูกระงับ",
   },
   NOTIF_ACCOUNT_BANNED_BODY: {
-    vi: "Tài khoản của bạn đã bị cấm. Hãy liên hệ bộ phận hỗ trợ nếu bạn cho rằng đây là nhầm lẫn.",
-    en: "Your account has been banned. Reach out to support if you think this is a mistake.",
-    th: "บัญชีของคุณถูกแบน หากคุณคิดว่าเป็นความผิดพลาด โปรดติดต่อฝ่ายสนับสนุน",
+    vi: "Tài khoản này đã bị đình chỉ.",
+    en: "This account has been suspended.",
+    th: "บัญชีนี้ถูกระงับการใช้งาน",
   },
   NOTIF_ACCOUNT_SUSPENDED_TITLE: {
     vi: "Tài khoản đã bị tạm khóa",
