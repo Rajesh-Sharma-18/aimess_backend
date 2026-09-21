@@ -102,21 +102,21 @@ export const userPaths = {
           description: "Used only when `type` is provided.",
         },
         {
-          name: "excludeGroupRoomId",
+          name: "groupRoomId",
           in: "query",
           required: false,
           schema: { type: "string" },
           description:
-            '"Add Members" picker for a GROUP. Every ACTIVE member of this room is removed from the result set BEFORE pagination, so an existing member can never be offered and `total`/`hasNext` count only addable users. Combinable with `excludeCommunityId`. Unknown/inaccessible ids simply exclude nobody.',
+            "Add/invite picker for a GROUP. Nobody is removed; every returned user carries `isMember: true` when already an ACTIVE member of this room (render disabled). Without it `isMember` is false.",
           example: "grp_8f2c1a...",
         },
         {
-          name: "excludeCommunityId",
+          name: "communityId",
           in: "query",
           required: false,
           schema: { type: "string" },
           description:
-            '"Add Members" picker for a COMMUNITY. Same semantics as `excludeGroupRoomId`, against the community\'s ACTIVE roster.',
+            "Add/invite picker for a COMMUNITY. Same semantics as `groupRoomId`, against the community's ACTIVE roster.",
         },
       ],
       responses: {
