@@ -2771,6 +2771,7 @@ export function createMessagingImpl(
                 ),
                 quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
                 mentionsJson: JSON.stringify(adminMentions(content)),
+                sequenceNumber: Number(m.sequenceNumber) || 0,
                 sentAt: Number(m.serverTs) || 0,
                 systemMessageType: str(m.systemEvent),
                 systemMetadata: m.systemData

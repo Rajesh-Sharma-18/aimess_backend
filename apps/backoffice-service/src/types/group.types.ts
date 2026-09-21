@@ -118,6 +118,8 @@ export type GroupConversationMessageItem = {
   attachments: unknown[];
   reactions: unknown[];
   quoteData: unknown | null;
+  /** Per-room sequence — the order member clients render a group in. */
+  sequenceNumber: number;
   sentAt: number;
   systemMessageType: string | null;
   isDeleted: boolean;

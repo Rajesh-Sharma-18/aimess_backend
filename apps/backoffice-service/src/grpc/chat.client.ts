@@ -407,6 +407,7 @@ export interface RawAdminGroupMessageDto {
   systemMetadata: string;
   isDeleted: boolean;
   mentionsJson: string;
+  sequenceNumber: string | number;
 }
 export interface AdminGetGroupMessagesReq {
   groupId: string;

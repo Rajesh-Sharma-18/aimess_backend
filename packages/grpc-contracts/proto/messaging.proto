@@ -393,6 +393,9 @@ message AdminGroupMessageDto {
   // SERVER resolved at send time. Render-only: the admin viewer highlights the
   // spans and is never itself a mention recipient.
   string mentions_json       = 16;
+  // Per-room sequence — the ordering contract the member clients sort a group
+  // by. createdAt is not monotonic with it (call rows are backdated).
+  int64  sequence_number     = 17;
 }
 message AdminGetGroupMessagesResponse {
   repeated AdminGroupMessageDto messages = 1;
