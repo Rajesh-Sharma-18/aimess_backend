@@ -1,7 +1,7 @@
 /**
  * Forgot-password flow (all unauthenticated):
- *   POST /api/auth/forgot-password/request  → issues an OTP only for a resettable
- *     account; answers the same 200 either way (no account enumeration)
+ *   POST /api/auth/forgot-password/request  → issues an OTP (404 EMAIL_NOT_FOUND,
+ *     with nothing issued, for an address with no resettable account)
  *   POST /api/auth/forgot-password/verify   → verifies OTP, mints a reset token
  *   POST /api/auth/forgot-password/reset    → swaps the password for the token
  * Repositories + the OTP/reset-token crypto helpers are mocked so each guard is
@@ -172,30 +172,34 @@ describe("POST /api/auth/forgot-password/request", () => {
   });
 
   /**
-   * AIM-07 / AIM-64. These two previously asserted a 404, which made the
-   * endpoint a membership oracle: 404 for an unknown address, 200 for a
-   * registered one, so any email could be tested for an account by status code
-   * alone — the input to targeted credential stuffing. The answer is now
-   * identical either way, matching the backoffice equivalent. No OTP is issued
-   * for an address that cannot reset, which is what the `otpRepo` assertions
-   * pin.
+   * An address with no eligible account answers 404
+   * AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND so every client keeps the user on the
+   * email screen with the error under the Email field. This deliberately
+   * re-opens the AIM-07 membership oracle (product decision, 2026-09-21); what
+   * must never change is that nothing is issued, stored or sent first.
    */
-  it("answers 200 for an unknown email, issuing no OTP", async () => {
+  function expectEmailNotFound(res: request.Response) {
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+    expect(res.body.code).toBe("AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND");
+    expect(res.body.message).toBe(
+      "This email is not registered or linked to any account."
+    );
+    expectNoOtpSideEffects();
+  }
+
+  it("answers 404 EMAIL_NOT_FOUND for an unknown email, issuing no OTP", async () => {
     authRepo.findByEmailForPasswordReset.mockResolvedValue(null);
 
     const res = await request(app)
       .post("/api/auth/forgot-password/request")
       .send({ email: "ghost@example.com" });
 
-    expect(res.status).toBe(200);
-    expect(res.body.message).toBe(
-      "If an account exists for this email, a verification code has been sent."
-    );
-    expectNoOtpSideEffects();
+    expectEmailNotFound(res);
   });
 
   it.each([["BANNED"], ["SUSPENDED"], ["PENDING_DELETION"]])(
-    "answers 200 for a %s account, issuing no OTP",
+    "answers 404 EMAIL_NOT_FOUND for a %s account, issuing no OTP",
     async (status) => {
       authRepo.findByEmailForPasswordReset.mockResolvedValue(
         resettableUser({ status })
@@ -205,12 +209,11 @@ describe("POST /api/auth/forgot-password/request", () => {
         .post("/api/auth/forgot-password/request")
         .send({ email: `status-${status.toLowerCase()}@example.com` });
 
-      expect(res.status).toBe(200);
-      expectNoOtpSideEffects();
+      expectEmailNotFound(res);
     }
   );
 
-  it("answers 200 for a deleted account (cannot reset), issuing no OTP", async () => {
+  it("answers 404 EMAIL_NOT_FOUND for a deleted account, issuing no OTP", async () => {
     authRepo.findByEmailForPasswordReset.mockResolvedValue(
       resettableUser({ deletedAt: new Date() })
     );
@@ -219,35 +222,18 @@ describe("POST /api/auth/forgot-password/request", () => {
       .post("/api/auth/forgot-password/request")
       .send({ email: "deleted@example.com" });
 
-    expect(res.status).toBe(200);
-    expectNoOtpSideEffects();
+    expectEmailNotFound(res);
   });
 
-  it("is indistinguishable from a real request: same status and body", async () => {
-    // The whole point of the change — a caller must not be able to tell the two
-    // apart. The SAME address is used for both calls, so nothing
-    // address-dependent can explain a difference; only the lookup result
-    // varies.
-    //
-    // A fresh address, because the OTP issuance throttle is keyed by identifier
-    // and the cases above have already spent quota on `john@example.com` —
-    // reusing it here would throttle the second call and compare a 429 against
-    // a 200.
-    const probe = "indistinguishability-probe@example.com";
+  it("an unknown email cannot be carried on to verify", async () => {
+    otpRepo.findLatestActive.mockResolvedValue(null);
 
-    authRepo.findByEmailForPasswordReset.mockResolvedValue(resettableUser());
-    const real = await request(app)
-      .post("/api/auth/forgot-password/request")
-      .send({ email: probe });
+    const res = await request(app)
+      .post("/api/auth/forgot-password/verify")
+      .send({ email: "ghost-verify@example.com", code: "123456" });
 
-    authRepo.findByEmailForPasswordReset.mockResolvedValue(null);
-    const ghost = await request(app)
-      .post("/api/auth/forgot-password/request")
-      .send({ email: probe });
-
-    expect(real.status).toBe(200);
-    expect(ghost.status).toBe(real.status);
-    expect(ghost.body).toEqual(real.body);
+    expect(res.status).toBe(400);
+    expect(resetRepo.create).not.toHaveBeenCalled();
   });
 
   it.each([
