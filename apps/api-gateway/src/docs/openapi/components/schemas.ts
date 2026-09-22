@@ -10395,6 +10395,7 @@ export const openApiSchemas = {
           "COMMUNITY_AVATAR_UPDATED",
           "COMMUNITY_BANNER_UPDATED",
           "COMMUNITY_UPDATED",
+          "COMMUNITY_PRIVACY_CHANGED",
           // Live streaming
           "LIVE_STREAM_STARTED",
           "LIVE_STREAM_ENDED",
@@ -10429,6 +10430,8 @@ export const openApiSchemas = {
           "COMMUNITY_NAME_UPDATED → 'Community renamed to \"{{newName}}\"' (metadata.newName); " +
           "COMMUNITY_AVATAR_UPDATED → 'Community photo updated'; " +
           "COMMUNITY_DESCRIPTION_UPDATED → 'Community description updated'; " +
+          "COMMUNITY_PRIVACY_CHANGED (actor-bearing, metadata.oldVisibility/newVisibility) → " +
+          "'{{actorName}} changed the community to private/public', or 'You changed …' when viewer=actor; " +
           "LIVE_STREAM_STARTED → 'Live stream started'; " +
           "LIVE_STREAM_ENDED → 'Live stream ended ({{duration}})' or 'Live stream ended' when duration absent; " +
           "ROLE_CHANGED (bystander) → '{{targetName}} is now a moderator/admin/member'; " +

@@ -867,6 +867,34 @@ export function selectCommunityUpdateSystemMessageType(
   return "COMMUNITY_UPDATED";
 }
 
+const COMMUNITY_UPDATE_SUCCESS_KEY: Record<string, MessageKey> = {
+  name: "COMMUNITY_UPDATED_NAME",
+  description: "COMMUNITY_UPDATED_DESCRIPTION",
+  avatar: "COMMUNITY_UPDATED_AVATAR",
+  handle: "COMMUNITY_UPDATED_HANDLE",
+  category: "COMMUNITY_UPDATED_CATEGORY",
+};
+
+/**
+ * API success message for `PATCH /communities/:id`, from the fields that
+ * actually changed: one field → its specific message (privacy says which way),
+ * 2+ → "Community details updated", none → the plain COMMUNITY_UPDATED.
+ */
+export function selectCommunityUpdateSuccessKey(
+  changedFields: string[],
+  newType: string
+): MessageKey {
+  if (changedFields.length > 1) return "COMMUNITY_UPDATED_DETAILS";
+  const [field] = changedFields;
+  if (!field) return "COMMUNITY_UPDATED";
+  if (field === "visibility") {
+    return newType === CommunityType.PRIVATE
+      ? "COMMUNITY_UPDATED_PRIVATE"
+      : "COMMUNITY_UPDATED_PUBLIC";
+  }
+  return COMMUNITY_UPDATE_SUCCESS_KEY[field] ?? "COMMUNITY_UPDATED_DETAILS";
+}
+
 /**
  * The set of community fields that ACTUALLY changed in one `update()` save —
  * the input to {@link selectCommunityUpdateSystemMessageType}. Each field counts
@@ -2753,6 +2781,23 @@ export const communityService = {
     callerId: string,
     input: UpdateCommunityInput
   ): Promise<CommunityData> {
+    return (await this.updateWithChanges(communityId, callerId, input))
+      .community;
+  },
+
+  /**
+   * `update()` plus the fields that ACTUALLY changed (value diff, see
+   * detectCommunityChangedFields) so the controller can say what happened
+   * (selectCommunityUpdateSuccessKey) instead of a generic "updated".
+   */
+  async updateWithChanges(
+    communityId: string,
+    callerId: string,
+    input: UpdateCommunityInput
+  ): Promise<{
+    community: CommunityData;
+    changedFields: string[];
+  }> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
@@ -2891,8 +2936,30 @@ export const communityService = {
     // N lines for N changed fields was tried and reverted (see the "up to three
     // separate lines" note above); this stays intentionally single-message per
     // update() call.
+    //
+    // EXCEPTION: a PUBLIC ↔ PRIVATE flip always gets its own actor-bearing
+    // COMMUNITY_PRIVACY_CHANGED line ("X changed the community to private") —
+    // it changes who can join, so folding it into "Community settings updated"
+    // would hide it. Any other fields changed in the same save still collapse
+    // through the rule above, so the worst case is two lines, each true.
+    const systemEventAt = new Date().toISOString();
+    if (changedFields.includes("visibility")) {
+      publishCommunitySystemMessageForChatSafe({
+        communityId,
+        systemMessageType: "COMMUNITY_PRIVACY_CHANGED",
+        metadata: {
+          actorUserId: callerId,
+          actorName: "",
+          oldVisibility: community.type,
+          newVisibility: updated.type,
+        },
+        triggeredByUserId: callerId,
+        eventAt: systemEventAt,
+      });
+    }
+    const otherChangedFields = changedFields.filter((f) => f !== "visibility");
     const systemMessageType =
-      selectCommunityUpdateSystemMessageType(changedFields);
+      selectCommunityUpdateSystemMessageType(otherChangedFields);
     if (systemMessageType) {
       publishCommunitySystemMessageForChatSafe({
         communityId,
@@ -2900,14 +2967,15 @@ export const communityService = {
         metadata: {
           actorUserId: callerId,
           actorName: "",
-          changedFields,
+          changedFields: otherChangedFields,
           ...(systemMessageType === "COMMUNITY_NAME_UPDATED"
             ? { newName: nextName }
             : {}),
+          // Kept for contract compatibility (shared-types CommunityUpdatedMetadata).
           ...(input.type !== undefined ? { newVisibility: input.type } : {}),
         },
         triggeredByUserId: callerId,
-        eventAt: new Date().toISOString(),
+        eventAt: systemEventAt,
       });
     }
     // Rename / avatar change: re-sync chat-service's GeneralRoom mirror. That
@@ -3000,7 +3068,10 @@ export const communityService = {
     }
 
     // Admin who just patched the community isn't asking about mute — skip read.
-    return toCommunityData(updated, membership.role, null);
+    return {
+      community: await toCommunityData(updated, membership.role, null),
+      changedFields,
+    };
   },
 
   /**

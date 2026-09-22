@@ -17,9 +17,18 @@ export const CommunitySystemMessageType = {
   COMMUNITY_AVATAR_UPDATED: "COMMUNITY_AVATAR_UPDATED",
   COMMUNITY_BANNER_UPDATED: "COMMUNITY_BANNER_UPDATED",
   COMMUNITY_HANDLE_UPDATED: "COMMUNITY_HANDLE_UPDATED",
-  /** Catch-all for multi-field edits and other single fields (category, rules,
-   * visibility…) — renders "Community settings updated". */
+  /** Catch-all for multi-field edits and other single fields (category…) —
+   * renders "Community settings updated" ("Community category updated" when
+   * `changedFields` is exactly ["category"]). Rows written before
+   * COMMUNITY_PRIVACY_CHANGED existed may carry changedFields ["visibility"] +
+   * `newVisibility`; those render "Community changed to private/public". */
   COMMUNITY_UPDATED: "COMMUNITY_UPDATED",
+  /** PUBLIC ↔ PRIVATE. ACTOR-BEARING (unlike the lifecycle lines above): the
+   * change alters who can join, so the line names who made it — "You changed
+   * the community to private" / "{actor} changed the community to private".
+   * metadata: `oldVisibility`, `newVisibility` ("PUBLIC" | "PRIVATE"). Posted
+   * on its own even when other fields change in the same save. */
+  COMMUNITY_PRIVACY_CHANGED: "COMMUNITY_PRIVACY_CHANGED",
 
   // --- Live streaming (COMMUNITY-visible) -----------------------------------
   LIVE_STREAM_STARTED: "LIVE_STREAM_STARTED",
@@ -97,6 +106,7 @@ export const SYSTEM_MESSAGE_VISIBILITY: Record<
   COMMUNITY_BANNER_UPDATED: "COMMUNITY",
   COMMUNITY_HANDLE_UPDATED: "COMMUNITY",
   COMMUNITY_UPDATED: "COMMUNITY",
+  COMMUNITY_PRIVACY_CHANGED: "COMMUNITY",
   LIVE_STREAM_STARTED: "COMMUNITY",
   LIVE_STREAM_ENDED: "COMMUNITY",
   ROLE_CHANGED: "COMMUNITY",
@@ -134,6 +144,7 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   COMMUNITY_BANNER_UPDATED: true,
   COMMUNITY_HANDLE_UPDATED: true,
   COMMUNITY_UPDATED: true,
+  COMMUNITY_PRIVACY_CHANGED: true,
   LIVE_STREAM_STARTED: true,
   LIVE_STREAM_ENDED: true,
   ROLE_CHANGED: true,

@@ -77,6 +77,51 @@ describe("buildGroupSystemFallbackText — pin/unpin", () => {
   });
 });
 
+describe("buildGroupSystemFallbackText — MEMBER_BANNED / MEMBER_UNBANNED actor view", () => {
+  const ROW = {
+    actorId: "actor-1",
+    actorName: "Smiley Creatures",
+    targetUserId: "target-1",
+    targetName: "Tom",
+  };
+
+  it("the admin who banned reads it first-person, not their own name", () => {
+    expect(buildGroupSystemFallbackText("MEMBER_BANNED", ROW, "actor-1")).toBe(
+      "You banned Tom"
+    );
+    expect(
+      buildGroupSystemFallbackText("MEMBER_UNBANNED", ROW, "actor-1")
+    ).toBe("You unbanned Tom");
+  });
+
+  it("other members and the stored row keep the actor's name", () => {
+    expect(
+      buildGroupSystemFallbackText("MEMBER_BANNED", ROW, "bystander-1")
+    ).toBe("Smiley Creatures banned Tom");
+    expect(buildGroupSystemFallbackText("MEMBER_UNBANNED", ROW)).toBe(
+      "Smiley Creatures unbanned Tom"
+    );
+  });
+
+  it("the target keeps the existing self copy", () => {
+    expect(buildGroupSystemFallbackText("MEMBER_BANNED", ROW, "target-1")).toBe(
+      "You were banned"
+    );
+    expect(
+      buildGroupSystemFallbackText("MEMBER_UNBANNED", ROW, "target-1")
+    ).toBe("You were unbanned");
+  });
+
+  it("localizes the actor view", () => {
+    expect(
+      buildGroupSystemFallbackText("MEMBER_BANNED", ROW, "actor-1", "vi")
+    ).toBe("Bạn đã cấm Tom");
+    expect(
+      buildGroupSystemFallbackText("MEMBER_UNBANNED", ROW, "actor-1", "th")
+    ).toBe("คุณปลดแบนTom");
+  });
+});
+
 describe("buildGroupSystemFallbackText — MEMBER_REMOVED", () => {
   // The exact row the bug report screenshots: admin `actor-1` ("Smiley
   // Creatures") kicks `target-1` ("Tom"). One stored row, three readings.

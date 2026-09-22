@@ -145,9 +145,21 @@ export interface LivestreamSystemMetadata {
   durationSeconds?: number;
 }
 
+/**
+ * COMMUNITY_PRIVACY_CHANGED — actor-bearing: render "You changed the community to
+ * private" when actorUserId === currentUserId, else "{actorName} changed …".
+ */
+export interface CommunityPrivacyChangedMetadata {
+  actorUserId: string;
+  actorName: string;
+  oldVisibility: "PUBLIC" | "PRIVATE";
+  newVisibility: "PUBLIC" | "PRIVATE";
+}
+
 export type SystemMessageMetadata =
   | CommunityCreatedMetadata
   | CommunityUpdatedMetadata
+  | CommunityPrivacyChangedMetadata
   | MemberRoleChangedMetadata
   | LivestreamSystemMetadata;
 

@@ -282,10 +282,14 @@ export function buildGroupSystemFallbackText(
 
     case "MEMBER_BANNED":
       if (isTarget) return t("SYS_GROUP_MEMBER_BANNED_SELF", locale);
+      if (isActor)
+        return t("SYS_GROUP_MEMBER_BANNED_ACTOR", locale, { target });
       return t("SYS_GROUP_MEMBER_BANNED", locale, { actor, target });
 
     case "MEMBER_UNBANNED":
       if (isTarget) return t("SYS_GROUP_MEMBER_UNBANNED_SELF", locale);
+      if (isActor)
+        return t("SYS_GROUP_MEMBER_UNBANNED_ACTOR", locale, { target });
       return t("SYS_GROUP_MEMBER_UNBANNED", locale, { actor, target });
 
     case "ADMIN_ASSIGNED":

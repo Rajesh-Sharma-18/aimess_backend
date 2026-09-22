@@ -135,6 +135,12 @@ function targetUserIdOf(metadata: Record<string, unknown>): string {
   return String(metadata.targetUserId ?? "").trim();
 }
 
+function visibilityOf(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toUpperCase();
+}
+
 /**
  * Localized text per community SYSTEM subtype (Telegram phrasing). When
  * `viewerUserId` is set and matches the actor or subject, names are replaced
@@ -177,8 +183,37 @@ export function buildCommunitySystemFallbackText(
       return t("SYS_COMMUNITY_BANNER_UPDATED", locale);
     case "COMMUNITY_HANDLE_UPDATED":
       return t("SYS_COMMUNITY_HANDLE_UPDATED", locale);
-    case "COMMUNITY_UPDATED":
+    case "COMMUNITY_UPDATED": {
+      // Actor-less by contract. A single known change still gets its specific
+      // sentence; legacy rows (pre-COMMUNITY_PRIVACY_CHANGED) whose only change
+      // was visibility say which way it went — never who did it (not stored).
+      const fields = Array.isArray(metadata.changedFields)
+        ? (metadata.changedFields as unknown[])
+        : [];
+      if (fields.length === 1 && fields[0] === "category") {
+        return t("SYS_COMMUNITY_CATEGORY_UPDATED", locale);
+      }
+      if (fields.length === 1 && fields[0] === "visibility") {
+        const to = visibilityOf(metadata.newVisibility);
+        if (to === "PRIVATE") return t("SYS_COMMUNITY_NOW_PRIVATE", locale);
+        if (to === "PUBLIC") return t("SYS_COMMUNITY_NOW_PUBLIC", locale);
+      }
       return t("SYS_COMMUNITY_UPDATED", locale);
+    }
+    case "COMMUNITY_PRIVACY_CHANGED": {
+      const to = visibilityOf(metadata.newVisibility);
+      if (to === "PRIVATE") {
+        return isActor
+          ? t("SYS_COMMUNITY_PRIVACY_PRIVATE_SELF", locale)
+          : t("SYS_COMMUNITY_PRIVACY_PRIVATE", locale, { actor });
+      }
+      if (to === "PUBLIC") {
+        return isActor
+          ? t("SYS_COMMUNITY_PRIVACY_PUBLIC_SELF", locale)
+          : t("SYS_COMMUNITY_PRIVACY_PUBLIC", locale, { actor });
+      }
+      return t("SYS_COMMUNITY_UPDATED", locale);
+    }
     case "LIVE_STREAM_STARTED":
       // Host-named (Telegram group video-chat parity). "You started …" for the
       // host's own view; "{host} started …" for everyone else.
@@ -353,6 +388,7 @@ export function resolveCommunitySystemSubjectUserId(
     case "PINNED_MESSAGE":
     case "UNPINNED_MESSAGE":
     case "COMMUNITY_INVITE_CREATED":
+    case "COMMUNITY_PRIVACY_CHANGED":
       return actorId || null;
     default:
       return null;

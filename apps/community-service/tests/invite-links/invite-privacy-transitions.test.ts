@@ -16,7 +16,10 @@
  */
 
 import { Prisma } from "../../src/generated/prisma/index.js";
-import { communityService } from "../../src/services/community.service.js";
+import {
+  communityService,
+  selectCommunityUpdateSuccessKey,
+} from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import { MemberAlreadyActiveError } from "../../src/lib/member-already-active-error.js";
 import { publishChatUserEvent } from "@aimess/redis";
@@ -487,13 +490,24 @@ describe("PRIVATE → PUBLIC settles pending requests", () => {
     await setType("PUBLIC");
     expect(joinLinesFor(A)).toHaveLength(1);
     expect(joinLinesFor(B)).toHaveLength(1);
-    // The only unaddressed line is the admin's own visibility-change line.
+    // The only unaddressed line is the admin's own privacy-change line —
+    // auto-resolved requests never post an "approved" line (AUTO_RESOLVED is
+    // not an admin decision); each user only gets their personal join line.
     const roomWide = sysMsg.mock.calls
       .map(([p]) => p)
       .filter((p) => !p.visibleToUserId);
     expect(roomWide.map((p) => p.systemMessageType)).toEqual([
-      "COMMUNITY_UPDATED",
+      "COMMUNITY_PRIVACY_CHANGED",
     ]);
+    expect(roomWide[0].metadata).toMatchObject({
+      oldVisibility: "PRIVATE",
+      newVisibility: "PUBLIC",
+    });
+    const personalTypes = sysMsg.mock.calls
+      .map(([p]) => p)
+      .filter((p) => p.visibleToUserId)
+      .map((p) => p.systemMessageType);
+    expect(personalTypes).not.toContain("JOIN_REQUEST_APPROVED");
   });
 
   it("14. a BANNED user's pending request is never turned into a membership", async () => {
@@ -941,6 +955,77 @@ describe("races end with one consistent outcome", () => {
 // ---------------------------------------------------------------------------
 // Regressions of the paths the change touched
 // ---------------------------------------------------------------------------
+describe("privacy change wording (system line + API message)", () => {
+  const roomWide = () =>
+    sysMsg.mock.calls.map(([p]) => p).filter((p) => !p.visibleToUserId);
+  const update = async (input: Record<string, unknown>) => {
+    jest.clearAllMocks();
+    const res = await communityService.updateWithChanges(
+      CID,
+      ADMIN,
+      input as never
+    );
+    return selectCommunityUpdateSuccessKey(
+      res.changedFields,
+      res.community.type
+    );
+  };
+
+  it("PUBLIC → PRIVATE posts one actor-bearing privacy line", async () => {
+    community!.type = "PUBLIC";
+    const key = await update({ type: "PRIVATE" });
+    expect(key).toBe("COMMUNITY_UPDATED_PRIVATE");
+    expect(roomWide()).toHaveLength(1);
+    expect(roomWide()[0]).toMatchObject({
+      systemMessageType: "COMMUNITY_PRIVACY_CHANGED",
+      triggeredByUserId: ADMIN,
+      metadata: {
+        actorUserId: ADMIN,
+        oldVisibility: "PUBLIC",
+        newVisibility: "PRIVATE",
+      },
+    });
+  });
+
+  it("PRIVATE → PUBLIC posts one actor-bearing privacy line", async () => {
+    const key = await update({ type: "PUBLIC" });
+    expect(key).toBe("COMMUNITY_UPDATED_PUBLIC");
+    expect(roomWide().map((p) => p.systemMessageType)).toEqual([
+      "COMMUNITY_PRIVACY_CHANGED",
+    ]);
+    expect(roomWide()[0].metadata).toMatchObject({
+      oldVisibility: "PRIVATE",
+      newVisibility: "PUBLIC",
+    });
+  });
+
+  it("re-sending the current privacy claims nothing changed", async () => {
+    const key = await update({ type: "PRIVATE" });
+    expect(key).toBe("COMMUNITY_UPDATED");
+    expect(roomWide()).toHaveLength(0);
+  });
+
+  it("description only → description line, never a privacy line", async () => {
+    const key = await update({ type: "PRIVATE", description: "New rules" });
+    expect(key).toBe("COMMUNITY_UPDATED_DESCRIPTION");
+    expect(roomWide().map((p) => p.systemMessageType)).toEqual([
+      "COMMUNITY_DESCRIPTION_UPDATED",
+    ]);
+  });
+
+  it("privacy + description → privacy line plus the other change, each true", async () => {
+    const key = await update({ type: "PUBLIC", description: "Open now" });
+    expect(key).toBe("COMMUNITY_UPDATED_DETAILS");
+    const lines = roomWide();
+    expect(lines.map((p) => p.systemMessageType)).toEqual([
+      "COMMUNITY_PRIVACY_CHANGED",
+      "COMMUNITY_DESCRIPTION_UPDATED",
+    ]);
+    // The second line no longer claims visibility changed.
+    expect(lines[1].metadata.changedFields).toEqual(["description"]);
+  });
+});
+
 describe("regressions", () => {
   it("41/42. PRIVATE request → approve still APPROVES and announces once", async () => {
     await communityService.redeemInviteLink(LINK_A, A);
