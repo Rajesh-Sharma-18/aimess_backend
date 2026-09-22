@@ -977,7 +977,9 @@ export const communityPaths = {
       summary: "Update a community",
       description:
         "Admin only. Partial update; name/handle re-checked for uniqueness (excluding this community). " +
-        "Optionally supply memberIds (uuid[]) with the complete desired member list — the service diffs it against current ACTIVE members and applies adds/removes automatically.",
+        "Optionally supply memberIds (uuid[]) with the complete desired member list — the service diffs it against current ACTIVE members and applies adds/removes automatically. " +
+        "Changing `type` PRIVATE → PUBLIC settles every PENDING join request: the requester becomes an ACTIVE member and the request becomes AUTO_RESOLVED (banned requesters are left untouched); each gets `community:added` (via `join_request_auto_accept`) and a joiner-only COMMUNITY_JOINED line. " +
+        "PUBLIC → PRIVATE keeps every existing member and only gates future joins. Neither direction touches invite links.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -5679,7 +5681,11 @@ export const communityPaths = {
       operationId: "redeemCommunityInviteLink",
       summary: "Redeem a community invite link",
       description:
-        "Adds (or reactivates) the caller as an ACTIVE MEMBER and atomically increments the link's usedCount. Idempotent for already-ACTIVE members (usedCount NOT incremented). BANNED users cannot redeem.",
+        "Joins through the link according to the community's CURRENT privacy — never the privacy it had when the link was minted. " +
+        "PUBLIC now → adds (or reactivates) the caller as an ACTIVE MEMBER (`member` in the response; any leftover PENDING request is AUTO_RESOLVED). " +
+        "PRIVATE now → files (or returns the existing) PENDING join request (`request` in the response), unless the link is `autoApprove` AND its creator is still an ACTIVE moderator/admin. " +
+        "A privacy change never invalidates a link; only revoking it (Reset Link) does. Consumes a use only for a real join effect. " +
+        "Idempotent for already-ACTIVE members (usedCount NOT incremented) and for concurrent taps (one membership / one request). BANNED users cannot redeem.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },

@@ -958,14 +958,20 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                     userId
                   )
                 : null;
+            // Only a PRIVATE community has a live request queue: a PENDING
+            // row left on a PUBLIC one gates nothing (joining resolves it), so
+            // the card offers Join rather than a stuck "Cancel Request".
             const joinRequestPending =
+              community.type === "PRIVATE" &&
               joinRequest?.status === CommunityJoinReqStatus.PENDING;
 
             // Same checks as `assertInviteLinkActive`/`toInviteLinkData`'s
             // `isActive` in community.service.ts, expressed as a status string
             // instead of a throw/boolean — no code with an ephemeral link row
             // uses a permanent code, so the branches are mutually exclusive.
-            // Nothing lapses on a clock, so EXPIRED is never produced here.
+            // A link minted with an expiry (AIM-60) reads EXPIRED once it has
+            // lapsed — the same verdict the redeem would return. Privacy
+            // changes never affect this status.
             let linkStatus: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" =
               "ACTIVE";
             if (code) {
@@ -976,6 +982,11 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                   link.usedCount >= link.maxUses
                 )
                   linkStatus = "REVOKED";
+                else if (
+                  link.expiresAt &&
+                  link.expiresAt.getTime() <= Date.now()
+                )
+                  linkStatus = "EXPIRED";
                 else linkStatus = "ACTIVE";
               } else if (community.invitationCode === code) {
                 // LEGACY permanent code: nothing mints these any more, but the

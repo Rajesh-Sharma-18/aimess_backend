@@ -468,7 +468,12 @@ async function handleCommunityEvent(
       if (p.via !== "join_request_approved" && p.via !== "self_join") {
         await pushToUser({
           userId: p.targetUserId,
-          copy: communityCopy.memberAdded(communityName),
+          // A request auto-accepted because the community went PUBLIC: nobody
+          // added or approved them, so it reads "You're now a member of …".
+          copy:
+            p.via === "join_request_auto_accept"
+              ? communityCopy.memberJoined(communityName)
+              : communityCopy.memberAdded(communityName),
           ...base(
             type,
             identity,

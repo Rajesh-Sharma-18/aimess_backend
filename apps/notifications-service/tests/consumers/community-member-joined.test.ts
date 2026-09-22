@@ -205,4 +205,25 @@ describe("MEMBER_ADDED via self_join — no duplicate welcome push", () => {
     expect(push.mock.calls[0][0].userId).toBe(USER_ID);
     expect(push.mock.calls[0][0].copy("en").title).toBe("Cool Community");
   });
+
+  it("MEMBER_ADDED via join_request_auto_accept (community went PUBLIC) — ONE push that never claims an admin added or approved them", async () => {
+    await deliver(CommunityEvents.MEMBER_ADDED, {
+      communityId: CID,
+      eventAt: "2026-06-17T12:00:00.000Z",
+      actorId: MOD,
+      targetUserId: USER_ID,
+      via: "join_request_auto_accept",
+      requestId: "r".repeat(24),
+      communityName: "Cool Community",
+      moderatorRecipientIds: [MOD],
+    });
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].userId).toBe(USER_ID);
+    const body = push.mock.calls[0][0].copy("en").body as string;
+    expect(body).toBe("You're now a member of Cool Community");
+    expect(body).not.toMatch(/added|approved/i);
+    // The admin who flipped privacy is the actor — excluded from the mod fan-out.
+    expect(pushMany).not.toHaveBeenCalled();
+  });
 });

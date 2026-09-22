@@ -27,6 +27,70 @@ import {
   normalizeForSearch,
 } from "../lib/community-search.util.js";
 import { CLOSE_REASON_ADMIN_BANNED } from "../constants/index.js";
+import { MemberAlreadyActiveError } from "../lib/member-already-active-error.js";
+
+/** Internal: aborts the auto-resolve transaction when the requester is banned. */
+class BannedMemberAbort extends Error {}
+
+function isRecordNotFoundError(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === "P2025";
+}
+
+/** Columns every membership (re)activation hands back to its caller. */
+const REACTIVATED_MEMBER_SELECT = {
+  id: true,
+  userId: true,
+  role: true,
+  status: true,
+  joinedAt: true,
+  snapshotUsername: true,
+  snapshotDisplayName: true,
+  snapshotAvatarKey: true,
+  bannedAt: true,
+  bannedBy: true,
+  banReason: true,
+} as const;
+
+/** The write that starts a fresh membership cycle on an existing member row. */
+function memberReactivationData(
+  snapshot: {
+    snapshotUsername: string;
+    snapshotDisplayName: string;
+    snapshotAvatarKey: string | null;
+  },
+  joinedViaInviteCode?: string | null
+) {
+  return {
+    status: CommunityMemberStatus.ACTIVE,
+    // A new membership cycle never carries forward the previous cycle's
+    // rank — a rejoining ADMIN/MODERATOR always starts over as MEMBER,
+    // regardless of leave/kick/ban+unban path.
+    role: CommunityMemberRole.MEMBER,
+    // Rejoin starts a fresh membership: advance joinedAt to now so the member
+    // list shows the LATEST join time, not the original (stale) one. joinedAt
+    // is @default(now()) which only applies on create, so reactivation must
+    // set it explicitly.
+    joinedAt: new Date(),
+    // Fresh membership also clears any stale kick/dismiss/unban/ban markers
+    // from the previous membership cycle (removedAt is audit metadata for
+    // the OLD cycle; dismissedAt only applies to a BANNED row; unbannedAt
+    // only applies to a post-unban LEFT row; bannedAt/bannedBy/banReason are
+    // the OLD ban's metadata — none of them should leak into a later,
+    // unrelated moderation event in THIS fresh cycle).
+    removedAt: { unset: true },
+    removedBy: { unset: true },
+    removedReason: { unset: true },
+    dismissedAt: { unset: true },
+    unbannedAt: { unset: true },
+    bannedAt: { unset: true },
+    bannedBy: { unset: true },
+    banReason: { unset: true },
+    ...(joinedViaInviteCode
+      ? { joinedViaInviteCode }
+      : { joinedViaInviteCode: { unset: true } }),
+    ...snapshot,
+  };
+}
 
 /**
  * THE invariant enforcer: a current member must never hold a PENDING join
@@ -873,63 +937,36 @@ export const communityRepository = {
      *  invitation, exactly like the kick/ban markers cleared below. */
     joinedViaInviteCode?: string | null
   ) {
-    const [row, clearedMutes] = await prisma.$transaction([
-      prisma.communityMember.update({
-        where: { communityId_userId: { communityId, userId } },
-        data: {
-          status: CommunityMemberStatus.ACTIVE,
-          // A new membership cycle never carries forward the previous cycle's
-          // rank — a rejoining ADMIN/MODERATOR always starts over as MEMBER,
-          // regardless of leave/kick/ban+unban path.
-          role: CommunityMemberRole.MEMBER,
-          // Rejoin starts a fresh membership: advance joinedAt to now so the member
-          // list shows the LATEST join time, not the original (stale) one. joinedAt
-          // is @default(now()) which only applies on create, so reactivation must
-          // set it explicitly.
-          joinedAt: new Date(),
-          // Fresh membership also clears any stale kick/dismiss/unban/ban markers
-          // from the previous membership cycle (removedAt is audit metadata for
-          // the OLD cycle; dismissedAt only applies to a BANNED row; unbannedAt
-          // only applies to a post-unban LEFT row; bannedAt/bannedBy/banReason are
-          // the OLD ban's metadata — none of them should leak into a later,
-          // unrelated moderation event in THIS fresh cycle).
-          removedAt: { unset: true },
-          removedBy: { unset: true },
-          removedReason: { unset: true },
-          dismissedAt: { unset: true },
-          unbannedAt: { unset: true },
-          bannedAt: { unset: true },
-          bannedBy: { unset: true },
-          banReason: { unset: true },
-          ...(joinedViaInviteCode
-            ? { joinedViaInviteCode }
-            : { joinedViaInviteCode: { unset: true } }),
-          ...snapshot,
-        },
-        select: {
-          id: true,
-          userId: true,
-          role: true,
-          status: true,
-          joinedAt: true,
-          snapshotUsername: true,
-          snapshotDisplayName: true,
-          snapshotAvatarKey: true,
-          bannedAt: true,
-          bannedBy: true,
-          banReason: true,
-        },
-      }),
-      // A fresh membership cycle also drops any leftover mute/warning rows from
-      // the OLD cycle — otherwise a rejoining member is still muted, or still
-      // carries warnings issued to a membership that no longer exists.
-      prisma.communityMemberMute.deleteMany({ where: { communityId, userId } }),
-      prisma.communityMemberWarning.deleteMany({
-        where: { communityId, userId },
-      }),
-      // Same transaction as the membership write — see resolvePendingJoinRequestsOp.
-      resolvePendingJoinRequestsOp(communityId, [userId], resolvedBy ?? userId),
-    ]);
+    let row: Prisma.CommunityMemberGetPayload<{ select: typeof REACTIVATED_MEMBER_SELECT }>;
+    let clearedMutes: { count: number };
+    try {
+      [row, clearedMutes] = await prisma.$transaction([
+        prisma.communityMember.update({
+          // Never re-activate a row that is ALREADY ACTIVE: a concurrent path
+          // (approve vs. privacy-change auto-resolve vs. Add Member) may have
+          // won. Rewriting it would reset joinedAt and let the loser announce a
+          // second join. No match throws P2025 and rolls the whole unit back.
+          where: {
+            communityId_userId: { communityId, userId },
+            status: { not: CommunityMemberStatus.ACTIVE },
+          },
+          data: memberReactivationData(snapshot, joinedViaInviteCode),
+          select: REACTIVATED_MEMBER_SELECT,
+        }),
+        // A fresh membership cycle also drops any leftover mute/warning rows from
+        // the OLD cycle — otherwise a rejoining member is still muted, or still
+        // carries warnings issued to a membership that no longer exists.
+        prisma.communityMemberMute.deleteMany({ where: { communityId, userId } }),
+        prisma.communityMemberWarning.deleteMany({
+          where: { communityId, userId },
+        }),
+        // Same transaction as the membership write — see resolvePendingJoinRequestsOp.
+        resolvePendingJoinRequestsOp(communityId, [userId], resolvedBy ?? userId),
+      ]);
+    } catch (err) {
+      if (isRecordNotFoundError(err)) throw new MemberAlreadyActiveError();
+      throw err;
+    }
     // Re-add of a previously-LEFT member: mirror the reactivation into
     // chat-service's RoomMember so they regain send/read in the general room.
     // The other member-mutation methods (create/createMany/updateStatus/
@@ -2892,6 +2929,144 @@ export const communityRepository = {
       where: { id: { in: requestIds } },
       data: { status, decidedBy, decidedAt },
     });
+  },
+
+  /**
+   * Move a request out of PENDING only if it is STILL PENDING. The status in the
+   * WHERE is the whole point: a cancel / reject that read PENDING a moment ago
+   * must not overwrite a request a concurrent path already settled (approved,
+   * or auto-resolved when the community went PUBLIC). Returns the row, or null
+   * when it was no longer PENDING — the caller reports the current truth.
+   */
+  async settlePendingJoinRequest(
+    requestId: string,
+    data: {
+      status: CommunityJoinReqStatus;
+      decidedBy: string | null;
+      decidedAt: Date;
+    }
+  ) {
+    const { count } = await prisma.communityJoinRequest.updateMany({
+      where: { id: requestId, status: CommunityJoinReqStatus.PENDING },
+      data,
+    });
+    if (count === 0) return null;
+    return prisma.communityJoinRequest.findUnique({ where: { id: requestId } });
+  },
+
+  /** Every PENDING request of one community (PRIVATE → PUBLIC auto-resolve). */
+  findPendingJoinRequestsForCommunity(communityId: string) {
+    return prisma.communityJoinRequest.findMany({
+      where: { communityId, status: CommunityJoinReqStatus.PENDING },
+      select: { id: true, userId: true, inviteCode: true },
+    });
+  },
+
+  /**
+   * PRIVATE → PUBLIC: turn one PENDING join request into an ACTIVE membership,
+   * as ONE interactive transaction:
+   *
+   *   1. claim the request — PENDING → AUTO_RESOLVED, conditional on it still
+   *      being PENDING (a concurrent cancel / reject / approve that got there
+   *      first leaves nothing to claim → "NOT_PENDING", nothing written);
+   *   2. re-read the member row INSIDE the transaction and apply the current
+   *      rules: ACTIVE → nothing more to do; BANNED → roll the claim back (a
+   *      privacy change never lifts a ban); LEFT → start a fresh cycle; none →
+   *      create the row.
+   *
+   * Any concurrent writer to the same request or member document makes one of
+   * the two transactions fail with a write conflict (or the create with P2002),
+   * so the membership is created exactly once. The caller treats a thrown error
+   * as "someone else settled it" and re-reads.
+   */
+  async autoResolveJoinRequestToMember(args: {
+    requestId: string;
+    communityId: string;
+    userId: string;
+    snapshot: {
+      snapshotUsername: string;
+      snapshotDisplayName: string;
+      snapshotAvatarKey: string | null;
+    };
+    resolvedBy: string;
+    /** The invitation the request was raised from — carried to the member row. */
+    inviteCode: string | null;
+  }): Promise<
+    | { outcome: "ACTIVATED"; member: CommunityMember; clearedMutes: number }
+    | { outcome: "ALREADY_MEMBER" | "NOT_PENDING" | "BANNED" }
+  > {
+    const { requestId, communityId, userId } = args;
+    const result = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.communityJoinRequest.updateMany({
+        where: { id: requestId, status: CommunityJoinReqStatus.PENDING },
+        data: {
+          status: CommunityJoinReqStatus.AUTO_RESOLVED,
+          decidedBy: args.resolvedBy || null,
+          decidedAt: new Date(),
+        },
+      });
+      if (claimed.count === 0) return { outcome: "NOT_PENDING" as const };
+
+      const existing = await tx.communityMember.findUnique({
+        where: { communityId_userId: { communityId, userId } },
+      });
+      if (existing?.status === CommunityMemberStatus.ACTIVE) {
+        return { outcome: "ALREADY_MEMBER" as const };
+      }
+      if (existing?.status === CommunityMemberStatus.BANNED) {
+        // Rolls back the claim above: the request stays exactly as it was.
+        throw new BannedMemberAbort();
+      }
+
+      if (existing) {
+        const member = await tx.communityMember.update({
+          where: {
+            communityId_userId: { communityId, userId },
+            status: { not: CommunityMemberStatus.ACTIVE },
+          },
+          data: memberReactivationData(args.snapshot, args.inviteCode),
+        });
+        const cleared = await tx.communityMemberMute.deleteMany({
+          where: { communityId, userId },
+        });
+        await tx.communityMemberWarning.deleteMany({
+          where: { communityId, userId },
+        });
+        return {
+          outcome: "ACTIVATED" as const,
+          member,
+          clearedMutes: cleared.count,
+        };
+      }
+
+      const member = await tx.communityMember.create({
+        data: {
+          communityId,
+          userId,
+          role: CommunityMemberRole.MEMBER,
+          status: CommunityMemberStatus.ACTIVE,
+          ...args.snapshot,
+          joinedViaInviteCode: args.inviteCode,
+        },
+      });
+      return { outcome: "ACTIVATED" as const, member, clearedMutes: 0 };
+    }).catch((err: unknown) => {
+      if (err instanceof BannedMemberAbort) return { outcome: "BANNED" as const };
+      throw err;
+    });
+
+    if (result.outcome === "ACTIVATED") {
+      publishCommunityMemberSyncedForChatSafe({
+        communityId,
+        userId,
+        status: CommunityMemberStatus.ACTIVE,
+        role: result.member.role,
+      });
+      if (result.clearedMutes > 0) {
+        await announceStaleMuteCleared(communityId, userId);
+      }
+    }
+    return result;
   },
 
   /**
