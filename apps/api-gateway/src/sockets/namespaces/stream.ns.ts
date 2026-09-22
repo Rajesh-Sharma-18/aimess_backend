@@ -52,13 +52,6 @@ const sessionKey = (streamId: string): string =>
 // stream-service's getViewers() alongside the presence hash above.
 const sessionJoinedKey = (streamId: string): string =>
   `stream:session:joined:${streamId}`;
-// Socket.IO room a superseded viewer is parked in until the winning session
-// for the same (stream, user) goes away. One room per (streamId, userId) —
-// resumed fan-out is scoped to that user only. Automatic cleanup on socket
-// disconnect (Socket.IO leaves all rooms on disconnect), so no manual sweep.
-const supersededRoom = (streamId: string, userId: string): string =>
-  `stream:superseded:${streamId}:${userId}`;
-
 // ─── Inbound payload schemas ────────────────────────────────────────────────
 const StreamJoinSchema = z.object({ streamId: z.string().min(1) });
 const StreamLeaveSchema = z.object({ streamId: z.string().min(1) });
@@ -649,26 +642,6 @@ export function registerStreamNamespace(
       }
     };
 
-    // Companion to the supersede kick at stream:join. After this socket's
-    // decrement, if the user now has ZERO active sockets in this stream,
-    // release every superseded sibling parked earlier so their UI clears the
-    // "Opened on another device" state. Idempotent: the room is vacated after
-    // the emit, so a double-fire is a no-op.
-    const maybeEmitResumed = async (streamId: string): Promise<void> => {
-      try {
-        const remaining = await redisPub.hget(sessionKey(streamId), userId);
-        if (remaining !== null && Number(remaining) > 0) return;
-        const room = supersededRoom(streamId, userId);
-        streamNs.to(room).emit("stream:session:resumed", { streamId });
-        const sockets = await streamNs.in(room).fetchSockets();
-        for (const s of sockets) void s.leave(room);
-      } catch (err) {
-        logger.warn(
-          `/stream resumed emit error for ${streamId}: ${String(err)}`
-        );
-      }
-    };
-
     // connectionStateRecovery: Socket.IO restored this socket into its previous
     // rooms after a brief network drop. The disconnecting handler already ran
     // its decrement for the prior socket instance, so re-increment here to
@@ -792,41 +765,10 @@ export function registerStreamNamespace(
           void socket.join(roomKey(streamId));
           streamCommentPermissions.set(streamId, canComment);
 
-          // Telegram-style "newest session wins" — emit stream:session:superseded
-          // to any OTHER socket of the SAME user already viewing this stream, so
-          // the older tab/device closes its viewer while this new one plays.
-          // Broadcaster protection: skip when the joining user is the stream's
-          // creator. A broadcaster opening the viewer in a second tab of their
-          // OWN stream (or their broadcast socket ever landing in this room)
-          // must not be kicked. Non-broadcaster viewers get the full kick.
-          if (userId !== access.creatorId) {
-            try {
-              const peers = await streamNs.in(roomKey(streamId)).fetchSockets();
-              for (const peer of peers) {
-                if (peer.id === socket.id) continue;
-                if (peer.data.userId !== userId) continue;
-                peer.emit("stream:session:superseded", { streamId });
-                void peer.leave(roomKey(streamId));
-                // Park the kicked peer in a per-(stream,user) room so the
-                // decrement path can fan a paired stream:session:resumed
-                // event back once the winning session's last socket goes
-                // away. Room auto-clears when the peer disconnects.
-                void peer.join(supersededRoom(streamId, userId));
-                // Clear the peer's own presence-tracking for this stream so its
-                // own eventual disconnect/leave doesn't double-decrement. Only
-                // works for local sockets — remote sockets self-heal via HDEL
-                // when their FE leave arrives.
-                const peerIncremented = peer.data.streamIncremented as
-                  | Set<string>
-                  | undefined;
-                peerIncremented?.delete(streamId);
-              }
-            } catch (err) {
-              logger.warn(
-                `/stream supersede kick error for ${streamId}: ${String(err)}`
-              );
-            }
-          }
+          // Multi-device: same user watching from multiple tabs/devices is
+          // allowed. Each socket gets its own room membership and chat, and
+          // the presence hash refcount keeps the viewer count accurate (one
+          // unique viewer regardless of tab count).
 
           // Per-socket refcount bump. If this same user is already watching
           // from another tab/device, HLEN stays the same and no viewer_count
@@ -961,7 +903,6 @@ export function registerStreamNamespace(
           streamCommentPermissions.delete(streamId);
           if (hadIncrement) {
             await decrementPresence(streamId);
-            await maybeEmitResumed(streamId);
             emitViewerCount(streamId);
             // Close the durable viewer session to match the presence
             // decrement — best-effort, never blocks the leave ack.
@@ -1263,7 +1204,6 @@ export function registerStreamNamespace(
       for (const streamId of streamIds) {
         void (async () => {
           await decrementPresence(streamId);
-          await maybeEmitResumed(streamId);
           // Close the durable viewer session — covers crashes/network drops
           // that never fire an explicit stream:leave. Best-effort.
           streamClient
