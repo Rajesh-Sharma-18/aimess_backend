@@ -5733,7 +5733,7 @@ export const communityService = {
   async listMutedMembers(
     communityId: string,
     callerId: string,
-    params: { page: number; limit: number }
+    params: { page: number; limit: number; search?: string }
   ): Promise<PaginatedResponse<CommunityMutedMemberData>> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
@@ -5751,6 +5751,7 @@ export const communityService = {
       now: new Date(),
       page: params.page,
       limit: params.limit,
+      search: params.search,
     });
 
     const items: CommunityMutedMemberData[] = [];

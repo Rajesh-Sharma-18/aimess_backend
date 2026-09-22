@@ -550,12 +550,12 @@ export const unmuteCommunityMember = asyncHandler(
 export const listCommunityMutedMembers = asyncHandler(
   async (req: Request, res: Response) => {
     const { id } = req.params as CommunityIdParams;
-    const { page, limit } = req.query as unknown as MutedMembersQuery;
+    const { page, limit, search } = req.query as unknown as MutedMembersQuery;
 
     const result = await communityService.listMutedMembers(
       id,
       req.auth.userId,
-      { page, limit }
+      { page, limit, search }
     );
 
     return res

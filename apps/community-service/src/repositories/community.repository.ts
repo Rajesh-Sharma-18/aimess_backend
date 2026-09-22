@@ -3482,11 +3482,28 @@ export const communityRepository = {
     now: Date;
     page: number;
     limit: number;
+    search?: string;
   }) {
     const where: Prisma.CommunityMemberMuteWhereInput = {
       communityId: params.communityId,
       OR: [{ mutedUntil: null }, { mutedUntil: { gt: params.now } }],
     };
+
+    const term = params.search?.trim();
+    if (term) {
+      const matches = await prisma.communityMember.findMany({
+        where: {
+          communityId: params.communityId,
+          OR: [
+            { snapshotDisplayName: { contains: term, mode: "insensitive" } },
+            { snapshotUsername: { contains: term, mode: "insensitive" } },
+            { userId: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        select: { userId: true },
+      });
+      where.userId = { in: matches.map((member) => member.userId) };
+    }
 
     const [rows, total] = await Promise.all([
       prisma.communityMemberMute.findMany({

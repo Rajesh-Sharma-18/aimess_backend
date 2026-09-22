@@ -2175,9 +2175,16 @@ export const communityPaths = {
       operationId: "listMutedCommunityMembers",
       summary: "List moderation-muted members",
       description:
-        "Moderator or admin only. Offset/page pagination (`page` + `limit`); response carries `pagination` and `data`. Fully-expired mutes are excluded (lazy expiration — a row whose `mutedUntil` is in the past is treated as not muted).",
+        "Moderator or admin only. Offset/page pagination (`page` + `limit`); response carries `pagination` and `data`. Optional search matches display name, username or user ID case-insensitively before pagination. Fully-expired mutes are excluded (lazy expiration — a row whose `mutedUntil` is in the past is treated as not muted).",
       security: [{ bearerAuth: [] }],
       parameters: [
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string", minLength: 1, maxLength: 100 },
+          description: "Case-insensitive display name, username or user ID substring.",
+        },
         { $ref: "#/components/parameters/LanguageHeader" },
         {
           name: "id",
