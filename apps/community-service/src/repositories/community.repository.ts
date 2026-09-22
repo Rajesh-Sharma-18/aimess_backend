@@ -2184,14 +2184,21 @@ export const communityRepository = {
     // ACTIVE-or-missing → `not: SUSPENDED` (Mongo `$ne` also matches unset
     // legacy rows). Owner-banned close leaves moderationStatus=ACTIVE and only
     // writes statusClosedReasonCode=ADMIN_BANNED — the admin UI renders those
-    // as Closed, so filter both axes. Top-level NOT is the reliable Prisma
-    // Mongo form for "!= X including unset"; positional `{ not: X }` on
-    // optional scalars has edge cases. Wrapped in AND so it composes with the
-    // search OR below without colliding.
+    // as Closed, so filter both axes. Prisma Mongo's `NOT`/`not` on an optional
+    // scalar silently excludes documents where the field is unset (verified:
+    // `NOT: { statusClosedReasonCode: X }` matched 0 of 220 rows), so the
+    // unset/null cases must be OR'd in explicitly. Wrapped in AND so it
+    // composes with the search OR below without colliding.
     if (params.status === "ACTIVE") {
       where.AND = [
         { moderationStatus: { not: CommunityModerationStatus.SUSPENDED } },
-        { NOT: { statusClosedReasonCode: CLOSE_REASON_ADMIN_BANNED } },
+        {
+          OR: [
+            { statusClosedReasonCode: { isSet: false } },
+            { statusClosedReasonCode: null },
+            { statusClosedReasonCode: { not: CLOSE_REASON_ADMIN_BANNED } },
+          ],
+        },
       ];
     } else if (params.status === "CLOSED") {
       where.AND = [
