@@ -70,6 +70,13 @@ const envSchema = z.object({
   /** SRS (OSSRS) media server HTTP API — same base stream-service uses. */
   SRS_API_URL: z.string().url().default("http://localhost:1985"),
   /**
+   * Basic Auth credentials for SRS's http_api, same pair as stream-service's
+   * SRS_API_USERNAME/PASSWORD. Optional — omit both when the target has no
+   * auth gate in front of it (e.g. local Docker SRS).
+   */
+  SRS_API_USERNAME: z.string().optional(),
+  SRS_API_PASSWORD: z.string().optional(),
+  /**
    * LiveKit signaling base — the same value chat-service uses (a wss:// URL).
    * The probe swaps the scheme for http(s) and hits LiveKit's root health path,
    * which LiveKit Cloud answers 200 on, unauthenticated, same as self-hosted.
