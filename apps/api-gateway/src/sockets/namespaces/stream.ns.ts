@@ -52,7 +52,6 @@ const sessionKey = (streamId: string): string =>
 // stream-service's getViewers() alongside the presence hash above.
 const sessionJoinedKey = (streamId: string): string =>
   `stream:session:joined:${streamId}`;
-
 // ─── Inbound payload schemas ────────────────────────────────────────────────
 const StreamJoinSchema = z.object({ streamId: z.string().min(1) });
 const StreamLeaveSchema = z.object({ streamId: z.string().min(1) });
@@ -766,36 +765,10 @@ export function registerStreamNamespace(
           void socket.join(roomKey(streamId));
           streamCommentPermissions.set(streamId, canComment);
 
-          // Telegram-style "newest session wins" — emit stream:session:superseded
-          // to any OTHER socket of the SAME user already viewing this stream, so
-          // the older tab/device closes its viewer while this new one plays.
-          // Broadcaster protection: skip when the joining user is the stream's
-          // creator. A broadcaster opening the viewer in a second tab of their
-          // OWN stream (or their broadcast socket ever landing in this room)
-          // must not be kicked. Non-broadcaster viewers get the full kick.
-          if (userId !== access.creatorId) {
-            try {
-              const peers = await streamNs.in(roomKey(streamId)).fetchSockets();
-              for (const peer of peers) {
-                if (peer.id === socket.id) continue;
-                if (peer.data.userId !== userId) continue;
-                peer.emit("stream:session:superseded", { streamId });
-                void peer.leave(roomKey(streamId));
-                // Clear the peer's own presence-tracking for this stream so its
-                // own eventual disconnect/leave doesn't double-decrement. Only
-                // works for local sockets — remote sockets self-heal via HDEL
-                // when their FE leave arrives.
-                const peerIncremented = peer.data.streamIncremented as
-                  | Set<string>
-                  | undefined;
-                peerIncremented?.delete(streamId);
-              }
-            } catch (err) {
-              logger.warn(
-                `/stream supersede kick error for ${streamId}: ${String(err)}`
-              );
-            }
-          }
+          // Multi-device: same user watching from multiple tabs/devices is
+          // allowed. Each socket gets its own room membership and chat, and
+          // the presence hash refcount keeps the viewer count accurate (one
+          // unique viewer regardless of tab count).
 
           // Per-socket refcount bump. If this same user is already watching
           // from another tab/device, HLEN stays the same and no viewer_count
