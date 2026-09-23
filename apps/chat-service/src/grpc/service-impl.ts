@@ -2618,12 +2618,14 @@ export function createMessagingImpl(
             groupId?: string;
             userId?: string;
             actorAdminId?: string;
+            actorAdminName?: string;
             reason?: string;
           };
           const result = await deps.adminGroupService.removeGroupMember({
             groupId: req.groupId ?? "",
             userId: req.userId ?? "",
             actorAdminId: req.actorAdminId ?? "",
+            actorAdminName: req.actorAdminName ?? "",
             reason: req.reason || undefined,
           });
           callback(null, result);
@@ -2646,12 +2648,14 @@ export function createMessagingImpl(
             groupId?: string;
             userId?: string;
             actorAdminId?: string;
+            actorAdminName?: string;
             reason?: string;
           };
           const result = await deps.adminGroupService.banGroupMember({
             groupId: req.groupId ?? "",
             userId: req.userId ?? "",
             actorAdminId: req.actorAdminId ?? "",
+            actorAdminName: req.actorAdminName ?? "",
             reason: req.reason || undefined,
           });
           callback(null, result);
@@ -2673,11 +2677,13 @@ export function createMessagingImpl(
             groupId?: string;
             userId?: string;
             actorAdminId?: string;
+            actorAdminName?: string;
           };
           const result = await deps.adminGroupService.unbanGroupMember({
             groupId: req.groupId ?? "",
             userId: req.userId ?? "",
             actorAdminId: req.actorAdminId ?? "",
+            actorAdminName: req.actorAdminName ?? "",
           });
           callback(null, result);
         } catch (err) {

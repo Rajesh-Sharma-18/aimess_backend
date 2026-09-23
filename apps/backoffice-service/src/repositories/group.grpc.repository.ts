@@ -185,13 +185,15 @@ export class GrpcGroupRepository {
   async removeMember(
     groupId: string,
     userId: string,
-    actorAdminId: string,
+    actor: { id: string; name: string },
     reason?: string
   ): Promise<void> {
     const res = await chatClient.adminRemoveGroupMember({
       groupId,
       userId,
-      actorAdminId,
+      actorAdminId: actor.id,
+      // Names the removal line in the group timeline; see the proto comment.
+      actorAdminName: actor.name,
       reason: reason ?? "",
     });
     if (res.errorCode) throw mapGroupModerationError(res.errorCode);

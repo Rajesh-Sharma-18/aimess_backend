@@ -37,6 +37,7 @@ export const adminAuth: RequestHandler = (req, _res, next) => {
 
       req.admin = {
         id: adminId,
+        name: admin.name,
         sid: sessionId,
         role: admin.role.key,
         // Applied here as well as in the RBAC repo: a cached set written before
