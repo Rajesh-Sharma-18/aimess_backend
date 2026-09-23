@@ -12,6 +12,49 @@ export const COMMUNITY_MESSAGES = {
     en: "Community updated successfully",
     th: "อัปเดตคอมมูนิตี้เรียบร้อยแล้ว",
   },
+  // Specific `PATCH /communities/:id` success messages, chosen from the fields
+  // that ACTUALLY changed (selectCommunityUpdateSuccessKey). COMMUNITY_UPDATED
+  // stays the no-op fallback.
+  COMMUNITY_UPDATED_PRIVATE: {
+    vi: "Đã chuyển cộng đồng sang riêng tư",
+    en: "Community changed to private",
+    th: "เปลี่ยนคอมมูนิตี้เป็นแบบส่วนตัวแล้ว",
+  },
+  COMMUNITY_UPDATED_PUBLIC: {
+    vi: "Đã chuyển cộng đồng sang công khai",
+    en: "Community changed to public",
+    th: "เปลี่ยนคอมมูนิตี้เป็นแบบสาธารณะแล้ว",
+  },
+  COMMUNITY_UPDATED_NAME: {
+    vi: "Đã cập nhật tên cộng đồng",
+    en: "Community name updated",
+    th: "อัปเดตชื่อคอมมูนิตี้แล้ว",
+  },
+  COMMUNITY_UPDATED_DESCRIPTION: {
+    vi: "Đã cập nhật mô tả cộng đồng",
+    en: "Community description updated",
+    th: "อัปเดตคำอธิบายคอมมูนิตี้แล้ว",
+  },
+  COMMUNITY_UPDATED_AVATAR: {
+    vi: "Đã cập nhật ảnh cộng đồng",
+    en: "Community photo updated",
+    th: "อัปเดตรูปคอมมูนิตี้แล้ว",
+  },
+  COMMUNITY_UPDATED_HANDLE: {
+    vi: "Đã cập nhật định danh cộng đồng",
+    en: "Community handle updated",
+    th: "อัปเดตแฮนเดิลคอมมูนิตี้แล้ว",
+  },
+  COMMUNITY_UPDATED_CATEGORY: {
+    vi: "Đã cập nhật danh mục cộng đồng",
+    en: "Community category updated",
+    th: "อัปเดตหมวดหมู่คอมมูนิตี้แล้ว",
+  },
+  COMMUNITY_UPDATED_DETAILS: {
+    vi: "Đã cập nhật thông tin cộng đồng",
+    en: "Community details updated",
+    th: "อัปเดตรายละเอียดคอมมูนิตี้แล้ว",
+  },
   COMMUNITY_FETCHED: {
     vi: "Lấy thông tin cộng đồng thành công",
     en: "Community fetched successfully",
@@ -147,6 +190,26 @@ export const COMMUNITY_MESSAGES = {
     en: "Member role updated successfully",
     th: "อัปเดตบทบาทสมาชิกเรียบร้อยแล้ว",
   },
+  COMMUNITY_MEMBER_NOW_MODERATOR: {
+    vi: "{{name}} hiện là người kiểm duyệt",
+    en: "{{name}} is now a moderator",
+    th: "{{name}}เป็นผู้ช่วยดูแลแล้ว",
+  },
+  COMMUNITY_MEMBER_NOW_MEMBER: {
+    vi: "{{name}} hiện là thành viên",
+    en: "{{name}} is now a member",
+    th: "{{name}}เป็นสมาชิกแล้ว",
+  },
+  COMMUNITY_MEMBER_ROLE_MODERATOR: {
+    vi: "Thành viên hiện là người kiểm duyệt",
+    en: "Member is now a moderator",
+    th: "สมาชิกเป็นผู้ช่วยดูแลแล้ว",
+  },
+  COMMUNITY_MEMBER_ROLE_MEMBER: {
+    vi: "Đã gỡ vai trò người kiểm duyệt",
+    en: "Moderator role removed",
+    th: "นำบทบาทผู้ช่วยดูแลออกแล้ว",
+  },
   COMMUNITY_MEMBER_NOT_FOUND: {
     vi: "Không tìm thấy thành viên",
     en: "Community member not found",
@@ -181,6 +244,16 @@ export const COMMUNITY_MESSAGES = {
     vi: "Đã thêm thành viên vào cộng đồng",
     en: "Members added to the community",
     th: "เพิ่มสมาชิกเข้าคอมมูนิตี้แล้ว",
+  },
+  COMMUNITY_MEMBERS_PARTIALLY_ADDED: {
+    vi: "Đã thêm {{added}}/{{total}} thành viên vào cộng đồng",
+    en: "{{added}} of {{total}} members added to the community",
+    th: "เพิ่มสมาชิก {{added}} จาก {{total}} คนเข้าคอมมูนิตี้แล้ว",
+  },
+  COMMUNITY_MEMBERS_NONE_ADDED: {
+    vi: "Không có thành viên nào được thêm",
+    en: "No members were added",
+    th: "ไม่มีสมาชิกที่ถูกเพิ่ม",
   },
   COMMUNITY_LEFT: {
     vi: "Đã rời khỏi cộng đồng",

@@ -96,6 +96,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     createJoinRequest: jest.fn(),
     recyclePendingJoinRequest: jest.fn(),
     updateJoinRequest: jest.fn(),
+    settlePendingJoinRequest: jest.fn(),
     bulkUpdateJoinRequestStatus: jest.fn(),
     findMemberByUserId: jest.fn(),
     findMembersByUserIds: jest.fn(),
@@ -301,7 +302,8 @@ describe("rejectJoinRequest — previously-silent path now emits an event", () =
     // already in the community is a no-op by design (see the D2 rule in
     // member-activation-resolves-requests.test.ts), so this must be explicit.
     repo.findMemberByUserId.mockResolvedValue(null);
-    repo.updateJoinRequest.mockResolvedValue({
+    // The decline is a conditional (still-PENDING) write.
+    repo.settlePendingJoinRequest.mockResolvedValue({
       ...pendingRequest,
       status: "REJECTED",
       decidedBy: MOD,
@@ -492,6 +494,12 @@ describe("redeemInviteLink (autoApprove) — member_added with welcome-able acto
       createdAt: new Date("2026-06-01T00:00:00.000Z"),
     });
     repo.findById.mockResolvedValue(community);
+    // Auto-approve is honoured on a PRIVATE community only while the issuer
+    // is still a moderator — checked at redeem time.
+    repo.findMembership.mockResolvedValue({
+      role: "MODERATOR",
+      status: "ACTIVE",
+    });
     repo.findMemberByUserId.mockResolvedValue(null); // not yet a member
     repo.incrementInviteLinkUsageIfUnder.mockResolvedValue({ count: 1 });
     repo.createAuditLog.mockResolvedValue(undefined);

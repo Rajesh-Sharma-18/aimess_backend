@@ -542,14 +542,26 @@ export async function probeClamAv(): Promise<InfraHealth> {
   }
 }
 
+/** Basic Auth header for SRS's http_api — omitted when no credentials are set. */
+const srsApiAuthHeaders: Record<string, string> =
+  env.SRS_API_USERNAME && env.SRS_API_PASSWORD
+    ? {
+        Authorization: `Basic ${Buffer.from(
+          `${env.SRS_API_USERNAME}:${env.SRS_API_PASSWORD}`
+        ).toString("base64")}`,
+      }
+    : {};
+
 /**
- * SRS media server — its unauthenticated `GET /api/v1/versions`, the lightest
- * call on the same HTTP API stream-service already drives.
+ * SRS media server — `GET /api/v1/versions`, the lightest call on the same
+ * HTTP API stream-service already drives. Sends Basic Auth when configured,
+ * since a proxy/SRS in front of it may require it (see SRS_API_USERNAME/PASSWORD).
  */
 export async function probeSrs(): Promise<InfraHealth> {
   const start = performance.now();
   try {
     const res = await fetch(`${env.SRS_API_URL}/api/v1/versions`, {
+      headers: srsApiAuthHeaders,
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
     const latencyMs = round(performance.now() - start);

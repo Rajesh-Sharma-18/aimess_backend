@@ -14,10 +14,14 @@
  * `{ success:false, message }` envelope.
  */
 jest.mock("../../src/services/community.service.js", () => ({
+  // Pure helper — keep the real one so the success message is exercised.
+  selectCommunityUpdateSuccessKey: jest.requireActual(
+    "../../src/services/community.service.js"
+  ).selectCommunityUpdateSuccessKey,
   communityService: {
     create: jest.fn(),
     getById: jest.fn(),
-    update: jest.fn(),
+    updateWithChanges: jest.fn(),
     deleteCommunity: jest.fn(),
     checkNameAvailability: jest.fn(),
     checkHandleAvailability: jest.fn(),
@@ -213,7 +217,10 @@ describe("GET /api/v1/communities/:id", () => {
 
 describe("PATCH /api/v1/communities/:id (update)", () => {
   beforeEach(() => {
-    svc.update.mockResolvedValue(communityDto({ name: "Renamed" }));
+    svc.updateWithChanges.mockResolvedValue({
+      community: communityDto({ name: "Renamed" }),
+      changedFields: ["name"],
+    });
   });
 
   it("updates → 200", async () => {
@@ -223,11 +230,28 @@ describe("PATCH /api/v1/communities/:id (update)", () => {
       .send({ name: "Renamed" });
     expect(res.status).toBe(200);
     expect(res.body.data.name).toBe("Renamed");
-    expect(svc.update).toHaveBeenCalledTimes(1);
+    // Names the field that actually changed, not a generic "updated".
+    expect(res.body.message).toBe("Community name updated");
+    expect(svc.updateWithChanges).toHaveBeenCalledTimes(1);
+  });
+
+  it("says which way privacy went", async () => {
+    svc.updateWithChanges.mockResolvedValue({
+      community: communityDto({ type: "PRIVATE" }),
+      changedFields: ["visibility"],
+    });
+    const res = await request(app)
+      .patch(`/api/v1/communities/${VALID_ID}`)
+      .set(auth())
+      .send({ type: "PRIVATE" });
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe("Community changed to private");
   });
 
   it("returns 403 when the caller is not an admin", async () => {
-    svc.update.mockRejectedValue(new ForbiddenError("COMMUNITY_FORBIDDEN"));
+    svc.updateWithChanges.mockRejectedValue(
+      new ForbiddenError("COMMUNITY_FORBIDDEN")
+    );
     const res = await request(app)
       .patch(`/api/v1/communities/${VALID_ID}`)
       .set(auth())
@@ -236,7 +260,9 @@ describe("PATCH /api/v1/communities/:id (update)", () => {
   });
 
   it("returns 409 on a handle conflict", async () => {
-    svc.update.mockRejectedValue(new ConflictError("COMMUNITY_HANDLE_TAKEN"));
+    svc.updateWithChanges.mockRejectedValue(
+      new ConflictError("COMMUNITY_HANDLE_TAKEN")
+    );
     const res = await request(app)
       .patch(`/api/v1/communities/${VALID_ID}`)
       .set(auth())
@@ -250,7 +276,7 @@ describe("PATCH /api/v1/communities/:id (update)", () => {
       .set(auth())
       .send({});
     expect(res.status).toBe(400);
-    expect(svc.update).not.toHaveBeenCalled();
+    expect(svc.updateWithChanges).not.toHaveBeenCalled();
   });
 
   it("returns 400 for an invalid type enum", async () => {

@@ -304,6 +304,12 @@ export const SYSTEM_MESSAGES = {
     en: "{{actor}} banned {{target}}",
     th: "{{actor}}แบน{{target}}",
   },
+  // Actor's view (same `_ACTOR` convention as SYS_GROUP_MEMBER_REMOVED_ACTOR).
+  SYS_GROUP_MEMBER_BANNED_ACTOR: {
+    vi: "Bạn đã cấm {{target}}",
+    en: "You banned {{target}}",
+    th: "คุณแบน{{target}}",
+  },
   SYS_GROUP_MEMBER_BANNED_SELF: {
     vi: "Bạn đã bị cấm",
     en: "You were banned",
@@ -313,6 +319,11 @@ export const SYSTEM_MESSAGES = {
     vi: "{{actor}} đã bỏ cấm {{target}}",
     en: "{{actor}} unbanned {{target}}",
     th: "{{actor}}ปลดแบน{{target}}",
+  },
+  SYS_GROUP_MEMBER_UNBANNED_ACTOR: {
+    vi: "Bạn đã bỏ cấm {{target}}",
+    en: "You unbanned {{target}}",
+    th: "คุณปลดแบน{{target}}",
   },
   SYS_GROUP_MEMBER_UNBANNED_SELF: {
     vi: "Bạn đã được bỏ cấm",
@@ -599,6 +610,44 @@ export const SYSTEM_MESSAGES = {
     vi: "Cài đặt cộng đồng đã được cập nhật",
     en: "Community settings updated",
     th: "อัปเดตการตั้งค่าคอมมูนิตี้แล้ว",
+  },
+  SYS_COMMUNITY_CATEGORY_UPDATED: {
+    vi: "Danh mục cộng đồng đã được cập nhật",
+    en: "Community category updated",
+    th: "อัปเดตหมวดหมู่คอมมูนิตี้แล้ว",
+  },
+  // COMMUNITY_PRIVACY_CHANGED (actor-bearing) — "You …" for the actor.
+  SYS_COMMUNITY_PRIVACY_PRIVATE: {
+    vi: "{{actor}} đã chuyển cộng đồng sang riêng tư",
+    en: "{{actor}} changed the community to private",
+    th: "{{actor}} เปลี่ยนคอมมูนิตี้เป็นแบบส่วนตัว",
+  },
+  SYS_COMMUNITY_PRIVACY_PRIVATE_SELF: {
+    vi: "Bạn đã chuyển cộng đồng sang riêng tư",
+    en: "You changed the community to private",
+    th: "คุณเปลี่ยนคอมมูนิตี้เป็นแบบส่วนตัว",
+  },
+  SYS_COMMUNITY_PRIVACY_PUBLIC: {
+    vi: "{{actor}} đã chuyển cộng đồng sang công khai",
+    en: "{{actor}} changed the community to public",
+    th: "{{actor}} เปลี่ยนคอมมูนิตี้เป็นแบบสาธารณะ",
+  },
+  SYS_COMMUNITY_PRIVACY_PUBLIC_SELF: {
+    vi: "Bạn đã chuyển cộng đồng sang công khai",
+    en: "You changed the community to public",
+    th: "คุณเปลี่ยนคอมมูนิตี้เป็นแบบสาธารณะ",
+  },
+  // Legacy COMMUNITY_UPDATED rows whose ONLY change was visibility: the actor
+  // was stripped when they were written, so they stay actor-less.
+  SYS_COMMUNITY_NOW_PRIVATE: {
+    vi: "Cộng đồng đã chuyển sang riêng tư",
+    en: "Community changed to private",
+    th: "คอมมูนิตี้เปลี่ยนเป็นแบบส่วนตัวแล้ว",
+  },
+  SYS_COMMUNITY_NOW_PUBLIC: {
+    vi: "Cộng đồng đã chuyển sang công khai",
+    en: "Community changed to public",
+    th: "คอมมูนิตี้เปลี่ยนเป็นแบบสาธารณะแล้ว",
   },
   SYS_COMMUNITY_LIVESTREAM_STARTED: {
     vi: "{{actor}} đã bắt đầu một buổi phát trực tiếp",

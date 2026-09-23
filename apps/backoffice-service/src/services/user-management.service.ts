@@ -1425,6 +1425,8 @@ async function banFromGroup(
     groupId,
     userId,
     actorAdminId: actor.id,
+    // Names the ban line in the group timeline; see the proto comment.
+    actorAdminName: actor.name,
     reason: input.reason,
   });
   if (!result.ok) {
@@ -1474,6 +1476,7 @@ async function unbanFromGroup(
     groupId,
     userId,
     actorAdminId: actor.id,
+    actorAdminName: actor.name,
   });
   if (!result.ok) {
     throw mapGroupScopeError(result.errorCode);

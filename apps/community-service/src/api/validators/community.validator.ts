@@ -628,6 +628,7 @@ export type SetMemberMuteInput = z.infer<typeof setMemberMuteSchema>;
 export const mutedMembersQuerySchema = z.object({
   page: pageSchema,
   limit: limitSchema,
+  search: z.string().trim().min(1).max(100).optional(),
 });
 export type MutedMembersQuery = z.infer<typeof mutedMembersQuerySchema>;
 

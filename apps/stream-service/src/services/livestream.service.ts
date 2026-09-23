@@ -264,9 +264,33 @@ function extractYoutubeVideoId(url: string | null): string | null {
   return null;
 }
 
+/**
+ * The `{hlsQualities, flvQualities}` pair for a stream, provider-aware so
+ * `toView` and the join-gate snapshot stay in sync. CDN rungs come from the
+ * transcode ladder (`buildQualityUrls`, token-signed per rung); SRS rungs are
+ * derived from the stored URL pattern. Gated on `hlsUrl` so a stream with no
+ * playback yet (YOUTUBE, pre-live) advertises no renditions — same as the SRS
+ * helpers returning `{}` on a null URL.
+ */
+function qualityMapsFor(
+  s: Livestream & { provider?: string | null },
+  cdn: CdnService
+): { hlsQualities: Record<string, string>; flvQualities: Record<string, string> } {
+  if (isCdnStream(s) && s.hlsUrl) {
+    const q = cdn.buildQualityUrls(resolveSrsName(s));
+    return { hlsQualities: q.hls, flvQualities: q.flv };
+  }
+  return {
+    hlsQualities: buildHlsQualityUrls(s.hlsUrl),
+    flvQualities: buildFlvQualityUrls(s.flvUrl),
+  };
+}
+
 function toView(
-  s: Livestream & { dashUrl?: string | null; provider?: string | null }
+  s: Livestream & { dashUrl?: string | null; provider?: string | null },
+  cdn: CdnService
 ): StreamView {
+  const qualities = qualityMapsFor(s, cdn);
   return {
     id: s.id,
     communityId: s.communityId,
@@ -281,9 +305,9 @@ function toView(
     status: s.status,
     commentStatus: s.commentStatus,
     hlsUrl: s.hlsUrl,
-    hlsQualities: buildHlsQualityUrls(s.hlsUrl),
+    hlsQualities: qualities.hlsQualities,
     flvUrl: s.flvUrl,
-    flvQualities: buildFlvQualityUrls(s.flvUrl),
+    flvQualities: qualities.flvQualities,
     dashUrl: s.dashUrl ?? null,
     youtubeVideoId: extractYoutubeVideoId(s.sourceUrl),
     viewerCount: s.viewerCount,
@@ -536,7 +560,7 @@ export class LivestreamService {
     });
 
     return {
-      ...toView(created),
+      ...toView(created, this.cdnService),
       streamKey,
       ingest: isYoutube
         ? {}
@@ -1192,13 +1216,14 @@ export class LivestreamService {
     }
 
     if (stream.status === "ENDED") {
-      return toView(stream);
+      return toView(stream, this.cdnService);
     }
 
     // Host clicked End Live. The encoder (OBS) may still be pushing, so kick it
     // off the CDN — this is the whole point of the feature.
     return toView(
-      await this.finalizeAsEnded(stream, "HOST_ENDED", false, true)
+      await this.finalizeAsEnded(stream, "HOST_ENDED", false, true),
+      this.cdnService
     );
   }
 
@@ -1225,7 +1250,7 @@ export class LivestreamService {
       throw new BadRequestError("STREAM_ALREADY_ENDED");
     }
     if (stream.status === "LIVE") {
-      return toView(stream);
+      return toView(stream, this.cdnService);
     }
 
     const isResume = stream.status === "RECONNECTING";
@@ -1301,7 +1326,7 @@ export class LivestreamService {
       });
     }
 
-    return toView(updated);
+    return toView(updated, this.cdnService);
   }
 
   /**
@@ -1540,7 +1565,7 @@ export class LivestreamService {
       );
     }
 
-    return toView(updated);
+    return toView(updated, this.cdnService);
   }
 
   /**
@@ -1676,7 +1701,7 @@ export class LivestreamService {
         visible = page.filter((row) => !banned.has(row.id));
       }
     }
-    const items = visible.map(toView);
+    const items = visible.map((s) => toView(s, this.cdnService));
 
     // Cursor advances on the LAST ROW READ, not the last row returned —
     // otherwise a page whose tail is entirely banned rows would rewind the
@@ -1726,7 +1751,7 @@ export class LivestreamService {
       }
     }
 
-    const view = toView(stream);
+    const view = toView(stream, this.cdnService);
 
     try {
       view.viewerCount = await this.redis.hlen(sessionKey(id));
@@ -2879,9 +2904,8 @@ export class LivestreamService {
       thumbnail: stream.thumbnail,
       creatorId: stream.creatorId,
       hlsUrl: stream.hlsUrl,
-      hlsQualities: buildHlsQualityUrls(stream.hlsUrl),
       flvUrl: stream.flvUrl,
-      flvQualities: buildFlvQualityUrls(stream.flvUrl),
+      ...qualityMapsFor(stream, this.cdnService),
       videoLostSince: stream.videoLostAt
         ? stream.videoLostAt.toISOString()
         : null,
@@ -3349,7 +3373,7 @@ export class LivestreamService {
       );
     }
 
-    return toView(updated);
+    return toView(updated, this.cdnService);
   }
 
   /**

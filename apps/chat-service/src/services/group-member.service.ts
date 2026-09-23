@@ -586,6 +586,15 @@ export class GroupMemberService {
     targetUserId: string;
     kickedBy: string;
     reason?: string;
+    /**
+     * Display name of a platform admin acting from backoffice. Only read when
+     * `asPlatformAdmin` is set: that actor has no chat profile, so its id would
+     * resolve to nothing and the system line would read "Someone removed X" for
+     * every member forever. Stored as `systemData.actorName` WITHOUT an
+     * `actorId`, so the row names who acted but still makes nobody "the actor"
+     * (no "You removed X", no profile link to a non-user).
+     */
+    actorDisplayName?: string;
     asPlatformAdmin?: boolean;
   }): Promise<GroupMember | null> {
     const actor = params.asPlatformAdmin
@@ -637,7 +646,12 @@ export class GroupMemberService {
       roomId: params.roomId,
       actorId: params.asPlatformAdmin ? null : params.kickedBy,
       systemEvent: SystemEvent.MEMBER_REMOVED,
-      systemData: { targetUserId: params.targetUserId },
+      systemData: {
+        targetUserId: params.targetUserId,
+        ...(params.asPlatformAdmin && params.actorDisplayName
+          ? { actorName: params.actorDisplayName }
+          : {}),
+      },
       excludeUserId: params.targetUserId,
       // backoffice-service already audited this removal against the admin who
       // ordered it; mirroring here too would double the row.
@@ -923,6 +937,8 @@ export class GroupMemberService {
     targetUserId: string;
     bannedBy: string;
     reason?: string;
+    /** See `kick`. */
+    actorDisplayName?: string;
     // Backoffice (platform-admin) ban — same bypass as `kick`: skip the in-group
     // actor lookup and role-order check (`bannedBy` is then an AdminUser.id, not
     // a member), post the system line actor-less, and skip the in-group admin
@@ -981,7 +997,12 @@ export class GroupMemberService {
       roomId: params.roomId,
       actorId: params.asPlatformAdmin ? null : params.bannedBy,
       systemEvent: SystemEvent.MEMBER_BANNED,
-      systemData: { targetUserId: params.targetUserId },
+      systemData: {
+        targetUserId: params.targetUserId,
+        ...(params.asPlatformAdmin && params.actorDisplayName
+          ? { actorName: params.actorDisplayName }
+          : {}),
+      },
       excludeUserId: params.targetUserId,
       skipAdminActivity: params.asPlatformAdmin,
     });
@@ -1006,6 +1027,8 @@ export class GroupMemberService {
     roomId: string;
     targetUserId: string;
     unbannedBy: string;
+    /** See `kick`. */
+    actorDisplayName?: string;
     // Backoffice (platform-admin) unban — same bypass as `ban`/`kick`.
     asPlatformAdmin?: boolean;
   }): Promise<GroupMember | null> {
@@ -1041,7 +1064,12 @@ export class GroupMemberService {
       roomId: params.roomId,
       actorId: params.asPlatformAdmin ? null : params.unbannedBy,
       systemEvent: SystemEvent.MEMBER_UNBANNED,
-      systemData: { targetUserId: params.targetUserId },
+      systemData: {
+        targetUserId: params.targetUserId,
+        ...(params.asPlatformAdmin && params.actorDisplayName
+          ? { actorName: params.actorDisplayName }
+          : {}),
+      },
       skipAdminActivity: params.asPlatformAdmin,
     });
 

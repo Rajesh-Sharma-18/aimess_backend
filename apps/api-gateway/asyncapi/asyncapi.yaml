@@ -6895,6 +6895,7 @@ components:
             - COMMUNITY_BANNER_UPDATED
             - COMMUNITY_HANDLE_UPDATED
             - COMMUNITY_UPDATED
+            - COMMUNITY_PRIVACY_CHANGED
             # Live streaming
             - LIVE_STREAM_STARTED
             - LIVE_STREAM_ENDED
@@ -6934,6 +6935,16 @@ components:
               COMMUNITY_BANNER_UPDATED      → "Community banner updated"
               COMMUNITY_HANDLE_UPDATED      → "Community handle updated"
               COMMUNITY_UPDATED             → "Community settings updated"
+                                              ("Community category updated" when changedFields == ["category"];
+                                              legacy rows with changedFields == ["visibility"] →
+                                              "Community changed to private/public")
+              COMMUNITY_PRIVACY_CHANGED     → "{{actorName}} changed the community to private/public"
+                                              or "You changed the community to …" (viewer=actor).
+                                              ACTOR-BEARING; metadata.oldVisibility / newVisibility
+                                              ("PUBLIC" | "PRIVATE"). Posted on its own line even when
+                                              other fields change in the same save (those still collapse
+                                              into one COMMUNITY_UPDATED / specific line). Clients that
+                                              do not know the type must render the message text verbatim.
               LIVE_STREAM_STARTED           → "{{actorName}} started a livestream"
                                               or "You started a livestream" (viewer=host)
               LIVE_STREAM_ENDED             → "{{actorName}} ended the livestream ({{metadata.duration}})"

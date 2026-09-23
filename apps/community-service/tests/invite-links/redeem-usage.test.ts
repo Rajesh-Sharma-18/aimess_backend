@@ -54,6 +54,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findInviteLinkByCode: jest.fn(),
     findInviteLinkById: jest.fn(),
     findById: jest.fn(),
+    findMembership: jest.fn(),
     findMemberByUserId: jest.fn(),
     findInviteByCommunityAndInvitee: jest.fn(),
     incrementInviteLinkUsageIfUnder: jest.fn(),
@@ -127,6 +128,9 @@ const pendingRequest = {
 beforeEach(() => {
   jest.clearAllMocks();
   repo.findById.mockResolvedValue(community);
+  // The link issuer: auto-approve on a PRIVATE community is honoured only
+  // while they are still a moderator (checked at redeem time).
+  repo.findMembership.mockResolvedValue({ role: "MODERATOR", status: "ACTIVE" });
   repo.findInviteLinkById.mockResolvedValue(link());
   repo.incrementInviteLinkUsageIfUnder.mockResolvedValue({ count: 1 });
   repo.findActiveMemberIdsByRoles.mockResolvedValue([]);

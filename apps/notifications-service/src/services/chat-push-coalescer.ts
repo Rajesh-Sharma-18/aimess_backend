@@ -9,6 +9,7 @@ import {
   chatMentionPreviewHiddenBody,
   chatPreviewHiddenBody,
 } from "../lib/notification-copy.js";
+import { recordPushedMessages } from "./push-retraction.js";
 import { pushToUser } from "./push.service.js";
 
 /**
@@ -415,6 +416,15 @@ async function flush(key: string): Promise<void> {
         navigation,
       },
     });
+
+    // The card is now on the device and the coalescer can no longer cancel it.
+    // Remember who holds it so a later delete-for-everyone can retract it —
+    // every id in the burst, because any one of them being deleted invalidates
+    // the single notification that stands for all of them.
+    await recordPushedMessages(
+      context.userId,
+      messages.map((m) => m.messageId)
+    );
   } catch (error) {
     logger.error(
       `[push:coalesce] flush failed for ${key} (${messages.length} message(s))`,

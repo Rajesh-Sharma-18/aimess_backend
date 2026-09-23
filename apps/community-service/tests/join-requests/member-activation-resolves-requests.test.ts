@@ -111,6 +111,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findPendingJoinRequestsForUsers: jest.fn(),
     resolvePendingJoinRequests: jest.fn(),
     updateJoinRequest: jest.fn(),
+    settlePendingJoinRequest: jest.fn(),
     bulkUpdateJoinRequestStatus: jest.fn(),
     listCommunityJoinRequests: jest.fn(),
     createJoinRequest: jest.fn(),
@@ -381,7 +382,8 @@ describe("B. other membership paths and their request handling", () => {
         clientVersion: "test",
       });
     });
-    repo.updateJoinRequest.mockResolvedValue(
+    // The winner's transaction missed this row: the loser closes it (once).
+    repo.settlePendingJoinRequest.mockResolvedValue(
       pendingRequest(RID, B, { status: "AUTO_RESOLVED", decidedBy: ADMIN })
     );
 
@@ -586,7 +588,7 @@ describe("D. server-side enforcement", () => {
   it("D2: declining a genuine pending request from a NON-member is unchanged", async () => {
     repo.findJoinRequestById.mockResolvedValue(pendingRequest(RID, B));
     // B is absent from the member store — not a member.
-    repo.updateJoinRequest.mockResolvedValue(
+    repo.settlePendingJoinRequest.mockResolvedValue(
       pendingRequest(RID, B, { status: "REJECTED", decidedBy: ADMIN })
     );
 

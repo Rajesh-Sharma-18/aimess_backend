@@ -26,7 +26,49 @@ import {
   selectCommunityUpdateSystemMessageType,
   detectCommunityChangedFields,
   changedFieldsToMetaChanges,
+  selectCommunityUpdateSuccessKey,
 } from "../../src/services/community.service.js";
+
+describe("selectCommunityUpdateSuccessKey (PATCH success message)", () => {
+  it("names the single field that changed", () => {
+    expect(selectCommunityUpdateSuccessKey(["name"], "PUBLIC")).toBe(
+      "COMMUNITY_UPDATED_NAME"
+    );
+    expect(selectCommunityUpdateSuccessKey(["description"], "PUBLIC")).toBe(
+      "COMMUNITY_UPDATED_DESCRIPTION"
+    );
+    expect(selectCommunityUpdateSuccessKey(["avatar"], "PUBLIC")).toBe(
+      "COMMUNITY_UPDATED_AVATAR"
+    );
+    expect(selectCommunityUpdateSuccessKey(["handle"], "PUBLIC")).toBe(
+      "COMMUNITY_UPDATED_HANDLE"
+    );
+    expect(selectCommunityUpdateSuccessKey(["category"], "PUBLIC")).toBe(
+      "COMMUNITY_UPDATED_CATEGORY"
+    );
+  });
+
+  it("says which way privacy went", () => {
+    expect(selectCommunityUpdateSuccessKey(["visibility"], "PRIVATE")).toBe(
+      "COMMUNITY_UPDATED_PRIVATE"
+    );
+    expect(selectCommunityUpdateSuccessKey(["visibility"], "PUBLIC")).toBe(
+      "COMMUNITY_UPDATED_PUBLIC"
+    );
+  });
+
+  it("multi-field saves never claim a single field", () => {
+    expect(
+      selectCommunityUpdateSuccessKey(["visibility", "name"], "PRIVATE")
+    ).toBe("COMMUNITY_UPDATED_DETAILS");
+  });
+
+  it("no change falls back to the plain message", () => {
+    expect(selectCommunityUpdateSuccessKey([], "PUBLIC")).toBe(
+      "COMMUNITY_UPDATED"
+    );
+  });
+});
 
 describe("selectCommunityUpdateSystemMessageType", () => {
   it("returns null when nothing changed", () => {

@@ -137,6 +137,32 @@ describe("DELETE /:id/members/:userId/mute (unmute)", () => {
 });
 
 describe("GET /:id/muted-members", () => {
+  it("passes trimmed search and pagination to the service", async () => {
+    svc.listMutedMembers.mockResolvedValue(emptyPage);
+    const res = await request(app)
+      .get(`/api/v1/communities/${CID}/muted-members`)
+      .query({ search: " Peter_ParKer ", page: 3, limit: 10 })
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.listMutedMembers).toHaveBeenCalledWith(CID, SELF, {
+      search: "Peter_ParKer",
+      page: 3,
+      limit: 10,
+    });
+  });
+
+  it.each([" ", "a".repeat(101)])(
+    "rejects invalid search: %s",
+    async (search) => {
+      const res = await request(app)
+        .get(`/api/v1/communities/${CID}/muted-members`)
+        .query({ search })
+        .set(auth());
+      expect(res.status).toBe(400);
+      expect(svc.listMutedMembers).not.toHaveBeenCalled();
+    }
+  );
+
   it("returns 200 with paginated muted members", async () => {
     svc.listMutedMembers.mockResolvedValue(emptyPage);
     const res = await request(app)

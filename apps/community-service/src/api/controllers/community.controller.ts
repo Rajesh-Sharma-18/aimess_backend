@@ -3,7 +3,10 @@ import type { Request, Response } from "express";
 import { HTTP_STATUS, t, type MessageKey } from "@aimess/constants";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
-import { communityService } from "../../services/community.service.js";
+import {
+  communityService,
+  selectCommunityUpdateSuccessKey,
+} from "../../services/community.service.js";
 import type {
   AddMembersInput,
   AuditLogsQuery,
@@ -76,11 +79,20 @@ export const updateCommunity = asyncHandler(
     const { id } = req.params as CommunityIdParams;
     const body = req.body as UpdateCommunityInput;
 
-    const community = await communityService.update(id, req.auth.userId, body);
+    const { community, changedFields } =
+      await communityService.updateWithChanges(id, req.auth.userId, body);
 
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(community, t("COMMUNITY_UPDATED", req.locale)));
+      .json(
+        new ApiResponse(
+          community,
+          t(
+            selectCommunityUpdateSuccessKey(changedFields, community.type),
+            req.locale
+          )
+        )
+      );
   }
 );
 
@@ -377,11 +389,27 @@ export const updateCommunityMemberRole = asyncHandler(
       role
     );
 
-    return res
-      .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(member, t("COMMUNITY_MEMBER_ROLE_UPDATED", req.locale))
-      );
+    return res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        member,
+        // Name the outcome, not just "role updated". Display name only —
+        // a handle reads wrong in a sentence; unresolved → nameless form.
+        member.snapshotDisplayName?.trim()
+          ? t(
+              role === "MODERATOR"
+                ? "COMMUNITY_MEMBER_NOW_MODERATOR"
+                : "COMMUNITY_MEMBER_NOW_MEMBER",
+              req.locale,
+              { name: member.snapshotDisplayName.trim() }
+            )
+          : t(
+              role === "MODERATOR"
+                ? "COMMUNITY_MEMBER_ROLE_MODERATOR"
+                : "COMMUNITY_MEMBER_ROLE_MEMBER",
+              req.locale
+            )
+      )
+    );
   }
 );
 
@@ -432,9 +460,21 @@ export const addCommunityMembers = asyncHandler(
       userIds
     );
 
-    return res
-      .status(HTTP_STATUS.CREATED)
-      .json(new ApiResponse(result, t("COMMUNITY_MEMBERS_ADDED", req.locale)));
+    return res.status(HTTP_STATUS.CREATED).json(
+      new ApiResponse(
+        result,
+        // Say what actually happened: already-members / ineligible ids are
+        // skipped, so "Members added" on an all-skipped call was false.
+        result.added.length === 0
+          ? t("COMMUNITY_MEMBERS_NONE_ADDED", req.locale)
+          : result.skipped.length > 0
+            ? t("COMMUNITY_MEMBERS_PARTIALLY_ADDED", req.locale, {
+                added: result.added.length,
+                total: result.added.length + result.skipped.length,
+              })
+            : t("COMMUNITY_MEMBERS_ADDED", req.locale)
+      )
+    );
   }
 );
 
@@ -550,12 +590,12 @@ export const unmuteCommunityMember = asyncHandler(
 export const listCommunityMutedMembers = asyncHandler(
   async (req: Request, res: Response) => {
     const { id } = req.params as CommunityIdParams;
-    const { page, limit } = req.query as unknown as MutedMembersQuery;
+    const { page, limit, search } = req.query as unknown as MutedMembersQuery;
 
     const result = await communityService.listMutedMembers(
       id,
       req.auth.userId,
-      { page, limit }
+      { page, limit, search }
     );
 
     return res

@@ -177,6 +177,18 @@ describe("delete for everyone", () => {
     expect(retractMock).not.toHaveBeenCalled();
   });
 
+  it("a failed delete (repository declined) publishes nothing", async () => {
+    const text = "hi @bob";
+    mocks.groupMessageRepo.findById.mockResolvedValue(
+      row({ text, mentions: [user("u_bob", text)] })
+    );
+    mocks.groupMessageRepo.deleteForEveryone.mockResolvedValue(null);
+    await del();
+    await flush();
+
+    expect(retractMock).not.toHaveBeenCalled();
+  });
+
   it("a refused delete publishes nothing", async () => {
     const text = "hi @bob";
     mocks.groupMessageRepo.findById.mockResolvedValue({
@@ -184,6 +196,26 @@ describe("delete for everyone", () => {
       senderId: "someone-else",
     });
     await expect(del()).rejects.toThrow();
+    await flush();
+
+    expect(retractMock).not.toHaveBeenCalled();
+  });
+
+  // Delete-for-me hides ONE member's copy. The message still exists for
+  // everybody else, so nobody may lose their mention row over it — the whole
+  // point of keeping the two scopes on separate service methods.
+  it("delete FOR ME retracts nobody", async () => {
+    const text = "@kristi and @all";
+    mocks.groupMessageRepo.findById.mockResolvedValue(
+      row({ text, mentions: [user("u_kristi", text), all(text)] })
+    );
+    mocks.groupMessageRepo.deleteForMe.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      sequenceNumber: 7,
+    });
+
+    await mocks.groupMessageService.deleteForMe(MSG, TEST_USER_ID, ROOM);
     await flush();
 
     expect(retractMock).not.toHaveBeenCalled();

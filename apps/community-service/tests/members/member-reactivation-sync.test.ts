@@ -119,8 +119,11 @@ describe("communityRepository.reactivateMemberWithSnapshot", () => {
 
     expect(updateMock).toHaveBeenCalledTimes(1);
     const arg = updateMock.mock.calls[0][0];
+    // Guarded: an already-ACTIVE row (a concurrent activation won) is never
+    // rewritten — see MemberAlreadyActiveError.
     expect(arg.where).toEqual({
       communityId_userId: { communityId: CID, userId: USER },
+      status: { not: "ACTIVE" },
     });
     expect(arg.data).toMatchObject({
       status: "ACTIVE",

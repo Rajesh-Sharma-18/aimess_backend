@@ -112,6 +112,7 @@ services:
       USER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_users?sslmode=${PG_SSLMODE:-disable}
       AUTH_GRPC_URL: auth-service:4001
       CHAT_GRPC_URL: chat-service:4004
+      COMMUNITY_GRPC_URL: community-service:4003
       MEDIA_GRPC_URL: media-service:4009
     # No published ports. gRPC is reached as `user-service:4002` on the compose
     # network. An earlier revision published this for a remote stream-service,
