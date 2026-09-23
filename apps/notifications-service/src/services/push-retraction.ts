@@ -104,7 +104,11 @@ export async function retractMessagePush(
         skipInbox: true,
         dataOnly: true,
         priority: "high",
-        ttl: 300,
+        // As long as the push it retracts (the FCM default), not the 5 minutes a
+        // read-dismiss gets: the tray card survives the browser being closed, so
+        // the retraction has to survive being queued for just as long or a device
+        // that comes back an hour later keeps a card for a deleted message.
+        ttl: 86_400,
         // Per MESSAGE, never per conversation: two deletes in a row must not
         // collapse into one, or the second card would never be retracted.
         collapseKey: `del:${messageId}`,

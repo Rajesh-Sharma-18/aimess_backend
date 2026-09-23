@@ -83,6 +83,8 @@ describe("retractMessagePush", () => {
       skipInbox: true,
       bypassSettings: true,
       collapseKey: "del:m1",
+      // Must outlive a closed browser, like the card it retracts.
+      ttl: 86_400,
       data: {
         type: "MESSAGE_DELETED",
         messageId: "m1",

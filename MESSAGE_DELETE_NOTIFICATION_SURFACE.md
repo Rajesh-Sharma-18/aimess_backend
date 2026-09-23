@@ -104,9 +104,60 @@ recipient's queued notification. The handler now reads the scope
   `messageId` and `conversationId`. Same mechanical, settings-bypassing shape as
   the existing `MESSAGE_READ` dismiss push.
 
+### 3a. Web (Chrome / Windows Notification Center) — DONE
+
+There is no single place that draws a web chat card, and that is the whole
+difficulty: **two different owners draw it, and each can only close its own.**
+
+| When the push arrives | Card drawn by | Retractable with `getNotifications()`? |
+|---|---|---|
+| Every AIMess tab hidden or closed | the FCM SDK, `self.registration.showNotification` | **Yes** — it belongs to the worker |
+| Any tab visible | the page, `new Notification()` in `notificationHandler.displayNotification` | **No** — `getNotifications()` returns only the worker's own |
+
+`@firebase/messaging`'s own push handler decides which: `hasVisibleClients()` →
+`sendMessagePayloadInternalToWindows()` and `onBackgroundMessage` is **never
+called**; only with no visible client does it `showNotification()` and invoke
+`onBackgroundMessage`. The retraction push follows exactly the same fork, so
+each side receives the retraction for the cards it drew — and because a card
+easily outlives the state it was drawn in (shown while hidden, still on screen
+when the user comes back), both sides also tell the other:
+
+```
+MESSAGE_DELETED (data-only push, carries messageId)
+├── no visible tab  → firebase-messaging-sw.js onBackgroundMessage
+│                      ├─ closeNotificationsForMessage()   ← the worker's own cards
+│                      └─ postMessage to every window       ← hidden tabs close theirs
+└── a tab visible   → page onMessage (notificationHandler)
+                       ├─ closeNotificationsForMessage()   ← this page's own cards
+                       └─ postMessage to the worker         ← worker closes its own
+```
+
+Correlation is `data.messageId`, plus `data.messageIds` for a coalesced burst
+(one card can stand for several messages; any of them being deleted invalidates
+the summary that counted it). The page keeps its handles in
+`src/services/displayedNotifications.ts`, indexed by message id and dropped on
+the card's own `close` event.
+
+The per-conversation `tag` is deliberately **unchanged**. It is the shipped
+collapse behaviour (mirrored from the backend's `conv:<id>` / `mention:<id>`
+collapse keys) and it is not what identifies a card for retraction — the ids in
+`data` are. Note the consequence: foreground cards for one conversation replace
+each other, while worker-drawn ones carry no tag and stack.
+
+Known limits, none of them claimed as working:
+
+* A **coalesced** card that stands for several messages is closed when any one
+  of them is deleted — it can no longer describe the remainder honestly.
+* Chrome may show its own "This site has been updated in the background" notice
+  for a push that closes a card instead of showing one. The same is already true
+  of the shipped `MESSAGE_READ` dismiss push.
+* With Chrome fully closed the retraction is queued by the push service (TTL 24h,
+  raised from 5 minutes for exactly this) and applied on the next start.
+
+### 3b. Android / iOS — MISSING (client work, not in these repos)
+
 | Client | Can it remove a delivered notification? | Status |
 |---|---|---|
-| **Web** | Yes. The service worker owns data-only pushes; `registration.getNotifications()` + `close()`, matched on `messageId` / the coalesced `messageIds` list. Same mechanism as the shipped `CALL_CANCELLED` ring retraction. | **DONE** (`public/firebase-messaging-sw.js`) |
 | **Android** | Yes in principle — every chat push is data-only there and the app draws (and therefore owns the id of) the tray entry, so `NotificationManager.cancel()` applies. | **MISSING** — needs the `MESSAGE_DELETED` branch in the client's FCM service. Until then the card stays. |
 | **iOS** | Yes in principle — `UNUserNotificationCenter.removeDeliveredNotifications(withIdentifiers:)` from the background wake (`apns-push-type: background`, priority 5). | **MISSING** — needs the client-side handler. Note APNs background pushes are throttled by the system and are **not guaranteed**, so iOS retraction can never be relied on. |
 
@@ -146,4 +197,5 @@ carries only ids. The recipient set in Redis holds user ids and expires in 24h.
 | Delete scope (for-me vs for-everyone) on the tombstone channels | `apps/notifications-service/tests/consumers/pending-push-delete-scope.test.ts` |
 | Recording recipients, claim-once retraction, failure tolerance | `apps/notifications-service/tests/services/push-retraction.test.ts` |
 | Coalescer drop/edit inside the window | `apps/notifications-service/tests/services/chat-push-coalescer.test.ts` |
-| Web service-worker tray retraction | `aimess_website/__tests__/services/messageDeletedPushRetraction.spec.ts` |
+| Web service-worker tray retraction (background half, A/B/C, page fan-out) | `aimess_website/__tests__/services/messageDeletedPushRetraction.spec.ts` |
+| Web page tray retraction (foreground half, registry, worker hand-off) | `aimess_website/__tests__/services/foregroundNotificationRetraction.spec.ts` |
