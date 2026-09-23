@@ -27,6 +27,11 @@ jest.mock("../../src/services/chat-push-coalescer.js", () => ({
   dropPendingChatMessage: jest.fn(),
   updatePendingChatMessage: jest.fn(),
 }));
+// Pulls in push.service (and its gRPC clients) transitively — this suite only
+// cares which channels the subscriber connects to.
+jest.mock("../../src/services/push-retraction.js", () => ({
+  retractMessagePush: jest.fn(async () => undefined),
+}));
 
 import { startPendingPushSync } from "../../src/consumers/pending-push-sync.js";
 import { startSessionLocaleConsumer } from "../../src/consumers/session-locale.consumer.js";

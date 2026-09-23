@@ -18,6 +18,11 @@ jest.mock("../../src/services/chat-push-coalescer.js", () => ({
   dropPendingChatMessage: jest.fn(),
   updatePendingChatMessage: jest.fn(),
 }));
+// Pulls in push.service (and its gRPC clients) transitively; the delete scope
+// it serves is covered by pending-push-delete-scope.test.ts.
+jest.mock("../../src/services/push-retraction.js", () => ({
+  retractMessagePush: jest.fn(async () => undefined),
+}));
 
 import { updatePendingChatMessage } from "../../src/services/chat-push-coalescer.js";
 import { startPendingPushSync } from "../../src/consumers/pending-push-sync.js";

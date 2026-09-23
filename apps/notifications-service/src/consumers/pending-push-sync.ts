@@ -4,6 +4,7 @@ import {
   dropPendingChatMessage,
   updatePendingChatMessage,
 } from "../services/chat-push-coalescer.js";
+import { retractMessagePush } from "../services/push-retraction.js";
 
 /**
  * Keeps a NOT-YET-SENT notification honest.
@@ -57,7 +58,25 @@ export function startPendingPushSync(): void {
         event === "message:deleted" ||
         event === "community:message:deleted"
       ) {
+        // Delete-for-me hides ONE user's copy; the message still exists for
+        // everybody else, so it must not cancel their queued notification and
+        // must not retract a card they were already shown. Both tombstones
+        // carry the scope: `type`/`deleteType` ("forMe" | "forEveryone") and
+        // the `deletedForEveryone` boolean every `buildDeletePayload` stamps.
+        if (
+          data.type === "forMe" ||
+          data.deleteType === "forMe" ||
+          data.deletedForEveryone === false
+        ) {
+          return;
+        }
         dropPendingChatMessage(messageId);
+        // …and, for whatever already left, ask the devices holding it to drop
+        // the tray entry. Best-effort and self-deduplicating across replicas.
+        void retractMessagePush(
+          messageId,
+          String(data.conversationId ?? data.communityId ?? data.roomId ?? "")
+        );
         return;
       }
       if (event === "message:edited" || event === "community:message:edited") {
