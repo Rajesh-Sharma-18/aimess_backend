@@ -64,6 +64,38 @@ export function cdnPublisherMs(publisherClientId?: string | null): number | null
 }
 
 /**
+ * Configured CDN transcode rungs from `CDN_TRANSCODE_TIERS`, e.g.
+ * `["1080p","720p","480p","360p"]`. Empty ⇒ no ladder. These are the
+ * `suffixName`s registered on the domain via AddLiveDomainTranscode and appended
+ * to the playback name as `<name>_<suffix>`.
+ */
+export function cdnTranscodeTiers(): string[] {
+  return env.CDN_TRANSCODE_TIERS.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * One AddLiveDomainTranscode profile. Only the fields we actually set — the API
+ * defaults the rest (copy codecs, no watermark, auto GOP). See
+ * `scripts/provision-cdn-transcode.ts` for the ladder we register.
+ */
+export interface CdnTranscodeProfile {
+  priority: number;
+  suffixName: string;
+  appNames?: string;
+  videoCodec?: string;
+  videoBitrate?: number;
+  audioCodec?: string;
+  audioBitrate?: number;
+  fps?: number;
+  gop?: number;
+  resolution?: string;
+  bitrateLimit?: number;
+  resolutionAutoLimit?: number;
+}
+
+/**
  * CDNetworks Media Acceleration Live Broadcast integration — the RTMP-ingest
  * counterpart of {@link SrsService}.
  *
@@ -201,6 +233,107 @@ export class CdnService {
       flvUrl: `${base}/${env.CDN_APP}/${name}.flv${query}`,
       dashUrl: null,
     };
+  }
+
+  /**
+   * Per-quality rendition URLs for a CDN stream's ABR ladder.
+   *
+   * CDNetworks transcode publishes each rung as a separate stream named
+   * `<name>_<suffix>` (the `_` is inserted by AddLiveDomainTranscode), so a rung
+   * URL is just the ordinary playback URL of that derived name — which means it
+   * inherits {@link buildPlaybackUrls}'s token signing for free, per rung.
+   *
+   * Driven by `CDN_TRANSCODE_TIERS`. Empty ⇒ `{ hls:{}, flv:{} }`: we never
+   * advertise a rendition the domain isn't transcoding (it would 404 in the
+   * player), the same gate as {@link buildHlsQualityUrls}. Keys match the SRS map
+   * key strings the web/mobile player already reads: HLS `"720p"` etc.; FLV adds
+   * an explicit `"Source"` rung (no ABR/auto tier for HTTP-FLV), mirroring
+   * {@link buildFlvQualityUrls}. HLS omits `"Source"` — the base `hlsUrl` is it.
+   */
+  buildQualityUrls(name: string): {
+    hls: Record<string, string>;
+    flv: Record<string, string>;
+  } {
+    const tiers = cdnTranscodeTiers();
+    if (tiers.length === 0) return { hls: {}, flv: {} };
+    const hls: Record<string, string> = {};
+    const flv: Record<string, string> = {
+      Source: this.buildPlaybackUrls(name).flvUrl,
+    };
+    for (const suffix of tiers) {
+      const urls = this.buildPlaybackUrls(`${name}_${suffix}`);
+      hls[suffix] = urls.hlsUrl;
+      flv[suffix] = urls.flvUrl;
+    }
+    return { hls, flv };
+  }
+
+  /**
+   * Register the transcode ladder on the push domain (AddLiveDomainTranscode).
+   * Domain-level and provisioned ONCE — it applies to every stream on the
+   * domain, so this is a one-shot admin action (`scripts/provision-cdn-transcode.ts`),
+   * not part of the per-stream lifecycle.
+   *
+   * Best-effort result: the vendor answers HTTP 200 with `{code,message}` even on
+   * a logical failure (e.g. transcoding not enabled on the account), so success
+   * is read from the body, same discipline as {@link stopPublishing}.
+   */
+  async addTranscode(
+    profiles: CdnTranscodeProfile[]
+  ): Promise<{ ok: boolean; status: number; body: string }> {
+    if (!this.isConfigured() || !this.isApiConfigured()) {
+      return {
+        ok: false,
+        status: 0,
+        body: "CDN not configured (CDN_PUSH_DOMAIN/CDN_PLAYBACK_BASE + CDN_API_USERNAME/CDN_API_KEY required)",
+      };
+    }
+    const url = `${env.CDN_API_BASE.replace(/\/+$/, "")}/live/domains/transcode/add`;
+    return this.postJson(url, {
+      domains: [env.CDN_PUSH_DOMAIN],
+      profiles: profiles.map((p) => ({ appNames: env.CDN_APP, ...p })),
+    });
+  }
+
+  /**
+   * Read back the transcode config on the push domain
+   * (QueryLiveDomainTranscode) — used by the provisioning script to confirm what
+   * was registered.
+   */
+  async queryTranscode(): Promise<{ ok: boolean; status: number; body: string }> {
+    if (!this.isConfigured() || !this.isApiConfigured()) {
+      return { ok: false, status: 0, body: "CDN not configured" };
+    }
+    const url = `${env.CDN_API_BASE.replace(/\/+$/, "")}/live/domains/transcode/query`;
+    return this.postJson(url, { domain: env.CDN_PUSH_DOMAIN });
+  }
+
+  /**
+   * POST a JSON body with the signed CDN headers and read logical success from
+   * the `{code,message}` reply (HTTP is 200 even on failure). Shared by
+   * {@link addTranscode} and {@link queryTranscode}; 5s timeout, never throws.
+   */
+  private async postJson(
+    url: string,
+    payload: unknown
+  ): Promise<{ ok: boolean; status: number; body: string }> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { ...this.apiHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      const body = await res.text();
+      const ok = res.ok && /"code"\s*:\s*"?0"?|success/i.test(body);
+      return { ok, status: res.status, body };
+    } catch (error) {
+      return { ok: false, status: 0, body: String(error) };
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   /**
