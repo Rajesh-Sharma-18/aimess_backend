@@ -222,6 +222,16 @@ const envSchema = z.object({
   /** Per-probe timeout. A live playlist answers in well under a second. */
   CDN_PLAYBACK_PROBE_TIMEOUT_MS: z.coerce.number().positive().default(4000),
   /**
+   * ABR ladder rungs the CDN domain is transcoding, as a comma list of
+   * `suffixName`s registered via AddLiveDomainTranscode (run
+   * `scripts/provision-cdn-transcode.ts`), e.g. `1080p,720p,480p,360p`. Blank =
+   * no ladder: playback exposes the source rendition only, exactly as before.
+   * Each rung must be provisioned on the account first (transcoding is a billed
+   * CDNetworks add-on) or its URL 404s — keep this blank until provisioning is
+   * confirmed.
+   */
+  CDN_TRANSCODE_TIERS: z.string().default(""),
+  /**
    * How long a CDN stream may sit RECONNECTING (publisher dropped, per the end
    * callback) before the sweeper ends it. A genuine reconnect resumes it via a
    * fresh start callback within this window; nothing else does — the status API
