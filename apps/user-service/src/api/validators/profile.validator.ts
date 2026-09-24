@@ -1,25 +1,33 @@
 import { z } from "zod";
 
 import {
+  countCharacters,
+  TEXT_NAME_MAX_LENGTH,
+  TEXT_NAME_MAX_RAW_LENGTH,
+} from "@aimess/constants";
+
+import {
   isValidProfileDateOfBirth,
   PROFILE_GENDER_VALUES,
 } from "../../lib/profile-fields.util.js";
-import { normalizeUsername } from "../../lib/username.util.js";
+import { usernameSchema } from "./username.validator.js";
 
-const usernameSchema = z
-  .string()
-  .trim()
-  .transform((s) => normalizeUsername(s))
-  .pipe(
-    z
-      .string()
-      .min(3, "Username must be at least 3 characters")
-      .max(32, "Username must be at most 32 characters")
-      .regex(
-        /^[a-z0-9_]+$/,
-        "Username may only contain lowercase letters, numbers, and underscores"
-      )
-  );
+/**
+ * First/last name: at most 30 CHARACTERS as the person sees them.
+ *
+ * `.max()` alone counts UTF-16 code units, which would hand a Thai or emoji
+ * name half the field — so the cheap raw cap only keeps a pathological string
+ * away from the segmenter, and the real limit is the grapheme count. Validated
+ * AFTER `.trim()`, matching how the value is stored. Both messages are message
+ * KEYS: `validateBody` renders them in the caller's locale.
+ */
+const personNameSchema = (requiredMessage: string, maxMessage: string) =>
+  z
+    .string()
+    .trim()
+    .min(1, requiredMessage)
+    .max(TEXT_NAME_MAX_RAW_LENGTH, maxMessage)
+    .refine((v) => countCharacters(v) <= TEXT_NAME_MAX_LENGTH, maxMessage);
 
 const dateOfBirthSchema = z
   .string()
@@ -61,18 +69,14 @@ export type PublicProfileQuery = z.infer<typeof publicProfileQuerySchema>;
 
 export const updateProfileSchema = z
   .object({
-    firstName: z
-      .string()
-      .trim()
-      .min(1, "First name is required")
-      .max(50, "First name must be at most 50 characters")
-      .optional(),
-    lastName: z
-      .string()
-      .trim()
-      .min(1, "Last name is required")
-      .max(50, "Last name must be at most 50 characters")
-      .optional(),
+    firstName: personNameSchema(
+      "First name is required",
+      "VALIDATION_FIRST_NAME_MAX_LENGTH"
+    ).optional(),
+    lastName: personNameSchema(
+      "Last name is required",
+      "VALIDATION_LAST_NAME_MAX_LENGTH"
+    ).optional(),
     username: usernameSchema.optional(),
     bio: z
       .string()

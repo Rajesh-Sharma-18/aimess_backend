@@ -1,3 +1,5 @@
+import { TEXT_NAME_MAX_LENGTH } from "@aimess/constants";
+
 import { authRepository } from "../repositories/auth.repository.js";
 
 function sanitizeAccountBase(value: string): string {
@@ -28,14 +30,17 @@ export function buildSocialAccountBase(
   return sanitizeAccountBase(`${provider}_${providerUserId.slice(0, 12)}`);
 }
 
+// A social sign-up never types its account name, so the 30-character rule is
+// enforced by CONSTRUCTION here rather than by a validator. `sanitizeAccountBase`
+// already stops at 24, so this only bounds the collision suffix.
 export async function generateUniqueAccount(base: string): Promise<string> {
-  let candidate = sanitizeAccountBase(base).slice(0, 32);
+  let candidate = sanitizeAccountBase(base).slice(0, TEXT_NAME_MAX_LENGTH);
   let suffix = 0;
 
   while (await authRepository.findByAccount(candidate)) {
     suffix += 1;
     const suffixText = `_${String(suffix)}`;
-    candidate = `${sanitizeAccountBase(base).slice(0, 32 - suffixText.length)}${suffixText}`;
+    candidate = `${sanitizeAccountBase(base).slice(0, TEXT_NAME_MAX_LENGTH - suffixText.length)}${suffixText}`;
   }
 
   return candidate;

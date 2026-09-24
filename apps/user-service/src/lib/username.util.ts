@@ -1,5 +1,12 @@
+import { TEXT_NAME_MAX_LENGTH } from "@aimess/constants";
+
 const USERNAME_MIN_LENGTH = 3;
-const USERNAME_MAX_LENGTH = 32;
+// 30, shared with every other short identity field and with the website — see
+// TEXT_NAME_MAX_LENGTH. Only the CEILING moved (it was 32); the floor, the
+// lowercase normalization and the [a-z0-9_] rule are unchanged, and nothing
+// here is applied to a username being LOOKED UP, so the handful of legacy
+// 31-32 character profiles keep resolving.
+const USERNAME_MAX_LENGTH = TEXT_NAME_MAX_LENGTH;
 /** Canonical usernames are stored lowercase so uniqueness matches user expectations. */
 const USERNAME_PATTERN = /^[a-z0-9_]+$/;
 

@@ -1,4 +1,7 @@
-import { DELETED_ACCOUNT_DISPLAY_NAME } from "@aimess/constants";
+import {
+  clampCharacters,
+  DELETED_ACCOUNT_DISPLAY_NAME,
+} from "@aimess/constants";
 import { BadRequestError, ConflictError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import {
@@ -492,8 +495,14 @@ export const userProfileService = {
     // carried one; otherwise leave the fields empty so the user fills them in
     // on the profile-details step. A blank/whitespace value is treated as
     // "not provided".
-    const firstName = data.firstName?.trim().slice(0, 50) ?? "";
-    const lastName = data.lastName?.trim().slice(0, 50) ?? "";
+    //
+    // Clamped, not rejected: the name comes from Google/Apple, not from a form,
+    // so a long one must still produce a profile — but it must not create a row
+    // the 30-character rule would refuse on the user's next edit. Clamping by
+    // CHARACTER (not `.slice`, which cuts UTF-16 code units) so a name ending
+    // in an emoji or a Thai cluster is never cut in half.
+    const firstName = clampCharacters(data.firstName?.trim() ?? "");
+    const lastName = clampCharacters(data.lastName?.trim() ?? "");
 
     for (
       let attempt = 1;

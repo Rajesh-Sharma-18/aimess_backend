@@ -1,16 +1,60 @@
 import { z } from "zod";
 
+import {
+  countCharacters,
+  TEXT_NAME_MAX_LENGTH,
+  TEXT_NAME_MAX_RAW_LENGTH,
+} from "@aimess/constants";
+
 import { normalizeHandle } from "../../lib/community-slug.util.js";
 
 const OBJECT_ID_REGEX = /^[a-f0-9]{24}$/i;
 
+/**
+ * Community display name: at most 30 CHARACTERS as the person sees them.
+ *
+ * The raw `.max()` is a UTF-16 guard, not the product limit — it only keeps a
+ * pathological string away from the grapheme segmenter, because counting code
+ * units would hand a Thai or emoji name half the field. Floor of 3 unchanged.
+ */
 const nameSchema = z
   .string()
   .trim()
   .min(3, "Community name must be at least 3 characters")
-  .max(50, "Community name must be at most 50 characters");
+  .max(TEXT_NAME_MAX_RAW_LENGTH, "VALIDATION_COMMUNITY_NAME_MAX_LENGTH")
+  .refine(
+    (v) => countCharacters(v) <= TEXT_NAME_MAX_LENGTH,
+    "VALIDATION_COMMUNITY_NAME_MAX_LENGTH"
+  );
 
+/**
+ * The handle as it is STORED — no leading "@"; the clients render that. Charset
+ * is ASCII, so `.max()` and the website's character counter agree exactly.
+ * Normalization, the floor of 3 and the charset rule are unchanged; only the
+ * ceiling moved (32 -> 30), and only here on the WRITE path — `handleParamsSchema`
+ * below keeps the wider shape so existing handles stay resolvable.
+ */
 const handleSchema = z
+  .string()
+  .trim()
+  .transform((s) => normalizeHandle(s))
+  .pipe(
+    z
+      .string()
+      .min(3, "Community handle must be at least 3 characters")
+      .max(TEXT_NAME_MAX_LENGTH, "VALIDATION_COMMUNITY_HANDLE_MAX_LENGTH")
+      .regex(
+        /^[a-z0-9_]+$/,
+        "Community handle may only contain lowercase letters, numbers, and underscores"
+      )
+  );
+
+/**
+ * Lookup shape for a handle that ALREADY EXISTS (`GET /communities/by-handle/:handle`).
+ * Kept at 32 on purpose: a community created before the 30-character rule must
+ * still resolve from a shared link. Only creating or renaming one is capped.
+ */
+const existingHandleSchema = z
   .string()
   .trim()
   .transform((s) => normalizeHandle(s))
@@ -105,7 +149,7 @@ export type HandleAvailableQuery = z.infer<typeof handleAvailableQuerySchema>;
  * malformed handle is rejected (400 INVALID_HANDLE) before hitting the service.
  */
 export const handleParamsSchema = z.object({
-  handle: handleSchema,
+  handle: existingHandleSchema,
 });
 
 export type HandleParams = z.infer<typeof handleParamsSchema>;
