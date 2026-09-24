@@ -38,25 +38,46 @@ const buildDeps = (existing: unknown) => {
   } as never as Parameters<typeof ensurePrivateRoom>[0] & {
     privateRoomRepo: { create: jest.Mock };
     redis: { publish: jest.Mock };
+    userSnapshotService: { getUserSnapshotsMap: jest.Mock };
   };
 };
 
 describe("ensurePrivateRoom", () => {
-  it("creates the room and announces it to BOTH participants when none exists", async () => {
+  it("creates the room when none exists", async () => {
     const deps = buildDeps(null);
 
     const room = await ensurePrivateRoom(deps, "user-a", "user-b");
 
     expect(room.roomId).toBe("prv_new");
     expect(deps.privateRoomRepo.create).toHaveBeenCalledTimes(1);
-    const channels = deps.redis.publish.mock.calls.map((c) => c[0]);
-    expect(channels).toEqual(["user:user-a", "user:user-b"]);
-    expect(
-      JSON.parse(deps.redis.publish.mock.calls[0]![1] as string).event
-    ).toBe("conv:created");
   });
 
-  it("is idempotent: an existing room is returned untouched and re-announces nothing", async () => {
+  /**
+   * The room this function creates has no `lastMessageAt`, and both list queries
+   * skip NULL rows — so it is not a conversation any list will return. Announcing
+   * it anyway handed every client a row the authoritative list never mentions
+   * again: unreconcilable by refetch, pagination or restart, with no preview, no
+   * timestamp, and the literal "Unknown User" whenever the snapshot lookup missed.
+   * The real announcements happen where the room becomes listable — the friendship
+   * consumer's `conv:updated`, and the first message's own `conv:created`.
+   */
+  it("announces NOTHING — a message-less room is not a listable conversation", async () => {
+    const deps = buildDeps(null);
+
+    await ensurePrivateRoom(deps, "user-a", "user-b");
+
+    expect(deps.redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("never asks for a peer snapshot — there is no payload left to name", async () => {
+    const deps = buildDeps(null);
+
+    await ensurePrivateRoom(deps, "user-a", "user-b");
+
+    expect(deps.userSnapshotService.getUserSnapshotsMap).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent: an existing room is returned untouched and announces nothing", async () => {
     const deps = buildDeps({ roomId: "prv_existing" });
 
     const room = await ensurePrivateRoom(deps, "user-a", "user-b");
