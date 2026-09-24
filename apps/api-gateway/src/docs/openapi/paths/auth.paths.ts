@@ -840,10 +840,30 @@ export const authPaths = {
       summary: "Sign out",
       operationId: "logoutUser",
       description:
-        "Revokes the current session and its refresh tokens. Requires a valid (non-expired) access token.\n\n" +
+        "Revokes the current session and its refresh tokens.\n\n" +
+        "**A live access token is NOT required.** The session is identified by, in order: the bearer access token, a `refreshToken` in the body, or the `aimess_rt` refresh cookie. A token that is missing, expired, malformed or forged is ignored rather than rejected: a client whose access token expired while it sat idle must still be able to end its session, and rejecting it left that session alive and listed under Connected Devices. Send the refresh token in the body from any client that does not get the cookie back (native apps, and browsers whose API is on another site).\n\n" +
+        "With none of the three the call is a 200 no-op that still clears the cookie. Logout is idempotent, and it only ever ends the ONE session it was given: other devices are untouched.\n\n" +
         "After logout, the access token is still technically valid until it naturally expires, but the session is marked ENDED on the server. The refresh token cannot be used to generate new access tokens.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                refreshToken: {
+                  type: "string",
+                  description:
+                    "The session's refresh token. Only needed when the access token may be expired and no refresh cookie is sent.",
+                },
+              },
+            },
+            example: { refreshToken: "b7f1c0e2..." },
+          },
+        },
+      },
       responses: {
         "200": {
           description: "Signed out successfully",
@@ -851,15 +871,6 @@ export const authPaths = {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
               example: { success: true, message: "Signed out successfully" },
-            },
-          },
-        },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-              example: { success: false, message: "Unauthorized" },
             },
           },
         },

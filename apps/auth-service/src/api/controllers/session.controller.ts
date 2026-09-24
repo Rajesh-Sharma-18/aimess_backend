@@ -68,14 +68,30 @@ export const issueAccessToken = asyncHandler(
   }
 );
 
+// The logout body is optional and unvalidated (every other credential path has
+// its own validator), so it is narrowed here rather than trusted.
+function bodyRefreshToken(req: Request): string | undefined {
+  const value = (req.body as { refreshToken?: unknown } | undefined)
+    ?.refreshToken;
+  if (typeof value !== "string") return undefined;
+  return value.trim() || undefined;
+}
+
 export const logout = asyncHandler(async (req: Request, res: Response) => {
   if (req.auth) {
     await sessionService.logout(req.auth.userId, req.auth.sessionId);
   } else {
-    // No usable access token. The refresh cookie still identifies the session,
+    // No usable access token. The refresh token still identifies the session,
     // and it must be revoked here or "Sign out" would leave it alive.
-    const cookie = readRefreshCookie(req);
-    if (cookie) await sessionService.logoutByRefreshToken(cookie);
+    //
+    // The body is read as well as the cookie: native clients have no cookie
+    // jar, and a browser talking to an API on another site never gets the
+    // cookie back either, so the cookie alone left those sessions unkillable
+    // once the access token had expired. The body wins when both are present,
+    // exactly as `hydrateRefreshTokenFromCookie` decides it for /refresh - an
+    // explicit token is the caller's own session, an ambient cookie need not be.
+    const refreshToken = bodyRefreshToken(req) ?? readRefreshCookie(req);
+    if (refreshToken) await sessionService.logoutByRefreshToken(refreshToken);
   }
 
   clearRefreshCookie(res);
