@@ -661,7 +661,9 @@ export class GroupMessageController {
     const page = Number(req.query.page) || 1;
     const [pins, totalCount] = await Promise.all([
       this.pinService.list(roomId, userId, { limit, cursor }),
-      this.pinService.countPins(roomId),
+      // Per-viewer: pins from before this member's own history are filtered out
+      // of the page, so they must not be counted into the total either.
+      this.pinService.countPins(roomId, userId),
     ]);
     const paginated = buildPaginatedResponse(
       pins as unknown as Record<string, unknown>[],

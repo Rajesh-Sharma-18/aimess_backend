@@ -47,6 +47,7 @@ import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
@@ -92,6 +93,7 @@ import {
   mentionedUserIdsOf,
 } from "../lib/group-mentions.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import { assertGroupMediaWithinHistory } from "../lib/media-history-guard.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { adminMentions, adminReactionCounts } from "../lib/admin-wire.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
@@ -188,6 +190,9 @@ export interface GrpcDeps {
   groupMemberService: GroupMemberService;
   groupRoomRepo: GroupRoomRepository;
   groupMemberRepo: GroupMemberRepository;
+  /** Read directly by the media-access guard to bind an objectKey to a message
+   *  the caller may actually read. */
+  groupMessageRepo: GroupMessageRepository;
   privateRoomRepo: PrivateRoomRepository;
   roomMemberRepo: RoomMemberRepository;
   generalRoomRepo: GeneralRoomRepository;
@@ -454,6 +459,31 @@ export function createMessagingImpl(
           // same messageId ack below.
           alreadySent = isIdempotentReplay(msg);
 
+          // WHO receives this DM is decided by the ROOM, not by the caller.
+          // `PrivateMessageService.sendMessage` derives the peer from
+          // `PrivateRoom.participants` and persists it, so the row we just got
+          // back IS the answer — read it here instead of trusting
+          // `req.receiverId`, an optional client-supplied field that drives all
+          // three personal fan-outs below.
+          //
+          // A client that omits it (the mobile clients do) sent them to
+          // `user:""`: the peer's `conv:updated` list bump and their push never
+          // fired, and their personal `message:new` copy was lost too. The
+          // message still reached them whenever they had the chat OPEN, because
+          // that copy rides the `conv:<roomId>` room broadcast — which is
+          // exactly how "the photo appears in the chat but the conversation-list
+          // preview stays on the previous message" happened. A forged value is
+          // the mirror image: it delivers all three to someone not in the room.
+          //
+          // The REST path (chat-message-orchestrator.ts `sendDirect`) has always
+          // resolved it this way; only this socket path still trusted the wire.
+          const resolvedReceiverId =
+            conversationType === "GROUP"
+              ? undefined
+              : (((msg as unknown as Record<string, unknown>).receiverId as
+                  | string
+                  | null) ?? "");
+
           // ONE roster read shared by the `conv:updated` bump and the push
           // below — they were each issued their own, and both are O(members).
           // See lib/once.ts.
@@ -505,7 +535,7 @@ export function createMessagingImpl(
                 senderAvatar: bcastAvatar,
                 senderRole:
                   (row as { senderRole?: string }).senderRole ?? msg.senderRole,
-                receiverId: req.receiverId,
+                receiverId: resolvedReceiverId,
                 messageType: row.messageType,
                 content: bcastContent ?? null,
                 parentMessageId: (rowFull.parentMessageId as string) || "",
@@ -555,7 +585,7 @@ export function createMessagingImpl(
                   });
               } else {
                 publishMessageNewToParticipants(
-                  [req.senderId, req.receiverId],
+                  [req.senderId, resolvedReceiverId ?? ""],
                   rowPayload,
                   bcastContext,
                   req.senderId
@@ -592,6 +622,14 @@ export function createMessagingImpl(
                 // Omitting it here left the primary socket send path publishing
                 // seq 0, so the client had nothing to order those bumps by.
                 seq: msg.sequenceNumber ?? 0,
+                // Feeds `projectionRevision` — the ordering a timestamp cannot
+                // express, and the client's guard against a stale bump
+                // overwriting a newer row. Omitting it here published 0 on the
+                // PRIMARY send path, so DM/group rows had no revision ordering
+                // at all while the REST path did. Same value the REST bump
+                // carries (chat-message-orchestrator.ts).
+                revision:
+                  (msg as unknown as { revision?: number }).revision ?? 0,
                 createdAt: bumpSentAt,
               },
             };
@@ -599,11 +637,22 @@ export function createMessagingImpl(
               publishConvUpdatedSafe({
                 ...bumpBase,
                 fetchRecipients: groupRecipients,
+                // Absolute per-recipient badge, not a blind +1: one album send
+                // is N rows behind ONE bump, so an incrementing client drifts
+                // away from `chat:unread_summary`. Mirrors the REST path.
+                resolveUnreadCounts: () =>
+                  deps.groupMessageService.getUnreadCountsByUser(
+                    req.conversationId
+                  ),
               });
             } else {
               publishConvUpdatedSafe({
                 ...bumpBase,
-                recipientIds: [req.senderId, req.receiverId],
+                recipientIds: [req.senderId, resolvedReceiverId ?? ""],
+                resolveUnreadCounts: () =>
+                  deps.privateMessageService.getUnreadCountsByUser(
+                    req.conversationId
+                  ),
               });
             }
           }
@@ -676,7 +725,7 @@ export function createMessagingImpl(
             } else {
               publishMessageSentSafe({
                 ...pushBase,
-                recipientIds: [req.receiverId],
+                recipientIds: [resolvedReceiverId ?? ""],
               });
             }
           }
@@ -1401,6 +1450,16 @@ export function createMessagingImpl(
             });
           }
 
+          // Room-derived, never the caller's claim — see `sendMessage` above.
+          // A forward whose `receiverId` the client omitted bumped nobody's
+          // inbox but the sender's.
+          const fwdReceiverId =
+            conversationType === "GROUP"
+              ? undefined
+              : (((message as unknown as Record<string, unknown>).receiverId as
+                  | string
+                  | null) ?? "");
+
           {
             const serverTs =
               message.createdAt instanceof Date
@@ -1425,7 +1484,7 @@ export function createMessagingImpl(
                   senderName: fwdSenderName,
                   senderAvatar: fwdAvatar,
                   senderRole: (full.senderRole as string) ?? "",
-                  receiverId: req.receiverId,
+                  receiverId: fwdReceiverId,
                   messageType: message.messageType,
                   content: fwdContent ?? null,
                   parentMessageId: (full.parentMessageId as string) || "",
@@ -1479,7 +1538,7 @@ export function createMessagingImpl(
             } else {
               publishConvUpdatedSafe({
                 ...bumpBase,
-                recipientIds: [req.senderId ?? "", req.receiverId ?? ""],
+                recipientIds: [req.senderId ?? "", fwdReceiverId ?? ""],
               });
             }
           }
@@ -1826,7 +1885,9 @@ export function createMessagingImpl(
             selfEmoji: "",
           });
         } catch (err) {
-          logger.error(`gRPC adminGetMessageReactionsPage error: ${String(err)}`);
+          logger.error(
+            `gRPC adminGetMessageReactionsPage error: ${String(err)}`
+          );
           callback(toGrpcCallbackError(err));
         }
       })();
@@ -3087,10 +3148,16 @@ export function createMessagingImpl(
           userId?: string;
           scope?: string;
           resourceId?: string;
+          objectKey?: string;
+          objectCreatedAt?: string | number;
         };
         const userId = req.userId ?? "";
         const resourceId = req.resourceId ?? "";
         const scope = String(req.scope ?? "").toUpperCase();
+        const objectKey = req.objectKey ?? "";
+        // int64 arrives as a string under `longs: String`; 0/absent means the
+        // caller did not supply it (upload path, or an older media-service).
+        const objectCreatedAtMs = Number(req.objectCreatedAt ?? 0) || 0;
 
         try {
           switch (scope) {
@@ -3124,6 +3191,18 @@ export function createMessagingImpl(
               if (String(member.status).toUpperCase() === "BANNED") {
                 throw new ForbiddenError("USER_BANNED");
               }
+              // Membership is not the whole answer for a group: each member also
+              // has a history boundary, and an attachment from before theirs
+              // belongs to a message every other surface refuses them. Knowing
+              // the objectKey must not be the way around it.
+              await assertGroupMediaWithinHistory({
+                member,
+                roomId: resourceId,
+                objectKey,
+                objectCreatedAtMs,
+                probe: (p) =>
+                  deps.groupMessageRepo.hasVisibleMessageWithObjectKey(p),
+              });
               break;
             }
             case "COMMUNITY_CHAT": {
@@ -4918,7 +4997,8 @@ export function createCommunityImpl(
               limit: req.limit || null,
               siblingMessageIds: Array.isArray(req.siblingMessageIds)
                 ? req.siblingMessageIds.filter(
-                    (id): id is string => typeof id === "string" && id.length > 0
+                    (id): id is string =>
+                      typeof id === "string" && id.length > 0
                   )
                 : null,
             });

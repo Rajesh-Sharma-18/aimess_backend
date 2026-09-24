@@ -126,9 +126,24 @@ export class GroupMessagePinRepository {
   }
 
   /** Count active pins for a room. */
-  async countActivePinsByRoom(roomId: string): Promise<number> {
+  /**
+   * Active pins in a room. `cutoff` is the viewer's own history boundary
+   * (`getGroupVisibilityCutoff`): a pin they cannot open must not be counted
+   * either, or the "Pinned (N)" header promises rows the list then withholds.
+   * Mirrors the filter `GroupPinService.list` applies to the page itself.
+   */
+  async countActivePinsByRoom(roomId: string, cutoff?: Date): Promise<number> {
     return this.prisma.groupMessagePin.count({
-      where: { roomId, unpinnedAt: null },
+      where: {
+        roomId,
+        unpinnedAt: null,
+        ...(cutoff
+          ? {
+              messageCreatedAt: { gt: cutoff },
+              pinnedAt: { gt: cutoff },
+            }
+          : {}),
+      },
     });
   }
 

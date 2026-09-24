@@ -154,6 +154,13 @@ message CheckMediaAccessRequest {
   string user_id     = 1;
   string scope       = 2;
   string resource_id = 3;
+  // The object being asked for, and the instant it was uploaded (epoch ms).
+  // Membership alone answers "may you read this room"; a GROUP additionally
+  // has a per-member history boundary, and an attachment from before it is as
+  // off-limits as the message carrying it. Optional: an older media-service
+  // that sends neither falls back to the membership-only answer.
+  string object_key         = 4;
+  int64  object_created_at  = 5;
 }
 message CheckMediaAccessResponse {
   bool allowed = 1;

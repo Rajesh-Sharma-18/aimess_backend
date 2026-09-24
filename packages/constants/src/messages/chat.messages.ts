@@ -305,6 +305,17 @@ export const CHAT_MESSAGES = {
     en: "Message not found",
     th: "ไม่พบข้อความ",
   },
+  // A group message older than the caller's own membership boundary
+  // (`getGroupVisibilityCutoff` — the latest of joinedAt / clearedAt /
+  // clearChatAt). Deliberately NOT folded into CHAT_MESSAGE_NOT_FOUND: the
+  // client has to tell "you were not here for this" from "this is gone", and
+  // the two say different things to the reader. Carries no detail about the
+  // message itself — the refusal is the whole answer.
+  CHAT_MESSAGE_BEFORE_JOIN: {
+    vi: "Tin nhắn này được gửi trước khi bạn tham gia nhóm",
+    en: "This message was sent before you joined the group",
+    th: "ข้อความนี้ถูกส่งก่อนที่คุณจะเข้าร่วมกลุ่ม",
+  },
   CHAT_INVALID_CONVERSATION_TYPE: {
     vi: "Loại cuộc trò chuyện không hợp lệ",
     en: "Invalid conversation type",

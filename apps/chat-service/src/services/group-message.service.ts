@@ -81,7 +81,10 @@ import {
 } from "../lib/access-guard.js";
 import { allocateRoomSlot } from "../lib/room-lock.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
-import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
+import {
+  getGroupVisibilityCutoff,
+  isHiddenByCutoff,
+} from "../lib/deletion-cutoff.js";
 import {
   getAccountChatSettings,
   mayBroadcastReadReceipts,
@@ -320,11 +323,29 @@ export class GroupMessageService {
     // Validate BEFORE the lookup query (not just before persistence) — an
     // invalid/foreign-shaped id (albumId/mediaId/attachmentId/clientMessageId,
     // anything not a 24-hex ObjectId) must never reach `findById`.
-    const resolvedParentId = resolveParentMessageId(params.parentMessageId);
+    let resolvedParentId = resolveParentMessageId(params.parentMessageId);
     let quoteData: CanonicalQuote | undefined;
     if (resolvedParentId) {
       const originalMsg = await this.messageRepo.findById(resolvedParentId);
-      if (originalMsg) {
+      // The quote is a SNAPSHOT of the parent's sender and text, persisted on
+      // the new message and broadcast to the room — so the parent has to be one
+      // this sender may actually read. `findById` takes a bare id and answered
+      // for any message in the product: a crafted `parentMessageId` quoted a
+      // message from another group entirely, or one from before the sender
+      // joined this one, and the reply then published that content to everyone.
+      // Silently dropping the quote (rather than failing the send) matches how
+      // every other unusable parent is handled here.
+      const parentReadable =
+        originalMsg &&
+        originalMsg.roomId === params.roomId &&
+        !isHiddenByCutoff(
+          originalMsg.createdAt,
+          getGroupVisibilityCutoff(member)
+        );
+      // Unusable parent: drop the reference as well as the quote, so the row
+      // never points at a message this sender was not allowed to reply to.
+      if (!parentReadable) resolvedParentId = null;
+      if (originalMsg && parentReadable) {
         // Album sends are split one-row-per-file (lib/split-media-album.ts),
         // so the parent row's own content.files can never reveal the true
         // album size — look up its sibling batch for IMAGE/VIDEO parents.
@@ -333,15 +354,15 @@ export class GroupMessageService {
         const attachmentCountOverride =
           isAlbumRowId(params.parentMessageId) &&
           ["IMAGE", "VIDEO"].includes(
-          normalizeMessageType(originalMsg.messageType)
-        )
-          ? await resolveReplyAttachmentCount(
-              this.messageRepo,
-              params.roomId,
-              originalMsg.senderId ?? "",
-              originalMsg
-            )
-          : undefined;
+            normalizeMessageType(originalMsg.messageType)
+          )
+            ? await resolveReplyAttachmentCount(
+                this.messageRepo,
+                params.roomId,
+                originalMsg.senderId ?? "",
+                originalMsg
+              )
+            : undefined;
         quoteData = buildReplyQuoteSnapshot({
           messageId: originalMsg.id,
           senderId: originalMsg.senderId ?? "",
@@ -1083,8 +1104,32 @@ export class GroupMessageService {
       this.roomRepo
     );
     const anchor = await this.messageRepo.findById(params.messageId);
-    if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bound to THIS room before anything else: `findById` takes a bare id, so a
+    // member of group A could otherwise anchor a window on a message from group
+    // B and learn its position. Same cross-room rule getMessageContext applies.
+    if (!anchor || anchor.roomId !== params.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     const cutoff = getGroupVisibilityCutoff(member);
+    // Authorization BEFORE navigation. A target outside the caller's own
+    // membership history used to be answered with a window of the OLDEST
+    // messages they may see — so a reply to a pre-join message threw the reader
+    // to the start of their history and then said "no longer available".
+    // Refuse it outright instead: no window, no cursors, nothing to scroll to,
+    // and a code that says which of the two reasons it was.
+    if (isHiddenByCutoff(anchor.createdAt, cutoff)) {
+      throw new ForbiddenError("CHAT_MESSAGE_BEFORE_JOIN");
+    }
+    // Past the instant this (disbanded-room) membership's read access froze, or
+    // gone for this reader — either way there is no window to centre on it.
+    if (
+      (readCutoffBefore && anchor.createdAt > readCutoffBefore) ||
+      anchor.isDeleted ||
+      ((anchor.deletedForUserIds as string[] | null) ?? []).includes(
+        params.userId
+      )
+    ) {
+      throw new GoneError("CHAT_MESSAGE_DELETED");
+    }
     const items = await this.messageRepo.findAroundSeq({
       userId: params.userId,
       roomId: params.roomId,
@@ -1929,7 +1974,11 @@ export class GroupMessageService {
     userId: string,
     emoji: string,
     mediaIndex?: number | null
-  ): Promise<{ message: GroupMessage; added: boolean; mediaIndex: number | null }> {
+  ): Promise<{
+    message: GroupMessage;
+    added: boolean;
+    mediaIndex: number | null;
+  }> {
     const MAX_ATTEMPTS = 5;
     let message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -2094,7 +2143,10 @@ export class GroupMessageService {
       params.mediaIndex
     );
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    const target = resolveMediaReactionIndex(message.content, params.mediaIndex);
+    const target = resolveMediaReactionIndex(
+      message.content,
+      params.mediaIndex
+    );
     return {
       roomId: message.roomId,
       added: true,
@@ -2285,6 +2337,15 @@ export class GroupMessageService {
     if (!message || message.roomId !== roomId)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
+    // Membership boundary first: a message from before this member's own
+    // history is refused for a REASON OF ITS OWN, not folded into "deleted".
+    // The reader is told something true ("you were not here for this") instead
+    // of something false, and the check runs before the deletion probes so a
+    // pre-join message never answers questions about its own state.
+    const cutoff = getGroupVisibilityCutoff(member);
+    if (isHiddenByCutoff(message.createdAt, cutoff)) {
+      throw new ForbiddenError("CHAT_MESSAGE_BEFORE_JOIN");
+    }
     if (message.isDeleted) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
@@ -2292,10 +2353,6 @@ export class GroupMessageService {
       message.deletedForUserIds &&
       (message.deletedForUserIds as string[]).includes(userId)
     ) {
-      throw new GoneError("CHAT_MESSAGE_DELETED");
-    }
-    const cutoff = getGroupVisibilityCutoff(member);
-    if (cutoff && message.createdAt <= cutoff) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
     return message;
@@ -2328,6 +2385,14 @@ export class GroupMessageService {
       userId
     );
     if (!member) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Membership is not the whole answer. The forward path READS
+    // `source.content` and republishes it elsewhere, so a member could forward
+    // a message from before they joined — content the room itself refuses them
+    // — straight out of the group. Same NotFound as a foreign message: the
+    // refusal says nothing about what is on the other side of it.
+    if (isHiddenByCutoff(message.createdAt, getGroupVisibilityCutoff(member))) {
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    }
     return member;
   }
 

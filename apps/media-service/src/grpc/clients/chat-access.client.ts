@@ -15,12 +15,20 @@ const PROTO_PATH = path.resolve(
 
 export type MediaAccessScope = "PRIVATE_CHAT" | "GROUP_CHAT" | "COMMUNITY_CHAT";
 
+export interface CheckMediaAccessParams {
+  userId: string;
+  scope: MediaAccessScope;
+  resourceId: string;
+  /** The object being downloaded. Omitted on the UPLOAD path, where no object
+   *  exists yet and membership is the whole question. */
+  objectKey?: string;
+  /** Upload instant of that object, epoch ms. Lets chat-service apply a GROUP's
+   *  per-member history boundary to the attachment, not just room membership. */
+  objectCreatedAt?: number;
+}
+
 export interface ChatAccessClient {
-  checkMediaAccess(p: {
-    userId: string;
-    scope: MediaAccessScope;
-    resourceId: string;
-  }): Promise<boolean>;
+  checkMediaAccess(p: CheckMediaAccessParams): Promise<boolean>;
 }
 
 /**
@@ -52,11 +60,13 @@ export function createChatAccessClient(): ChatAccessClient {
 
   const breaker = makeBreaker(
     "chat.checkMediaAccess",
-    (p: { userId: string; scope: MediaAccessScope; resourceId: string }) =>
+    (p: CheckMediaAccessParams) =>
       makeGrpcCall<unknown, { allowed: boolean }>(client, "checkMediaAccess", {
         userId: p.userId,
         scope: p.scope,
         resourceId: p.resourceId,
+        objectKey: p.objectKey ?? "",
+        objectCreatedAt: p.objectCreatedAt ?? 0,
       }),
     { timeout: 2000 }
   );

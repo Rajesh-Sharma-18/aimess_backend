@@ -44,6 +44,10 @@ import {
   groupReadCutoff,
   isGroupMemberMuted,
 } from "../lib/access-guard.js";
+import {
+  getGroupVisibilityCutoff,
+  isHiddenByCutoff,
+} from "../lib/deletion-cutoff.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -53,10 +57,7 @@ import type { UserSnapshotService } from "./user-snapshot.service.js";
 import { resolveDisplayName } from "./user-snapshot.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
-import {
-  EMPTY_UNREAD_STATS,
-  type UnreadStats,
-} from "../lib/unread-count.js";
+import { EMPTY_UNREAD_STATS, type UnreadStats } from "../lib/unread-count.js";
 
 export type GroupRoomMembership = GroupRoom & {
   /** True when the logged-in caller is an active member of this group. */
@@ -423,19 +424,35 @@ export class GroupRoomService {
     );
   }
 
-  private applyClearChatPreviewCap<T extends GroupRoom>(
+  /**
+   * Blank the list preview for a room whose shared last message sits at or
+   * before the viewer's own history boundary — the SAME boundary
+   * (`getGroupVisibilityCutoff`: the latest of joinedAt / clearedAt /
+   * clearChatAt) the timeline, search and pins are read through.
+   *
+   * It used to test `clearChatAt` alone, which covered a member who cleared
+   * their chat and missed the one every new member hits: join a group whose
+   * last message predates the join and the inbox row printed that message's
+   * text and sender — content the room itself would refuse to show them. The
+   * row still belongs in the list (they ARE a member); it just has nothing to
+   * preview yet.
+   */
+  private applyHistoryBoundaryPreviewCap<T extends GroupRoom>(
     rooms: T[],
-    membershipByRoom: Map<string, { clearChatAt?: Date | null }>
+    membershipByRoom: Map<
+      string,
+      {
+        clearChatAt?: Date | null;
+        clearedAt?: Date | null;
+        joinedAt?: Date | null;
+      }
+    >
   ): T[] {
     return rooms.map((room) => {
-      const clearChatAt = membershipByRoom.get(room.roomId)?.clearChatAt;
-      if (
-        !clearChatAt ||
-        !room.lastMessageAt ||
-        room.lastMessageAt.getTime() > clearChatAt.getTime()
-      ) {
-        return room;
-      }
+      const cutoff = getGroupVisibilityCutoff(
+        membershipByRoom.get(room.roomId)
+      );
+      if (!isHiddenByCutoff(room.lastMessageAt, cutoff)) return room;
       return { ...room, lastMessagePreview: null } as T;
     });
   }
@@ -1140,7 +1157,7 @@ export class GroupRoomService {
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
     const rooms = await this.enrichLastMessageSenderNames(
-      this.applyClearChatPreviewCap(
+      this.applyHistoryBoundaryPreviewCap(
         await this.applyPerUserPreview(rawRooms, userId),
         membershipByRoom
       )
@@ -1293,7 +1310,7 @@ export class GroupRoomService {
     // No ex-member preview cap here any more — every row this list can produce
     // is an ACTIVE membership, so there is no cutoff to cap against.
     const rooms = await this.enrichLastMessageSenderNames(
-      this.applyClearChatPreviewCap(
+      this.applyHistoryBoundaryPreviewCap(
         await this.applyPerUserPreview(rawRooms, params.userId),
         membershipByRoom
       )

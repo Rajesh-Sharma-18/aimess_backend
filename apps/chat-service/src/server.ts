@@ -964,6 +964,7 @@ const startServer = async () => {
       groupMemberService,
       groupRoomRepo,
       groupMemberRepo,
+      groupMessageRepo,
       privateRoomRepo,
       roomMemberRepo,
       generalRoomRepo,
