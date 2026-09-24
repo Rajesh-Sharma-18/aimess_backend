@@ -690,6 +690,17 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
     expect(recipients).toEqual([ADMIN, MOD, MOD_2].sort());
   });
 
+  it("stamps the event with WHICH attempt this is", async () => {
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+
+    const payload = pubRequested.mock.calls[0][0];
+    // The row is unique per (community, requester) and recycled, so its id is
+    // the same on every attempt — the admin surfaces need the attempt itself,
+    // and `updatedAt` is what moves when the row is recycled.
+    expect(payload.lifecycle).toBe(`${RID}:${pendingRequest.updatedAt.getTime()}`);
+    expect(payload.requestId).toBe(RID);
+  });
+
   it("does NOT retract anything while the request is still PENDING", async () => {
     await communityService.createJoinRequest(CID, REQUESTER, null);
 

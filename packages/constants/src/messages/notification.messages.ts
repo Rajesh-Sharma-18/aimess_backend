@@ -607,6 +607,20 @@ export const NOTIFICATION_MESSAGES = {
     en: "Your account email was updated",
     th: "อีเมลบัญชีของคุณถูกอัปเดตแล้ว",
   },
+  // Tray action buttons. These are BUTTON LABELS, not sentences — rendered on
+  // the push card itself (web `Notification.actions`, and the category the iOS
+  // app registers), so they localize per DEVICE like the title and body above
+  // rather than per account.
+  NOTIF_ACTION_ACCEPT: {
+    vi: "Chấp nhận",
+    en: "Accept",
+    th: "ยอมรับ",
+  },
+  NOTIF_ACTION_DECLINE: {
+    vi: "Từ chối",
+    en: "Decline",
+    th: "ปฏิเสธ",
+  },
 } as const satisfies MessageCatalog;
 
 export type NotificationMessageKey = keyof typeof NOTIFICATION_MESSAGES;

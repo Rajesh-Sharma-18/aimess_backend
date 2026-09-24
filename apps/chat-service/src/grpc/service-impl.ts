@@ -5301,6 +5301,17 @@ export function createNotificationImpl(
             };
 
             if (plan.action === "DELETE") {
+              // A producer that can race its own replacement (a join request
+              // cancelled and re-sent) stamps the retraction with the moment it
+              // was raised, so a card created AFTER it survives — see
+              // `raisedAtOrBefore`. Producers that cannot race omit it and the
+              // whole group goes, exactly as before.
+              const raisedAtRaw = data.staleBefore;
+              const raisedAt = raisedAtRaw ? new Date(raisedAtRaw) : undefined;
+              const raisedAtOrBefore =
+                raisedAt && !Number.isNaN(raisedAt.getTime())
+                  ? raisedAt
+                  : undefined;
               // The WHOLE group goes, not just the row `findActiveByGroupKey`
               // happened to return: a friendship id is recycled across cycles,
               // so older cards for the same pair share this groupKey and would
@@ -5309,7 +5320,8 @@ export function createNotificationImpl(
               const { ids } =
                 await deps.notificationRepo.deleteActiveByGroupKey(
                   req.userId,
-                  groupKey as string
+                  groupKey as string,
+                  raisedAtOrBefore
                 );
               if (ids.length > 0) {
                 const remainingUnread =

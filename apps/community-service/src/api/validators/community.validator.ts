@@ -437,6 +437,25 @@ export const joinRequestIdParamsSchema = z.object({
 });
 export type JoinRequestIdParams = z.infer<typeof joinRequestIdParamsSchema>;
 
+/**
+ * Body of an approve / reject call. Optional throughout: the in-app requests
+ * list reads the current row and sends nothing, while a surface that can go
+ * stale (a notification card, a push in the tray) echoes the `lifecycle` token
+ * it was raised with so the server can refuse a decision aimed at an attempt
+ * that has since been cancelled and re-raised. An empty body stays valid.
+ */
+export const joinRequestDecisionSchema = z.object({
+  lifecycle: z
+    .string()
+    .trim()
+    .max(64, "Lifecycle token is invalid")
+    .optional()
+    .nullable(),
+});
+export type JoinRequestDecisionInput = z.infer<
+  typeof joinRequestDecisionSchema
+>;
+
 const joinRequestIdsSchema = z
   .array(
     z

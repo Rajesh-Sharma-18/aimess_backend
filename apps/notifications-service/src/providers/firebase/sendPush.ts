@@ -48,6 +48,15 @@ interface SendPushParams {
    * notification). No-op on Android and data-only pushes.
    */
   apnsCategory?: string;
+  /**
+   * Tray action buttons for the WEB card (Notification API `actions`). FCM
+   * passes them through `webpush.notification`, and the JS SDK truncates the
+   * list to `Notification.maxActions` on browsers that show fewer — so a
+   * browser that supports none simply renders the card without buttons, and the
+   * tap-through still works. iOS uses `apnsCategory` for the same purpose;
+   * Android clients draw their own from the data map.
+   */
+  actions?: ReadonlyArray<{ action: string; title: string }>;
 }
 
 /**
@@ -141,6 +150,7 @@ export async function sendPush({
   dataOnly = false,
   platform,
   apnsCategory,
+  actions,
 }: SendPushParams): Promise<SendPushResult> {
   // Merge deepLink into the data map so native clients can read it.
   const enrichedData: Record<string, string> = {
@@ -313,6 +323,15 @@ export async function sendPush({
                 badge: "/icons/badge-72.png",
                 // requireInteraction keeps the notification visible for calls.
                 requireInteraction: priority === "high",
+                // Tray buttons, for the events that offer a decision (a join
+                // request's Accept / Decline). The SDK trims the list to what
+                // the browser supports and drops it entirely where actions are
+                // unsupported, so the card degrades to tap-through on its own.
+                ...(actions?.length ? { actions: [...actions] } : {}),
+                // Lets the retraction close THIS card: a data-only push with
+                // the same tag reaches the worker, which closes by tag rather
+                // than by matching the rendered text.
+                ...(collapseKey ? { tag: collapseKey } : {}),
               },
             }),
         fcmOptions: {

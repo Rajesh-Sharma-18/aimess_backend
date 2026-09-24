@@ -1374,6 +1374,42 @@ async function toMemberData(member: {
   };
 }
 
+/**
+ * Which PENDING attempt of a join request this row currently is.
+ *
+ * The row is unique on (communityId, userId) and recycled across attempts, so
+ * its id is stable from the first request to the last and cannot tell one
+ * attempt from another. `updatedAt` moves on every recycle, so the pair is a
+ * usable occurrence identity — enough for an admin surface raised for attempt N
+ * to notice it is looking at attempt N+1 and refuse, and cheap enough that no
+ * schema change is needed for it.
+ */
+function joinRequestLifecycle(row: CommunityJoinRequest): string {
+  return `${row.id}:${row.updatedAt.getTime()}`;
+}
+
+/**
+ * Refuse a decision aimed at an attempt that is no longer the current one.
+ *
+ * Only callers that can go stale pass a token; everything else (the in-app
+ * requests list, bulk actions) omits it and is unaffected. The error is the
+ * SAME one a decision on a settled request already returns, so a client that
+ * handles "this request is no longer pending" needs nothing new — and a stale
+ * Accept can therefore never admit someone off an attempt they cancelled.
+ */
+function assertJoinRequestLifecycle(
+  row: CommunityJoinRequest,
+  expected?: string | null
+): void {
+  if (!expected) return;
+  const current = joinRequestLifecycle(row);
+  if (current === expected) return;
+  logger.info(
+    `Stale join-request action refused: request=${row.id} expected=${expected} current=${current}`
+  );
+  throw new BadRequestError("COMMUNITY_JOIN_REQUEST_NOT_PENDING");
+}
+
 function toJoinRequestData(
   row: CommunityJoinRequest
 ): CommunityJoinRequestData {
@@ -7400,6 +7436,10 @@ export const communityService = {
         eventAt: new Date().toISOString(),
         userId: callerId,
         requestId: row.id,
+        // Occurrence identity for THIS pending attempt — see the payload type.
+        // Read off the row the write above returned, so it is the value an
+        // admin action will be compared against.
+        lifecycle: joinRequestLifecycle(row),
         message,
         adminRecipientIds,
         // Deprecated alias carrying the SAME admin-only list — see the payload
@@ -7574,7 +7614,16 @@ export const communityService = {
   async approveJoinRequest(
     communityId: string,
     callerId: string,
-    requestId: string
+    requestId: string,
+    /**
+     * The attempt the caller believes they are deciding (see
+     * {@link joinRequestLifecycle}). Surfaces that can go stale — a
+     * notification card, a push sitting in the tray — send the token they were
+     * raised with, and a mismatch is refused rather than silently applied to
+     * whatever attempt is pending now. Omitted by the in-app requests list,
+     * which always reads the current row.
+     */
+    lifecycle?: string | null
   ): Promise<{
     request: CommunityJoinRequestData;
     member: CommunityMemberData;
@@ -7595,6 +7644,7 @@ export const communityService = {
     if (!request || request.communityId !== communityId) {
       throw new NotFoundError("COMMUNITY_JOIN_REQUEST_NOT_FOUND");
     }
+    assertJoinRequestLifecycle(request, lifecycle);
 
     // Membership is read FIRST, before the request's own status, because the
     // requester being a member already settles the call regardless of what the
@@ -7833,7 +7883,9 @@ export const communityService = {
   async rejectJoinRequest(
     communityId: string,
     callerId: string,
-    requestId: string
+    requestId: string,
+    /** See {@link approveJoinRequest} — same stale-surface guard. */
+    lifecycle?: string | null
   ): Promise<CommunityJoinRequestData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
@@ -7850,6 +7902,7 @@ export const communityService = {
     if (!request || request.communityId !== communityId) {
       throw new NotFoundError("COMMUNITY_JOIN_REQUEST_NOT_FOUND");
     }
+    assertJoinRequestLifecycle(request, lifecycle);
 
     // SERVER-SIDE ENFORCEMENT (Section D2). A decline that arrives after the
     // user already became a member — a stale admin list, or the other half of an

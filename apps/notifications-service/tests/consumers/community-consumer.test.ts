@@ -197,13 +197,18 @@ describe("JOIN_REQUESTED branch — admin-only recipient set", () => {
       adminRecipientIds: [ADMIN],
     });
 
-    expect(pushMany).toHaveBeenCalledTimes(1);
-    const recipients = pushMany.mock.calls[0][0] as string[];
-    expect(recipients).toEqual([ADMIN]);
-    // One assertion per excluded party, so a failure names who leaked.
-    expect(recipients).not.toContain(MOD);
-    expect(recipients).not.toContain(MOD_2);
-    expect(recipients).not.toContain(REQUESTER);
+    // Two sends per request: the previous attempt's card is retracted before
+    // the new one is written (see community-join-request-lifecycle.test.ts).
+    // BOTH are admin-only — a moderator must not even be told to drop a card.
+    expect(pushMany).toHaveBeenCalledTimes(2);
+    for (const call of pushMany.mock.calls) {
+      const recipients = call[0] as string[];
+      expect(recipients).toEqual([ADMIN]);
+      // One assertion per excluded party, so a failure names who leaked.
+      expect(recipients).not.toContain(MOD);
+      expect(recipients).not.toContain(MOD_2);
+      expect(recipients).not.toContain(REQUESTER);
+    }
     // pushToUser is the single-recipient seam — nothing may sneak a moderator
     // in through it either.
     expect(push).not.toHaveBeenCalled();
@@ -238,8 +243,9 @@ describe("JOIN_REQUESTED branch — admin-only recipient set", () => {
       adminRecipientIds: [ADMIN, ADMIN_2],
     });
 
-    const recipients = pushMany.mock.calls[0][0] as string[];
-    expect(recipients.sort()).toEqual([ADMIN, ADMIN_2].sort());
+    // calls[1] is the card itself; calls[0] retracts the previous attempt.
+    const recipients = pushMany.mock.calls[1][0] as string[];
+    expect([...recipients].sort()).toEqual([ADMIN, ADMIN_2].sort());
   });
 });
 
@@ -266,10 +272,13 @@ describe("JOIN_REQUEST_RETRACTED branch — the admin's card goes away", () => {
     expect(recipients).not.toContain(MOD_2);
 
     const arg = build(ADMIN);
-    // No device may ring for "the request you handled is gone"...
-    expect(arg.skipPush).toBe(true);
-    // ...but the row must still be cleaned up for an admin who muted the
-    // community, or their badge is stranded.
+    // Silent, but still delivered: no device may RING for "the request you
+    // handled is gone", while the data push is what lets a service worker close
+    // the stale tray card.
+    expect(arg.dataOnly).toBe(true);
+    expect(arg.skipPush).toBeUndefined();
+    // The row must still be cleaned up for an admin who muted the community, or
+    // their badge is stranded.
     expect(arg.bypassSettings).toBe(true);
     // The group key is the whole mechanism — it is what chat-service matches the
     // existing card on, and it must key on the REQUESTER (request ids recycle).
@@ -614,9 +623,10 @@ describe("community consumer — navigation deep-link", () => {
   it("JOIN_REQUESTED — navigation JSON string in FCM data resolves to COMMUNITY_REQUESTS screen", async () => {
     await deliver(CommunityEvents.JOIN_REQUESTED, JOIN_REQUESTED_PAYLOAD);
 
-    expect(pushMany).toHaveBeenCalledTimes(1);
+    expect(pushMany).toHaveBeenCalledTimes(2);
     // pushToUsers(recipientIds, builderFn) — call the builder for one recipient
-    const [, builderFn] = pushMany.mock.calls[0] as [
+    // calls[1] is the card; calls[0] retracts the previous attempt first.
+    const [, builderFn] = pushMany.mock.calls[1] as [
       string[],
       (id: string) => { data: Record<string, string> },
     ];
@@ -637,7 +647,8 @@ describe("community consumer — navigation deep-link", () => {
   it("JOIN_REQUESTED — actorSnapshot JSON string in FCM data contains requester info", async () => {
     await deliver(CommunityEvents.JOIN_REQUESTED, JOIN_REQUESTED_PAYLOAD);
 
-    const [, builderFn] = pushMany.mock.calls[0] as [
+    // calls[1] is the card; calls[0] retracts the previous attempt first.
+    const [, builderFn] = pushMany.mock.calls[1] as [
       string[],
       (id: string) => { data: Record<string, string> },
     ];
@@ -655,7 +666,8 @@ describe("community consumer — navigation deep-link", () => {
   it("JOIN_REQUESTED — FCM data has plain string communityName and requesterDisplayName", async () => {
     await deliver(CommunityEvents.JOIN_REQUESTED, JOIN_REQUESTED_PAYLOAD);
 
-    const [, builderFn] = pushMany.mock.calls[0] as [
+    // calls[1] is the card; calls[0] retracts the previous attempt first.
+    const [, builderFn] = pushMany.mock.calls[1] as [
       string[],
       (id: string) => { data: Record<string, string> },
     ];
@@ -670,7 +682,8 @@ describe("community consumer — navigation deep-link", () => {
   it("JOIN_REQUESTED — push body contains requesterDisplayName and communityName", async () => {
     await deliver(CommunityEvents.JOIN_REQUESTED, JOIN_REQUESTED_PAYLOAD);
 
-    const [, builderFn] = pushMany.mock.calls[0] as [
+    // calls[1] is the card; calls[0] retracts the previous attempt first.
+    const [, builderFn] = pushMany.mock.calls[1] as [
       string[],
       (id: string) => { body: string },
     ];

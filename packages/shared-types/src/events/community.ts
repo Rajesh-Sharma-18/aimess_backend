@@ -270,6 +270,18 @@ export type CommunityJoinRequestedPayload = CommunityEventBase & {
   /** Requester. */
   userId: string;
   requestId: string;
+  /**
+   * Which PENDING OCCURRENCE of `requestId` this is — `"<requestId>:<updatedAtMs>"`.
+   *
+   * A join request row is RECYCLED, not recreated: `CommunityJoinRequest` is
+   * unique on (communityId, userId), so request → cancel → request again comes
+   * back with the SAME id. That makes `requestId` useless for telling one
+   * lifecycle from the next, which is why an admin action carries this token
+   * instead: the recycle bumps `updatedAt`, so a card raised for the cancelled
+   * attempt can be recognised as stale and refused rather than silently
+   * deciding the attempt that replaced it.
+   */
+  lifecycle: string;
   message: string | null;
   /**
    * The community's CURRENT ADMIN(s) — the only eligible recipients of a

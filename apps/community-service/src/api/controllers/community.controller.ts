@@ -32,6 +32,7 @@ import type {
   InviteIdParams,
   InviteLinkCodeParams,
   InviteLinkIdParams,
+  JoinRequestDecisionInput,
   JoinRequestIdParams,
   LeaveReasonInput,
   ListInvitesQuery,
@@ -841,10 +842,12 @@ export const listMyJoinRequests = asyncHandler(
 export const approveCommunityJoinRequest = asyncHandler(
   async (req: Request, res: Response) => {
     const { id, requestId } = req.params as JoinRequestIdParams;
+    const { lifecycle } = (req.body ?? {}) as JoinRequestDecisionInput;
     const result = await communityService.approveJoinRequest(
       id,
       req.auth.userId,
-      requestId
+      requestId,
+      lifecycle
     );
     return res
       .status(HTTP_STATUS.OK)
@@ -860,10 +863,12 @@ export const approveCommunityJoinRequest = asyncHandler(
 export const rejectCommunityJoinRequest = asyncHandler(
   async (req: Request, res: Response) => {
     const { id, requestId } = req.params as JoinRequestIdParams;
+    const { lifecycle } = (req.body ?? {}) as JoinRequestDecisionInput;
     const result = await communityService.rejectJoinRequest(
       id,
       req.auth.userId,
-      requestId
+      requestId,
+      lifecycle
     );
     return res
       .status(HTTP_STATUS.OK)

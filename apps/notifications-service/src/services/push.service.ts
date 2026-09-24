@@ -355,6 +355,19 @@ export interface PushInput {
    * Ignored on Android and data-only pushes.
    */
   apnsCategory?: string;
+  /**
+   * Tray action buttons for the platforms that render them (web: the
+   * Notification API `actions` array; iOS uses `apnsCategory` instead). The
+   * payload only NAMES what to act on — the client still calls the ordinary
+   * authenticated endpoint, so a push can never authorize the action itself.
+   *
+   * A thunk over the locale, exactly like `copy`: "Accept" / "Decline" are
+   * product copy sitting on the same card as the title and body, so they are
+   * rendered per DEVICE with them. A literal array here would have put English
+   * buttons under a Thai sentence on the one surface where the reader cannot
+   * ask for it again.
+   */
+  actions?: (locale: SupportedLocale) => ReadonlyArray<PushAction>;
 }
 
 /**
@@ -364,11 +377,19 @@ export interface PushInput {
  * what language the client owning that token last asked for, and five devices
  * of one account do not have to agree. Built by `viewFor` inside `pushToUser`.
  */
+/** One tray button: a stable id the client branches on, and its localized label. */
+export interface PushAction {
+  action: string;
+  title: string;
+}
+
 interface PushView {
   title: string;
   /** Already preview-masked — never send the raw body to a provider. */
   body: string;
   data?: Record<string, string>;
+  /** Tray buttons in THIS view's language, absent when the event offers none. */
+  actions?: ReadonlyArray<PushAction>;
 }
 
 /**
@@ -614,6 +635,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
       data: input.localizedData
         ? { ...(rawData ?? {}), ...input.localizedData(viewLocale) }
         : rawData,
+      actions: input.actions?.(viewLocale),
     };
     views.set(viewLocale, view);
     return view;
@@ -868,6 +890,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
               dataOnly: effectiveDataOnly,
               platform,
               apnsCategory,
+              actions: view.actions,
             });
       if (result.invalidToken) {
         try {

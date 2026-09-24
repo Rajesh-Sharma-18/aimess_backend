@@ -353,9 +353,26 @@ export class NotificationRepository {
    */
   async deleteActiveByGroupKey(
     userId: string,
-    groupKey: string
+    groupKey: string,
+    /**
+     * Only retract cards raised at or before this instant.
+     *
+     * A retraction and the next card for the same group race: a join request
+     * cancelled and immediately re-sent publishes "take the old card back" and
+     * "here is a new one" within the same second, and the two travel different
+     * paths. Without a cutoff, a retraction that lands second deletes the card
+     * that REPLACED the one it was written for, and the admin is left with
+     * nothing to act on. A card newer than the retraction is by definition a
+     * later attempt, so it is left alone.
+     */
+    raisedAtOrBefore?: Date
   ): Promise<{ ids: string[] }> {
-    const where = { userId, groupKey, isDeleted: false };
+    const where = {
+      userId,
+      groupKey,
+      isDeleted: false,
+      ...(raisedAtOrBefore ? { createdAt: { lte: raisedAtOrBefore } } : {}),
+    };
     const rows = await this.prisma.notification.findMany({
       where,
       select: { id: true },

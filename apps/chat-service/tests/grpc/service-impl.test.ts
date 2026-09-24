@@ -944,9 +944,12 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
       data: { friendshipId: "fid-1", requesterId: "user-a" },
     });
 
+    // No cutoff: a cancelled friend request cannot race its own replacement,
+    // so it still takes the whole group (see `raisedAtOrBefore`).
     expect(notifRepo.deleteActiveByGroupKey).toHaveBeenCalledWith(
       "user-b",
-      "friend:fid-1"
+      "friend:fid-1",
+      undefined
     );
     expect(notifRepo.deleteById).not.toHaveBeenCalled();
     // Clients remove by notificationId, so every deleted row needs its own event.

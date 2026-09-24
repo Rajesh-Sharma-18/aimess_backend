@@ -167,7 +167,9 @@ describe("approve / reject / cancel", () => {
       .post(`/api/v1/communities/${CID}/join-requests/${RID}/approve`)
       .set(auth());
     expect(res.status).toBe(200);
-    expect(svc.approveJoinRequest).toHaveBeenCalledWith(CID, SELF, RID);
+    // No token from the in-app list: it reads the live row, so there is no
+    // stale attempt for it to name.
+    expect(svc.approveJoinRequest).toHaveBeenCalledWith(CID, SELF, RID, undefined);
   });
 
   it("rejects → 200", async () => {
