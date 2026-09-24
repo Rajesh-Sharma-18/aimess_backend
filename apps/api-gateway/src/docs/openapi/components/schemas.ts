@@ -9973,7 +9973,10 @@ export const openApiSchemas = {
       "the canonical call status in `data.callStatus`, `data.callType`, " +
       "`data.callDirection` and `data.durationSec`; CALL_MISSED is its legacy " +
       "predecessor), chat.mention (group @username/@all mention — one row per " +
-      "message per mentioned recipient, `data.mentionType` USER|ALL, " +
+      "message per mentioned recipient, `data.mentionType` USER|ALL — USER " +
+      "wins when a message both names you and says @all, so one recipient " +
+      'never gets two rows, and the body reads "mentioned you" vs ' +
+      '"mentioned @all" accordingly, ' +
       "`data.conversationId` + `data.messageId` to open the message; written " +
       "already read when the recipient had the chat open) — the rest are " +
       "push-only. A chat.mention row is removed (`notification:deleted`) when " +

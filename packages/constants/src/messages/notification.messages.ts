@@ -306,6 +306,18 @@ export const NOTIFICATION_MESSAGES = {
     en: "{{name}} mentioned you",
     th: "{{name}} กล่าวถึงคุณ",
   },
+  // Same row for an @all message. The recipient was reached as part of the
+  // room, not named, so it must never read "mentioned you".
+  NOTIF_CHAT_MENTION_ALL_INBOX_BODY: {
+    vi: "{{name}} đã nhắc đến @all trong {{group}}",
+    en: "{{name}} mentioned @all in {{group}}",
+    th: "{{name}} กล่าวถึง @all ใน{{group}}",
+  },
+  NOTIF_CHAT_MENTION_ALL_INBOX_BODY_NO_GROUP: {
+    vi: "{{name}} đã nhắc đến @all",
+    en: "{{name}} mentioned @all",
+    th: "{{name}} กล่าวถึง @all",
+  },
 
   // ── Group ───────────────────────────────────────────────────────────────
   NOTIF_GROUP_UNNAMED: {

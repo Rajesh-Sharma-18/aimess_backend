@@ -43,7 +43,7 @@ export const localizeNotificationFrame: PersonalizeFn = (
     return typeof value === "string" ? value : undefined;
   };
 
-  const copy = renderNotificationCopy(ref(COPY_REF_KEY), locale);
+  const copy = renderNotificationCopy(ref(COPY_REF_KEY), locale, frameData);
   const extra = renderNotificationData(ref(DATA_REF_KEY), locale);
   if (!copy && !extra) return data;
 

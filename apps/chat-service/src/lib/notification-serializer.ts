@@ -312,7 +312,7 @@ function localizeRow(
   data: Record<string, string>,
   locale: SupportedLocale
 ): { title?: string; body?: string; resolution?: string } | null {
-  const copy = renderNotificationCopy(data[COPY_REF_KEY], locale);
+  const copy = renderNotificationCopy(data[COPY_REF_KEY], locale, data);
   const extra = renderNotificationData(data[DATA_REF_KEY], locale);
   if (!copy && !extra) return null;
   return {

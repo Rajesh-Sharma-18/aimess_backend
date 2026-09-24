@@ -167,8 +167,11 @@ async function writeMentionRows(
   // ponytail: one CreateNotification gRPC round per recipient (≤256 members
   // for an @all); add a batch RPC if groups grow past that.
   const results = await Promise.allSettled(
-    claimed.map((userId) =>
-      pushToUser({
+    claimed.map((userId) => {
+      // Why THIS reader got the row. Being named wins over being in the room,
+      // so "@all @kristi" is one row for Kristi and it says "mentioned you".
+      const mentionType = individual.has(userId) ? "USER" : "ALL";
+      return pushToUser({
         userId,
         category: "chatEnabled",
         type: "chat.mention",
@@ -178,10 +181,11 @@ async function writeMentionRows(
         copy: chatCopy.mentionInbox({
           senderName: data.senderName,
           groupName: data.groupName,
+          ...(mentionType === "ALL" ? { all: true } : {}),
         }),
         data: {
           groupKey: `mention:${mentionId}`,
-          mentionType: individual.has(userId) ? "USER" : "ALL",
+          mentionType,
           conversationId: data.conversationId,
           conversationType: "GROUP",
           messageId: mentionId,
@@ -193,8 +197,8 @@ async function writeMentionRows(
           navigation,
           ...(open.has(userId) ? { markRead: "true" } : {}),
         },
-      })
-    )
+      });
+    })
   );
 
   const failed = claimed.filter((_, i) => results[i]!.status === "rejected");

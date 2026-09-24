@@ -1444,8 +1444,15 @@ describe("startChatConsumer — group mention inbox rows", () => {
 
     expect(rowWrites.map((r) => r.userId)).toEqual(["a"]);
     expect(rowFor("a")!.data.mentionType).toBe("ALL");
+    // Reached as part of the room, not named: never "mentioned you".
     expect(rowFor("a")!.copy!("en").body).toBe(
-      "Alice mentioned you in Weekend Trip"
+      "Alice mentioned @all in Weekend Trip"
+    );
+    expect(rowFor("a")!.copy!("vi").body).toBe(
+      "Alice đã nhắc đến @all trong Weekend Trip"
+    );
+    expect(rowFor("a")!.copy!("th").body).toBe(
+      "Alice กล่าวถึง @all ในWeekend Trip"
     );
     // The opted-out user still gets their ordinary message push.
     expect(pushedIds()).toEqual(["a", "opted-out"]);
@@ -1456,6 +1463,7 @@ describe("startChatConsumer — group mention inbox rows", () => {
       makeMsg({
         ...BASE,
         conversationType: "GROUP",
+        groupName: "Weekend Trip",
         recipientIds: ["a"],
         mentionedUserIds: ["a"],
         mentionAllUserIds: ["a"],
@@ -1465,6 +1473,31 @@ describe("startChatConsumer — group mention inbox rows", () => {
 
     expect(rowWrites).toHaveLength(1);
     expect(rowWrites[0]!.data.mentionType).toBe("USER");
+    // Being named outranks being in the room, and the copy follows the type.
+    expect(rowWrites[0]!.copy!("en").body).toBe(
+      "Alice mentioned you in Weekend Trip"
+    );
+  });
+
+  it("named and @all recipients of one message get their own wording", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        groupName: "Weekend Trip",
+        recipientIds: ["named", "everyone"],
+        mentionedUserIds: ["named"],
+        mentionAllUserIds: ["named", "everyone"],
+      })
+    );
+    await flush();
+
+    expect(rowFor("named")!.copy!("en").body).toBe(
+      "Alice mentioned you in Weekend Trip"
+    );
+    expect(rowFor("everyone")!.copy!("en").body).toBe(
+      "Alice mentioned @all in Weekend Trip"
+    );
   });
 
   it("a recipient with the room open gets the row already read", async () => {
@@ -1685,7 +1718,11 @@ describe("startChatConsumer — group mention inbox rows", () => {
     content: Buffer.from(
       JSON.stringify({
         type: "chat.mention_retracted",
-        data: { messageId: "msg9", conversationId: BASE.conversationId, ...data },
+        data: {
+          messageId: "msg9",
+          conversationId: BASE.conversationId,
+          ...data,
+        },
       })
     ),
   });
