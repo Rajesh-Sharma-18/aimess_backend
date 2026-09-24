@@ -161,6 +161,7 @@ import {
   publishCommunityJoinRequestApprovedSafe,
   publishCommunityJoinRequestCancelledSafe,
   publishCommunityJoinRequestedSafe,
+  publishCommunityJoinRequestRetractedSafe,
   publishCommunityJoinRequestRejectedSafe,
   publishCommunityMemberAddedSafe,
   publishCommunityMemberBannedSafe,
@@ -4691,6 +4692,30 @@ export const communityService = {
           )
         ),
       ]);
+
+      // The admin's "X wants to join" inbox card describes a PENDING request, so
+      // the moment the request stops being pending the card is a lie — it would
+      // otherwise sit there (and keep the badge up) pointing at a requests screen
+      // the row has already left. Retract it from here, the one function EVERY
+      // resolution path already funnels through (approve, reject, cancel, bulk,
+      // auto-resolve on going public, admin-add while pending), rather than from
+      // each of those call sites.
+      if (status !== "PENDING") {
+        const adminRecipientIds =
+          await communityRepository.findActiveMemberIdsByRoles(communityId, [
+            CommunityMemberRole.ADMIN,
+          ]);
+        if (adminRecipientIds.length > 0) {
+          publishCommunityJoinRequestRetractedSafe({
+            communityId,
+            eventAt: new Date().toISOString(),
+            requestId,
+            requesterId: targetUserId,
+            resolution: status,
+            adminRecipientIds,
+          });
+        }
+      }
     } catch (error) {
       logger.warn(
         `community:join_request:updated broadcast failed for community=${communityId} request=${requestId}`

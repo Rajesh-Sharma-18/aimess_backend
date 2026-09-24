@@ -12,6 +12,7 @@ import {
   type CommunityJoinRequestCancelledPayload,
   type CommunityJoinRequestedPayload,
   type CommunityJoinRequestRejectedPayload,
+  type CommunityJoinRequestRetractedPayload,
   type CommunityLivestreamStartedPayload,
   type CommunityLivestreamEndedPayload,
   type CommunityMemberAddedPayload,
@@ -215,6 +216,33 @@ async function handleCommunityEvent(
           },
           generateEventThreadId(type)
         ),
+      }));
+      break;
+    }
+
+    case CommunityEvents.JOIN_REQUEST_RETRACTED: {
+      const p = data as CommunityJoinRequestRetractedPayload;
+      const recipients = p.adminRecipientIds ?? [];
+      if (recipients.length === 0) break;
+      // Terminal row removal, not a notification: `skipPush` keeps every device
+      // asleep (nobody wants "a request you already handled is gone" on their
+      // lock screen) and the shared `groupKey` is what chat-service matches the
+      // existing card on — see DELETE_ON_ARRIVAL in notification-identity.ts.
+      // `bypassSettings` because a row must still be cleaned up for an admin who
+      // has since muted the community; leaving it would strand their badge.
+      await pushToUsers(recipients, (userId) => ({
+        userId,
+        category: "communityEnabled" as const,
+        type,
+        skipPush: true,
+        bypassSettings: true,
+        data: {
+          groupKey: `community:${p.communityId}:join_request:${p.requesterId}`,
+          communityId: p.communityId,
+          requestId: p.requestId,
+          requesterId: p.requesterId,
+          resolution: p.resolution,
+        },
       }));
       break;
     }

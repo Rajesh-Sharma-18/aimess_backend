@@ -13,6 +13,7 @@ import {
   type CommunityJoinRequestCancelledPayload,
   type CommunityJoinRequestedPayload,
   type CommunityJoinRequestRejectedPayload,
+  type CommunityJoinRequestRetractedPayload,
   type CommunityLivestreamStartedPayload,
   type CommunityLivestreamEndedPayload,
   type CommunityMemberAddedPayload,
@@ -201,6 +202,16 @@ export function publishCommunityJoinRequestCancelledSafe(
     CommunityEvents.JOIN_REQUEST_CANCELLED,
     data,
     "community.join_request_cancelled"
+  );
+}
+
+export function publishCommunityJoinRequestRetractedSafe(
+  data: CommunityJoinRequestRetractedPayload
+): void {
+  publishSafe(
+    CommunityEvents.JOIN_REQUEST_RETRACTED,
+    data,
+    "community.join_request_retracted"
   );
 }
 

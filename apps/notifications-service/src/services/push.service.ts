@@ -111,6 +111,16 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   CommunityEvents.MEMBER_BANNED,
   CommunityEvents.MEMBER_KICKED,
   CommunityEvents.DELETED,
+  // Incoming join request → a card for the community's ADMIN only (the producer
+  // narrows the roster; moderators are not recipients of this event at all).
+  // It is an action item, not an announcement, which is why it earns an inbox
+  // row and a badge rather than staying push-only — and why it must not outlive
+  // the request: JOIN_REQUEST_RETRACTED is its terminal partner, emitted by
+  // every path that resolves a pending request, and it DELETES the row again
+  // (DELETE_ON_ARRIVAL in chat-service's notification-identity.ts) so the badge
+  // clears itself the moment the admin decides.
+  CommunityEvents.JOIN_REQUESTED,
+  CommunityEvents.JOIN_REQUEST_RETRACTED,
   // Livestream — listed under LIVE_NOW (chat-service notification-category.ts).
   // Still gated like the push: liveStreamEnabled, the community's own
   // streamEnabled toggle, and ACTIVE membership.

@@ -67,6 +67,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityJoinRequestedSafe: jest.fn(),
   publishCommunityJoinRequestApprovedSafe: jest.fn(),
   publishCommunityJoinRequestRejectedSafe: jest.fn(),
+  publishCommunityJoinRequestRetractedSafe: jest.fn(),
   publishCommunityInviteSentSafe: jest.fn(),
   publishCommunityInviteAcceptedSafe: jest.fn(),
   publishCommunityReportCreatedSafe: jest.fn(),
@@ -128,6 +129,7 @@ import {
   publishCommunityJoinRequestApprovedSafe,
   publishCommunityJoinRequestRejectedSafe,
   publishCommunityJoinRequestedSafe,
+  publishCommunityJoinRequestRetractedSafe,
   publishCommunityMemberAddedSafe,
 } from "../../src/messaging/publish-community.js";
 
@@ -135,6 +137,7 @@ const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const pubApproved = publishCommunityJoinRequestApprovedSafe as jest.Mock;
 const pubRejected = publishCommunityJoinRequestRejectedSafe as jest.Mock;
 const pubRequested = publishCommunityJoinRequestedSafe as jest.Mock;
+const pubRetracted = publishCommunityJoinRequestRetractedSafe as jest.Mock;
 const pubMemberAdded = publishCommunityMemberAddedSafe as jest.Mock;
 const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
 const pubChatUserEvent = publishChatUserEvent as jest.Mock;
@@ -265,6 +268,30 @@ describe("approveJoinRequest — events + member fan-out", () => {
     });
   });
 
+  it("retracts the admin's join-request card once the request is approved", async () => {
+    // Distinct ADMIN so "retracted for the admin, not the whole roster" is
+    // falsifiable: the roster read answers per requested role set.
+    repo.findActiveMemberIdsByRoles.mockImplementation(
+      async (_communityId: string, roles: string[]) =>
+        roles.includes("MODERATOR") ? [ADMIN, MOD, MOD_2] : [ADMIN]
+    );
+
+    await communityService.approveJoinRequest(CID, MOD, RID);
+
+    expect(pubRetracted).toHaveBeenCalledTimes(1);
+    const payload = pubRetracted.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      communityId: CID,
+      requestId: RID,
+      requesterId: REQUESTER,
+      resolution: "APPROVED",
+      adminRecipientIds: [ADMIN],
+    });
+    // A moderator never had a card, so a moderator must not be told to drop one.
+    expect(payload.adminRecipientIds).not.toContain(MOD);
+    expect(payload.adminRecipientIds).not.toContain(MOD_2);
+  });
+
   it("does NOT publish a rejected event on the approve path", async () => {
     await communityService.approveJoinRequest(CID, MOD, RID);
     expect(pubRejected).not.toHaveBeenCalled();
@@ -331,6 +358,23 @@ describe("rejectJoinRequest — previously-silent path now emits an event", () =
       decidedBy: { userId: MOD },
     });
     expect(typeof payload.decidedAt).toBe("string");
+  });
+
+  it("retracts the admin's card on reject too", async () => {
+    repo.findActiveMemberIdsByRoles.mockImplementation(
+      async (_communityId: string, roles: string[]) =>
+        roles.includes("MODERATOR") ? [ADMIN, MOD] : [ADMIN]
+    );
+
+    await communityService.rejectJoinRequest(CID, MOD, RID);
+
+    expect(pubRetracted).toHaveBeenCalledTimes(1);
+    expect(pubRetracted.mock.calls[0][0]).toMatchObject({
+      requestId: RID,
+      requesterId: REQUESTER,
+      resolution: "REJECTED",
+      adminRecipientIds: [ADMIN],
+    });
   });
 
   it("does NOT emit an approved event or a member_added on reject", async () => {
@@ -644,6 +688,14 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
     // bump, no push). Narrowing THIS to the admin would break their Accept
     // Requests screen, which the task explicitly forbids.
     expect(recipients).toEqual([ADMIN, MOD, MOD_2].sort());
+  });
+
+  it("does NOT retract anything while the request is still PENDING", async () => {
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+
+    // The card has only just been written — retracting here would delete the
+    // notification the same action created.
+    expect(pubRetracted).not.toHaveBeenCalled();
   });
 
   it("does not broadcast again when the caller retries and an identical PENDING request already exists (no spam)", async () => {

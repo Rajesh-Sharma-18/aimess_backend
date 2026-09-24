@@ -17,6 +17,14 @@ export const CommunityEvents = {
   JOIN_REQUEST_APPROVED: "community.join_request_approved",
   JOIN_REQUEST_REJECTED: "community.join_request_rejected",
   JOIN_REQUEST_CANCELLED: "community.join_request_cancelled",
+  /**
+   * The admin's "X wants to join" inbox card is stale — the request left
+   * PENDING (approved, rejected, cancelled by the requester, or auto-resolved).
+   * Terminal: it removes that card and corrects the unread count, and carries no
+   * push of its own. Emitted for EVERY resolution path, so the card can never
+   * outlive the request it describes.
+   */
+  JOIN_REQUEST_RETRACTED: "community.join_request_retracted",
   INVITE_SENT: "community.invite_sent",
   INVITE_ACCEPTED: "community.invite_accepted",
   INVITE_LINK_SHARED: "community.invite_link_shared",
@@ -310,6 +318,26 @@ export type CommunityJoinRequestRejectedPayload = CommunityEventBase & {
   decidedBy: { userId: string; username: string | null; displayName: string };
   /** ISO-8601. */
   decidedAt: string;
+};
+
+/**
+ * Terminal counterpart of {@link CommunityJoinRequestedPayload}: the request is
+ * no longer PENDING, so the admin card that announced it must go.
+ *
+ * Addressed to the same audience the original notification was — the admins —
+ * which is why it carries its own `adminRecipientIds` rather than reusing the
+ * wider roster that the pending-list sync goes to. `requesterId` is what ties it
+ * back to the card (the group key is keyed on the requester, not the request id,
+ * because a request row is recycled across cycles).
+ */
+export type CommunityJoinRequestRetractedPayload = CommunityEventBase & {
+  requestId: string;
+  /** The user whose request it was. */
+  requesterId: string;
+  /** How it was resolved — for the log line, not for any copy. */
+  resolution: "APPROVED" | "REJECTED" | "CANCELLED" | "AUTO_RESOLVED";
+  /** Current admin(s) whose inbox card should be removed. */
+  adminRecipientIds: string[];
 };
 
 /** Published when a user cancels their own pending join request. */

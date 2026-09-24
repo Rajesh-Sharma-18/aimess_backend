@@ -4,6 +4,11 @@ const DELETE_ON_ARRIVAL = new Set<string>([
   "friend.cancelled",
   // Group @mention removed (message deleted for everyone, or edited away).
   "chat.mention_retracted",
+  // The join request the admin's card announced is no longer PENDING (approved,
+  // rejected, cancelled by the requester, or auto-resolved). The card is an
+  // action item, so it goes away with the action rather than being rewritten
+  // into an outcome nobody needs to read.
+  "community.join_request_retracted",
 ]);
 
 const FRIEND_TYPES = new Set<string>([

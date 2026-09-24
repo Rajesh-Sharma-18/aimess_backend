@@ -243,6 +243,101 @@ describe("JOIN_REQUESTED branch — admin-only recipient set", () => {
   });
 });
 
+describe("JOIN_REQUEST_RETRACTED branch — the admin's card goes away", () => {
+  const RETRACTED = {
+    communityId: CID,
+    eventAt: "2026-09-24T11:00:00.000Z",
+    requestId: RID,
+    requesterId: REQUESTER,
+    resolution: "APPROVED" as const,
+    adminRecipientIds: [ADMIN],
+  };
+
+  it("removes the row for the admin(s) only, silently and regardless of settings", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_RETRACTED, RETRACTED);
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const [recipients, build] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => Record<string, unknown>,
+    ];
+    expect(recipients).toEqual([ADMIN]);
+    expect(recipients).not.toContain(MOD);
+    expect(recipients).not.toContain(MOD_2);
+
+    const arg = build(ADMIN);
+    // No device may ring for "the request you handled is gone"...
+    expect(arg.skipPush).toBe(true);
+    // ...but the row must still be cleaned up for an admin who muted the
+    // community, or their badge is stranded.
+    expect(arg.bypassSettings).toBe(true);
+    // The group key is the whole mechanism — it is what chat-service matches the
+    // existing card on, and it must key on the REQUESTER (request ids recycle).
+    expect((arg.data as Record<string, string>).groupKey).toBe(
+      `community:${CID}:join_request:${REQUESTER}`
+    );
+  });
+
+  it("matches the group key the JOIN_REQUESTED card was written under", async () => {
+    await deliver(CommunityEvents.JOIN_REQUESTED, {
+      communityId: CID,
+      communityName: "Cool Community",
+      communityHandle: "@cool",
+      communityAvatarUrl: null,
+      userId: REQUESTER,
+      requestId: RID,
+      message: null,
+      requesterDisplayName: "Alice Requester",
+      requesterAvatarUrl: null,
+      eventAt: "2026-09-24T10:00:00.000Z",
+      adminRecipientIds: [ADMIN],
+    });
+    const requestedData = (
+      pushMany.mock.calls[0][1] as (id: string) => { data: Record<string, string> }
+    )(ADMIN).data;
+
+    await deliver(CommunityEvents.JOIN_REQUEST_RETRACTED, RETRACTED);
+    const retractedData = (
+      pushMany.mock.calls.at(-1)![1] as (id: string) => {
+        data: Record<string, string>;
+      }
+    )(ADMIN).data;
+
+    // The request's own row carries no explicit groupKey — chat-service derives
+    // it from `requesterId` — so the retraction's explicit key has to agree with
+    // that derivation. Assert the input they share.
+    expect(requestedData.requesterId).toBe(REQUESTER);
+    expect(requestedData.communityId).toBe(CID);
+    expect(retractedData.groupKey).toBe(
+      `community:${requestedData.communityId}:join_request:${requestedData.requesterId}`
+    );
+  });
+
+  it("does nothing when the payload names no admin", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_RETRACTED, {
+      ...RETRACTED,
+      adminRecipientIds: [],
+    });
+    expect(pushMany).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it.each(["APPROVED", "REJECTED", "CANCELLED", "AUTO_RESOLVED"])(
+    "retracts on %s — every resolution path clears the card",
+    async (resolution) => {
+      await deliver(CommunityEvents.JOIN_REQUEST_RETRACTED, {
+        ...RETRACTED,
+        resolution,
+      });
+      expect(pushMany).toHaveBeenCalledTimes(1);
+      const arg = (pushMany.mock.calls[0][1] as (id: string) => Record<string, unknown>)(
+        ADMIN
+      );
+      expect((arg.data as Record<string, string>).resolution).toBe(resolution);
+    }
+  );
+});
+
 describe("MEMBER_ADDED branch", () => {
   it("does NOT welcome the joiner when via=join_request_approved", async () => {
     await deliver(CommunityEvents.MEMBER_ADDED, {
