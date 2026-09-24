@@ -104,6 +104,34 @@ function base(
   };
 }
 
+/**
+ * Recipients minus the ACTOR of the event, compared on the canonical AIMess
+ * userId — never a username, email, social-provider subject, device or session,
+ * so a host who signed in with Google or Apple is excluded exactly like one who
+ * signed in with a password.
+ *
+ * A livestream host is not a recipient of their own start/end announcement.
+ * The producer already resolves the roster without them, but the rule belongs
+ * HERE too: this is the layer that creates the inbox row, the `notification:new`
+ * frame and the FCM/APNs push, and it is the last authority before all three.
+ * Enforcing it here means no payload can put the host back into their own
+ * fan-out — a replayed event, a hand-published one, a producer running older
+ * code, or the next source that grows livestreams (groups) and resolves its own
+ * roster.
+ *
+ * Deliberately NOT a blanket rule in push.service: plenty of events legitimately
+ * have actor === recipient (a password change alerts the person who made it).
+ * The livestream announcement is the one that is third-person by definition.
+ */
+function withoutActor(
+  recipientIds: string[] | undefined,
+  actorId: string | undefined
+): string[] {
+  if (!recipientIds?.length) return [];
+  if (!actorId) return recipientIds;
+  return recipientIds.filter((id) => id !== actorId);
+}
+
 /** Name + avatar of ONE community, resolved together from ONE record. */
 interface CommunityIdentity {
   communityId: string;
@@ -353,7 +381,8 @@ async function handleCommunityEvent(
 
     case CommunityEvents.LIVESTREAM_STARTED: {
       const p = data as CommunityLivestreamStartedPayload;
-      if (!p.recipientIds?.length) break;
+      const recipients = withoutActor(p.recipientIds, p.hostUserId);
+      if (recipients.length === 0) break;
       const identity = await communityIdentityFor(
         p.communityId,
         p.communityName,
@@ -365,7 +394,7 @@ async function handleCommunityEvent(
         displayName: p.hostDisplayName,
         avatarUrl: p.hostAvatarUrl,
       };
-      await pushToUsers(p.recipientIds, (userId) => ({
+      await pushToUsers(recipients, (userId) => ({
         userId,
         copy: communityCopy.livestreamStarted(identity.name, hostName),
         ...base(
@@ -397,7 +426,8 @@ async function handleCommunityEvent(
 
     case CommunityEvents.LIVESTREAM_ENDED: {
       const p = data as CommunityLivestreamEndedPayload;
-      if (!p.recipientIds?.length) break;
+      const recipients = withoutActor(p.recipientIds, p.hostUserId);
+      if (recipients.length === 0) break;
       const identity = await communityIdentityFor(
         p.communityId,
         p.communityName,
@@ -409,7 +439,7 @@ async function handleCommunityEvent(
         displayName: p.hostDisplayName,
         avatarUrl: p.hostAvatarUrl,
       };
-      await pushToUsers(p.recipientIds, (userId) => ({
+      await pushToUsers(recipients, (userId) => ({
         userId,
         copy: communityCopy.livestreamEnded(
           identity.name,
