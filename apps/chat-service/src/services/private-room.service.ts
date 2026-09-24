@@ -116,36 +116,30 @@ export async function ensurePrivateRoom(
 
   logger.debug(`PrivateRoomService|ensurePrivateRoom|created room=${roomId}`);
 
-  // Notify both participants that a new conversation was opened.
+  // DELIBERATELY SILENT. The room just created has no `lastMessageAt`, and both
+  // list queries (`getInboxConversations`, `getConversationList`) skip NULL
+  // rows — so by the server's own eligibility rule this is not yet a
+  // conversation any list will return.
   //
-  // ADDITIVE `peer`: the recipient's OWN view of the other participant. Without it a client can
-  // only learn the peer's name from `GET /chat/inbox`, which keysets on `lastMessageAt` and
-  // therefore never returns a room that has no messages yet — a chat created by accepting a
-  // friend request showed a nameless row until the first message. Existing clients ignore the
-  // extra field; the `participants` array and every other field are unchanged.
-  const snapshots = await deps.userSnapshotService
-    .getUserSnapshotsMap([userId, peerId], deps.cacheRepo)
-    .catch(() => new Map<string, Record<string, unknown>>());
-  const briefFor = (id: string) => ({
-    id,
-    displayName: resolveDisplayName(snapshots.get(id)),
-    memberId: (snapshots.get(id)?.memberId as string) || "",
-  });
-  const convCreatedFor = (recipientId: string, otherId: string) =>
-    JSON.stringify({
-      event: "conv:created",
-      data: {
-        roomId,
-        participants: [userId, peerId],
-        peer: briefFor(otherId),
-      },
-    });
-  deps.redis
-    .publish(`user:${userId}`, convCreatedFor(userId, peerId))
-    .catch(() => {});
-  deps.redis
-    .publish(`user:${peerId}`, convCreatedFor(peerId, userId))
-    .catch(() => {});
+  // It used to publish `conv:created` to both participants right here, with a
+  // `peer` brief attached so the row would at least have a name. That
+  // announcement was the bug: a client that materializes a list row from the
+  // payload gets an entry the authoritative list never mentions again, so no
+  // refetch, no pagination page and no restart can reconcile it away. It sits
+  // there forever with no preview and no timestamp, and — whenever the snapshot
+  // lookup missed, which its `.catch(() => new Map())` made silent for BOTH
+  // sides on a single user-service blip — named with the literal placeholder
+  // "Unknown User".
+  //
+  // Nothing is lost by staying quiet: every caller already announces the room at
+  // the moment it genuinely becomes listable.
+  //   - friendship.created → `postFriendshipSystemMessage` or `stampRoomActivity`
+  //     sets `lastMessageAt` and publishes `conv:updated`
+  //     (events/friendship.consumer.ts).
+  //   - first user message → its own `conv:created`, which is the real "this
+  //     conversation now exists" moment (services/private-message.service.ts).
+  //   - a client opening the chat gets the whole room, peer included, from
+  //     `GET /chat/private/rooms/{peerId}`.
 
   return room;
 }
