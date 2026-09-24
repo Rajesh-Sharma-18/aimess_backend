@@ -51,6 +51,11 @@ service MessagingService {
   // from an accept-then-immediately-end race (no duration, treated as
   // cancelled). Idempotent per callId.
   rpc HandleLiveKitParticipantJoined (HandleLiveKitParticipantJoinedRequest) returns (HandleLiveKitParticipantJoinedResponse);
+  // LiveKit `track_published` for a CAMERA track — the only sign the server
+  // gets that a voice call became a video call, because every client upgrades
+  // client-side without telling us. Flips Call.type AUDIO → VIDEO, one-way and
+  // idempotent, so the call card and call history end as "Video call".
+  rpc HandleLiveKitCameraPublished (HandleLiveKitCameraPublishedRequest) returns (HandleLiveKitCameraPublishedResponse);
   rpc CatchupRoom             (CatchupRoomRequest)             returns (CatchupRoomResponse);
   // Room-independent typing indicator fan-out for private/group — the exact
   // mirror of community's GetCommunityActiveMemberIds. Lets the gateway resolve
@@ -857,10 +862,10 @@ message HandleLiveKitRoomFinishedRequest {
   // NOT interchangeable — only a real room close may cancel a RINGING call, since
   // during RINGING the caller is the room's sole participant.
   string event_type = 2;
-  // Participants still in the room when the webhook fired. A `participant_left`
-  // that leaves 2+ behind is one leg dropping out of a call that is still up
-  // (e.g. a second device of one user being evicted for duplicate identity) and
-  // must NOT end the call. -1 when the webhook did not report a count.
+  // UNUSED — chat-service no longer reads it. It is the webhook payload's
+  // `room.num_participants`, which LiveKit fills from a background-refreshed
+  // cache, so it can still count a participant who just left. chat-service
+  // re-reads the room live from LiveKit instead. Kept for wire compatibility.
   int32 remaining_participants = 3;
 }
 message HandleLiveKitRoomFinishedResponse {}
@@ -875,6 +880,12 @@ message HandleLiveKitParticipantJoinedRequest {
   string participant_identity = 2;
 }
 message HandleLiveKitParticipantJoinedResponse {}
+
+message HandleLiveKitCameraPublishedRequest {
+  // LiveKit room_name == callId by our convention.
+  string room_name = 1;
+}
+message HandleLiveKitCameraPublishedResponse {}
 
 message CatchupRoomRequest {
   string           conversation_id   = 1;

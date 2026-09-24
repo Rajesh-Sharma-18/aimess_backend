@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import express from "express";
-import { WebhookReceiver } from "livekit-server-sdk";
+import { TrackSource, WebhookReceiver } from "livekit-server-sdk";
 import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
@@ -51,6 +51,9 @@ export function createLiveKitWebhookRouter(
         event?: string;
         room?: { name?: string; numParticipants?: number };
         participant?: { identity?: string };
+        // `receive` parses with protobuf `fromJson`, so the wire's "CAMERA"
+        // arrives here as the numeric enum — compare against TrackSource.
+        track?: { source?: TrackSource };
       };
       try {
         // WebhookReceiver.receive expects a stringified body. express.raw gives
@@ -76,7 +79,8 @@ export function createLiveKitWebhookRouter(
       // the room never empties, so `room_finished` never fires, and the row would
       // otherwise sit IN_PROGRESS keeping BOTH users "busy" until the max-duration
       // sweep. LiveKit fires `participant_left` only after its own reconnection
-      // grace, so a transient network blip does not trigger it. Other events are
+      // grace, so a transient network blip does not trigger it. A CAMERA
+      // `track_published` marks the call as video (below). Other events are
       // dropped after a debug log — wire them later for analytics.
       if (
         (eventType === "room_finished" || eventType === "participant_left") &&
@@ -86,9 +90,9 @@ export function createLiveKitWebhookRouter(
           await messagingClient.handleLiveKitRoomFinished({
             roomName,
             eventType,
-            // Both peers still in the room means this `participant_left` was an
-            // extra leg dropping out (duplicate-identity eviction, a second
-            // device), not the call ending — chat-service uses it to decide.
+            // No longer read by chat-service: LiveKit fills this count from a
+            // cache that lags a departure, so chat-service re-reads the room
+            // live from LiveKit before ending anything. Kept on the wire only.
             remainingParticipants: event.room?.numParticipants ?? -1,
           });
         } catch (err) {
@@ -110,6 +114,23 @@ export function createLiveKitWebhookRouter(
         } catch (err) {
           logger.warn(
             `livekit participant_joined reconcile failed for room=${roomName}: ${String(err)}`
+          );
+        }
+      } else if (
+        eventType === "track_published" &&
+        roomName &&
+        event.track?.source === TrackSource.CAMERA
+      ) {
+        // A camera going live is the only sign the server gets that a voice
+        // call became a video call: every client upgrades client-side and never
+        // says so. chat-service flips Call.type AUDIO → VIDEO (one-way,
+        // idempotent — a VIDEO call's own camera is a no-op), so the call card,
+        // chat-list preview and call history all end as "Video call".
+        try {
+          await messagingClient.handleLiveKitCameraPublished({ roomName });
+        } catch (err) {
+          logger.warn(
+            `livekit track_published reconcile failed for room=${roomName}: ${String(err)}`
           );
         }
       } else {

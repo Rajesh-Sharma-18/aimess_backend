@@ -2098,12 +2098,10 @@ export function createMessagingImpl(
           const req = call.request as {
             roomName?: string;
             eventType?: string;
-            remainingParticipants?: number;
           };
           await deps.callService.reconcileFromLiveKitRoomFinished(
             req.roomName ?? "",
-            req.eventType ?? "",
-            req.remainingParticipants ?? -1
+            req.eventType ?? ""
           );
           callback(null, {});
         } catch (err) {
@@ -2131,6 +2129,24 @@ export function createMessagingImpl(
         } catch (err) {
           logger.error(
             `gRPC handleLiveKitParticipantJoined error: ${String(err)}`
+          );
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    handleLiveKitCameraPublished: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<Record<string, never>>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { roomName?: string };
+          await deps.callService.markVideo(req.roomName ?? "");
+          callback(null, {});
+        } catch (err) {
+          logger.error(
+            `gRPC handleLiveKitCameraPublished error: ${String(err)}`
           );
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }

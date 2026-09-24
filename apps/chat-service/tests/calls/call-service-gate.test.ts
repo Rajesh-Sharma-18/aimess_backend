@@ -144,6 +144,14 @@ describe("CallService.initiateCall gate", () => {
       "self:caller",
       expect.stringContaining('"calleeName":"Alice"')
     );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:callee",
+      expect.stringContaining('"calleeId":"callee"')
+    );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:caller",
+      expect.stringContaining('"callerId":"caller"')
+    );
   });
 
   // Regression: initiateCall used to be fully re-entrant. Two rapid initiates from

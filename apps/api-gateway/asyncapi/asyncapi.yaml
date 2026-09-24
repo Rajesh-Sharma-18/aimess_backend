@@ -5736,8 +5736,11 @@ components:
         - `VOICE_CALL` / `VIDEO_CALL` — a call lifecycle entry in a private or
           group timeline. **Read-only**: the send validators reject them, they are
           only ever written by the call service. The kind comes from the call's
-          own type, so it does NOT change as the call progresses — read the
-          current state from `content.call`
+          own type, and changes AT MOST ONCE: `VOICE_CALL` → `VIDEO_CALL` (never
+          back) when a camera was turned on mid-call — so re-read `messageType`
+          and `content.call.callType` from every `message:edited` instead of
+          keeping the kind from `message:new`. Read the current state from
+          `content.call`
           (`{ callId, callType, callStatus, callerId, calleeId, durationSec }`,
           where `callStatus` is `RINGING` | `ANSWERED` | `ENDED` | `DECLINED` |
           `MISSED` | `CANCELLED` | `FAILED`; `outcome` is a legacy alias with the
