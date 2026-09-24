@@ -1,5 +1,5 @@
 import type { PrismaClient, Call } from "../generated/prisma/index.js";
-import { CallStatus } from "../types/enums.js";
+import { CallStatus, CallType } from "../types/enums.js";
 
 export class CallRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -145,6 +145,29 @@ export class CallRepository {
         answeredAt: null,
       },
       data: { answeredAt },
+    });
+    return { won: result.count === 1 };
+  }
+
+  /**
+   * One-way AUDIO → VIDEO: a call that ever carried camera video is a video
+   * call for good. Only a LIVE non-VIDEO row matches, so a VIDEO call, a
+   * replayed webhook, or a settled row (its card is already written — flipping
+   * it now would make history and card disagree) all no-op. `not VIDEO` rather
+   * than `= AUDIO` so a lowercase/legacy type still flips.
+   *
+   * This bumps `@updatedAt`, which endCall/declineCall/reconcile read as the
+   * answer instant — but only when `answeredAt` is null, and the one
+   * IN_PROGRESS writer (answerCallClaimed) stamps `answeredAt` in the same write.
+   */
+  async upgradeToVideo(callId: string): Promise<{ won: boolean }> {
+    const result = await this.prisma.call.updateMany({
+      where: {
+        callId,
+        type: { not: CallType.VIDEO },
+        status: { in: [CallStatus.RINGING, CallStatus.IN_PROGRESS] },
+      },
+      data: { type: CallType.VIDEO },
     });
     return { won: result.count === 1 };
   }

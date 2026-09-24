@@ -457,6 +457,7 @@ export interface MessagingClient {
     roomName: string;
     participantIdentity: string;
   }): Promise<unknown>;
+  handleLiveKitCameraPublished(p: { roomName: string }): Promise<unknown>;
   catchupRoom(p: CatchupRoomParams): Promise<CatchupRoomResult>;
   getRoomParticipantIds(
     p: GetRoomParticipantIdsParams
@@ -904,6 +905,14 @@ export function createMessagingClient(): MessagingClient {
       })
   );
 
+  const handleLiveKitCameraPublishedBreaker = makeBreaker(
+    "messaging.handleLiveKitCameraPublished",
+    (p: { roomName: string }) =>
+      call<unknown, Record<string, never>>("handleLiveKitCameraPublished", {
+        roomName: p.roomName,
+      })
+  );
+
   const catchupRoomBreaker = makeBreaker(
     "messaging.catchupRoom",
     (p: CatchupRoomParams) => {
@@ -958,6 +967,8 @@ export function createMessagingClient(): MessagingClient {
     handleLiveKitRoomFinished: (p) => handleLiveKitRoomFinishedBreaker.fire(p),
     handleLiveKitParticipantJoined: (p) =>
       handleLiveKitParticipantJoinedBreaker.fire(p),
+    handleLiveKitCameraPublished: (p) =>
+      handleLiveKitCameraPublishedBreaker.fire(p),
     catchupRoom: (p) => catchupRoomBreaker.fire(p),
     getRoomParticipantIds: (p) => getRoomParticipantIdsBreaker.fire(p),
   };

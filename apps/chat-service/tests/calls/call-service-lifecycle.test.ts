@@ -33,6 +33,8 @@ function buildService() {
       set: jest.fn().mockResolvedValue("OK"),
       get: jest.fn().mockResolvedValue(null),
       eval: jest.fn().mockResolvedValue(1),
+      // Media-gone sighting written by a `participant_left` webhook.
+      zadd: jest.fn().mockResolvedValue(1),
     },
     livekit: { mintToken: jest.fn() },
     // These lifecycle tests are about legs/status transitions, not the call
@@ -236,9 +238,13 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
     expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
     expect(stubs.redis.publish).not.toHaveBeenCalled();
     expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+    expect(stubs.redis.zadd).not.toHaveBeenCalled();
   });
 
-  it("IN_PROGRESS + participant_left → still ends (a peer dropping ends an answered call)", async () => {
+  // The webhook cannot tell a peer who is gone from a duplicate-identity
+  // eviction, and its head-count is a lagging cache — so it only records a
+  // sighting. sweepAbandonedMediaCalls re-reads the room live and ends it.
+  it("IN_PROGRESS + participant_left → flagged for a live re-check, NOT ended", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue({
       callId: "c1",
@@ -252,11 +258,49 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
 
     await service.reconcileFromLiveKitRoomFinished("c1", "participant_left");
 
-    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
-      "c1",
-      "IN_PROGRESS",
-      expect.objectContaining({ status: "ENDED", endedBy: "SYSTEM_LIVEKIT" })
+    expect(stubs.redis.zadd).toHaveBeenCalledWith(
+      "call:media-gone",
+      "NX",
+      expect.any(Number),
+      "c1"
     );
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+  });
+
+  it("an event other than room_finished is only verified, never final", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "IN_PROGRESS",
+      answeredAt: new Date(1_000_000),
+      callerId: "u1",
+      calleeId: "u2",
+    });
+
+    // An empty event type is the proto default when a gateway omits it.
+    await service.reconcileFromLiveKitRoomFinished("c1", "");
+
+    expect(stubs.redis.zadd).toHaveBeenCalled();
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+  });
+
+  it("a failed sighting write never fails the webhook", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "IN_PROGRESS",
+      answeredAt: new Date(1_000_000),
+      callerId: "u1",
+      calleeId: "u2",
+    });
+    stubs.redis.zadd.mockRejectedValueOnce(new Error("redis down"));
+
+    await expect(
+      service.reconcileFromLiveKitRoomFinished("c1", "participant_left")
+    ).resolves.toBeUndefined();
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
   });
 
   it("losing the atomic terminal transition emits no event or chat row", async () => {
@@ -577,38 +621,6 @@ describe("CallService — call leg ownership", () => {
     });
 
     expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalled();
-  });
-
-  it("participant_left with both peers still in the room does NOT end the call", async () => {
-    const { service, stubs } = buildService();
-    stubs.callRepo.findByCallId.mockResolvedValue({
-      ...ringingCall,
-      status: "IN_PROGRESS",
-      answeredAt: new Date(Date.now() - 30_000),
-    });
-
-    // A duplicate-identity eviction: one extra leg left, the call is still up.
-    await service.reconcileFromLiveKitRoomFinished("c1", "participant_left", 2);
-
-    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
-    expect(stubs.redis.publish).not.toHaveBeenCalled();
-  });
-
-  it("participant_left that leaves one peer behind still ends the call", async () => {
-    const { service, stubs } = buildService();
-    stubs.callRepo.findByCallId.mockResolvedValue({
-      ...ringingCall,
-      status: "IN_PROGRESS",
-      answeredAt: new Date(Date.now() - 30_000),
-    });
-
-    await service.reconcileFromLiveKitRoomFinished("c1", "participant_left", 1);
-
-    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
-      "c1",
-      "IN_PROGRESS",
-      expect.objectContaining({ status: "ENDED", endedBy: "SYSTEM_LIVEKIT" })
-    );
   });
 });
 
