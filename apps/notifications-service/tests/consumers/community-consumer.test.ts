@@ -83,6 +83,8 @@ const CID = "c".repeat(24);
 const RID = "r".repeat(24);
 const REQUESTER = "99999999-9999-4999-8999-999999999999";
 const MOD = "11111111-1111-4111-8111-111111111111";
+const ADMIN = "22222222-2222-4222-8222-222222222222";
+const MOD_2 = "33333333-3333-4333-8333-333333333333";
 
 /**
  * Boot the consumer, grab the captured consume callback, then deliver one
@@ -172,6 +174,72 @@ describe("JOIN_REQUEST_REJECTED branch", () => {
     expect(userId).toBe(REQUESTER);
     expect(event).toBe("community:join_request:update");
     expect(data.status).toBe("REJECTED");
+  });
+});
+
+describe("JOIN_REQUESTED branch — admin-only recipient set", () => {
+  const JOIN_REQUESTED = {
+    communityId: CID,
+    communityName: "Cool Community",
+    communityHandle: "@coolcommunity",
+    communityAvatarUrl: null,
+    userId: REQUESTER,
+    requestId: RID,
+    message: null,
+    requesterDisplayName: "Alice Requester",
+    requesterAvatarUrl: null,
+    eventAt: "2026-09-24T10:00:00.000Z",
+  };
+
+  it("pushes to the admin(s) only — every moderator is absent from the recipient set", async () => {
+    await deliver(CommunityEvents.JOIN_REQUESTED, {
+      ...JOIN_REQUESTED,
+      adminRecipientIds: [ADMIN],
+    });
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const recipients = pushMany.mock.calls[0][0] as string[];
+    expect(recipients).toEqual([ADMIN]);
+    // One assertion per excluded party, so a failure names who leaked.
+    expect(recipients).not.toContain(MOD);
+    expect(recipients).not.toContain(MOD_2);
+    expect(recipients).not.toContain(REQUESTER);
+    // pushToUser is the single-recipient seam — nothing may sneak a moderator
+    // in through it either.
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("ignores a legacy moderatorRecipientIds field rather than falling back to it", async () => {
+    // An old producer's in-flight message, or a hand-rolled replay. The wide
+    // roster must NOT be honoured: dropping one admin notification during a
+    // rollout is recoverable, notifying every moderator is the bug.
+    await deliver(CommunityEvents.JOIN_REQUESTED, {
+      ...JOIN_REQUESTED,
+      moderatorRecipientIds: [ADMIN, MOD, MOD_2],
+    });
+
+    expect(pushMany).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("drops the event when the only 'admin' is the requester (no self-notification)", async () => {
+    await deliver(CommunityEvents.JOIN_REQUESTED, {
+      ...JOIN_REQUESTED,
+      adminRecipientIds: [REQUESTER],
+    });
+
+    expect(pushMany).not.toHaveBeenCalled();
+  });
+
+  it("notifies every co-admin when ownership is shared, still no moderators", async () => {
+    const ADMIN_2 = "44444444-4444-4444-8444-444444444444";
+    await deliver(CommunityEvents.JOIN_REQUESTED, {
+      ...JOIN_REQUESTED,
+      adminRecipientIds: [ADMIN, ADMIN_2],
+    });
+
+    const recipients = pushMany.mock.calls[0][0] as string[];
+    expect(recipients.sort()).toEqual([ADMIN, ADMIN_2].sort());
   });
 });
 
@@ -414,7 +482,7 @@ describe("community consumer — navigation deep-link", () => {
     userId: REQUESTER,
     requestId: RID,
     message: null,
-    moderatorRecipientIds: [MOD, "moderator-2"],
+    adminRecipientIds: [ADMIN],
     requesterDisplayName: "Alice Requester",
     requesterAvatarUrl: "https://cdn.example.com/alice.png",
     eventAt: "2026-06-17T10:00:00.000Z",
@@ -457,7 +525,7 @@ describe("community consumer — navigation deep-link", () => {
       string[],
       (id: string) => { data: Record<string, string> },
     ];
-    const { data } = builderFn(MOD);
+    const { data } = builderFn(ADMIN);
 
     // navigation must be a JSON string
     expect(typeof data.navigation).toBe("string");
@@ -478,7 +546,7 @@ describe("community consumer — navigation deep-link", () => {
       string[],
       (id: string) => { data: Record<string, string> },
     ];
-    const { data } = builderFn(MOD);
+    const { data } = builderFn(ADMIN);
 
     expect(typeof data.actorSnapshot).toBe("string");
     const actor = JSON.parse(data.actorSnapshot);
@@ -496,7 +564,7 @@ describe("community consumer — navigation deep-link", () => {
       string[],
       (id: string) => { data: Record<string, string> },
     ];
-    const { data } = builderFn(MOD);
+    const { data } = builderFn(ADMIN);
 
     expect(typeof data.communityName).toBe("string");
     expect(data.communityName).toBe("Cool Community");
@@ -511,7 +579,7 @@ describe("community consumer — navigation deep-link", () => {
       string[],
       (id: string) => { body: string },
     ];
-    const { body } = builderFn(MOD).copy("en");
+    const { body } = builderFn(ADMIN).copy("en");
 
     expect(body).toContain("Alice Requester");
     expect(body).toContain("Cool Community");

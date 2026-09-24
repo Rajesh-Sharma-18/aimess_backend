@@ -168,6 +168,16 @@ async function handleCommunityEvent(
   switch (type) {
     case CommunityEvents.JOIN_REQUESTED: {
       const p = data as CommunityJoinRequestedPayload;
+      // ADMIN-ONLY event. The producer already narrows the roster to the
+      // community's current admin(s) (moderators are excluded there, at the
+      // source), so this branch must never widen it back to
+      // `moderatorRecipientIds`. The requester filter is belt-and-braces: a
+      // community admin asking to join their own community is impossible today,
+      // but "your own request needs review" would be nonsense if it ever were.
+      const recipients = (p.adminRecipientIds ?? []).filter(
+        (id) => id !== p.userId
+      );
+      if (recipients.length === 0) break;
       const identity = await communityIdentityFor(
         p.communityId,
         p.communityName,
@@ -178,7 +188,7 @@ async function handleCommunityEvent(
         displayName: p.requesterDisplayName,
         avatarUrl: p.requesterAvatarUrl,
       };
-      await pushToUsers(p.moderatorRecipientIds, (userId) => ({
+      await pushToUsers(recipients, (userId) => ({
         userId,
         copy: communityCopy.joinRequested(
           identity.name,

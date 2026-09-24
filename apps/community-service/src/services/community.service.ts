@@ -7337,11 +7337,28 @@ export const communityService = {
     );
 
     if (isNewOrRecycled) {
-      const moderatorRecipientIds =
-        await communityRepository.findActiveMemberIdsByRoles(communityId, [
+      // TWO rosters, on purpose — they answer two different questions.
+      //
+      // `adminRecipientIds` (ADMIN only) is who gets NOTIFIED. An incoming join
+      // request is an owner decision, so only the community's current admin is
+      // an eligible recipient; moderators get no inbox row, no unread bump, no
+      // socket emit and no push. Read from the membership table at emit time, so
+      // an ownership transfer moves the notification to the NEW admin and the
+      // former one stops receiving it.
+      //
+      // `moderatorRecipientIds` (ADMIN + MODERATOR) is who can ACT, and it stays
+      // wide: moderators may still list and approve/reject requests, so their
+      // "Accept Requests" screen must still receive the pending-list sync below.
+      // Authorization to act is not authorization to be notified.
+      const [adminRecipientIds, moderatorRecipientIds] = await Promise.all([
+        communityRepository.findActiveMemberIdsByRoles(communityId, [
+          CommunityMemberRole.ADMIN,
+        ]),
+        communityRepository.findActiveMemberIdsByRoles(communityId, [
           CommunityMemberRole.ADMIN,
           CommunityMemberRole.MODERATOR,
-        ]);
+        ]),
+      ]);
       const [requesterSnaps, communityAvatarMedia] = await Promise.all([
         fetchUserSnapshots([callerId]),
         buildCommunityImageMedia(community.avatarUrl),
@@ -7359,7 +7376,13 @@ export const communityService = {
         userId: callerId,
         requestId: row.id,
         message,
-        moderatorRecipientIds,
+        adminRecipientIds,
+        // Deprecated alias carrying the SAME admin-only list — see the payload
+        // type. It exists so a notifications-service instance that has not yet
+        // picked up the new field name still notifies exactly the admin, instead
+        // of either notifying the moderators (old behaviour) or dropping the
+        // message for an empty roster. Delete with the field.
+        moderatorRecipientIds: adminRecipientIds,
         requesterDisplayName: requesterSnap?.displayName ?? "Unknown",
         requesterAvatarUrl: requesterAvatarMedia.downloadUrl,
       });

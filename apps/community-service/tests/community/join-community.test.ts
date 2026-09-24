@@ -142,6 +142,8 @@ const pubSystemMessage = publishCommunitySystemMessageForChatSafe as jest.Mock;
 const CID = "c".repeat(24);
 const CALLER = "99999999-9999-4999-8999-999999999999";
 const MOD = "11111111-1111-4111-8111-111111111111";
+/** A plain MODERATOR — not the admin, so never a join-request notification recipient. */
+const SECOND_MOD = "33333333-3333-4333-8333-333333333333";
 const REQ_ID = "r".repeat(24);
 
 const publicCommunity = {
@@ -358,7 +360,13 @@ describe("joinCommunity — PRIVATE community", () => {
     repo.findMemberByUserId.mockResolvedValue(null);
     repo.findJoinRequestByCommunityAndUser.mockResolvedValue(null);
     repo.createJoinRequest.mockResolvedValue(pendingJoinRequest);
-    repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD]);
+    // MOD is this community's adminId; SECOND_MOD is a plain MODERATOR. The
+    // stub answers per requested role set so the admin-only notification roster
+    // and the wider list-sync roster stay distinguishable.
+    repo.findActiveMemberIdsByRoles.mockImplementation(
+      async (_communityId: string, roles: string[]) =>
+        roles.includes("MODERATOR") ? [MOD, SECOND_MOD] : [MOD]
+    );
     repo.createAuditLog.mockResolvedValue(undefined);
   });
 
@@ -383,8 +391,13 @@ describe("joinCommunity — PRIVATE community", () => {
       userId: CALLER,
       requestId: REQ_ID,
       communityName: "Cool Community",
-      moderatorRecipientIds: [MOD],
+      // Admin only. A moderator is authorized to review this request but is not
+      // a recipient of the notification about it.
+      adminRecipientIds: [MOD],
     });
+    expect(payload.adminRecipientIds).not.toContain(SECOND_MOD);
+    // Deprecated rollout alias — same narrow list, never the wide roster.
+    expect(payload.moderatorRecipientIds).toEqual([MOD]);
     expect(typeof payload.eventAt).toBe("string");
   });
 

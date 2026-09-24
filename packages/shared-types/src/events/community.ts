@@ -263,8 +263,24 @@ export type CommunityJoinRequestedPayload = CommunityEventBase & {
   userId: string;
   requestId: string;
   message: string | null;
-  /** Admins + moderators that can action this request — notify each. */
-  moderatorRecipientIds: string[];
+  /**
+   * The community's CURRENT ADMIN(s) — the only eligible recipients of a
+   * join-request notification. Deliberately NOT the admin+moderator roster
+   * (`moderatorRecipientIds`, which every other community event carries):
+   * moderators may still open, approve and reject requests, but they are not
+   * notified about incoming ones. Narrowed at the producer so the exclusion
+   * holds for every channel at once — inbox row, unread count, socket emit,
+   * web/mobile push — instead of once per delivery path.
+   */
+  adminRecipientIds: string[];
+  /**
+   * @deprecated Rollout compatibility only — a consumer still reading the old
+   * field name gets the SAME admin-only list, never the wide roster, so a
+   * mid-deploy message can neither notify a moderator nor be dropped for having
+   * no recipients at all. Remove once every notifications-service instance
+   * reads `adminRecipientIds`. New code must not read this.
+   */
+  moderatorRecipientIds?: string[];
   communityName: string;
   communityHandle: string;
   communityAvatarUrl: string | null;
