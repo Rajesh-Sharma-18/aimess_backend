@@ -7,6 +7,16 @@
  * side rebuild the same sentence in a different language later. Without the
  * ticket the row is frozen at write time, which is the original bug.
  */
+// push.service pulls in the session-active cache, which imports the auth gRPC
+// client at module load. That client derives its proto path from
+// `import.meta.url`, which the CommonJS test transform cannot compile — so
+// without this the whole suite fails to load before a single assertion runs.
+// Its sibling clients are mocked here for the same reason.
+jest.mock("../../src/grpc/auth-session.client.js", () => ({
+  createAuthSessionClient: () => ({
+    isSessionActive: jest.fn(async () => true),
+  }),
+}));
 jest.mock("../../src/repositories/device-token.repository.js", () => ({
   deviceTokenRepository: {
     findTokensByUserId: jest.fn(async () => ["token-1"]),
