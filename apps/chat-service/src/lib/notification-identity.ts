@@ -4,6 +4,11 @@ const DELETE_ON_ARRIVAL = new Set<string>([
   "friend.cancelled",
   // Group @mention removed (message deleted for everyone, or edited away).
   "chat.mention_retracted",
+  // The join request the admin's card announced is no longer PENDING (approved,
+  // rejected, cancelled by the requester, or auto-resolved). The card is an
+  // action item, so it goes away with the action rather than being rewritten
+  // into an outcome nobody needs to read.
+  "community.join_request_retracted",
 ]);
 
 const FRIEND_TYPES = new Set<string>([
@@ -111,6 +116,17 @@ export function resolveTransition(
     incomingType === "friend.requested" &&
     RESOLVED_FRIEND_TYPES.has(existingType)
   ) {
+    return { action: "CREATE", resurface: true };
+  }
+  // Same rule for a community join request, and for the same reason: the join
+  // request row is unique per (community, requester) and recycled, so request →
+  // cancel → request again arrives with the id — and the group key — of the
+  // attempt before it. Rewriting the old card in place is what made a second
+  // request produce no `notification:new` and no badge, leaving the admin with
+  // a card they had already seen. The producer retracts the previous card
+  // first, so in practice there is nothing here to rewrite; this is what keeps
+  // that true when a retraction is lost.
+  if (incomingType === "community.join_requested") {
     return { action: "CREATE", resurface: true };
   }
   const explicit = nonEmpty(data.resurface);

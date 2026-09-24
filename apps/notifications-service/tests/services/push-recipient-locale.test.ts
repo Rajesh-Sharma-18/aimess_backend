@@ -6,6 +6,16 @@
  * on what actually reaches FCM (`sendPush`) proves the language is applied at
  * delivery, not at the consumer that produced the event.
  */
+// push.service pulls in the session-active cache, which imports the auth gRPC
+// client at module load. That client derives its proto path from
+// `import.meta.url`, which the CommonJS test transform cannot compile — so
+// without this the whole suite fails to load before a single assertion runs.
+// Its sibling clients are mocked here for the same reason.
+jest.mock("../../src/grpc/auth-session.client.js", () => ({
+  createAuthSessionClient: () => ({
+    isSessionActive: jest.fn(async () => true),
+  }),
+}));
 jest.mock("../../src/repositories/device-token.repository.js", () => ({
   deviceTokenRepository: {
     findTokensByUserId: jest.fn(async () => ["token-1"]),

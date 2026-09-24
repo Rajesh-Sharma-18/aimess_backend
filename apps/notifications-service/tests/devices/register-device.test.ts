@@ -16,6 +16,14 @@
  *   token: string min 1 max 4096; platform: enum ANDROID|IOS|WEB;
  *   deviceId?: string min 1 max 256.
  */
+// The auth gRPC client derives its proto path from `import.meta.url`, which the
+// CommonJS test transform cannot compile — anything that reaches it fails to
+// load before a single assertion runs. Mocked here as its siblings already are.
+jest.mock("../../src/grpc/auth-session.client.js", () => ({
+  createAuthSessionClient: () => ({
+    isSessionActive: jest.fn(async () => true),
+  }),
+}));
 jest.mock("../../src/repositories/device-token.repository.js", () => ({
   deviceTokenRepository: {
     upsert: jest.fn(),

@@ -54,10 +54,14 @@ describe("authorizeMediaAccess — registry-bound", () => {
         requesterId: "u2",
       })
     ).resolves.toBeUndefined();
+    // The object now travels with the question so chat-service can apply a
+    // group history boundary to it; the other scopes ignore the extra fields.
     expect(mockCheck).toHaveBeenCalledWith({
       userId: "u2",
       scope: "PRIVATE_CHAT",
       resourceId: "room1",
+      objectKey: "chat-uploads/u1/x.pdf",
+      objectCreatedAt: undefined,
     });
   });
 
@@ -81,6 +85,8 @@ describe("authorizeMediaAccess — registry-bound", () => {
       userId: "u2",
       scope: "COMMUNITY_CHAT",
       resourceId: "comm1",
+      objectKey: "community-chat-uploads/u1/x.jpg",
+      objectCreatedAt: undefined,
     });
   });
 

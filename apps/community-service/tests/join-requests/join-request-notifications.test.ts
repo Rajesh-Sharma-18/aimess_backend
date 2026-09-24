@@ -67,6 +67,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityJoinRequestedSafe: jest.fn(),
   publishCommunityJoinRequestApprovedSafe: jest.fn(),
   publishCommunityJoinRequestRejectedSafe: jest.fn(),
+  publishCommunityJoinRequestRetractedSafe: jest.fn(),
   publishCommunityInviteSentSafe: jest.fn(),
   publishCommunityInviteAcceptedSafe: jest.fn(),
   publishCommunityReportCreatedSafe: jest.fn(),
@@ -128,6 +129,7 @@ import {
   publishCommunityJoinRequestApprovedSafe,
   publishCommunityJoinRequestRejectedSafe,
   publishCommunityJoinRequestedSafe,
+  publishCommunityJoinRequestRetractedSafe,
   publishCommunityMemberAddedSafe,
 } from "../../src/messaging/publish-community.js";
 
@@ -135,6 +137,7 @@ const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const pubApproved = publishCommunityJoinRequestApprovedSafe as jest.Mock;
 const pubRejected = publishCommunityJoinRequestRejectedSafe as jest.Mock;
 const pubRequested = publishCommunityJoinRequestedSafe as jest.Mock;
+const pubRetracted = publishCommunityJoinRequestRetractedSafe as jest.Mock;
 const pubMemberAdded = publishCommunityMemberAddedSafe as jest.Mock;
 const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
 const pubChatUserEvent = publishChatUserEvent as jest.Mock;
@@ -149,6 +152,11 @@ const CID = "c".repeat(24);
 const RID = "r".repeat(24);
 const MOD = "11111111-1111-4111-8111-111111111111"; // the approving moderator
 const REQUESTER = "99999999-9999-4999-8999-999999999999"; // the join requester
+// A community whose ADMIN is a different person from its moderators — the only
+// shape in which "admin gets the join-request notification, moderators do not"
+// is falsifiable.
+const ADMIN = "22222222-2222-4222-8222-222222222222";
+const MOD_2 = "33333333-3333-4333-8333-333333333333";
 
 const community = {
   id: CID,
@@ -260,6 +268,30 @@ describe("approveJoinRequest — events + member fan-out", () => {
     });
   });
 
+  it("retracts the admin's join-request card once the request is approved", async () => {
+    // Distinct ADMIN so "retracted for the admin, not the whole roster" is
+    // falsifiable: the roster read answers per requested role set.
+    repo.findActiveMemberIdsByRoles.mockImplementation(
+      async (_communityId: string, roles: string[]) =>
+        roles.includes("MODERATOR") ? [ADMIN, MOD, MOD_2] : [ADMIN]
+    );
+
+    await communityService.approveJoinRequest(CID, MOD, RID);
+
+    expect(pubRetracted).toHaveBeenCalledTimes(1);
+    const payload = pubRetracted.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      communityId: CID,
+      requestId: RID,
+      requesterId: REQUESTER,
+      resolution: "APPROVED",
+      adminRecipientIds: [ADMIN],
+    });
+    // A moderator never had a card, so a moderator must not be told to drop one.
+    expect(payload.adminRecipientIds).not.toContain(MOD);
+    expect(payload.adminRecipientIds).not.toContain(MOD_2);
+  });
+
   it("does NOT publish a rejected event on the approve path", async () => {
     await communityService.approveJoinRequest(CID, MOD, RID);
     expect(pubRejected).not.toHaveBeenCalled();
@@ -326,6 +358,23 @@ describe("rejectJoinRequest — previously-silent path now emits an event", () =
       decidedBy: { userId: MOD },
     });
     expect(typeof payload.decidedAt).toBe("string");
+  });
+
+  it("retracts the admin's card on reject too", async () => {
+    repo.findActiveMemberIdsByRoles.mockImplementation(
+      async (_communityId: string, roles: string[]) =>
+        roles.includes("MODERATOR") ? [ADMIN, MOD] : [ADMIN]
+    );
+
+    await communityService.rejectJoinRequest(CID, MOD, RID);
+
+    expect(pubRetracted).toHaveBeenCalledTimes(1);
+    expect(pubRetracted.mock.calls[0][0]).toMatchObject({
+      requestId: RID,
+      requesterId: REQUESTER,
+      resolution: "REJECTED",
+      adminRecipientIds: [ADMIN],
+    });
   });
 
   it("does NOT emit an approved event or a member_added on reject", async () => {
@@ -546,10 +595,19 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
     repo.findMemberByUserId.mockResolvedValue(null); // not yet a member
     repo.findJoinRequestByCommunityAndUser.mockResolvedValue(null); // no existing request
     repo.createJoinRequest.mockResolvedValue(pendingRequest);
-    repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD, "moderator-2"]);
+    // Role-AWARE roster stub — the whole point of this block is that the
+    // notification roster and the list-sync roster are different queries. A
+    // role-blind mock returning one array for both would pass even if the
+    // service asked for ADMIN+MODERATOR in both places.
+    repo.findActiveMemberIdsByRoles.mockImplementation(
+      async (_communityId: string, roles: string[]) =>
+        roles.includes("MODERATOR")
+          ? [ADMIN, MOD, MOD_2]
+          : [ADMIN]
+    );
   });
 
-  it("publishes community.join_requested for the moderators (cross-service/push)", async () => {
+  it("addresses community.join_requested to the ADMIN only — never the moderators", async () => {
     await communityService.createJoinRequest(CID, REQUESTER, null);
 
     expect(pubRequested).toHaveBeenCalledTimes(1);
@@ -558,8 +616,47 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
       communityId: CID,
       requestId: RID,
       userId: REQUESTER,
-      moderatorRecipientIds: [MOD, "moderator-2"],
+      adminRecipientIds: [ADMIN],
     });
+    // The deprecated alias rides along for rollout safety, but it must carry the
+    // SAME narrow list — if it ever widened back to the roster, an older
+    // consumer would resurrect the bug.
+    expect(payload.moderatorRecipientIds).toEqual([ADMIN]);
+    expect(payload.adminRecipientIds).not.toContain(MOD);
+    expect(payload.adminRecipientIds).not.toContain(MOD_2);
+    expect(payload.adminRecipientIds).not.toContain(REQUESTER);
+  });
+
+  it("asks the roster for ADMIN alone when resolving notification recipients", async () => {
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+
+    const roleSets = repo.findActiveMemberIdsByRoles.mock.calls.map(
+      ([, roles]: [string, string[]]) => [...roles].sort()
+    );
+    // One ADMIN-only read (who is notified) + one ADMIN+MODERATOR read (whose
+    // pending list is synced). Both, not one widened to cover both.
+    expect(roleSets).toEqual(
+      expect.arrayContaining([["ADMIN"], ["ADMIN", "MODERATOR"]])
+    );
+  });
+
+  it("notifies the CURRENT admin after an ownership transfer, not the former one", async () => {
+    // Ownership moved: the roster now answers with the new admin. Recipients are
+    // resolved from the membership table at emit time, so nothing about the old
+    // admin (creator, adminId snapshot, cached name) can leak back in.
+    const NEW_ADMIN = "44444444-4444-4444-8444-444444444444";
+    repo.findActiveMemberIdsByRoles.mockImplementation(
+      async (_communityId: string, roles: string[]) =>
+        roles.includes("MODERATOR") ? [NEW_ADMIN, ADMIN] : [NEW_ADMIN]
+    );
+
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+
+    const payload = pubRequested.mock.calls[0][0];
+    expect(payload.adminRecipientIds).toEqual([NEW_ADMIN]);
+    // The former admin is a plain MODERATOR now — eligible to action the
+    // request, not to be notified about it.
+    expect(payload.adminRecipientIds).not.toContain(ADMIN);
   });
 
   it("broadcasts community:join_request:updated (status=PENDING) into the community room", async () => {
@@ -579,14 +676,37 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
     expect(typeof payload.updatedAt).toBe("number");
   });
 
-  it("also fans community:join_request:updated to every admin/moderator's personal channel", async () => {
+  it("still syncs the pending LIST to moderators — they can act, they just are not notified", async () => {
     await communityService.createJoinRequest(CID, REQUESTER, null);
 
     const personalCalls = pubChatUserEvent.mock.calls.filter(
       ([, , evt]) => evt === "community:join_request:updated"
     );
     const recipients = personalCalls.map((c) => c[1]).sort();
-    expect(recipients).toEqual([MOD, "moderator-2"].sort());
+    // Moderators keep the list-refresh event: it is a row appearing in a screen
+    // they are authorized to open, not a notification (no inbox row, no unread
+    // bump, no push). Narrowing THIS to the admin would break their Accept
+    // Requests screen, which the task explicitly forbids.
+    expect(recipients).toEqual([ADMIN, MOD, MOD_2].sort());
+  });
+
+  it("stamps the event with WHICH attempt this is", async () => {
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+
+    const payload = pubRequested.mock.calls[0][0];
+    // The row is unique per (community, requester) and recycled, so its id is
+    // the same on every attempt — the admin surfaces need the attempt itself,
+    // and `updatedAt` is what moves when the row is recycled.
+    expect(payload.lifecycle).toBe(`${RID}:${pendingRequest.updatedAt.getTime()}`);
+    expect(payload.requestId).toBe(RID);
+  });
+
+  it("does NOT retract anything while the request is still PENDING", async () => {
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+
+    // The card has only just been written — retracting here would delete the
+    // notification the same action created.
+    expect(pubRetracted).not.toHaveBeenCalled();
   });
 
   it("does not broadcast again when the caller retries and an identical PENDING request already exists (no spam)", async () => {

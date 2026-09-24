@@ -19,12 +19,22 @@ export const authenticateAccessToken: RequestHandler =
     assertUserBanned: createBannedUserGuard(() => redis),
   });
 
-// Same guard, but a request with NO Authorization header is allowed through
-// unauthenticated (req.auth stays undefined). Only /logout uses it: once the
-// refresh token lives in an httpOnly cookie the browser cannot clear it itself,
-// so a user whose access token already expired must still be able to sign out.
-// A malformed or revoked token is still rejected - this skips the check, it
-// never weakens it.
+// Same guard, but a request that cannot prove a live access token is allowed
+// through UNAUTHENTICATED (req.auth stays undefined) instead of being rejected.
+// Only /logout uses it.
+//
+// A missing header was already let through: the refresh token is an httpOnly
+// cookie the browser cannot clear itself, so sign-out must not require a live
+// access token. A STALE header was not, and that was the hole: a tab left idle
+// past the 1h access-token expiry still sends its old token, so logout 401'd in
+// this guard and never reached the controller's refresh-cookie fallback. The
+// client cleared its own state either way, leaving the session alive and piling
+// up in Connected Devices on every sign-in/sign-out cycle.
+//
+// Falling through grants nothing: `req.auth` is never set on this path, so the
+// controller can only revoke the session the caller still proves with a refresh
+// token (cookie or body). Both are credentials in their own right, and logout
+// is idempotent.
 export const authenticateAccessTokenOptional: RequestHandler = (
   req,
   res,
@@ -35,5 +45,8 @@ export const authenticateAccessTokenOptional: RequestHandler = (
     return;
   }
 
-  authenticateAccessToken(req, res, next);
+  // The rejection is swallowed on purpose - see above. `req.auth` is only
+  // assigned on success, so a rejected token leaves the request
+  // unauthenticated rather than failing it.
+  authenticateAccessToken(req, res, () => next());
 };

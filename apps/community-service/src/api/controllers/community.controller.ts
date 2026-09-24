@@ -32,6 +32,7 @@ import type {
   InviteIdParams,
   InviteLinkCodeParams,
   InviteLinkIdParams,
+  JoinRequestDecisionInput,
   JoinRequestIdParams,
   LeaveReasonInput,
   ListInvitesQuery,
@@ -269,7 +270,21 @@ export const listMyCommunities = asyncHandler(
     // gets the exclusive compound keyset (the strictly better boundary).
     if (cursor != null) {
       const sep = cursor.indexOf("_");
-      const ms = Number(sep === -1 ? cursor : cursor.slice(0, sep));
+      // "now" = the newest page, resolved against the SERVER's clock.
+      //
+      // The boundary below is `lastActivityAt < cursor`, and `lastActivityAt` is
+      // written from the message's server-side `createdAt`. A client that stamps
+      // its own wall clock there is asking the server to hide everything that
+      // happened between the two clocks: on a device a few seconds behind, the
+      // community it just posted in sorts newer than its idea of "now" and drops
+      // out of its own list. The chat room still opens (membership is untouched),
+      // so the screen ends up naming a community the list next to it says does
+      // not exist — and with a single membership that list renders its empty
+      // state. Clients cannot measure the skew, so they send "now" instead.
+      const ms =
+        cursor === "now"
+          ? Date.now()
+          : Number(sep === -1 ? cursor : cursor.slice(0, sep));
       const id = sep === -1 ? "" : cursor.slice(sep + 1);
 
       const result = await communityService.listMineKeyset(req.auth.userId, {
@@ -827,10 +842,12 @@ export const listMyJoinRequests = asyncHandler(
 export const approveCommunityJoinRequest = asyncHandler(
   async (req: Request, res: Response) => {
     const { id, requestId } = req.params as JoinRequestIdParams;
+    const { lifecycle } = (req.body ?? {}) as JoinRequestDecisionInput;
     const result = await communityService.approveJoinRequest(
       id,
       req.auth.userId,
-      requestId
+      requestId,
+      lifecycle
     );
     return res
       .status(HTTP_STATUS.OK)
@@ -846,10 +863,12 @@ export const approveCommunityJoinRequest = asyncHandler(
 export const rejectCommunityJoinRequest = asyncHandler(
   async (req: Request, res: Response) => {
     const { id, requestId } = req.params as JoinRequestIdParams;
+    const { lifecycle } = (req.body ?? {}) as JoinRequestDecisionInput;
     const result = await communityService.rejectJoinRequest(
       id,
       req.auth.userId,
-      requestId
+      requestId,
+      lifecycle
     );
     return res
       .status(HTTP_STATUS.OK)

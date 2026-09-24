@@ -112,6 +112,7 @@ import {
   inviteIdParamsSchema,
   inviteLinkCodeParamsSchema,
   inviteLinkIdParamsSchema,
+  joinRequestDecisionSchema,
   joinRequestIdParamsSchema,
   leaveReasonSchema,
   listInviteLinksQuerySchema,
@@ -526,12 +527,14 @@ communityRoutes.get(
 communityRoutes.post(
   "/:id/join-requests/:requestId/approve",
   validateParams(joinRequestIdParamsSchema),
+  validateBody(joinRequestDecisionSchema),
   approveCommunityJoinRequest
 );
 
 communityRoutes.post(
   "/:id/join-requests/:requestId/reject",
   validateParams(joinRequestIdParamsSchema),
+  validateBody(joinRequestDecisionSchema),
   rejectCommunityJoinRequest
 );
 

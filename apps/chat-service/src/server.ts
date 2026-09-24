@@ -964,6 +964,7 @@ const startServer = async () => {
       groupMemberService,
       groupRoomRepo,
       groupMemberRepo,
+      groupMessageRepo,
       privateRoomRepo,
       roomMemberRepo,
       generalRoomRepo,
@@ -1139,6 +1140,19 @@ const startServer = async () => {
         )
         .catch((err: unknown) => {
           logger.warn(`callOrphanSweep failed: ${String(err)}`);
+        });
+      //   4. IN_PROGRESS → ENDED when LiveKit's room lost a participant and
+      //      still lacks them a few seconds later, re-read live from LiveKit.
+      //      Covers the case 3 cannot: one app killed while the other user
+      //      stays (or comes back) online. See sweepAbandonedMediaCalls.
+      void callService
+        .sweepAbandonedMediaCalls(
+          now,
+          env.CALL_MAX_DURATION_SEC,
+          env.CALL_TIMEOUT_SWEEP_BATCH
+        )
+        .catch((err: unknown) => {
+          logger.warn(`callMediaGoneSweep failed: ${String(err)}`);
         });
     }, env.CALL_TIMEOUT_SWEEP_INTERVAL_SEC * 1000);
     // Don't hold the event loop open on shutdown.

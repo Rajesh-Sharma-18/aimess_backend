@@ -1,4 +1,4 @@
-import { GoneError, NotFoundError } from "@aimess/errors";
+import { ForbiddenError, GoneError, NotFoundError } from "@aimess/errors";
 
 /**
  * Shared response-shaping for the "message navigation context" feature
@@ -34,6 +34,33 @@ export interface MessageContextResult {
 }
 
 /**
+ * Why a message cannot be navigated to. Two DIFFERENT answers, deliberately not
+ * one: `MESSAGE_BEFORE_JOIN` means the caller was not in the room yet and never
+ * had access, `MESSAGE_NOT_FOUND` means it is gone (deleted for everyone, hidden
+ * for them, expired, or never existed). Clients say different things for each,
+ * so collapsing them tells the reader something untrue.
+ *
+ * Neither carries any of the message's own content — the code IS the answer.
+ */
+export const MESSAGE_CONTEXT_REASON = {
+  notFound: "MESSAGE_NOT_FOUND",
+  beforeJoin: "MESSAGE_BEFORE_JOIN",
+} as const;
+
+export type MessageContextReason =
+  (typeof MESSAGE_CONTEXT_REASON)[keyof typeof MESSAGE_CONTEXT_REASON];
+
+/** The thrown-error key the services raise for the before-join refusal. */
+export const MESSAGE_BEFORE_JOIN_KEY = "CHAT_MESSAGE_BEFORE_JOIN";
+
+/** True when the error is the membership-boundary refusal (not a generic 403). */
+export function isBeforeJoinError(err: unknown): boolean {
+  return (
+    err instanceof ForbiddenError && err.messageKey === MESSAGE_BEFORE_JOIN_KEY
+  );
+}
+
+/**
  * True when a thrown error represents a CONTENT-level result (message missing
  * or deleted) rather than an ACCESS-level failure (not a participant/member,
  * room doesn't exist). Content-level results are surfaced as `200
@@ -44,21 +71,42 @@ export function isMessageContentError(err: unknown): boolean {
   return (
     err instanceof GoneError ||
     (err instanceof NotFoundError &&
-      err.messageKey === "CHAT_MESSAGE_NOT_FOUND")
+      err.messageKey === "CHAT_MESSAGE_NOT_FOUND") ||
+    // The membership-boundary refusal is an ANSWER about the target, not a
+    // failure to answer: the caller may read the room, just not this far back.
+    // Surfaced as 200 + isAvailable:false with its own code, like the others.
+    isBeforeJoinError(err)
   );
+}
+
+/** The reason code for an error {@link isMessageContentError} accepted. */
+export function messageContextReasonFor(err: unknown): MessageContextReason {
+  return isBeforeJoinError(err)
+    ? MESSAGE_CONTEXT_REASON.beforeJoin
+    : MESSAGE_CONTEXT_REASON.notFound;
 }
 
 export function buildUnavailableContext(params: {
   messageId: string;
   roomId: string;
   conversationType: MessageConversationType;
+  /** Defaults to `MESSAGE_NOT_FOUND` — the answer every caller gave before the
+   *  before-join reason existed, so existing clients read an unchanged shape. */
+  reason?: MessageContextReason;
 }): MessageContextResult {
+  const reason = params.reason ?? MESSAGE_CONTEXT_REASON.notFound;
   return {
     messageId: params.messageId,
     roomId: params.roomId,
     conversationType: params.conversationType,
     isAvailable: false,
-    error: { code: "MESSAGE_NOT_FOUND", message: "Message doesn't exist" },
+    error: {
+      code: reason,
+      message:
+        reason === MESSAGE_CONTEXT_REASON.beforeJoin
+          ? "Message is outside your history"
+          : "Message doesn't exist",
+    },
   };
 }
 

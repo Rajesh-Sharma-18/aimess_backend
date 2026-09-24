@@ -24,7 +24,17 @@ const USER_ID = "usr_1";
 function buildService() {
   const findByRoomIdSeq = jest.fn().mockResolvedValue([]);
   const findAroundSeq = jest.fn().mockResolvedValue([]);
-  const findById = jest.fn().mockResolvedValue({ id: "m1", sequenceNumber: 5 });
+  // The anchor is now bound to its own room and to the caller's history
+  // boundary before any window is built, so the fixture has to look like a real
+  // row: same room, and old enough to sit inside a disbanded room's read cap.
+  const findById = jest.fn().mockResolvedValue({
+    id: "m1",
+    roomId: ROOM_ID,
+    sequenceNumber: 5,
+    createdAt: new Date("2024-01-01T00:00:00.000Z"),
+    isDeleted: false,
+    deletedForUserIds: [],
+  });
   const messageRepo = {
     findByRoomIdSeq,
     findAroundSeq,

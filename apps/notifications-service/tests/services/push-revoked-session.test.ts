@@ -22,6 +22,16 @@ const redisMock = {
   set: jest.fn(async () => "OK"),
   del: jest.fn(async () => 0),
 };
+// push.service pulls in the session-active cache, which imports the auth gRPC
+// client at module load. That client derives its proto path from
+// `import.meta.url`, which the CommonJS test transform cannot compile — so
+// without this the whole suite fails to load before a single assertion runs.
+// Its sibling clients are mocked here for the same reason.
+jest.mock("../../src/grpc/auth-session.client.js", () => ({
+  createAuthSessionClient: () => ({
+    isSessionActive: jest.fn(async () => true),
+  }),
+}));
 jest.mock("../../src/config/redis.js", () => ({ redis: redisMock }));
 
 jest.mock("../../src/repositories/device-token.repository.js", () => ({

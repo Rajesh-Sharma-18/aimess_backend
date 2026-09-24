@@ -7,6 +7,14 @@
  * service identity envelope:
  *   { success: true, service, title, environment, timestamp }
  */
+// The auth gRPC client derives its proto path from `import.meta.url`, which the
+// CommonJS test transform cannot compile — anything that reaches it fails to
+// load before a single assertion runs. Mocked here as its siblings already are.
+jest.mock("../src/grpc/auth-session.client.js", () => ({
+  createAuthSessionClient: () => ({
+    isSessionActive: jest.fn(async () => true),
+  }),
+}));
 import request from "supertest";
 
 // notifications-service exports `app` as a NAMED export (no default), unlike

@@ -16,6 +16,14 @@
  * NOTE: the token travels in the URL path; an empty `:token` segment makes
  * Express match DELETE /v1/devices/ (no route) → 404, not the 400 zod branch.
  */
+// The auth gRPC client derives its proto path from `import.meta.url`, which the
+// CommonJS test transform cannot compile — anything that reaches it fails to
+// load before a single assertion runs. Mocked here as its siblings already are.
+jest.mock("../../src/grpc/auth-session.client.js", () => ({
+  createAuthSessionClient: () => ({
+    isSessionActive: jest.fn(async () => true),
+  }),
+}));
 jest.mock("../../src/repositories/device-token.repository.js", () => ({
   deviceTokenRepository: {
     upsert: jest.fn(),

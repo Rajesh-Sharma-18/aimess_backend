@@ -1051,11 +1051,9 @@ export class GroupMessageRepository {
     });
   }
 
-
   private reactionIndexRepo: MessageReactionRepository | null = null;
 
-  private readonly reactionConversationType: ReactionConversationType =
-    "GROUP";
+  private readonly reactionConversationType: ReactionConversationType = "GROUP";
 
   /**
    * Paginated reactor index for this collection. Built lazily from the same
@@ -1470,6 +1468,49 @@ export class GroupMessageRepository {
         return !deletedFor.includes(params.userId);
       })
       .slice(0, params.limit);
+  }
+
+  /**
+   * Is this storage object carried by a message the viewer is allowed to read —
+   * i.e. one posted AFTER their own history boundary?
+   *
+   * The media download guard knows the room and the object but not the message,
+   * so membership alone used to answer it: a brand-new member who learned an
+   * objectKey got a presigned URL for an attachment from long before they
+   * joined. This is the missing half.
+   *
+   * Only ever asked when the object was uploaded at/before the cutoff (the
+   * caller short-circuits otherwise), which is exactly when the answer is
+   * usually "no" and the `createdAt > cutoff` range is the viewer's own short
+   * era — served by the `[roomId, createdAt]` index and cut off at the first
+   * hit. The one case it exists for is the straddle: uploaded just before the
+   * boundary, sent just after, which membership-time comparison alone would
+   * wrongly refuse.
+   */
+  async hasVisibleMessageWithObjectKey(params: {
+    roomId: string;
+    objectKey: string;
+    cutoff: Date;
+  }): Promise<boolean> {
+    const raw = (await this.prisma.groupMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: params.roomId,
+            isDeleted: false,
+            createdAt: { $gt: { $date: params.cutoff.toISOString() } },
+            $or: [
+              { "content.files.objectKey": params.objectKey },
+              { "content.files.thumbnailObjectKey": params.objectKey },
+              { "content.sticker.objectKey": params.objectKey },
+            ],
+          },
+        },
+        { $limit: 1 },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<unknown>;
+    return raw.length > 0;
   }
 
   /**

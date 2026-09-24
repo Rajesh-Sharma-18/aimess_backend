@@ -1,16 +1,60 @@
 import { z } from "zod";
 
+import {
+  countCharacters,
+  TEXT_NAME_MAX_LENGTH,
+  TEXT_NAME_MAX_RAW_LENGTH,
+} from "@aimess/constants";
+
 import { normalizeHandle } from "../../lib/community-slug.util.js";
 
 const OBJECT_ID_REGEX = /^[a-f0-9]{24}$/i;
 
+/**
+ * Community display name: at most 30 CHARACTERS as the person sees them.
+ *
+ * The raw `.max()` is a UTF-16 guard, not the product limit — it only keeps a
+ * pathological string away from the grapheme segmenter, because counting code
+ * units would hand a Thai or emoji name half the field. Floor of 3 unchanged.
+ */
 const nameSchema = z
   .string()
   .trim()
   .min(3, "Community name must be at least 3 characters")
-  .max(50, "Community name must be at most 50 characters");
+  .max(TEXT_NAME_MAX_RAW_LENGTH, "VALIDATION_COMMUNITY_NAME_MAX_LENGTH")
+  .refine(
+    (v) => countCharacters(v) <= TEXT_NAME_MAX_LENGTH,
+    "VALIDATION_COMMUNITY_NAME_MAX_LENGTH"
+  );
 
+/**
+ * The handle as it is STORED — no leading "@"; the clients render that. Charset
+ * is ASCII, so `.max()` and the website's character counter agree exactly.
+ * Normalization, the floor of 3 and the charset rule are unchanged; only the
+ * ceiling moved (32 -> 30), and only here on the WRITE path — `handleParamsSchema`
+ * below keeps the wider shape so existing handles stay resolvable.
+ */
 const handleSchema = z
+  .string()
+  .trim()
+  .transform((s) => normalizeHandle(s))
+  .pipe(
+    z
+      .string()
+      .min(3, "Community handle must be at least 3 characters")
+      .max(TEXT_NAME_MAX_LENGTH, "VALIDATION_COMMUNITY_HANDLE_MAX_LENGTH")
+      .regex(
+        /^[a-z0-9_]+$/,
+        "Community handle may only contain lowercase letters, numbers, and underscores"
+      )
+  );
+
+/**
+ * Lookup shape for a handle that ALREADY EXISTS (`GET /communities/by-handle/:handle`).
+ * Kept at 32 on purpose: a community created before the 30-character rule must
+ * still resolve from a shared link. Only creating or renaming one is capped.
+ */
+const existingHandleSchema = z
   .string()
   .trim()
   .transform((s) => normalizeHandle(s))
@@ -105,7 +149,7 @@ export type HandleAvailableQuery = z.infer<typeof handleAvailableQuerySchema>;
  * malformed handle is rejected (400 INVALID_HANDLE) before hitting the service.
  */
 export const handleParamsSchema = z.object({
-  handle: handleSchema,
+  handle: existingHandleSchema,
 });
 
 export type HandleParams = z.infer<typeof handleParamsSchema>;
@@ -152,11 +196,19 @@ export const myCommunitiesQuerySchema = z
     before_ts: z.coerce.number().int().positive().optional(),
     after_ts: z.coerce.number().int().positive().optional(),
     // Joined-mode compound keyset cursor — the gap-safe replacement for
-    // before_ts/after_ts. EITHER a plain epoch-ms ("1784104753870") OR the opaque
-    // compound token "<lastActivityAtMs>_<communityId>" handed back as
-    // `pagination.nextCursor`. Kept as a string so the id tiebreaker survives
-    // (coercing to a number would drop it). Boundaries are EXCLUSIVE, so
-    // same-millisecond communities are returned exactly once across pages.
+    // before_ts/after_ts. The literal "now", OR a plain epoch-ms
+    // ("1784104753870"), OR the opaque compound token
+    // "<lastActivityAtMs>_<communityId>" handed back as `pagination.nextCursor`.
+    // Kept as a string so the id tiebreaker survives (coercing to a number would
+    // drop it). Boundaries are EXCLUSIVE, so same-millisecond communities are
+    // returned exactly once across pages.
+    //
+    // "now" is what a client asking for the NEWEST page must send. The boundary
+    // is `lastActivityAt < cursor` against the SERVER's clock, and a client that
+    // stamps its own clock there hides every community whose last activity is
+    // newer than the client believes "now" to be — which is exactly the one it
+    // just posted in. A client cannot measure that skew, so it says "now" and
+    // the server resolves it. See the controller.
     //
     // Precedence: `cursor` wins over before_ts/after_ts when both are sent.
     //
@@ -165,8 +217,8 @@ export const myCommunitiesQuerySchema = z
     cursor: z
       .string()
       .regex(
-        /^(\d+(_[a-fA-F0-9]{24})?|[a-fA-F0-9]{24})$/,
-        "cursor must be epoch-ms, the compound cursor '<ms>_<communityId>', or a community id"
+        /^(now|\d+(_[a-fA-F0-9]{24})?|[a-fA-F0-9]{24})$/,
+        "cursor must be 'now', epoch-ms, the compound cursor '<ms>_<communityId>', or a community id"
       )
       .optional(),
     // search-mode filters + offset/keyset pagination
@@ -194,11 +246,11 @@ export const myCommunitiesQuerySchema = z
         q.after_ts == null;
       return isSearch
         ? OBJECT_ID_REGEX.test(q.cursor)
-        : /^\d+(_[a-fA-F0-9]{24})?$/.test(q.cursor);
+        : q.cursor === "now" || /^\d+(_[a-fA-F0-9]{24})?$/.test(q.cursor);
     },
     {
       message:
-        "cursor must be a community id in search mode, or epoch-ms / '<ms>_<communityId>' in joined mode",
+        "cursor must be a community id in search mode, or 'now' / epoch-ms / '<ms>_<communityId>' in joined mode",
       path: ["cursor"],
     }
   );
@@ -384,6 +436,25 @@ export const joinRequestIdParamsSchema = z.object({
   requestId: z.string().trim().regex(OBJECT_ID_REGEX, "Request ID is invalid"),
 });
 export type JoinRequestIdParams = z.infer<typeof joinRequestIdParamsSchema>;
+
+/**
+ * Body of an approve / reject call. Optional throughout: the in-app requests
+ * list reads the current row and sends nothing, while a surface that can go
+ * stale (a notification card, a push in the tray) echoes the `lifecycle` token
+ * it was raised with so the server can refuse a decision aimed at an attempt
+ * that has since been cancelled and re-raised. An empty body stays valid.
+ */
+export const joinRequestDecisionSchema = z.object({
+  lifecycle: z
+    .string()
+    .trim()
+    .max(64, "Lifecycle token is invalid")
+    .optional()
+    .nullable(),
+});
+export type JoinRequestDecisionInput = z.infer<
+  typeof joinRequestDecisionSchema
+>;
 
 const joinRequestIdsSchema = z
   .array(

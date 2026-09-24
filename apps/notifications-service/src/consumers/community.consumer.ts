@@ -1,4 +1,5 @@
 import { logger } from "@aimess/logger";
+import { t, type SupportedLocale } from "@aimess/constants";
 import { publishUserSocketEvent } from "@aimess/redis";
 import amqp from "amqplib";
 import {
@@ -12,6 +13,7 @@ import {
   type CommunityJoinRequestCancelledPayload,
   type CommunityJoinRequestedPayload,
   type CommunityJoinRequestRejectedPayload,
+  type CommunityJoinRequestRetractedPayload,
   type CommunityLivestreamStartedPayload,
   type CommunityLivestreamEndedPayload,
   type CommunityMemberAddedPayload,
@@ -102,6 +104,34 @@ function base(
   };
 }
 
+/**
+ * Recipients minus the ACTOR of the event, compared on the canonical AIMess
+ * userId — never a username, email, social-provider subject, device or session,
+ * so a host who signed in with Google or Apple is excluded exactly like one who
+ * signed in with a password.
+ *
+ * A livestream host is not a recipient of their own start/end announcement.
+ * The producer already resolves the roster without them, but the rule belongs
+ * HERE too: this is the layer that creates the inbox row, the `notification:new`
+ * frame and the FCM/APNs push, and it is the last authority before all three.
+ * Enforcing it here means no payload can put the host back into their own
+ * fan-out — a replayed event, a hand-published one, a producer running older
+ * code, or the next source that grows livestreams (groups) and resolves its own
+ * roster.
+ *
+ * Deliberately NOT a blanket rule in push.service: plenty of events legitimately
+ * have actor === recipient (a password change alerts the person who made it).
+ * The livestream announcement is the one that is third-person by definition.
+ */
+function withoutActor(
+  recipientIds: string[] | undefined,
+  actorId: string | undefined
+): string[] {
+  if (!recipientIds?.length) return [];
+  if (!actorId) return recipientIds;
+  return recipientIds.filter((id) => id !== actorId);
+}
+
 /** Name + avatar of ONE community, resolved together from ONE record. */
 interface CommunityIdentity {
   communityId: string;
@@ -157,6 +187,95 @@ async function communityIdentityFor(
 }
 
 /**
+ * The tray actions an admin gets on an incoming join request, where the
+ * platform renders them (web: Notification API `actions`, iOS: the
+ * {@link JOIN_REQUEST_CATEGORY} the app registers). A client that renders none
+ * of them still opens the request on tap, so this degrades to today's card.
+ *
+ * A function of the locale, resolved once per DEVICE language inside
+ * `pushToUser`. The `action` ids are contract and never move; only the labels
+ * are copy — an admin reading Thai must not get English buttons under a Thai
+ * sentence, and the tray is the one surface that cannot be re-rendered later.
+ */
+const joinRequestPushActions = (
+  locale: SupportedLocale
+): ReadonlyArray<{ action: string; title: string }> => [
+  {
+    action: "community_join_request_accept",
+    title: t("NOTIF_ACTION_ACCEPT", locale),
+  },
+  {
+    action: "community_join_request_reject",
+    title: t("NOTIF_ACTION_DECLINE", locale),
+  },
+];
+
+/** APNs category the iOS app registers its Accept / Decline buttons under. */
+const JOIN_REQUEST_CATEGORY = "COMMUNITY_JOIN_REQUEST";
+
+/**
+ * One tray card per (community, requester) — the same grain as the inbox card,
+ * so a retraction closes exactly the card the request raised, by id rather than
+ * by its rendered text.
+ */
+const joinRequestPushTag = (communityId: string, requesterId: string): string =>
+  `community_join_request_${communityId}_${requesterId}`;
+
+/**
+ * Take back the admin cards for one requester's join request — the inbox row
+ * AND the tray card.
+ *
+ * Used by both ends of the lifecycle: when an attempt is settled (approved,
+ * rejected, cancelled, auto-resolved) and when a NEW attempt supersedes the
+ * previous one. `groupKey` is what chat-service matches the row on (see
+ * DELETE_ON_ARRIVAL in notification-identity.ts) and it deletes the whole group,
+ * so duplicates left by an earlier failure are cleaned up too.
+ *
+ * Deliberately `dataOnly` rather than `skipPush`: the row still has to be
+ * deleted (that is the inbox half), and the silent data push is what lets a
+ * service worker close the tray card — nobody wants a visible "the request you
+ * already handled is gone" banner. `bypassSettings` because a card must be
+ * cleaned up even for an admin who has since muted the community; leaving it
+ * would strand a badge they cannot clear.
+ */
+async function retractJoinRequestCards(
+  recipients: string[],
+  communityId: string,
+  requesterId: string,
+  resolution: string,
+  requestId?: string,
+  /**
+   * When the settlement happened. A cancel and the re-request that follows it
+   * race each other through different queues, so the retraction says how old a
+   * card it is entitled to take back: anything raised later is a NEW attempt
+   * and is left alone (see `raisedAtOrBefore` in the notification repository).
+   */
+  raisedAt?: string
+): Promise<void> {
+  if (recipients.length === 0) return;
+  await pushToUsers(recipients, (userId) => ({
+    userId,
+    category: "communityEnabled" as const,
+    type: CommunityEvents.JOIN_REQUEST_RETRACTED,
+    dataOnly: true,
+    bypassSettings: true,
+    collapseKey: joinRequestPushTag(communityId, requesterId),
+    data: {
+      groupKey: `community:${communityId}:join_request:${requesterId}`,
+      type: CommunityEvents.JOIN_REQUEST_RETRACTED,
+      communityId,
+      requesterId,
+      resolution,
+      // The tag the tray card was drawn with, so a worker can close it without
+      // reading any rendered text.
+      tag: joinRequestPushTag(communityId, requesterId),
+      ...(raisedAt ? { staleBefore: raisedAt } : {}),
+      ...(requestId ? { requestId, joinRequestId: requestId } : {}),
+    },
+  }));
+}
+
+/**
  * Map one CommunityEvent to its recipient pushes. Each branch resolves the
  * recipient roster from the (roster-enriched) payload and fans pushes out.
  * Throwing here → caller nacks(no requeue) so the message DLQs.
@@ -168,6 +287,16 @@ async function handleCommunityEvent(
   switch (type) {
     case CommunityEvents.JOIN_REQUESTED: {
       const p = data as CommunityJoinRequestedPayload;
+      // ADMIN-ONLY event. The producer already narrows the roster to the
+      // community's current admin(s) (moderators are excluded there, at the
+      // source), so this branch must never widen it back to
+      // `moderatorRecipientIds`. The requester filter is belt-and-braces: a
+      // community admin asking to join their own community is impossible today,
+      // but "your own request needs review" would be nonsense if it ever were.
+      const recipients = (p.adminRecipientIds ?? []).filter(
+        (id) => id !== p.userId
+      );
+      if (recipients.length === 0) break;
       const identity = await communityIdentityFor(
         p.communityId,
         p.communityName,
@@ -178,18 +307,44 @@ async function handleCommunityEvent(
         displayName: p.requesterDisplayName,
         avatarUrl: p.requesterAvatarUrl,
       };
-      await pushToUsers(p.moderatorRecipientIds, (userId) => ({
+      // Clear the previous attempt's card BEFORE writing this one.
+      //
+      // A join-request card is grouped per (community, requester), so without
+      // this the second attempt would transition the first attempt's row in
+      // place — same row id, no `notification:new`, no badge — and the admin
+      // would simply never see it. Cancelling already retracts, but relying on
+      // that would make a lost retraction silence every future attempt by that
+      // requester; retracting here makes the new attempt self-sufficient, and
+      // leaves exactly one actionable card whichever way the previous one ended.
+      await retractJoinRequestCards(recipients, p.communityId, p.userId, "SUPERSEDED");
+      await pushToUsers(recipients, (userId) => ({
         userId,
         copy: communityCopy.joinRequested(
           identity.name,
           p.requesterDisplayName
         ),
+        // Accept / Decline straight from the tray, where the platform renders
+        // them. The payload only NAMES the request — every action re-enters the
+        // ordinary authenticated endpoint, so a copied or stale push decides
+        // nothing by itself.
+        actions: joinRequestPushActions,
+        apnsCategory: JOIN_REQUEST_CATEGORY,
+        // Stable per requester+community, so the retraction above (and the one
+        // on cancel/approve/reject) can close the tray card by tag instead of
+        // matching on its rendered text.
+        collapseKey: joinRequestPushTag(p.communityId, p.userId),
         ...base(
           type,
           identity,
           p.userId,
           {
             requestId: p.requestId,
+            // Named as the clients read it, alongside the legacy `requestId`.
+            joinRequestId: p.requestId,
+            // WHICH attempt this card decides — echoed back by Accept/Reject so
+            // a card left over from a cancelled attempt cannot decide the one
+            // that replaced it. See CommunityJoinRequestedPayload.lifecycle.
+            lifecycle: p.lifecycle ?? "",
             requesterId: p.userId,
             communityHandle: p.communityHandle,
             requesterDisplayName: p.requesterDisplayName,
@@ -209,9 +364,25 @@ async function handleCommunityEvent(
       break;
     }
 
+    case CommunityEvents.JOIN_REQUEST_RETRACTED: {
+      const p = data as CommunityJoinRequestRetractedPayload;
+      const recipients = p.adminRecipientIds ?? [];
+      if (recipients.length === 0) break;
+      await retractJoinRequestCards(
+        recipients,
+        p.communityId,
+        p.requesterId,
+        p.resolution,
+        p.requestId,
+        p.eventAt
+      );
+      break;
+    }
+
     case CommunityEvents.LIVESTREAM_STARTED: {
       const p = data as CommunityLivestreamStartedPayload;
-      if (!p.recipientIds?.length) break;
+      const recipients = withoutActor(p.recipientIds, p.hostUserId);
+      if (recipients.length === 0) break;
       const identity = await communityIdentityFor(
         p.communityId,
         p.communityName,
@@ -223,7 +394,7 @@ async function handleCommunityEvent(
         displayName: p.hostDisplayName,
         avatarUrl: p.hostAvatarUrl,
       };
-      await pushToUsers(p.recipientIds, (userId) => ({
+      await pushToUsers(recipients, (userId) => ({
         userId,
         copy: communityCopy.livestreamStarted(identity.name, hostName),
         ...base(
@@ -255,7 +426,8 @@ async function handleCommunityEvent(
 
     case CommunityEvents.LIVESTREAM_ENDED: {
       const p = data as CommunityLivestreamEndedPayload;
-      if (!p.recipientIds?.length) break;
+      const recipients = withoutActor(p.recipientIds, p.hostUserId);
+      if (recipients.length === 0) break;
       const identity = await communityIdentityFor(
         p.communityId,
         p.communityName,
@@ -267,7 +439,7 @@ async function handleCommunityEvent(
         displayName: p.hostDisplayName,
         avatarUrl: p.hostAvatarUrl,
       };
-      await pushToUsers(p.recipientIds, (userId) => ({
+      await pushToUsers(recipients, (userId) => ({
         userId,
         copy: communityCopy.livestreamEnded(
           identity.name,

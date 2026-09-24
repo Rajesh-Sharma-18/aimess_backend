@@ -11,7 +11,10 @@ import {
   resolveMediaUrl,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
-import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
+import {
+  getGroupVisibilityCutoff,
+  isHiddenByCutoff,
+} from "../lib/deletion-cutoff.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import { SystemEvent } from "../types/enums.js";
 import type { GroupMessagePinRepository } from "../repositories/group-message-pin.repository.js";
@@ -28,6 +31,32 @@ import type { PinnedMessageSummary } from "./community-pin.service.js";
 import type { GroupMessagePin } from "../generated/prisma/index.js";
 
 const PIN_ROLES = ["ADMIN", "MODERATOR"];
+
+/**
+ * A pin is invisible to a member whose own history starts after it — and BOTH
+ * instants have to be tested, not just the pin event.
+ *
+ * `pinnedAt` alone was the rule, which held only while the pin and the message
+ * shared an era: pinning an OLD message TODAY (a perfectly ordinary moderator
+ * action) produced a pin whose `pinnedAt` is recent and whose `messageCreatedAt`
+ * predates a new member's join — and the banner then handed that member the
+ * pre-join message's text, media, sender and timestamp, which no other surface
+ * would give them. The pinned MESSAGE is the content, so its own instant is
+ * what decides; `pinnedAt` stays because a pin event before the member's Clear
+ * Chat is theirs to have cleared.
+ *
+ * Nothing about the pin is returned when this is true — not a stub, not a
+ * sender, not a thumbnail. The safest non-leak is no pin at all.
+ */
+function isPinOutsideHistory(
+  pin: { pinnedAt: Date; messageCreatedAt: Date },
+  cutoff: Date | undefined
+): boolean {
+  return (
+    isHiddenByCutoff(pin.messageCreatedAt, cutoff) ||
+    isHiddenByCutoff(pin.pinnedAt, cutoff)
+  );
+}
 
 /**
  * Parity with `CommunityPinService`: only ONE active pin may exist per room at
@@ -347,7 +376,13 @@ export class GroupPinService {
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    const pins = await this.pinRepo.findPinsByRoom(roomId, params);
+    // Same membership boundary the banner applies. Without it the pin LIST was
+    // the way around it: a new member opened "Pinned messages" and read the
+    // snapshot text and media of every pin from before they joined.
+    const cutoff = getGroupVisibilityCutoff(member);
+    const pins = (await this.pinRepo.findPinsByRoom(roomId, params)).filter(
+      (pin) => !isPinOutsideHistory(pin, cutoff)
+    );
     const resolved = await resolvePinsMedia(pins);
     const messageIds = resolved.map((p) => p.messageId);
     const [liveIds, hiddenIds] = await Promise.all([
@@ -365,8 +400,14 @@ export class GroupPinService {
       }));
   }
 
-  async countPins(roomId: string): Promise<number> {
-    return this.pinRepo.countActivePinsByRoom(roomId);
+  async countPins(roomId: string, userId?: string): Promise<number> {
+    const member = userId
+      ? await this.memberRepo.findActiveByRoomAndUser(roomId, userId)
+      : null;
+    return this.pinRepo.countActivePinsByRoom(
+      roomId,
+      getGroupVisibilityCutoff(member)
+    );
   }
 
   /**
@@ -388,8 +429,8 @@ export class GroupPinService {
         roomId,
         userId
       );
-      const cutoff = getGroupVisibilityCutoff(member);
-      if (cutoff && pin.pinnedAt <= cutoff) return null;
+      if (isPinOutsideHistory(pin, getGroupVisibilityCutoff(member)))
+        return null;
     }
 
     const isAvailable = !pin.originalMessageDeletedAt;

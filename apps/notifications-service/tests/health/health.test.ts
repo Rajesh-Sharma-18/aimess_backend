@@ -3,6 +3,14 @@
  * src/app.ts, no auth, no body. Verifies the full identity envelope shape from
  * src/routes/health.routes.ts and that it is publicly reachable.
  */
+// The auth gRPC client derives its proto path from `import.meta.url`, which the
+// CommonJS test transform cannot compile — anything that reaches it fails to
+// load before a single assertion runs. Mocked here as its siblings already are.
+jest.mock("../../src/grpc/auth-session.client.js", () => ({
+  createAuthSessionClient: () => ({
+    isSessionActive: jest.fn(async () => true),
+  }),
+}));
 import request from "supertest";
 
 import { app } from "../../src/app.js";

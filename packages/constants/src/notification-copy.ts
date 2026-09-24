@@ -125,9 +125,30 @@ function register<
  * back". Normalizing on the way back in keeps a replayed call byte-identical to
  * the original one.
  */
+/**
+ * Rows written before @all had its own inbox sentence stored a
+ * `chat.mentionInbox` ticket with no `all` flag — but they have ALWAYS carried
+ * `data.mentionType`, which shipped in the same commit as the row itself, so
+ * the row still records WHY it was sent. Reading it back is recovering stored
+ * semantics, not guessing from prose; a row without it falls through unchanged.
+ *
+ * ponytail: delete once pre-2026-09-24 mention rows have aged out of the list.
+ */
+function patchLegacyArgs(
+  ref: string,
+  args: unknown[],
+  data?: Record<string, unknown>
+): unknown[] {
+  if (ref !== "chat.mentionInbox" || data?.mentionType !== "ALL") return args;
+  const params = args[0];
+  if (!params || typeof params !== "object" || "all" in params) return args;
+  return [{ ...params, all: true }, ...args.slice(1)];
+}
+
 function replay(
   raw: string | undefined | null,
-  locale: SupportedLocale
+  locale: SupportedLocale,
+  data?: Record<string, unknown>
 ): unknown {
   if (!raw) return null;
   let parsed: CopyDescriptor;
@@ -138,8 +159,12 @@ function replay(
   }
   const build = REGISTRY.get(parsed?.ref ?? "");
   if (!build) return null;
-  const args = (Array.isArray(parsed.args) ? parsed.args : []).map((a) =>
-    a === null ? undefined : a
+  const args = patchLegacyArgs(
+    parsed.ref ?? "",
+    (Array.isArray(parsed.args) ? parsed.args : []).map((a) =>
+      a === null ? undefined : a
+    ),
+    data
   );
   try {
     return (build as (...a: unknown[]) => (l: SupportedLocale) => unknown)(
@@ -157,12 +182,17 @@ function replay(
  * `data.copyRef`. `null` means "no usable descriptor" — the caller keeps the
  * text baked into the row, which is exactly what every row written before this
  * existed relies on.
+ *
+ * Pass the row's whole `data` when you have it: it is what lets a ticket
+ * written before a distinction existed still render on the right side of it
+ * (see {@link patchLegacyArgs}). Omitting it only costs that back-fill.
  */
 export function renderNotificationCopy(
   copyRef: string | undefined | null,
-  locale: SupportedLocale
+  locale: SupportedLocale,
+  data?: Record<string, unknown>
 ): NotificationCopy | null {
-  const out = replay(copyRef, locale);
+  const out = replay(copyRef, locale, data);
   return out && typeof out === "object" && "body" in out
     ? (out as NotificationCopy)
     : null;
@@ -746,22 +776,37 @@ export const chatCopy = register("chat", {
       };
     },
   /**
-   * Notification-Center row for a GROUP @mention (individual or @all). The one
-   * chat builder that reaches the inbox: it quotes no preview, because the
-   * replay ticket would freeze the line as it was before any later edit.
+   * Notification-Center row for a GROUP @mention. The one chat builder that
+   * reaches the inbox: it quotes no preview, because the replay ticket would
+   * freeze the line as it was before any later edit.
+   *
+   * `all` is the RECIPIENT's reason, not the message's shape — it mirrors the
+   * row's `data.mentionType`. Someone named in a message that also said "@all"
+   * is an individual mention and still reads "mentioned you"; one reader never
+   * gets both rows.
    */
   mentionInbox:
-    (params: { senderName?: string; groupName?: string }): LocalizedCopy =>
+    (params: {
+      senderName?: string;
+      groupName?: string;
+      /** Reached by @all rather than by name. */
+      all?: boolean;
+    }): LocalizedCopy =>
     (locale) => {
       const name = person(params.senderName, locale);
+      const key = params.all
+        ? params.groupName
+          ? "NOTIF_CHAT_MENTION_ALL_INBOX_BODY"
+          : "NOTIF_CHAT_MENTION_ALL_INBOX_BODY_NO_GROUP"
+        : params.groupName
+          ? "NOTIF_CHAT_MENTION_INBOX_BODY"
+          : "NOTIF_CHAT_MENTION_INBOX_BODY_NO_GROUP";
       return {
         title: params.groupName || t("NOTIF_CHAT_NEW_MESSAGE", locale),
-        body: params.groupName
-          ? t("NOTIF_CHAT_MENTION_INBOX_BODY", locale, {
-              name,
-              group: params.groupName,
-            })
-          : t("NOTIF_CHAT_MENTION_INBOX_BODY_NO_GROUP", locale, { name }),
+        body: t(key, locale, {
+          name,
+          ...(params.groupName ? { group: params.groupName } : {}),
+        }),
       };
     },
 });

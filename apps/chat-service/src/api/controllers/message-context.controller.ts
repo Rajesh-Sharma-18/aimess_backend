@@ -8,6 +8,7 @@ import {
   buildAvailableContext,
   buildUnavailableContext,
   isMessageContentError,
+  messageContextReasonFor,
   type MessageConversationType,
 } from "../../lib/message-context.js";
 import type { PrivateMessageService } from "../../services/private-message.service.js";
@@ -108,13 +109,16 @@ export class MessageContextController {
       }
     } catch (err) {
       if (!isMessageContentError(err)) throw err;
-      res
-        .status(HTTP_STATUS.OK)
-        .json(
-          new ApiResponse(
-            buildUnavailableContext({ messageId, roomId, conversationType })
-          )
-        );
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse(
+          buildUnavailableContext({
+            messageId,
+            roomId,
+            conversationType,
+            reason: messageContextReasonFor(err),
+          })
+        )
+      );
       return;
     }
 

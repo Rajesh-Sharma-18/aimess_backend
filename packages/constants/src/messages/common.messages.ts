@@ -158,6 +158,48 @@ export const COMMON_MESSAGES = {
     en: "Recipient account could not be found.",
     th: "ไม่พบบัญชีผู้รับ",
   },
+  /**
+   * The 30-character ceiling shared by every short identity field (see
+   * `TEXT_NAME_MAX_LENGTH`). One key per field rather than one template with a
+   * placeholder, because `validateBody` renders a Zod issue message through
+   * `renderMessageKey` WITHOUT params — a `{{field}}` would reach the form
+   * verbatim. The sentences follow the app's existing max-limit wording.
+   */
+  VALIDATION_USERNAME_MAX_LENGTH: {
+    vi: "Độ dài tối đa của tên người dùng là 30 ký tự",
+    en: "Maximum username length is 30 characters",
+    th: "ชื่อผู้ใช้ต้องมีความยาวไม่เกิน 30 ตัวอักษร",
+  },
+  VALIDATION_FIRST_NAME_MAX_LENGTH: {
+    vi: "Độ dài tối đa của tên là 30 ký tự",
+    en: "Maximum name length is 30 characters",
+    th: "ชื่อต้องมีความยาวไม่เกิน 30 ตัวอักษร",
+  },
+  VALIDATION_LAST_NAME_MAX_LENGTH: {
+    vi: "Độ dài tối đa của họ là 30 ký tự",
+    en: "Maximum surname length is 30 characters",
+    th: "นามสกุลต้องมีความยาวไม่เกิน 30 ตัวอักษร",
+  },
+  VALIDATION_ACCOUNT_MAX_LENGTH: {
+    vi: "Độ dài tối đa của tên tài khoản là 30 ký tự",
+    en: "Maximum account name length is 30 characters",
+    th: "ชื่อบัญชีต้องมีความยาวไม่เกิน 30 ตัวอักษร",
+  },
+  VALIDATION_COMMUNITY_NAME_MAX_LENGTH: {
+    vi: "Độ dài tối đa của tên cộng đồng là 30 ký tự",
+    en: "Maximum community name length is 30 characters",
+    th: "ชื่อคอมมูนิตี้ต้องมีความยาวไม่เกิน 30 ตัวอักษร",
+  },
+  VALIDATION_COMMUNITY_HANDLE_MAX_LENGTH: {
+    vi: "Độ dài tối đa của định danh cộng đồng là 30 ký tự",
+    en: "Maximum community handle length is 30 characters",
+    th: "แฮนเดิลคอมมูนิตี้ต้องมีความยาวไม่เกิน 30 ตัวอักษร",
+  },
+  VALIDATION_GROUP_NAME_MAX_LENGTH: {
+    vi: "Độ dài tối đa của tên nhóm là 30 ký tự",
+    en: "Maximum group name length is 30 characters",
+    th: "ชื่อกลุ่มต้องมีความยาวไม่เกิน 30 ตัวอักษร",
+  },
 } as const satisfies MessageCatalog;
 
 export type CommonMessageKey = keyof typeof COMMON_MESSAGES;

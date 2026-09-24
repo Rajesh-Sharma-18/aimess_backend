@@ -306,6 +306,18 @@ export const NOTIFICATION_MESSAGES = {
     en: "{{name}} mentioned you",
     th: "{{name}} กล่าวถึงคุณ",
   },
+  // Same row for an @all message. The recipient was reached as part of the
+  // room, not named, so it must never read "mentioned you".
+  NOTIF_CHAT_MENTION_ALL_INBOX_BODY: {
+    vi: "{{name}} đã nhắc đến @all trong {{group}}",
+    en: "{{name}} mentioned @all in {{group}}",
+    th: "{{name}} กล่าวถึง @all ใน{{group}}",
+  },
+  NOTIF_CHAT_MENTION_ALL_INBOX_BODY_NO_GROUP: {
+    vi: "{{name}} đã nhắc đến @all",
+    en: "{{name}} mentioned @all",
+    th: "{{name}} กล่าวถึง @all",
+  },
 
   // ── Group ───────────────────────────────────────────────────────────────
   NOTIF_GROUP_UNNAMED: {
@@ -594,6 +606,20 @@ export const NOTIFICATION_MESSAGES = {
     vi: "Email tài khoản của bạn đã được cập nhật",
     en: "Your account email was updated",
     th: "อีเมลบัญชีของคุณถูกอัปเดตแล้ว",
+  },
+  // Tray action buttons. These are BUTTON LABELS, not sentences — rendered on
+  // the push card itself (web `Notification.actions`, and the category the iOS
+  // app registers), so they localize per DEVICE like the title and body above
+  // rather than per account.
+  NOTIF_ACTION_ACCEPT: {
+    vi: "Chấp nhận",
+    en: "Accept",
+    th: "ยอมรับ",
+  },
+  NOTIF_ACTION_DECLINE: {
+    vi: "Từ chối",
+    en: "Decline",
+    th: "ปฏิเสธ",
   },
 } as const satisfies MessageCatalog;
 

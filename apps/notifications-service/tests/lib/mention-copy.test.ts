@@ -69,6 +69,91 @@ describe("chat mention inbox copy", () => {
   });
 });
 
+describe("chat @all mention inbox copy", () => {
+  it("has vi/en/th for both @all inbox keys", () => {
+    for (const key of [
+      "NOTIF_CHAT_MENTION_ALL_INBOX_BODY",
+      "NOTIF_CHAT_MENTION_ALL_INBOX_BODY_NO_GROUP",
+    ] as const) {
+      const entry = MESSAGES[key];
+      expect(entry.vi).toBeTruthy();
+      expect(entry.en).toBeTruthy();
+      expect(entry.th).toBeTruthy();
+    }
+  });
+
+  it("says @all, never 'you', in all three locales", () => {
+    const copy = chatCopy.mentionInbox({
+      senderName: "Ana",
+      groupName: "Weekend Trip",
+      all: true,
+    });
+    expect(copy("en")).toEqual({
+      title: "Weekend Trip",
+      body: "Ana mentioned @all in Weekend Trip",
+    });
+    expect(copy("vi").body).toBe("Ana đã nhắc đến @all trong Weekend Trip");
+    expect(copy("th").body).toBe("Ana กล่าวถึง @all ในWeekend Trip");
+    for (const locale of ["en", "vi", "th"] as const) {
+      expect(copy(locale).body).not.toBe(
+        chatCopy.mentionInbox({
+          senderName: "Ana",
+          groupName: "Weekend Trip",
+        })(locale).body
+      );
+    }
+  });
+
+  it("falls back to the no-group body", () => {
+    const copy = chatCopy.mentionInbox({ senderName: "Ana", all: true });
+    expect(copy("en")).toEqual({
+      title: "New message",
+      body: "Ana mentioned @all",
+    });
+    expect(copy("vi").body).toBe("Ana đã nhắc đến @all");
+    expect(copy("th").body).toBe("Ana กล่าวถึง @all");
+  });
+
+  it("replays from its stored ticket in another language", () => {
+    const copy = chatCopy.mentionInbox({
+      senderName: "Ana",
+      groupName: "Weekend Trip",
+      all: true,
+    });
+    expect(
+      renderNotificationCopy(JSON.stringify(copy.descriptor), "vi")?.body
+    ).toBe("Ana đã nhắc đến @all trong Weekend Trip");
+  });
+
+  // Rows written before the split have no `all` in their ticket, but every
+  // chat.mention row has always carried `data.mentionType`.
+  it("renders a historical @all row from data.mentionType", () => {
+    const legacy = JSON.stringify({
+      ref: "chat.mentionInbox",
+      args: [{ senderName: "Ana", groupName: "Weekend Trip" }],
+    });
+    expect(
+      renderNotificationCopy(legacy, "en", { mentionType: "ALL" })?.body
+    ).toBe("Ana mentioned @all in Weekend Trip");
+    expect(
+      renderNotificationCopy(legacy, "en", { mentionType: "USER" })?.body
+    ).toBe("Ana mentioned you in Weekend Trip");
+    // No metadata at all: keep the old sentence rather than guess.
+    expect(renderNotificationCopy(legacy, "en")?.body).toBe(
+      "Ana mentioned you in Weekend Trip"
+    );
+  });
+
+  it("never overrides a ticket that already decided", () => {
+    const stored = JSON.stringify(
+      chatCopy.mentionInbox({ senderName: "Ana", all: false }).descriptor
+    );
+    expect(
+      renderNotificationCopy(stored, "en", { mentionType: "ALL" })?.body
+    ).toBe("Ana mentioned you");
+  });
+});
+
 describe("chat mention copy", () => {
   it("is named in COPY_PARAM_NAMES", () => {
     expect(COPY_PARAM_NAMES["chat.mention"]).toEqual(["params"]);

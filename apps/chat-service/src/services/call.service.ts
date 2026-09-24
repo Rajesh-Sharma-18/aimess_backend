@@ -95,6 +95,32 @@ const ACCEPT_THEN_END_WINDOW_MS = 10_000;
 const CALL_MEMBER_TTL_SEC = 4 * 60 * 60;
 
 /**
+ * Calls whose LiveKit room was seen short of two people: a ZSET of callId
+ * scored by the FIRST sighting (epoch ms). Fed by the `participant_left`
+ * webhook and by the poll in {@link CallService.sweepAbandonedMediaCalls};
+ * only that sweep ends a call from it, after a live re-read of the room.
+ */
+const MEDIA_GONE_KEY = "call:media-gone";
+
+/**
+ * How long a sighting waits before the room is re-read and the call ended.
+ * Well above every client's own peer-gone grace (web 3s, Android 3s, iOS 0s),
+ * so the server is never stricter than the apps already are.
+ */
+const MEDIA_GONE_CONFIRM_MS = 10_000;
+
+/**
+ * A call answered less than this long ago is never ended for a short room:
+ * the callee's media can still be joining (cold push wake, slow network).
+ * Also the minimum age the poll looks at.
+ */
+const MEDIA_JOIN_GRACE_MS = 60_000;
+
+/** One poll per window across every chat-service node — each poll is one Room API request per call. */
+const MEDIA_POLL_LEASE_KEY = "lock:call-media-poll";
+const MEDIA_POLL_LEASE_SEC = 30;
+
+/**
  * Fetch caller display name + presigned avatar URL for the `call:incoming`
  * event so the callee's FE can render the ringing UI without a second lookup.
  * Returns empty strings on failure — a lookup miss must never block a call.
@@ -155,6 +181,9 @@ export class CallService {
      */
     private readonly getOnlineMany?: GetOnlineManyFn
   ) {}
+
+  /** See {@link sweepAbandonedMediaCalls} — its passes must never overlap. */
+  private mediaSweepRunning = false;
 
   /**
    * GROUP calls only: the full rung roster. 1:1 calls: the single calleeId.
@@ -279,8 +308,8 @@ export class CallService {
    *
    * Fails CLOSED, unlike `withCallerLock`: if Redis is unreachable we cannot tell
    * two devices apart, and letting both through is precisely the failure this
-   * guards — two legs join LiveKit under one identity, the newer evicts the older,
-   * and the `participant_left` webhook ends the call for BOTH parties. A ring the
+   * guards — two legs join LiveKit under one identity and the newer evicts the
+   * older, cutting the media of the device that really answered. A ring the
    * user has to tap again is the cheaper failure.
    */
   private async claimCallLeg(
@@ -570,6 +599,7 @@ export class CallService {
             data: {
               callId,
               callerId: params.callerId,
+              calleeId: params.calleeId,
               callerName: callerSnapshot.displayName,
               callerAvatarUrl: callerSnapshot.avatarUrl,
               callType: params.type || CallType.AUDIO,
@@ -590,6 +620,7 @@ export class CallService {
             event: "call:outgoing_mirror",
             data: {
               callId,
+              callerId: params.callerId,
               calleeId: params.calleeId,
               calleeName: calleeSnapshot.displayName,
               calleeAvatarUrl: calleeSnapshot.avatarUrl,
@@ -777,6 +808,7 @@ export class CallService {
               data: {
                 callId,
                 callerId: params.callerId,
+                calleeId,
                 callerName: callerSnapshot.displayName,
                 callerAvatarUrl: callerSnapshot.avatarUrl,
                 callType: params.type || CallType.AUDIO,
@@ -801,6 +833,7 @@ export class CallService {
           event: "call:outgoing_mirror",
           data: {
             callId,
+            callerId: params.callerId,
             groupId: params.groupId,
             calleeIds,
             callType: params.type || CallType.AUDIO,
@@ -1958,23 +1991,27 @@ export class CallService {
   }
 
   /**
-   * Settle ONE stranded IN_PROGRESS call. Shared by both sweeps so the two can
-   * never drift into recording the same situation two different ways.
+   * Settle ONE stranded IN_PROGRESS call. Shared by every sweep so they can
+   * never drift into recording the same situation different ways.
    *
    * Returns true only if this writer won the atomic claim, so the caller can
    * count flips without double-counting a row another node settled.
    *
    * `endedBy` distinguishes WHY it was swept — `SYSTEM_TIMEOUT` for the
    * max-duration ceiling, `SYSTEM_ORPHANED` for "no participant is connected
-   * any more" — which support and analytics read to tell a stranded call from a
-   * real hangup. Clients never see either: the REST DTO collapses anything
-   * beginning with `SYSTEM`.
+   * any more", `SYSTEM_LIVEKIT` for "LiveKit's room lost a participant" — which
+   * support and analytics read to tell a stranded call from a real hangup.
+   * Clients never see any of them: the REST DTO collapses anything beginning
+   * with `SYSTEM`.
+   *
+   * `now` is the recorded end. The media sweep passes the moment the room was
+   * first seen short, so the confirmation wait is not billed as call time.
    */
   private async settleStrandedCall(
     call: Call,
     now: Date,
     maxDurationSec: number,
-    endedBy: "SYSTEM_TIMEOUT" | "SYSTEM_ORPHANED"
+    endedBy: "SYSTEM_TIMEOUT" | "SYSTEM_ORPHANED" | "SYSTEM_LIVEKIT"
   ): Promise<boolean> {
     // A stranded row with NO `answeredAt` never connected — nothing ever
     // stamped the moment the callee picked up.
@@ -2178,42 +2215,170 @@ export class CallService {
   }
 
   /**
-   * Reconcile a Call from a LiveKit `room_finished` OR `participant_left` webhook
-   * — the authoritative "the media session for this call is gone" signal. Guards
-   * against clients that crash / lose network without sending `call:end` or
-   * `call:decline`. `participant_left` is what catches the 1:1 case where one peer
-   * drops but the other stays connected: the room never empties, so `room_finished`
-   * never fires, and the row would otherwise sit IN_PROGRESS keeping BOTH users
-   * "busy" until the max-duration sweep. LiveKit fires `participant_left` only after
-   * its own reconnection grace, so a transient blip does not reach here.
+   * True while LiveKit's room still holds a conversation (two or more people),
+   * false when it does not, and null when LiveKit could not be asked. Null must
+   * never end a call.
+   */
+  private async mediaRoomHeld(callId: string): Promise<boolean | null> {
+    try {
+      return (await this.livekit.countParticipants(callId)) >= 2;
+    } catch (err) {
+      logger.warn(
+        `CallService|mediaRoomHeld|LiveKit lookup failed call=${callId}: ${String(err)}`
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Record that this call's room was seen short. NX keeps the FIRST sighting, so
+   * a repeat can never push the confirmation back. Best-effort: a lost flag only
+   * means the poll or the ceiling sweep catches the call instead.
+   */
+  private async flagMediaGone(callId: string): Promise<void> {
+    try {
+      await this.redis.zadd(MEDIA_GONE_KEY, "NX", Date.now(), callId);
+    } catch (err) {
+      logger.warn(
+        `CallService|flagMediaGone|failed call=${callId}: ${String(err)}`
+      );
+    }
+  }
+
+  /**
+   * End IN_PROGRESS calls whose LiveKit room lost a participant and did not get
+   * them back.
+   *
+   * This is what stops a killed app (crash, force-quit, an auto-update mid-call)
+   * from leaving both users "busy" until the CALL_MAX_DURATION_SEC ceiling. The
+   * other backstops all miss that case: the gateway's disconnect cleanup is an
+   * in-memory timer, the `participant_left` webhook is not guaranteed to arrive
+   * (and its head-count is a stale cache), and the orphan sweep needs BOTH users
+   * offline, which is never true once they reopen the app.
+   *
+   * Two steps, confirmation first so a poll sighting is never confirmed in the
+   * pass that made it:
+   *  1. Confirm — every sighting at least MEDIA_GONE_CONFIRM_MS old is re-read
+   *     live from LiveKit. Still short → the call ends as `SYSTEM_LIVEKIT`, dated
+   *     to the first sighting. Held again → the sighting is dropped. A call
+   *     answered under MEDIA_JOIN_GRACE_MS ago keeps its sighting and waits.
+   *  2. Poll — at most once per lease window across all nodes, answered calls
+   *     past MEDIA_JOIN_GRACE_MS are read, and a short room becomes a sighting.
+   *     Covers a `participant_left` that was lost or never configured.
+   *
+   * A failed LiveKit read stops that step for this pass and keeps every
+   * sighting: one lookup can take ~30s (10s timeout, three Cloud regions), so an
+   * outage must not turn a pass into hours, and an unknown answer never ends a
+   * call. Multi-node safe: `settleStrandedCall` is a CAS and `zrem` idempotent.
+   *
+   * ponytail: the poll reads the first `batchLimit` IN_PROGRESS rows (no
+   * ordering), so past CALL_TIMEOUT_SWEEP_BATCH concurrent calls it keeps
+   * re-reading the same subset. Page it if calls ever outgrow the batch; the
+   * webhook path has no such ceiling.
+   */
+  async sweepAbandonedMediaCalls(
+    now: Date,
+    maxDurationSec: number,
+    batchLimit: number
+  ): Promise<number> {
+    // Must stay ahead of every await: setInterval does not wait for a slow pass.
+    if (this.mediaSweepRunning) return 0;
+    this.mediaSweepRunning = true;
+    try {
+      const nowMs = now.getTime();
+      let ended = 0;
+
+      const due = await this.redis.zrangebyscore(
+        MEDIA_GONE_KEY,
+        "-inf",
+        nowMs - MEDIA_GONE_CONFIRM_MS,
+        "WITHSCORES",
+        "LIMIT",
+        0,
+        batchLimit
+      );
+      for (let i = 0; i < due.length; i += 2) {
+        const callId = due[i];
+        const call = await this.callRepo.findByCallId(callId);
+        if (call?.status === CallStatus.IN_PROGRESS) {
+          const answeredAt = (call.answeredAt ?? call.initiatedAt).getTime();
+          if (nowMs - answeredAt < MEDIA_JOIN_GRACE_MS) continue;
+          const held = await this.mediaRoomHeld(callId);
+          if (held === null) break;
+          if (
+            !held &&
+            (await this.settleStrandedCall(
+              call,
+              new Date(Number(due[i + 1])),
+              maxDurationSec,
+              "SYSTEM_LIVEKIT"
+            ))
+          ) {
+            ended++;
+          }
+        }
+        await this.redis.zrem(MEDIA_GONE_KEY, callId);
+      }
+
+      const pollLease = await this.redis.set(
+        MEDIA_POLL_LEASE_KEY,
+        "1",
+        "EX",
+        MEDIA_POLL_LEASE_SEC,
+        "NX"
+      );
+      if (pollLease === "OK") {
+        const live = await this.callRepo.findStuckInProgress(
+          new Date(nowMs - MEDIA_JOIN_GRACE_MS),
+          batchLimit
+        );
+        for (const call of live) {
+          const held = await this.mediaRoomHeld(call.callId);
+          if (held === null) break;
+          if (!held) await this.flagMediaGone(call.callId);
+        }
+      }
+
+      if (ended > 0) {
+        logger.info(
+          `CallService|sweepMediaGone|ended ${ended} call(s) whose LiveKit room lost a participant`
+        );
+      }
+      return ended;
+    } finally {
+      this.mediaSweepRunning = false;
+    }
+  }
+
+  /**
+   * Reconcile a Call from a LiveKit `room_finished` OR `participant_left` webhook.
+   * Guards against clients that crash / lose network without sending `call:end`
+   * or `call:decline`.
+   *
+   * `room_finished` is final: the room is gone, so an IN_PROGRESS call ends here
+   * and now. `participant_left` (and anything else) is only a SIGHTING. It is
+   * what catches the 1:1 case where one peer drops but the other stays connected
+   * — the room never empties, so `room_finished` never fires — but the webhook
+   * alone cannot say whether the call is over: a duplicate-identity eviction
+   * (a second device of the same user) also fires it while the call is live, and
+   * the payload's `room.numParticipants` comes from a cache LiveKit refreshes in
+   * the background, so it is wrong in both directions. The sighting is handed to
+   * {@link sweepAbandonedMediaCalls}, which re-reads the room live a few seconds
+   * later and ends the call only if it is still short.
    *
    * Idempotent via `claimStatusTransition` (first writer wins, only it publishes):
-   *  - IN_PROGRESS → ENDED, publish `call:ended` to `call:<id>` + chat audit.
-   *  - RINGING → cancel (caller abandoned before answer): ENDED + `call:cancelled`
-   *    to the callee's `self:` channel + push dismiss, mirroring `endCall`'s
-   *    pre-answer branch so the ring stops now instead of at the 60s missed sweep.
-   *    ONLY on `room_finished` — see the guard below.
+   *  - IN_PROGRESS + `room_finished` → ENDED, publish `call:ended` to `call:<id>`
+   *    + chat audit.
+   *  - IN_PROGRESS + anything else → sighting only, no write here.
+   *  - RINGING → ignored for EVERY event, see below.
    *  - anything terminal → no-op.
    */
   async reconcileFromLiveKitRoomFinished(
     callId: string,
-    eventType: string,
-    remainingParticipants = -1
+    eventType: string
   ): Promise<void> {
     const call = await this.callRepo.findByCallId(callId);
     if (!call) return; // room name wasn't a callId — ignore
-
-    // Both parties are still in the room, so the call is plainly not over: what
-    // left was an extra leg. LiveKit evicts the older connection when a second
-    // device of the same user joins with the same participant identity, and
-    // honouring that eviction here would end a perfectly live call for everyone.
-    // -1 means the webhook reported no count — behave as before.
-    if (eventType === "participant_left" && remainingParticipants >= 2) {
-      logger.info(
-        `CallService|reconcile|ignoring participant_left with ${remainingParticipants} still in room call=${callId}`
-      );
-      return;
-    }
 
     // NO LiveKit event may settle a ringing call — not `participant_left`, and
     // not `room_finished` either.
@@ -2250,6 +2415,12 @@ export class CallService {
     }
 
     if (call.status !== CallStatus.IN_PROGRESS) return; // already terminal
+
+    // Only a closed room is final. Everything else is verified live, later.
+    if (eventType !== "room_finished") {
+      await this.flagMediaGone(callId);
+      return;
+    }
 
     const endedAt = new Date();
     // Same bound as `endCall`: a missing `participant_joined` webhook must not
@@ -2358,6 +2529,26 @@ export class CallService {
       logger.info(
         `CallService|markMediaJoined|answeredAt stamped call=${callId} participant=${participantIdentity}`
       );
+    }
+  }
+
+  /**
+   * A camera went live in this call's room (LiveKit `track_published`, CAMERA).
+   * Clients upgrade voice → video client-side without telling us, so this is
+   * the only place the backend learns of it. Flipping `Call.type` is the whole
+   * fix: every terminal writer — chat card, call history, REST history — reads
+   * the type from the row when the call settles.
+   *
+   * ponytail: camera on + hangup inside the webhook's latency (sub-second) can
+   * still settle as voice — a webhook after the terminal claim no-ops, and one
+   * landing mid end-path leaves row VIDEO / card voice. Re-reading `type` after
+   * the terminal claim closes the latter; add it if that ever matters.
+   */
+  async markVideo(callId: string): Promise<void> {
+    if (!callId) return;
+    const { won } = await this.callRepo.upgradeToVideo(callId);
+    if (won) {
+      logger.info(`CallService|markVideo|AUDIO→VIDEO call=${callId}`);
     }
   }
 

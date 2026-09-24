@@ -1,18 +1,50 @@
 import { z } from "zod";
 
+import { TEXT_NAME_MAX_LENGTH } from "@aimess/constants";
+
 import { checkPasswordPolicy } from "../../lib/password-policy.js";
 import { deviceInfoField } from "./device-info.validator.js";
 
-export const accountSchema = z
+/** Everything about an account name EXCEPT how long it may be. */
+const accountShape = z
   .string()
   .trim()
   // .toLowerCase()
   .min(3, "Account name must be at least 3 characters")
-  .max(32, "Account name must be at most 32 characters")
   .regex(
     /^[-a-zA-Z0-9_]+$/,
     "Account name can only contain letters, numbers, hyphens, and underscores"
   );
+
+/**
+ * The SHAPE of an account name, used wherever an EXISTING handle is read:
+ * sign-in, and the "does this account exist?" step.
+ *
+ * Deliberately still 32. Live accounts were created at 31-32 characters before
+ * the 30-character product rule existed; tightening this schema would not
+ * shorten them, it would only refuse their owners a login. New handles go
+ * through `newAccountSchema` below.
+ */
+export const accountSchema = accountShape.max(
+  32,
+  "Account name must be at most 32 characters"
+);
+
+/**
+ * The account name a NEW registration may claim: the same shape, capped at the
+ * shared 30 (`TEXT_NAME_MAX_LENGTH`). The charset is ASCII-only, so UTF-16
+ * length and character count are the same thing here, and this `.max()` agrees
+ * exactly with the website's character counter. The message is a message KEY —
+ * `validateBody` renders it in the caller's locale.
+ *
+ * Built from `accountShape` rather than from `accountSchema` so that a
+ * 50-character handle is answered with THIS sentence; layered over the 32 cap it
+ * would have reported "at most 32 characters" to someone being held to 30.
+ */
+export const newAccountSchema = accountShape.max(
+  TEXT_NAME_MAX_LENGTH,
+  "VALIDATION_ACCOUNT_MAX_LENGTH"
+);
 
 /**
  * Proof-of-work credential.
@@ -102,7 +134,7 @@ export const fcmTokensSchema = z
 
 export const registerSchema = z
   .object({
-    account: accountSchema,
+    account: newAccountSchema,
     password: passwordSchema,
     fcmTokens: fcmTokensSchema.optional().default([]),
     proof: challengeSchema.optional(),

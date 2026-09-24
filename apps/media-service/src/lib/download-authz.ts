@@ -128,10 +128,16 @@ export async function authorizeMediaAccess(
       legacyAuthz(objectKey, category, requesterId);
       return;
     }
+    // The object travels with the question. Membership answers "may you read
+    // this room"; a group ALSO gives each member a history boundary, and an
+    // attachment uploaded before theirs belongs to a message they may not read
+    // — so knowing the objectKey must not be enough to mint a URL for it.
     const allowed = await getChatAccessClient().checkMediaAccess({
       userId: requesterId,
       scope,
       resourceId: record.resourceId,
+      objectKey,
+      objectCreatedAt: record.createdAt?.getTime(),
     });
     if (!allowed) throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
     return;
