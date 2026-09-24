@@ -152,11 +152,19 @@ export const myCommunitiesQuerySchema = z
     before_ts: z.coerce.number().int().positive().optional(),
     after_ts: z.coerce.number().int().positive().optional(),
     // Joined-mode compound keyset cursor — the gap-safe replacement for
-    // before_ts/after_ts. EITHER a plain epoch-ms ("1784104753870") OR the opaque
-    // compound token "<lastActivityAtMs>_<communityId>" handed back as
-    // `pagination.nextCursor`. Kept as a string so the id tiebreaker survives
-    // (coercing to a number would drop it). Boundaries are EXCLUSIVE, so
-    // same-millisecond communities are returned exactly once across pages.
+    // before_ts/after_ts. The literal "now", OR a plain epoch-ms
+    // ("1784104753870"), OR the opaque compound token
+    // "<lastActivityAtMs>_<communityId>" handed back as `pagination.nextCursor`.
+    // Kept as a string so the id tiebreaker survives (coercing to a number would
+    // drop it). Boundaries are EXCLUSIVE, so same-millisecond communities are
+    // returned exactly once across pages.
+    //
+    // "now" is what a client asking for the NEWEST page must send. The boundary
+    // is `lastActivityAt < cursor` against the SERVER's clock, and a client that
+    // stamps its own clock there hides every community whose last activity is
+    // newer than the client believes "now" to be — which is exactly the one it
+    // just posted in. A client cannot measure that skew, so it says "now" and
+    // the server resolves it. See the controller.
     //
     // Precedence: `cursor` wins over before_ts/after_ts when both are sent.
     //
@@ -165,8 +173,8 @@ export const myCommunitiesQuerySchema = z
     cursor: z
       .string()
       .regex(
-        /^(\d+(_[a-fA-F0-9]{24})?|[a-fA-F0-9]{24})$/,
-        "cursor must be epoch-ms, the compound cursor '<ms>_<communityId>', or a community id"
+        /^(now|\d+(_[a-fA-F0-9]{24})?|[a-fA-F0-9]{24})$/,
+        "cursor must be 'now', epoch-ms, the compound cursor '<ms>_<communityId>', or a community id"
       )
       .optional(),
     // search-mode filters + offset/keyset pagination
@@ -194,11 +202,11 @@ export const myCommunitiesQuerySchema = z
         q.after_ts == null;
       return isSearch
         ? OBJECT_ID_REGEX.test(q.cursor)
-        : /^\d+(_[a-fA-F0-9]{24})?$/.test(q.cursor);
+        : q.cursor === "now" || /^\d+(_[a-fA-F0-9]{24})?$/.test(q.cursor);
     },
     {
       message:
-        "cursor must be a community id in search mode, or epoch-ms / '<ms>_<communityId>' in joined mode",
+        "cursor must be a community id in search mode, or 'now' / epoch-ms / '<ms>_<communityId>' in joined mode",
       path: ["cursor"],
     }
   );

@@ -269,7 +269,21 @@ export const listMyCommunities = asyncHandler(
     // gets the exclusive compound keyset (the strictly better boundary).
     if (cursor != null) {
       const sep = cursor.indexOf("_");
-      const ms = Number(sep === -1 ? cursor : cursor.slice(0, sep));
+      // "now" = the newest page, resolved against the SERVER's clock.
+      //
+      // The boundary below is `lastActivityAt < cursor`, and `lastActivityAt` is
+      // written from the message's server-side `createdAt`. A client that stamps
+      // its own wall clock there is asking the server to hide everything that
+      // happened between the two clocks: on a device a few seconds behind, the
+      // community it just posted in sorts newer than its idea of "now" and drops
+      // out of its own list. The chat room still opens (membership is untouched),
+      // so the screen ends up naming a community the list next to it says does
+      // not exist — and with a single membership that list renders its empty
+      // state. Clients cannot measure the skew, so they send "now" instead.
+      const ms =
+        cursor === "now"
+          ? Date.now()
+          : Number(sep === -1 ? cursor : cursor.slice(0, sep));
       const id = sep === -1 ? "" : cursor.slice(sep + 1);
 
       const result = await communityService.listMineKeyset(req.auth.userId, {
