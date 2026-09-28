@@ -163,6 +163,14 @@ export const AUTH_MESSAGES = {
     en: "Session not found or already ended.",
     th: "ไม่พบเซสชันหรือเซสชันสิ้นสุดไปแล้ว",
   },
+  // The session a "Login Detected" alert is ABOUT may not answer that alert:
+  // an attacker holding the new session would otherwise silence the warning on
+  // the owner's other devices with one call. Only another session decides.
+  AUTH_SESSION_SELF_ACTION_FORBIDDEN: {
+    vi: "Không thể xác nhận hoặc kết thúc phiên đăng nhập này từ chính thiết bị vừa đăng nhập.",
+    en: "This login can only be reviewed from one of your other devices.",
+    th: "การเข้าสู่ระบบนี้ตรวจสอบได้จากอุปกรณ์เครื่องอื่นของคุณเท่านั้น",
+  },
   AUTH_SESSION_TRUSTED: {
     vi: "Đã xác nhận đăng nhập",
     en: "Login verified.",

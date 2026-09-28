@@ -152,10 +152,10 @@ export class NotificationController {
   });
 
   recordAction = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
+    const { userId, sessionId } = req.auth;
     const { id } = req.params as { id: string };
     const { action, body } = req.body as { action: string; body: string };
-    await this.service.recordAction(id, userId, body, action);
+    await this.service.recordAction(id, userId, body, action, sessionId);
     res
       .status(HTTP_STATUS.OK)
       .json(

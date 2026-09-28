@@ -2184,7 +2184,7 @@ const notificationAction = {
     operationId: "recordNotificationAction",
     summary: "Record an action on a notification",
     description:
-      "Records the caller's decision on an actionable notification (e.g. TERMINATE / CONFIRM / REJECT / ACCEPT) with a short `body` note.",
+      "Records the caller's decision on an actionable notification (e.g. TERMINATE / CONFIRM / REJECT / ACCEPT) with a short `body` note. A Login Detected row may never be actioned by the session whose login it reports: that attempt is refused with 403, whichever action is sent.",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -2209,6 +2209,10 @@ const notificationAction = {
       ...successResponse("Action recorded"),
       "400": badRequest,
       "401": unauthorized,
+      "403": {
+        description:
+          "A Login Detected row, actioned by the very session that triggered it",
+      },
       "404": notFound,
     },
   },

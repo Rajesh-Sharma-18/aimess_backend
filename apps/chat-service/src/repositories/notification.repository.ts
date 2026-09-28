@@ -435,6 +435,13 @@ export class NotificationRepository {
     });
   }
 
+  /** One row, owner-scoped. Tombstones excluded, like every other finder. */
+  async findById(id: string, userId: string): Promise<Notification | null> {
+    return this.prisma.notification.findFirst({
+      where: { id, userId, isDeleted: false },
+    });
+  }
+
   async findByNewLoginSessionId(
     userId: string,
     sessionId: string

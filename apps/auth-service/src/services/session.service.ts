@@ -1,5 +1,5 @@
 import { signAccessToken } from "@aimess/auth-jwt";
-import { NotFoundError, UnauthorizedError } from "@aimess/errors";
+import { ForbiddenError, NotFoundError, UnauthorizedError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import {
   publishAdminActivitySafe,
@@ -80,6 +80,27 @@ function auditTokenReuseRevoke(userId: string, revokedSessions: number): void {
  * replay within seconds of the legitimate holder's own refresh.
  */
 const REFRESH_ROTATION_GRACE_SECONDS = 60;
+
+/**
+ * A "Login Detected" alert is ABOUT one session, and that session may not
+ * answer it — not "It's Me", not "Terminate". Both sides belong to the same
+ * account, so a `userId` check proves nothing; session identity is the only
+ * thing that separates the device raising the alarm from the device that
+ * caused it.
+ *
+ * Deliberately NOT applied to `revokeSession`: signing the current device out
+ * is what "Sign out this device" in Connected Devices does, it leaves the
+ * alert PENDING for the account's other sessions (only a REMOTE_SIGNOUT
+ * records TERMINATED), and so it gives the new session nothing.
+ */
+function assertNotSelfSecurityAction(
+  currentSessionId: string,
+  targetSessionId: string
+): void {
+  if (currentSessionId && currentSessionId === targetSessionId) {
+    throw new ForbiddenError("AUTH_SESSION_SELF_ACTION_FORBIDDEN");
+  }
+}
 
 /**
  * Decide whether a reuse of an already-rotated refresh token is a benign replay
@@ -515,7 +536,18 @@ export const sessionService = {
    * trusted. The session itself is untouched; only the notification status
    * changes so the UI resolves without action buttons.
    */
-  async trustSession(userId: string, targetSessionId: string): Promise<void> {
+  async trustSession(
+    userId: string,
+    currentSessionId: string,
+    targetSessionId: string
+  ): Promise<void> {
+    // A "Login Detected" alert may never be answered by the session it is
+    // ABOUT. Same user on both sides, so `userId` decides nothing here — only
+    // the session identity does. Without this an attacker who has just signed
+    // in with stolen credentials clears the warning off the owner's other
+    // devices with one call, which is the whole point of the alert.
+    assertNotSelfSecurityAction(currentSessionId, targetSessionId);
+
     // Verify the session belongs to this user (IDOR guard).
     const session = await sessionRepository.findActiveForUser(
       userId,

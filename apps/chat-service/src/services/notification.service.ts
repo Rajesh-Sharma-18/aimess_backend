@@ -1,5 +1,6 @@
 import type { Redis, Cluster } from "ioredis";
 import { copyTickets } from "@aimess/constants";
+import { ForbiddenError } from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
 
 import type { NotificationRepository } from "../repositories/notification.repository.js";
@@ -7,6 +8,7 @@ import type { Notification } from "../generated/prisma/index.js";
 import {
   categoryWhere,
   categorize,
+  LOGIN_DETECTED_TYPE,
   type NotificationCategory,
 } from "../lib/notification-category.js";
 import {
@@ -101,7 +103,15 @@ export class NotificationService {
     });
     const refresh = await resolveAvatarRefresh(rows);
     return Promise.all(
-      rows.map((n) => serializeNotification(n, userId, refresh))
+      rows.map((n) =>
+        serializeNotification(
+          n,
+          userId,
+          refresh,
+          undefined,
+          params.viewerSessionId
+        )
+      )
     );
   }
 
@@ -146,7 +156,15 @@ export class NotificationService {
     );
     const refresh = await resolveAvatarRefresh(rows);
     const notifications = await Promise.all(
-      rows.map((n) => serializeNotification(n, userId, refresh))
+      rows.map((n) =>
+        serializeNotification(
+          n,
+          userId,
+          refresh,
+          undefined,
+          params.viewerSessionId
+        )
+      )
     );
     const hasMore = rows.length === params.limit;
     const nextSince = rows.length
@@ -264,8 +282,28 @@ export class NotificationService {
     id: string,
     userId: string,
     body: string,
-    action: string
+    action: string,
+    /**
+     * The acting device's own session. A Login Detected alert may never be
+     * answered by the session it is ABOUT — both sides belong to the same
+     * account, so owner-scoping the row (which `recordAction` below does)
+     * separates nothing, and a stolen new session could otherwise clear its
+     * own warning off the owner's other devices. The list already withholds
+     * that row from that session; this is the same rule for a caller that
+     * skips the list and PATCHes the id directly.
+     */
+    callerSessionId?: string | null
   ): Promise<void> {
+    if (callerSessionId) {
+      const row = await this.notificationRepo.findById(id, userId);
+      if (
+        row &&
+        row.type === LOGIN_DETECTED_TYPE &&
+        row.loginSessionId === callerSessionId
+      ) {
+        throw new ForbiddenError("AUTH_SESSION_SELF_ACTION_FORBIDDEN");
+      }
+    }
     const updated = await this.notificationRepo.recordAction(
       id,
       userId,

@@ -136,7 +136,11 @@ export const trustSession = asyncHandler(
   async (req: Request, res: Response) => {
     const { sessionId } = req.params as { sessionId: string };
 
-    await sessionService.trustSession(req.auth.userId, sessionId);
+    await sessionService.trustSession(
+      req.auth.userId,
+      req.auth.sessionId,
+      sessionId
+    );
 
     return res
       .status(HTTP_STATUS.OK)

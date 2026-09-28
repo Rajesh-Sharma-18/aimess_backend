@@ -119,6 +119,54 @@ async function run() {
     "New login detected on a firefox. If this wasn't you, Terminate Session"
   );
 
+  // Who may answer a Login Detected alert. The account is the same on every
+  // device, so the verdict turns on SESSION identity and on nothing else.
+  const pendingLogin = {
+    ...baseRow,
+    type: "auth.security_new_login",
+    loginSessionId: "sessionB",
+    loginResolvedAt: null,
+    payload: {
+      title: "Login Detected",
+      body: "New login detected on a chrome. If this wasn't you, Terminate Session",
+      data: { sessionId: "sessionB", browser: "Chrome" },
+    },
+  } as unknown as Parameters<typeof serializeNotification>[0];
+
+  // Another session of the same account: both buttons.
+  assert.deepEqual(
+    (await serializeNotification(pendingLogin, "viewer1", undefined, undefined, "sessionA"))
+      .actions,
+    { canTerminate: true, canConfirm: true }
+  );
+  // The session the alert is ABOUT: neither button, on its own row only.
+  assert.deepEqual(
+    (await serializeNotification(pendingLogin, "viewer1", undefined, undefined, "sessionB"))
+      .actions,
+    { canTerminate: false, canConfirm: false }
+  );
+  // Already resolved — nobody acts twice, whichever session is reading.
+  assert.deepEqual(
+    (
+      await serializeNotification(
+        { ...pendingLogin, loginResolvedAt: new Date() } as typeof pendingLogin,
+        "viewer1",
+        undefined,
+        undefined,
+        "sessionA"
+      )
+    ).actions,
+    { canTerminate: false, canConfirm: false }
+  );
+  // No viewer session (the realtime publish, which the triggering session is
+  // already excluded from): actionable.
+  assert.deepEqual((await serializeNotification(pendingLogin, "viewer1")).actions, {
+    canTerminate: true,
+    canConfirm: true,
+  });
+  // Not a login row: no `actions` block at all.
+  assert.equal((await serializeNotification(baseRow, "viewer1")).actions, undefined);
+
   // eslint-disable-next-line no-console
   console.log("notification-serializer.check ok");
 }

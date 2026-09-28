@@ -5524,7 +5524,9 @@ export function createNotificationImpl(
               const dto = await serializeNotification(
                 n,
                 req.userId as string,
-                refresh
+                refresh,
+                undefined,
+                req.sessionId || null
               );
               const rawData =
                 ((n.payload ?? {}) as { data?: Record<string, string> }).data ??
