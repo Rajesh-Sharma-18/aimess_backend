@@ -16,10 +16,16 @@ jest.mock("../../src/repositories/refresh-token.repository.js", () => ({
     findSuccessor: jest.fn(async () => null),
   },
 }));
+jest.mock("@aimess/redis", () => ({
+  ...jest.requireActual("@aimess/redis"),
+  publishSessionRevokedEvent: jest.fn(async () => 0),
+}));
 jest.mock("../../src/repositories/session.repository.js", () => ({
   sessionRepository: {
     listActiveSessionIds: jest.fn(async () => []),
     revokeAllForUser: jest.fn(async () => undefined),
+    getDeviceId: jest.fn(async () => null),
+    revokeForUser: jest.fn(async () => ({ revoked: true })),
   },
 }));
 
@@ -73,7 +79,7 @@ describe("POST /api/auth/refresh", () => {
     expect(repo.rotate).not.toHaveBeenCalled();
   });
 
-  it("returns 401 + revokes all sessions on a reused (rotated) token", async () => {
+  it("returns 401 + revokes the session on a reused (rotated) token", async () => {
     repo.findByTokenHash.mockResolvedValue(
       storedToken({ rotatedToId: "rt-2" })
     );
