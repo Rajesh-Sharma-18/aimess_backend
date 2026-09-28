@@ -12,7 +12,11 @@ import type { Redis, Cluster } from "ioredis";
 
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
-import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
+import {
+  assertPrivateParticipants,
+  buildParticipantsKey,
+  generateRoomId,
+} from "../lib/room-id.js";
 import {
   toWireMessage,
   normalizeMessageType,
@@ -88,6 +92,11 @@ export async function ensurePrivateRoom(
   userId: string,
   peerId: string
 ): Promise<PrivateRoom> {
+  // BEFORE the lookup, so a junk peer id is a 400 rather than a wasted round
+  // trip. The repository asserts the same invariant again as the storage-level
+  // backstop for the two invite-share paths that create rooms without coming
+  // through here — see `assertPrivateParticipants`.
+  assertPrivateParticipants([userId, peerId]);
   const participantsKey = buildParticipantsKey(userId, peerId);
   const existing =
     await deps.privateRoomRepo.findByParticipantsKey(participantsKey);

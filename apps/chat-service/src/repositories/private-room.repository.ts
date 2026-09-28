@@ -11,6 +11,7 @@ import {
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
+import { assertPrivateParticipants } from "../lib/room-id.js";
 import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
 import {
   UNREAD_COUNTABLE_RAW_MATCH,
@@ -240,6 +241,10 @@ export class PrivateRoomRepository {
     participantsKey: string;
     [key: string]: unknown;
   }): Promise<PrivateRoom> {
+    // The one choke point every private-room creation passes through — see
+    // `assertPrivateParticipants` for which callers those are, and for why the
+    // friendship gate above it cannot be relied on to stop a junk peer id.
+    assertPrivateParticipants(data.participants);
     return this.prisma.privateRoom.create({
       data: {
         roomId: data.roomId,

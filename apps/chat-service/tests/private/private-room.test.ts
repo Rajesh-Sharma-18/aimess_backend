@@ -149,18 +149,22 @@ describe("POST /api/chat/private/rooms/:peerId (get-or-create)", () => {
   });
 
   it("POSITIVE: creates a new room when friends and none exists", async () => {
+    // A real peer id, not the "peer-1" placeholder the read-only tests use:
+    // creation asserts the participants are two distinct user UUIDs (see
+    // lib/room-id.ts#assertPrivateParticipants).
+    const peerUuid = "22222222-2222-4222-8222-222222222222";
     mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue(null);
     mocks.userServiceClient.checkFriendship.mockResolvedValue(true);
     mocks.privateRoomRepo.create.mockResolvedValue({
       roomId: "prv_new",
-      participants: [TEST_USER_ID, "peer-1"],
+      participants: [TEST_USER_ID, peerUuid],
       createdAt: new Date(1000),
       updatedAt: new Date(2000),
       lastSequence: 0,
     });
 
     const res = await request(app)
-      .post("/api/chat/private/rooms/peer-1")
+      .post(`/api/chat/private/rooms/${peerUuid}`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
