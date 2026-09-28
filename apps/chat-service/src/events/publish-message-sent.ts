@@ -228,6 +228,10 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
         ...(p.canReply !== undefined ? { canReply: p.canReply } : {}),
         preview: p.preview,
         ...(previewImageUrl ? { previewImageUrl } : {}),
+        // The URL above is presigned for an hour while a push may sit undelivered
+        // for FCM's full 24h TTL; the key is permanent, so a client that finds the
+        // URL expired re-mints one from it.
+        ...(p.previewImageKey ? { previewImageKey: p.previewImageKey } : {}),
         messageType: p.messageType,
         sentAt: p.sentAt,
         recipientIds: targets,
