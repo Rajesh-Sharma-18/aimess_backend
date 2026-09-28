@@ -2024,7 +2024,7 @@ export class LivestreamService {
             });
           }
           if (stat?.viewers !== null && stat?.viewers !== undefined) {
-            await this.publishCdnViewerCount(stream.id, stat.viewers);
+            await this.publishCdnViewerCount(stream, stat.viewers);
           }
           continue;
         }
@@ -2083,14 +2083,20 @@ export class LivestreamService {
    * (0 viewers reported at t+65s, correct 5 at t+143s), but it counts EVERY
    * viewer the CDN serves, including anyone playing the raw .m3u8 outside our
    * apps. The socket count is instant but only sees our own clients.
+   *
+   * Also the only writer of `peakViewers` for CDN streams: SRS on_play/on_stop
+   * (incrementViewer) never fires when the CDN serves playback.
    */
   private async publishCdnViewerCount(
-    streamId: string,
+    stream: Livestream,
     viewers: number
   ): Promise<void> {
+    const streamId = stream.id;
+    const count = Math.max(0, viewers);
     try {
       await this.streamRepo.updateById(streamId, {
-        viewerCount: Math.max(0, viewers),
+        viewerCount: count,
+        ...(count > stream.peakViewers ? { peakViewers: count } : {}),
       });
       // This tick is the number viewers actually see in CDN mode, so it is also
       // what the stream's peak has to be measured against. Sampled every 30s,
