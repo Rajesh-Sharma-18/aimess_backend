@@ -2,10 +2,10 @@
  * Service-layer tests for the Sharing & Deep-Linking backend deltas:
  *   - communityService.getByHandle()        (public deep-link resolver)
  *   - communityService.getPublicCard()       (internal OG-card lookup)
- *   - communityService.createInviteLink()    (request-to-join default flip)
+ *   - communityService.createInviteLink()    (bare call vs custom link)
  *
  * Only the I/O boundary is mocked (repository + image resolver); the real
- * service logic — PUBLIC-only gating, ban handling, autoApprove default — runs.
+ * service logic — PUBLIC-only gating, ban handling, link reuse — runs.
  */
 
 jest.mock("../../src/repositories/community.repository.js", () => ({
@@ -189,7 +189,7 @@ describe("getPublicCard", () => {
   });
 });
 
-describe("createInviteLink — request-to-join default", () => {
+describe("createInviteLink — bare call vs custom link", () => {
   const linkRow = {
     id: "l".repeat(24),
     code: "abc123",
@@ -197,42 +197,43 @@ describe("createInviteLink — request-to-join default", () => {
     createdBy: CALLER,
     maxUses: null,
     usedCount: 0,
-    autoApprove: false,
     expiresAt: null,
     revokedAt: null,
     createdAt: new Date("2026-06-23T00:00:00.000Z"),
   };
 
-  // The assertion moved, the intent did not: a bare call must never silently
-  // auto-approve. A parameterless call on a PRIVATE community returns that
-  // community's live (1-hour) invite link — reused when one is still valid,
-  // minted as a plain request-to-join link otherwise. The legacy row-creating
-  // path is still asserted by the explicit-autoApprove case below.
-  it("defaults autoApprove=false for a PRIVATE community when not specified", async () => {
+  // A parameterless call on a PRIVATE community returns that community's live
+  // invite link — reused when one is still valid, minted otherwise. `maxUses`
+  // is the only thing that now asks for a separate custom link.
+  it("a bare call on a PRIVATE community reuses the live link and mints nothing", async () => {
     repo.findById.mockResolvedValue({ ...publicCommunity, type: "PRIVATE" });
     repo.findMembership.mockResolvedValue({ status: "ACTIVE", role: "ADMIN" });
     repo.findLatestReusableInviteLink.mockResolvedValue({
       ...linkRow,
-      autoApprove: false,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     });
 
     const link = await communityService.createInviteLink(CID, CALLER, {});
 
+    // The retired flag is reported false on every link — it is `required` in
+    // the published contract, so it must still be there and must still be false.
     expect(link.autoApprove).toBe(false);
     // Idempotent by construction: a bare call consumes no link quota.
     expect(repo.createInviteLink).not.toHaveBeenCalled();
   });
 
-  it("respects an explicit autoApprove=true", async () => {
+  it("maxUses mints a separate limited-use link", async () => {
     repo.findById.mockResolvedValue({ ...publicCommunity, type: "PRIVATE" });
     repo.findMembership.mockResolvedValue({ status: "ACTIVE", role: "ADMIN" });
-    repo.createInviteLink.mockResolvedValue({ ...linkRow, autoApprove: true });
+    repo.createInviteLink.mockResolvedValue({ ...linkRow, maxUses: 5 });
 
-    await communityService.createInviteLink(CID, CALLER, { autoApprove: true });
+    const link = await communityService.createInviteLink(CID, CALLER, {
+      maxUses: 5,
+    });
 
     expect(repo.createInviteLink).toHaveBeenCalledWith(
-      expect.objectContaining({ autoApprove: true })
+      expect.objectContaining({ maxUses: 5 })
     );
+    expect(link.autoApprove).toBe(false);
   });
 });

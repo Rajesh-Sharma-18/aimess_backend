@@ -8389,8 +8389,10 @@ export const openApiSchemas = {
       },
       autoApprove: {
         type: "boolean",
+        deprecated: true,
+        enum: [false],
         description:
-          "Recorded when the link was created; it does NOT decide the join. Redeeming follows the community's CURRENT privacy: PUBLIC adds the member directly, PRIVATE files a join request whatever this says.",
+          "RETIRED — always `false`, and no longer stored. It once meant this link skipped the join-request queue, which was the privacy in force when the link was minted, frozen. Redeeming now follows the community's CURRENT privacy and nothing else: PUBLIC adds the member directly, PRIVATE files a join request. Still sent (and still `required`) so existing clients decode; drop it on your next contract update.",
         example: false,
       },
       expiresAt: {
@@ -8651,7 +8653,7 @@ export const openApiSchemas = {
   CreateInviteLinkRequest: {
     type: "object",
     description:
-      "All fields are optional. Omit a field to use its default: unlimited uses, requires moderator approval (autoApprove: false). Invitation links never expire on their own — they stay usable until an admin revokes one.",
+      "`maxUses` is the only field, and it is optional — omit it for unlimited uses. Invitation links never expire on their own; they stay usable until an admin revokes one. A link carries no join policy: who gets in is decided by the community's privacy at redeem time. The retired `autoApprove` field is ignored rather than rejected, so an older client sending it still gets a 201.",
     properties: {
       maxUses: {
         type: "integer",
@@ -8661,17 +8663,9 @@ export const openApiSchemas = {
           "Maximum number of times this link can be redeemed. Omit for unlimited.",
         example: 50,
       },
-      autoApprove: {
-        type: "boolean",
-        default: false,
-        description:
-          "Stored on the link and echoed back, but it does not decide the join — redeeming always follows the community's CURRENT privacy. Setting it to true on a PRIVATE community still requires a MODERATOR/ADMIN caller.",
-        example: false,
-      },
     },
     example: {
       maxUses: 50,
-      autoApprove: false,
     },
   },
   InviteLinkListResponseData: {

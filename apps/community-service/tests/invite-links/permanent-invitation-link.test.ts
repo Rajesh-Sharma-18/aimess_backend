@@ -111,7 +111,6 @@ const linkRow = (over: Record<string, unknown> = {}) => {
     createdBy: CALLER,
     maxUses: null,
     usedCount: 0,
-    autoApprove: false,
     expiresAt: null,
     revokedAt: null,
     ...over,
@@ -169,14 +168,16 @@ describe("getOrCreatePermanentInvitationLink — minting", () => {
     );
   });
 
-  it("never mints a limited-use or auto-approve link", async () => {
+  it("never mints a limited-use link", async () => {
     repo.findById.mockResolvedValue(community());
 
     await communityService.getOrCreatePermanentInvitationLink(CID, CALLER);
 
     const written = repo.createInviteLink.mock.calls[0][0];
     expect(written.maxUses).toBeNull();
-    expect(written.autoApprove).toBe(false);
+    // A link records no join policy at all any more — nothing but the identity,
+    // the use cap and the clock is written.
+    expect(written).not.toHaveProperty("autoApprove");
   });
 });
 

@@ -455,6 +455,12 @@ model CommunityMemberWarning {
 // CommunityInviteLink — shareable join link (distinct from 1:1 CommunityInvite).
 // `code` is server-generated, URL-safe; revoked / expired / exhausted is computed
 // at redeem time. Atomic conditional-update guards against over-redemption.
+//
+// A link carries no join POLICY: who gets in is the community's current privacy
+// alone (see `redeemInviteLink`). The retired `autoApprove` flag lived here and
+// said otherwise — it was the privacy in force when the link was minted, frozen,
+// and it outlived the switch that closed the community. Documents written by
+// older builds still carry it; nothing reads it.
 // -----------------------------------------------------------------------------
 model CommunityInviteLink {
   id          String    @id @default(auto()) @map("_id") @db.ObjectId
@@ -463,7 +469,6 @@ model CommunityInviteLink {
   createdBy   String // AuthUser.id of issuer
   maxUses     Int?
   usedCount   Int       @default(0)
-  autoApprove Boolean   @default(false)
   expiresAt   DateTime?
   revokedAt   DateTime?
   createdAt   DateTime  @default(now())

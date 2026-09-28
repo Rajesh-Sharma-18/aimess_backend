@@ -79,7 +79,6 @@ const createdRow = (over: Record<string, unknown> = {}) => ({
   createdBy: CALLER,
   maxUses: null,
   usedCount: 0,
-  autoApprove: false,
   expiresAt: null,
   revokedAt: null,
   createdAt: new Date("2026-06-24T00:00:00.000Z"),

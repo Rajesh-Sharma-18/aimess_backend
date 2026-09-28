@@ -1747,7 +1747,11 @@ function toInviteLinkData(
     createdBy: row.createdBy,
     maxUses: row.maxUses,
     usedCount: row.usedCount,
-    autoApprove: row.autoApprove,
+    // RETIRED field, always false: a link carries no join policy any more, so
+    // no link auto-approves. Kept on the response — it is `required` in the
+    // published contract, so a client with a non-optional field would fail to
+    // decode an invite link without it.
+    autoApprove: false,
     // LEGACY field: nothing stamps an expiry any more. Kept on the response so
     // older clients that read it still parse the payload.
     expiresAt: null,
@@ -1803,7 +1807,7 @@ function assertPermanentCodeActive(): void {}
  *  - `expiresAt: null` / `isActive: true` → nothing expires or revokes a
  *    permanent code
  *  - `revokedAt: null` → never revoked
- *  - `autoApprove: false` → request-to-join (PRIVATE default)
+ *  - `autoApprove: false` → the retired flag, false on every link
  */
 function toPermanentLinkAsInviteLinkData(community: {
   id: string;
@@ -10029,7 +10033,6 @@ export const communityService = {
    * Mirrors `redeemInviteLink` but:
    *  - The community is looked up by its permanent `invitationCode` field (not a
    *    `CommunityInviteLink` row), so there is no `usedCount` to increment.
-   *  - The link is always `autoApprove: false` (request-to-join for PRIVATE).
    *  - A synthetic `CommunityInviteLinkData` is returned so the caller's response
    *    shape is identical to a regular redeem.
    *
@@ -10168,7 +10171,6 @@ export const communityService = {
     callerId: string,
     input: {
       maxUses?: number;
-      autoApprove?: boolean;
     }
   ): Promise<CommunityInviteLinkData> {
     const community = await communityRepository.findById(communityId);
@@ -10188,9 +10190,9 @@ export const communityService = {
     communityAccessPolicy.assertWritable(community);
 
     // ── SINGLE SOURCE OF TRUTH short-circuit (bare/default call) ───────────────
-    // A "Generate Invitation Link" button posts an EMPTY body. With no maxUses /
-    // autoApprove, the caller wants THE community's current invite link — not a
-    // fresh throwaway link per click. For PRIVATE communities we hand back the
+    // A "Generate Invitation Link" button posts an EMPTY body. With no maxUses,
+    // the caller wants THE community's current invite link — not a fresh
+    // throwaway link per click. For PRIVATE communities we hand back the
     // caller's live link, which is reused until someone revokes it, with NO
     // rate-limit consumption and NO active-link-cap usage.
     //
@@ -10198,10 +10200,12 @@ export const communityService = {
     // handle-based and code-independent (already deterministic), so there is no
     // "code changes every call" problem to fix for them.
     //
-    // A PARAMETERIZED call (maxUses / autoApprove present) is an explicit
-    // request for a custom link and keeps the full legacy multi-link behavior
-    // below — preserving Limited-use / Auto-approve links untouched.
-    const isDefaultCall = input.maxUses == null && input.autoApprove == null;
+    // A PARAMETERIZED call (maxUses present) is an explicit request for a custom
+    // link and keeps the full legacy multi-link behavior below — preserving
+    // Limited-use links untouched. `maxUses` is now the only parameter there is:
+    // a body carrying only the retired `autoApprove` asks for nothing this
+    // endpoint still does, so it reads as the bare call it has become.
+    const isDefaultCall = input.maxUses == null;
     if (isDefaultCall && community.type === CommunityType.PRIVATE) {
       const link = await this.resolveOrCreateShareableLink(
         community.id,
@@ -10216,20 +10220,6 @@ export const communityService = {
     await assertInviteCreateRateLimit(callerId);
 
     const maxUses = input.maxUses ?? null;
-    // Default = request-to-join for BOTH types (Sharing & Deep-Linking spec,
-    // flow F5: a private link's primary path is "Request to Join" with moderator
-    // approval). Moderators can still opt into instant-join by passing
-    // `autoApprove: true` explicitly at create time.
-    const autoApprove = input.autoApprove ?? false;
-
-    // `autoApprove` no longer skips anything: redeem reads the community's
-    // CURRENT privacy and nothing else, so a PRIVATE community always files a
-    // request (see `redeemInviteLink`). The flag is still stored and echoed for
-    // clients that read it back, and the moderation gate below stays so asking
-    // for it on a PRIVATE community answers exactly as it always has.
-    if (autoApprove && community.type === CommunityType.PRIVATE) {
-      assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
-    }
 
     // Retry up to 3 times on code collision (P2002 unique violation on `code`).
     let row: Awaited<
@@ -10242,7 +10232,6 @@ export const communityService = {
           communityId,
           createdBy: callerId,
           maxUses,
-          autoApprove,
           // Links now lapse. One shared months ago used to still admit anyone
           // who had it, with unlimited uses by default — a leaked link was a
           // permanent door into a private community.
@@ -10368,7 +10357,6 @@ export const communityService = {
           communityId,
           createdBy: callerId,
           maxUses: null,
-          autoApprove: false,
           // The community's reusable share link expires too, and
           // `findLatestReusableInviteLink` skips an expired one so the next
           // share mints a fresh code rather than handing back a dead link.
@@ -10467,7 +10455,6 @@ export const communityService = {
             createdBy: community.adminId,
             maxUses: null,
             usedCount: 0,
-            autoApprove: false,
             expiresAt: null,
             revokedAt: null,
             createdAt: community.invitationCodeCreatedAt ?? community.createdAt,
@@ -10770,7 +10757,7 @@ export const communityService = {
     }
 
     // A redeem only consumes a usage slot when it produces a REAL join effect:
-    // a new/reactivated membership (autoApprove) or a NEW/recycled join request.
+    // a new/reactivated membership, or a NEW/recycled join request.
     // An idempotent re-tap (already ACTIVE — handled above; or already PENDING —
     // handled below) must NOT burn a use, otherwise a single user re-tapping a
     // maxUses-limited link would prematurely exhaust it for everyone.
@@ -10796,10 +10783,11 @@ export const communityService = {
     // Join behaviour belongs to the community's CURRENT privacy and to nothing
     // else: a code minted while PRIVATE admits directly once the community is
     // PUBLIC, and one minted while PUBLIC files a request once it is PRIVATE.
-    // `link.autoApprove` used to override this — but a flag frozen at mint time
-    // IS the stale privacy, under another name: it was free to set while the
-    // community was open and it outlived the switch that closed it. A link
-    // cannot grant what the community currently withholds.
+    // A link once carried an `autoApprove` flag that overrode this — but a flag
+    // frozen at mint time IS the stale privacy, under another name: it was free
+    // to set while the community was open and it outlived the switch that closed
+    // it. A link cannot grant what the community currently withholds, so the
+    // flag is retired: nothing writes it and the response reports it false.
     let slotBurned = false;
     if (community.type === CommunityType.PUBLIC) {
       // A direct join always creates/reactivates a membership → consume a use.

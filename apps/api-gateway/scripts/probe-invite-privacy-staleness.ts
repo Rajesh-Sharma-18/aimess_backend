@@ -111,15 +111,20 @@ async function setType(id: string, type: "PUBLIC" | "PRIVATE"): Promise<void> {
   if (r.status >= 400) throw new Error(`setType failed: ${r.status} ${JSON.stringify(r.json)}`);
 }
 
-/** Mint a link as `creator`, optionally flagged queue-skipping. */
+/**
+ * Mint a link as `creator`. `askAutoApprove` sends the RETIRED `autoApprove`
+ * flag, the way an older client still would: the server strips it, so the rows
+ * that pass true are asserting that asking for a queue-skipping link buys
+ * nothing — neither at create time nor at redeem time.
+ */
 async function makeLink(
   id: string,
   creator: string,
-  autoApprove: boolean
-): Promise<{ code: string; linkId: string }> {
+  askAutoApprove: boolean
+): Promise<{ code: string; linkId: string; autoApprove: unknown }> {
   const r = await api(creator, "POST", `/communities/${id}/invite-links`, {
     maxUses: 100,
-    autoApprove,
+    ...(askAutoApprove ? { autoApprove: true } : {}),
   });
   // An error envelope carries a `code` too — the ERROR code. Gate on the status
   // first or a rate-limited create silently hands back "…RATE_LIMITED" as if it
@@ -128,7 +133,7 @@ async function makeLink(
   if (r.status >= 300 || !d?.code) {
     throw new Error(`link failed: ${r.status} ${JSON.stringify(r.json)}`);
   }
-  return { code: d.code, linkId: d.linkId };
+  return { code: d.code, linkId: d.linkId, autoApprove: d.autoApprove };
 }
 
 /** What did the redeem actually do? */
@@ -218,12 +223,16 @@ async function main(): Promise<void> {
     await reset(id);
   }
 
-  // ── the reported bug: `autoApprove` is the stale privacy in disguise ──────
+  // ── the reported bug: `autoApprove` was the stale privacy in disguise ─────
+  // The flag is retired, so these send it the way an older client would and
+  // assert it buys nothing: not a queue-skipping link, not a `true` in the
+  // response, not a bypass at redeem time.
   {
     const id = await makeCommunity("PUBLIC");
-    const { code } = await makeLink(id, ADMIN, true);
+    const link = await makeLink(id, ADMIN, true);
+    check("7a asking for auto-approve is accepted and reported false", link.autoApprove === false, String(link.autoApprove));
     await setType(id, "PRIVATE");
-    const got = await redeem(code);
+    const got = await redeem(link.code);
     check("7  admin auto-approve link minted PUBLIC, now PRIVATE → request", got === "REQUEST", got);
     check("7b no membership was created", !(await isMember(id)));
     await reset(id);
@@ -237,6 +246,9 @@ async function main(): Promise<void> {
     await reset(id);
   }
   {
+    // A plain MEMBER asking for auto-approve on a PRIVATE community used to be
+    // refused by a moderation gate. There is nothing left to gate, so it is an
+    // ordinary link request now — and it still admits nobody.
     const id = await makeCommunity("PRIVATE");
     const { code } = await makeLink(id, ADMIN, true);
     const got = await redeem(code);

@@ -101,7 +101,6 @@ const link = {
   createdBy: CALLER,
   maxUses: null,
   usedCount: 0,
-  autoApprove: false,
   // Live link: every invite link expires 1 hour after it is created.
   expiresAt: new Date(Date.now() + 60 * 60 * 1000),
   revokedAt: null,

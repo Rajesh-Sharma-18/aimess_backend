@@ -821,9 +821,13 @@ export type BulkDeleteCommunityInput = z.infer<
 // No expiry input: an invitation link lives until it is revoked (or its
 // `maxUses` is spent). A client still sending `expiresInMinutes` is not
 // rejected — the key is simply stripped, as with any unknown field.
+/**
+ * `autoApprove` was removed: a link carries no join policy any more, so the flag
+ * decided nothing. Zod strips unknown keys, so a client still sending it gets a
+ * 200 with the flag ignored rather than a 400.
+ */
 export const createInviteLinkSchema = z.object({
   maxUses: z.number().int().min(1).max(1000).optional(),
-  autoApprove: z.boolean().optional(),
 });
 export type CreateInviteLinkInput = z.infer<typeof createInviteLinkSchema>;
 
