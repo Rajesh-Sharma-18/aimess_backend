@@ -278,6 +278,16 @@ export const CHAT_MESSAGES = {
     en: "This account is no longer available.",
     th: "บัญชีนี้ไม่พร้อมใช้งานอีกต่อไป",
   },
+  // The identity lookup behind a conversation row could not be completed
+  // (user-service/auth-service unreachable, or its circuit breaker open). The
+  // request is well-formed and worth retrying — serving the row anyway would
+  // bake an unresolved placeholder name into a client cache that has no reason
+  // to refetch it.
+  CHAT_IDENTITY_UNAVAILABLE: {
+    vi: "Không thể tải thông tin người dùng ngay bây giờ. Vui lòng thử lại.",
+    en: "User details could not be loaded right now. Please try again.",
+    th: "ไม่สามารถโหลดข้อมูลผู้ใช้ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+  },
   CHAT_GROUP_LEFT: {
     vi: "Đã rời nhóm",
     en: "Left the group",
