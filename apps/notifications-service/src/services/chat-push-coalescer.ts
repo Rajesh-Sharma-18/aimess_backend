@@ -1,5 +1,5 @@
 import { logger } from "@aimess/logger";
-import { usersWithRoomOpen } from "@aimess/redis";
+import { sessionsViewingRoom } from "@aimess/redis";
 import { type SupportedLocale } from "@aimess/constants";
 
 import { redis } from "../config/redis.js";
@@ -24,15 +24,16 @@ import { pushToUser } from "./push.service.js";
  * Three things are decided at FLUSH time rather than at arrival, which is what
  * makes the window useful beyond simple deduplication:
  *
- *  - **Presence.** A recipient who opened the conversation while the window was
- *    running gets nothing at all — the pending notification is simply dropped.
- *    That is the "cancel on read" rule, and it falls out of checking late.
+ *  - **Presence.** A session that opened THIS conversation while the window was
+ *    running is skipped — the device the user is reading on gets nothing. That
+ *    is the "cancel on read" rule, and it falls out of checking late.
  *  - **Final content.** An edit or delete that lands inside the window rewrites
  *    or removes the message before anything is sent, so a deleted line can never
  *    be pushed.
- *  - **Which devices.** Sessions with a foregrounded socket are excluded by
- *    push.service, so the phone in a pocket still buzzes while the laptop the
- *    user is typing on does not.
+ *  - **Which devices.** Presence is resolved per SESSION, not per user, so the
+ *    phone in a pocket still buzzes while the laptop showing the conversation
+ *    does not — and a second tab parked on Settings never speaks for the tab
+ *    that is actually reading.
  *
  * In-process, like the gateway's socket batcher: several notifications-service
  * replicas each coalesce their own share. Worst case that is one notification
@@ -256,16 +257,30 @@ async function flush(key: string): Promise<void> {
   if (messages.length === 0) return;
 
   try {
-    // Cancel-on-read: the recipient opened this conversation while the window
-    // was running, so the message was never unread and needs no notification.
-    const open = await usersWithRoomOpen(redis, context.conversationId, [
+    // Cancel-on-read, resolved per SESSION at flush time: which of this
+    // recipient's logins is looking at THIS conversation right now, on a
+    // foregrounded tab/app. Those devices already have the message on screen;
+    // every other device of theirs still needs the notification.
+    //
+    // This used to be two much blunter questions, and each answered "suppress"
+    // far too often:
+    //   * "does this USER have the room open anywhere?" — one device reading
+    //     silenced the notification on all the others;
+    //   * `suppressForegroundSessions` — "is this session's app foregrounded?",
+    //     which on the web is true for ANY open tab, so a user sitting on their
+    //     Settings page or in a DIFFERENT chat never got a push at all.
+    // Being online, connected, in a socket room, or somewhere in the app is not
+    // the same thing as reading this conversation, and only the last one earns
+    // silence.
+    const viewing = await sessionsViewingRoom(
+      redis,
       context.userId,
-    ]);
-    if (open.has(context.userId)) {
+      context.conversationId
+    );
+    if (viewing.size > 0) {
       logger.info(
-        `[push:coalesce] suppressed ${messages.length} message(s) — recipient ${context.userId} has room ${context.conversationId} open`
+        `[push:coalesce] ${context.userId} is viewing ${context.conversationId} on ${viewing.size} session(s) — those devices skip ${messages.length} message(s)`
       );
-      return;
     }
 
     const latest = messages[messages.length - 1]!;
@@ -358,8 +373,8 @@ async function flush(key: string): Promise<void> {
           ? "GROUP"
           : ("PERSONAL" as const),
       showPreviewOverride,
-      // A device whose app is foregrounded already has this over the socket.
-      suppressForegroundSessions: true,
+      // The devices reading this very conversation already have it on screen.
+      ...(viewing.size > 0 ? { excludeSessionIds: [...viewing] } : {}),
       skipInbox: true,
       data: {
         // `type` stays MESSAGE for a mention: shipped Android builds render
