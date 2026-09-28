@@ -50,6 +50,8 @@ interface MessageSentPayload {
   unreadCount?: number;
   preview: string;
   previewImageUrl?: string;
+  /** Permanent object key behind previewImageUrl — lets a client re-mint an expired URL. */
+  previewImageKey?: string;
   messageType: string;
   sentAt: number;
   recipientIds: string[];
@@ -484,6 +486,9 @@ async function handleMessageSent(
         preview: data.preview ?? "",
         ...(data.previewImageUrl
           ? { previewImageUrl: data.previewImageUrl }
+          : {}),
+        ...(data.previewImageKey
+          ? { previewImageKey: data.previewImageKey }
           : {}),
         messageType: data.messageType ?? "",
         sentAt: data.sentAt,
