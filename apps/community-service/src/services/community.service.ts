@@ -1615,24 +1615,22 @@ function assertInviteLinkActive(link: {
 }
 
 /**
- * Whether an auto-approve link may still skip a PRIVATE community's request
- * queue: only while the member who minted it is an ACTIVE moderator or admin.
- * Checked at redeem time, never trusted from mint time — a rank lost, or a link
- * a plain member minted while the community was PUBLIC, grants nothing.
+ * The community's privacy at the LAST possible moment before a membership is
+ * written.
+ *
+ * Every direct-join path reads the community once and then does slow work — ban
+ * checks, a usage-slot burn, a gRPC snapshot fetch — before the write lands.
+ * That gap is long enough for an admin to flip PUBLIC → PRIVATE in between, and
+ * a membership written after the flip is exactly the approval bypass the privacy
+ * switch exists to prevent. Re-reading here narrows the gap to one round-trip.
+ *
+ * ponytail: a re-read, not a transaction — Mongo cannot condition the member
+ * write on another collection's field. To close the window completely, the
+ * community needs a privacy epoch that the member write compares against.
  */
-async function linkIssuerCanAutoApprove(
-  communityId: string,
-  issuerId: string
-): Promise<boolean> {
-  const issuer = await communityRepository.findMembership(
-    communityId,
-    issuerId
-  );
-  return (
-    issuer?.status === CommunityMemberStatus.ACTIVE &&
-    COMMUNITY_ROLE_RANK[issuer.role] >=
-      COMMUNITY_ROLE_RANK[CommunityMemberRole.MODERATOR]
-  );
+async function isStillPublic(communityId: string): Promise<boolean> {
+  const fresh = await communityRepository.findById(communityId);
+  return fresh?.type === CommunityType.PUBLIC;
 }
 
 /**
@@ -6549,6 +6547,23 @@ export const communityService = {
         snapshotAvatarKey: snap?.avatarObjectKey ?? null,
       };
 
+      // STEP 5b2: Last word before the write — see `isStillPublic`. STEP 1 read
+      // the community, then STEP 5b spent a gRPC round-trip on the snapshot; an
+      // admin can close the community in that gap, and a membership written
+      // afterwards is exactly the approval bypass the switch exists to prevent.
+      if (!(await isStillPublic(communityId))) {
+        const request = await this.createJoinRequest(
+          communityId,
+          callerId,
+          null
+        );
+        return {
+          status: "REQUEST_CREATED",
+          membershipStatus: "PENDING",
+          request,
+        };
+      }
+
       // STEP 5c: Reactivate LEFT row or create a fresh ACTIVE row.
       let newRow;
       const reactivated = existingMember?.status === CommunityMemberStatus.LEFT;
@@ -10085,24 +10100,27 @@ export const communityService = {
       };
     }
 
-    // Same rule as redeemInviteLink: the CURRENT type decides. A legacy
-    // permanent code carries no auto-approve, so PUBLIC is the only direct path.
+    // Same rule as redeemInviteLink: the CURRENT type decides, and only PUBLIC
+    // is a direct path. A `null` answer means the community went PRIVATE while
+    // this redeem was in flight — fall through to the request path below.
     if (community.type === CommunityType.PUBLIC) {
       const fresh = await communityRepository.findById(community.id);
       if (!fresh) throw new NotFoundError("COMMUNITY_NOT_FOUND");
-      const { member } = await this._joinDirectlyViaInvite({
+      const direct = await this._joinDirectlyViaInvite({
         community: fresh,
         callerId,
         existing,
         code,
       });
-      return {
-        link: toPermanentLinkAsInviteLinkData({
-          ...community,
-          invitationCode: code,
-        }),
-        member: await toMemberData(member),
-      };
+      if (direct) {
+        return {
+          link: toPermanentLinkAsInviteLinkData({
+            ...community,
+            invitationCode: code,
+          }),
+          member: await toMemberData(direct.member),
+        };
+      }
     }
 
     // PRIVATE: request-to-join.
@@ -10204,14 +10222,11 @@ export const communityService = {
     // `autoApprove: true` explicitly at create time.
     const autoApprove = input.autoApprove ?? false;
 
-    // `autoApprove: true` is not an ordinary link option on a PRIVATE community
-    // — it BYPASSES the join-request queue, which is the only thing that makes
-    // the community private. Link creation itself is open to every ACTIVE member
-    // (MEMBER included), so without this a rank-and-file member could mint a
-    // link that lets anyone holding it walk straight in, with no moderator ever
-    // seeing a request. Deciding who gets in is a moderation power, so it takes
-    // a moderation role. PUBLIC communities are unaffected: anyone can join them
-    // anyway, so auto-approve grants nothing that isn't already available.
+    // `autoApprove` no longer skips anything: redeem reads the community's
+    // CURRENT privacy and nothing else, so a PRIVATE community always files a
+    // request (see `redeemInviteLink`). The flag is still stored and echoed for
+    // clients that read it back, and the moderation gate below stays so asking
+    // for it on a PRIVATE community answers exactly as it always has.
     if (autoApprove && community.type === CommunityType.PRIVATE) {
       assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
     }
@@ -10603,9 +10618,16 @@ export const communityService = {
   },
 
   /**
-   * Invite-link direct join (current community PUBLIC, or a moderator's
-   * auto-approve link). Creates — or starts a fresh cycle on — the caller's
-   * membership, stamps the invitation that admitted them, and announces it once.
+   * Invite-link direct join — the ONE place an invitation turns into a
+   * membership, for both the invite-link and permanent-code redeem paths.
+   * Creates (or starts a fresh cycle on) the caller's membership, stamps the
+   * invitation that admitted them, and announces it once.
+   *
+   * Returns `null` when the community is no longer PUBLIC. The caller read the
+   * community before its own slow work; this re-read is the last word, and it
+   * lives HERE rather than in each caller so no invite path can ever write a
+   * membership into a community that currently requires approval. A `null`
+   * caller falls through to the request path.
    *
    * Race-safe: a concurrent activation of the same user (double tap, a second
    * device, an admin approve / Add Member, the PRIVATE→PUBLIC auto-resolve)
@@ -10620,6 +10642,7 @@ export const communityService = {
     code: string;
   }) {
     const { community, callerId, existing, code } = args;
+    if (!(await isStillPublic(community.id))) return null;
     // Read BEFORE the write so the admin queue can be told which request the
     // write's transaction auto-resolves (a PENDING row left from while the
     // community was PRIVATE).
@@ -10770,35 +10793,39 @@ export const communityService = {
       });
     };
 
-    // Join behaviour belongs to the community's CURRENT privacy, never to the
-    // link: a code minted while PRIVATE admits directly once the community is
+    // Join behaviour belongs to the community's CURRENT privacy and to nothing
+    // else: a code minted while PRIVATE admits directly once the community is
     // PUBLIC, and one minted while PUBLIC files a request once it is PRIVATE.
-    // The only thing a link itself can add is `autoApprove` — a queue-skipping
-    // grant that is a moderation power, so on a PRIVATE community it is honoured
-    // only while the moderator who minted it still holds that rank (a link a
-    // plain member minted while the community was PUBLIC grants nothing).
-    const joinsDirectly =
-      community.type === CommunityType.PUBLIC ||
-      (link.autoApprove &&
-        (await linkIssuerCanAutoApprove(community.id, link.createdBy)));
-
-    if (joinsDirectly) {
+    // `link.autoApprove` used to override this — but a flag frozen at mint time
+    // IS the stale privacy, under another name: it was free to set while the
+    // community was open and it outlived the switch that closed it. A link
+    // cannot grant what the community currently withholds.
+    let slotBurned = false;
+    if (community.type === CommunityType.PUBLIC) {
       // A direct join always creates/reactivates a membership → consume a use.
       await burnUsageSlot();
-      const updatedLink = await communityRepository.findInviteLinkById(link.id);
-      const { member } = await this._joinDirectlyViaInvite({
+      slotBurned = true;
+      const direct = await this._joinDirectlyViaInvite({
         community,
         callerId,
         existing,
         code: link.code,
       });
-      return {
-        link: toInviteLinkData(updatedLink!, community),
-        member: await toMemberData(member),
-      };
+      if (direct) {
+        const updatedLink = await communityRepository.findInviteLinkById(
+          link.id
+        );
+        return {
+          link: toInviteLinkData(updatedLink!, community),
+          member: await toMemberData(direct.member),
+        };
+      }
+      // The community went PRIVATE between the read above and the write: fall
+      // through to the request path. The slot is already burned and a request
+      // burns one too, so the count stays right.
     }
 
-    // PRIVATE (and no moderator auto-approve): create a join request.
+    // PRIVATE: create a join request.
     // Only consume a usage slot for a NEW or recycled request — an existing
     // PENDING request is returned idempotently and must not burn a use.
     const existingRequest =
@@ -10809,7 +10836,7 @@ export const communityService = {
     const willCreateOrRecycle =
       !existingRequest ||
       existingRequest.status !== CommunityJoinReqStatus.PENDING;
-    if (willCreateOrRecycle) {
+    if (willCreateOrRecycle && !slotBurned) {
       await burnUsageSlot();
     }
 

@@ -5683,7 +5683,7 @@ export const communityPaths = {
       description:
         "Joins through the link according to the community's CURRENT privacy — never the privacy it had when the link was minted. " +
         "PUBLIC now → adds (or reactivates) the caller as an ACTIVE MEMBER (`member` in the response; any leftover PENDING request is AUTO_RESOLVED). " +
-        "PRIVATE now → files (or returns the existing) PENDING join request (`request` in the response), unless the link is `autoApprove` AND its creator is still an ACTIVE moderator/admin. " +
+        "PRIVATE now → files (or returns the existing) PENDING join request (`request` in the response). No link setting overrides this: `autoApprove` is the privacy the link was minted under and grants nothing once the community is PRIVATE. " +
         "A privacy change never invalidates a link; only revoking it (Reset Link) does. Consumes a use only for a real join effect. " +
         "Idempotent for already-ACTIVE members (usedCount NOT incremented) and for concurrent taps (one membership / one request). BANNED users cannot redeem.",
       security: [{ bearerAuth: [] }],

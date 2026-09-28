@@ -8390,7 +8390,7 @@ export const openApiSchemas = {
       autoApprove: {
         type: "boolean",
         description:
-          "When true, redeeming this link adds the member directly (no join-request flow).",
+          "Recorded when the link was created; it does NOT decide the join. Redeeming follows the community's CURRENT privacy: PUBLIC adds the member directly, PRIVATE files a join request whatever this says.",
         example: false,
       },
       expiresAt: {
@@ -8665,7 +8665,7 @@ export const openApiSchemas = {
         type: "boolean",
         default: false,
         description:
-          "When true, anyone redeeming this link is added as an ACTIVE member directly (no join-request flow). Default false: a PENDING join request is created for moderator review.",
+          "Stored on the link and echoed back, but it does not decide the join — redeeming always follows the community's CURRENT privacy. Setting it to true on a PRIVATE community still requires a MODERATOR/ADMIN caller.",
         example: false,
       },
     },
@@ -8688,8 +8688,8 @@ export const openApiSchemas = {
   RedeemInviteLinkResponseData: {
     type: "object",
     description:
-      "`link` is always present. `member` is set when `autoApprove: true` (caller added directly as ACTIVE); " +
-      "`request` is set when `autoApprove: false` (a PENDING join request was created for moderator review). " +
+      "`link` is always present. Which of `member` / `request` comes back is decided by the community's CURRENT privacy: " +
+      "PUBLIC → `member` (caller added directly as ACTIVE); PRIVATE → `request` (a PENDING join request awaiting admin approval). " +
       "Exactly one of `member` / `request` is non-null on success; both are null for an already-joined caller (idempotent).",
     properties: {
       link: {
@@ -8700,13 +8700,13 @@ export const openApiSchemas = {
         allOf: [{ $ref: "#/components/schemas/CommunityMemberData" }],
         nullable: true,
         description:
-          "Populated when the caller was added directly as an ACTIVE member (`autoApprove: true` or already-joined idempotent case).",
+          "Populated when the caller was added directly as an ACTIVE member (community currently PUBLIC, or the already-joined idempotent case).",
       },
       request: {
         allOf: [{ $ref: "#/components/schemas/JoinRequestData" }],
         nullable: true,
         description:
-          "Populated when a PENDING join request was created (`autoApprove: false`). The caller must wait for moderator approval.",
+          "Populated when a PENDING join request was created (community currently PRIVATE). The caller must wait for admin approval.",
       },
     },
     required: ["link"],

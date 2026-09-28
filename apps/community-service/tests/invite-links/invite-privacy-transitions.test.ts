@@ -406,15 +406,24 @@ describe("current privacy decides — not the privacy the link was minted under"
     expect(memberStatus(A)).toBeNull();
   });
 
-  it("a moderator's auto-approve link still admits on PRIVATE — but not once they lose the rank", async () => {
+  // `autoApprove` is the mint-time privacy wearing another name: it was free to
+  // set while the community was open and it used to outlive the switch that
+  // closed it. Nothing a link records may admit someone the community currently
+  // wants to approve first — a moderator's link included.
+  it("a moderator's auto-approve link files a request like any other once PRIVATE", async () => {
     seedLink(LINK_B, { autoApprove: true, createdBy: MOD });
-    expect(
-      (await communityService.redeemInviteLink(LINK_B, A)).member
-    ).toBeDefined();
-    members.get(MOD)!.role = "MEMBER";
-    const res = await communityService.redeemInviteLink(LINK_B, B);
+    const res = await communityService.redeemInviteLink(LINK_B, A);
+    expect(res.member).toBeUndefined();
     expect(res.request?.status).toBe("PENDING");
-    expect(memberStatus(B)).toBeNull();
+    expect(memberStatus(A)).toBeNull();
+  });
+
+  it("the same moderator's auto-approve link admits directly while PUBLIC", async () => {
+    community!.type = "PUBLIC";
+    seedLink(LINK_B, { autoApprove: true, createdBy: MOD });
+    const res = await communityService.redeemInviteLink(LINK_B, B);
+    expect(res.member?.userId).toBe(B);
+    expect(memberStatus(B)).toBe("ACTIVE");
   });
 
   it("the lookup preview reports the CURRENT type after every flip", async () => {
@@ -858,6 +867,41 @@ describe("races end with one consistent outcome", () => {
     await communityService.addMembers(CID, ADMIN, [A]);
     expect(requestStatus(A)).toBe("AUTO_RESOLVED");
     expect(approvedPub).not.toHaveBeenCalled();
+  });
+
+  // The check-then-write window: the redeem read a PUBLIC community, and the
+  // flip to PRIVATE lands while it is still doing its slow work (ban lookup,
+  // usage-slot burn, snapshot fetch). The membership must NOT be the thing that
+  // wins — whoever loses, the user ends up outside the community with a request.
+  it("PUBLIC→PRIVATE landing mid-redeem → a request, never a membership", async () => {
+    community!.type = "PUBLIC";
+    const [res] = await Promise.all([
+      communityService.redeemInviteLink(LINK_A, A),
+      setType("PRIVATE"),
+    ]);
+    // A redeem that fully beat the flip is a legitimate PUBLIC join; one that
+    // did not must have filed a request. Never both, and never a membership
+    // written after the community closed.
+    if (res.member) {
+      expect(memberStatus(A)).toBe("ACTIVE");
+    } else {
+      expect(res.request?.status).toBe("PENDING");
+      expect(memberStatus(A)).toBeNull();
+    }
+  });
+
+  it("PUBLIC→PRIVATE landing mid-Join → a request, never a membership", async () => {
+    community!.type = "PUBLIC";
+    const [join] = await Promise.all([
+      communityService.joinCommunity(CID, A),
+      setType("PRIVATE"),
+    ]);
+    if (join.status === "JOINED") {
+      expect(memberStatus(A)).toBe("ACTIVE");
+    } else {
+      expect(join.status).toBe("REQUEST_CREATED");
+      expect(memberStatus(A)).toBeNull();
+    }
   });
 
   it("24. two devices redeeming a PRIVATE invite at once → one request, one moderator ping", async () => {
