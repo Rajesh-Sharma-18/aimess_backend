@@ -64,6 +64,52 @@ export const UNREAD_COUNTABLE_RAW_MATCH = {
   ],
 } as const;
 
+/**
+ * Raw-Mongo form of {@link shouldCountInUnread}, for the two surfaces whose
+ * system marker is `systemEvent` (private + group). Every recount pipeline must
+ * match on THIS, not on a hand-rolled filter, because a writer and a reader that
+ * disagree about countability produce a stored counter no recount can ever
+ * reconcile.
+ *
+ * That is exactly what happened: the pipelines this replaces carried a blanket
+ * `messageType != "SYSTEM"` + `systemEvent == null`, which excludes the invite
+ * cards {@link shouldCountInUnread} deliberately counts. A conversation whose
+ * only unread content was an invite therefore had its counter `$inc`-ed on
+ * delivery and filtered straight back out of every recount — so it contributed a
+ * permanent unread conversation to the nav badge that no read could clear.
+ *
+ * A persisted `countInUnread: false` still wins (it is the stored form of
+ * `explicit`), and a MISSING `countInUnread` falls back to the derived rule, so
+ * rows written before that column existed are classified here exactly as the
+ * write path would classify them today.
+ */
+export const UNREAD_COUNTABLE_EVENT_RAW_MATCH = {
+  $or: [
+    // The persisted form of `explicit`, which wins outright.
+    { countInUnread: true },
+    // No stored verdict (a row written before the column existed) ⇒ derive it,
+    // exactly as shouldCountInUnread derives it.
+    {
+      $and: [
+        { countInUnread: { $exists: false } },
+        {
+          $or: [
+            { systemEvent: { $in: [...COUNTABLE_SYSTEM_EVENTS] } },
+            // No system marker of any kind. `systemEvent: null` matches a
+            // missing field too, which is what an ordinary message has.
+            {
+              $and: [
+                { messageType: { $ne: "SYSTEM" } },
+                { systemEvent: null },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+} as const;
+
 
 /**
  * Per-surface unread aggregate: the message total AND how many conversations
