@@ -1069,10 +1069,12 @@ export class LivestreamService {
       const stream = await this.streamRepo.findBySrsName(streamKey);
       if (!stream) return;
       const next = Math.max(0, stream.viewerCount + delta);
-      await this.streamRepo.updateById(stream.id, {
-        viewerCount: next,
-        ...(next > stream.peakViewers ? { peakViewers: next } : {}),
-      });
+      await this.streamRepo.updateById(stream.id, { viewerCount: next });
+      // Separate conditional UPDATE rather than a read-then-write on the row we
+      // just read: two on_play hooks landing together would otherwise both
+      // compute a peak from the same stale `stream.peakViewers` and the second
+      // write would erase the first.
+      await this.streamRepo.raisePeakViewers(stream.id, next);
     } catch (error) {
       logger.warn(
         `incrementViewer failed for key=${streamKeyRef(streamKey)}: ${String(error)}`
@@ -2090,6 +2092,11 @@ export class LivestreamService {
       await this.streamRepo.updateById(streamId, {
         viewerCount: Math.max(0, viewers),
       });
+      // This tick is the number viewers actually see in CDN mode, so it is also
+      // what the stream's peak has to be measured against. Sampled every 30s,
+      // so a spike that rises and falls entirely between two ticks is missed —
+      // the socket-presence bump in recordViewerJoin catches those.
+      await this.streamRepo.raisePeakViewers(streamId, Math.max(0, viewers));
       await this.redis.publish(
         `stream:${streamId}`,
         JSON.stringify({
@@ -2380,7 +2387,10 @@ export class LivestreamService {
           creatorId: updated.creatorId,
           endedAt: updated.endedAt?.getTime() ?? Date.now(),
           durationSeconds: 0,
-          peakViewers: 0,
+          // Read the row rather than hardcoding 0: a PENDING stream is
+          // watchable, so it can have accumulated a peak before timing out,
+          // and backoffice stores whatever this event carries.
+          peakViewers: updated.peakViewers,
           liveStreamCount,
         });
         logger.info(
@@ -2637,6 +2647,29 @@ export class LivestreamService {
     } catch (error) {
       logger.warn(
         `recordViewerJoin failed for stream=${streamId} user=${userId}: ${String(error)}`
+      );
+    }
+    // Every join is a moment the concurrent-viewer count can only have gone up,
+    // and the gateway has already bumped the presence hash by the time it calls
+    // us — so HLEN here is the post-join count. Reading it (rather than trusting
+    // a number the caller passes) keeps the peak on exactly the same semantics
+    // as the live badge: unique users, refcounted across tabs/devices, so a
+    // reconnect or a second device never inflates it.
+    await this.raisePeakFromPresence(streamId);
+  }
+
+  /**
+   * Raise `peakViewers` to the current socket-presence count. Best-effort in
+   * both directions — a Redis miss or a write failure must never turn a join
+   * into an error, and a stat is not worth failing a viewer's join over.
+   */
+  private async raisePeakFromPresence(streamId: string): Promise<void> {
+    try {
+      const live = await this.redis.hlen(sessionKey(streamId));
+      await this.streamRepo.raisePeakViewers(streamId, live);
+    } catch (error) {
+      logger.warn(
+        `raisePeakFromPresence failed for stream=${streamId}: ${String(error)}`
       );
     }
   }

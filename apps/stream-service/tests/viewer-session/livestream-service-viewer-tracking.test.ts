@@ -39,6 +39,7 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     countLiveByCommunity: jest.fn().mockResolvedValue(0),
     adminList: jest.fn().mockResolvedValue([]),
     adminCount: jest.fn().mockResolvedValue(0),
+    raisePeakViewers: jest.fn().mockResolvedValue(undefined),
     ...(overrides.streamRepo as object),
   };
   const srsService = {
