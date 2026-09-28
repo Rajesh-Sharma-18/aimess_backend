@@ -110,13 +110,16 @@ export class NotificationController {
   // mark-many. Scoped to the caller so a user can't mark another user's
   // notification read.
   markRead = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
+    const { userId, sessionId } = req.auth;
     const body = req.body as
       | { notificationId: string }
       | { notificationIds: string[] };
     const ids =
       "notificationIds" in body ? body.notificationIds : [body.notificationId];
-    const result = await this.service.markManyRead(ids, userId);
+    // The response feeds the CALLER's badge, so it is the caller's own view of
+    // the count — never the account-wide number, which over-counts this device
+    // by its own (hidden) login alert.
+    const result = await this.service.markManyRead(ids, userId, sessionId);
     res
       .status(HTTP_STATUS.OK)
       .json(
@@ -125,7 +128,7 @@ export class NotificationController {
   });
 
   markAllRead = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
+    const { userId, sessionId } = req.auth;
     // Accept `type` / `before` from body OR querystring so existing callers
     // (no body) stay on the mark-everything path (backward compatible).
     const body = (req.body ?? {}) as { type?: unknown; before?: unknown };
@@ -140,7 +143,12 @@ export class NotificationController {
       before = Number.isFinite(asNum) ? new Date(asNum) : new Date(rawBefore);
       if (Number.isNaN(before.getTime())) before = null;
     }
-    const result = await this.service.markAllRead(userId, category, before);
+    const result = await this.service.markAllRead(
+      userId,
+      category,
+      before,
+      sessionId
+    );
     res
       .status(HTTP_STATUS.OK)
       .json(
@@ -168,9 +176,9 @@ export class NotificationController {
   // `deleted: false` with the caller's own unread count rather than 404, which
   // keeps a double-tap / retry idempotent instead of surfacing a false error.
   deleteNotification = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
+    const { userId, sessionId } = req.auth;
     const { id } = req.params as { id: string };
-    const result = await this.service.deleteNotification(id, userId);
+    const result = await this.service.deleteNotification(id, userId, sessionId);
     res
       .status(HTTP_STATUS.OK)
       .json(

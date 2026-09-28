@@ -128,7 +128,10 @@ describe("GET /api/chat/notifications (list)", () => {
 describe("POST /api/chat/notifications/read", () => {
   it("POSITIVE: marks a notification read, scoped to the caller", async () => {
     mocks.notificationRepo.markManyRead.mockResolvedValue(1);
-    mocks.notificationRepo.getUnreadCount.mockResolvedValue(3);
+    mocks.notificationRepo.getUnreadFanout.mockResolvedValue({
+      unreadCount: 3,
+      selfHiddenSessions: [],
+    });
 
     const res = await request(app)
       .post(`${BASE}/read`)
@@ -149,7 +152,10 @@ describe("POST /api/chat/notifications/read", () => {
   // so the repo matches 0 rows and returns null (no mutation, no leak).
   it("SECURITY: IDOR — marking a foreign notification is scoped out (null result)", async () => {
     mocks.notificationRepo.markManyRead.mockResolvedValue(0);
-    mocks.notificationRepo.getUnreadCount.mockResolvedValue(3);
+    mocks.notificationRepo.getUnreadFanout.mockResolvedValue({
+      unreadCount: 3,
+      selfHiddenSessions: [],
+    });
 
     const res = await request(app)
       .post(`${BASE}/read`)
@@ -217,7 +223,10 @@ describe("POST /api/chat/notifications/read-all", () => {
 describe("DELETE /api/chat/notifications/:id", () => {
   it("POSITIVE: soft-deletes the row and returns the recomputed unread count", async () => {
     mocks.notificationRepo.deleteById.mockResolvedValue({ count: 1 });
-    mocks.notificationRepo.getUnreadCount.mockResolvedValue(4);
+    mocks.notificationRepo.getUnreadFanout.mockResolvedValue({
+      unreadCount: 4,
+      selfHiddenSessions: [],
+    });
 
     const res = await request(app)
       .delete(`${BASE}/notif-1`)

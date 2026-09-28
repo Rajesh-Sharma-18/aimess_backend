@@ -69,6 +69,31 @@ function combineWhere(
   return { AND: nonEmpty };
 }
 
+/**
+ * An account-wide unread count plus the sessions it over-counts for.
+ * See {@link NotificationRepository.getUnreadFanout}.
+ */
+export interface UnreadFanout {
+  unreadCount: number;
+  selfHiddenSessions: string[];
+}
+
+/**
+ * The unread count AS ONE SESSION SEES IT — the single rule every badge,
+ * response and socket frame resolves through, so a device is never told a
+ * number its own notification list disagrees with.
+ */
+export function unreadCountForSession(
+  fanout: UnreadFanout,
+  viewerSessionId?: string | null
+): number {
+  if (!viewerSessionId) return fanout.unreadCount;
+  const hidden = fanout.selfHiddenSessions.filter(
+    (s) => s === viewerSessionId
+  ).length;
+  return Math.max(0, fanout.unreadCount - hidden);
+}
+
 export class NotificationRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -232,6 +257,45 @@ export class NotificationRepository {
   }
 
   /**
+   * The unread badge as ONE authoritative answer, in the only shape that can be
+   * fanned out to a whole account at once.
+   *
+   * `unreadCount` is the account-wide number. `selfHiddenSessions` lists the
+   * sessions that must NOT count part of it — one entry per unread
+   * login-detected row, carrying the session that login created, which is
+   * exactly the session `excludeSelfLoginWhere` hides that row from. A consumer
+   * subtracts its own occurrences (see `unreadCountForSession`) and gets the
+   * same number the list, `/unread-count` and the per-tab badges give it.
+   *
+   * This exists because a broadcast has one payload and many sessions: sending
+   * a bare account-wide count told the device that had just logged in it had 1
+   * unread while its own list — correctly — showed none, and only a refetch
+   * ever corrected it.
+   */
+  async getUnreadFanout(userId: string): Promise<UnreadFanout> {
+    const [unreadCount, loginRows] = await Promise.all([
+      this.getUnreadCount(userId),
+      this.prisma.notification.findMany({
+        where: {
+          userId,
+          isRead: false,
+          isDeleted: false,
+          type: LOGIN_DETECTED_TYPE,
+        },
+        select: { loginSessionId: true },
+      }),
+    ]);
+    return {
+      unreadCount,
+      // NOT de-duplicated: a consumer subtracts one per matching entry, so the
+      // multiplicity is the arithmetic.
+      selfHiddenSessions: loginRows
+        .map((r) => r.loginSessionId)
+        .filter((s): s is string => !!s),
+    };
+  }
+
+  /**
    * TOTAL rows the user can see in one tab — read and unread alike.
    *
    * Distinct from `countByCategories`, which is unread-only because it drives
@@ -304,7 +368,10 @@ export class NotificationRepository {
       ...NOTIFICATION_CATEGORY_IDS.map(countFor),
     ]);
     const byId = Object.fromEntries(
-      NOTIFICATION_CATEGORY_IDS.map((id, index) => [id, perCategory[index] ?? 0])
+      NOTIFICATION_CATEGORY_IDS.map((id, index) => [
+        id,
+        perCategory[index] ?? 0,
+      ])
     ) as Record<NotificationCategoryId, number>;
     return {
       all,

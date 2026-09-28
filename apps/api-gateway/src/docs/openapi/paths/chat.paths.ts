@@ -2050,7 +2050,11 @@ const notificationRead = {
       "so one endpoint covers mark-one and mark-many. Scoped to the caller — a user " +
       "cannot mark another user's notification read. Relays the refreshed unread " +
       "count over Socket.IO (notification:read + legacy notification:count_update alias) " +
-      "to every connected device.",
+      "to every connected device.\n\n" +
+      "The returned `unreadCount` is the count THIS session sees — the same number " +
+      "GET /chat/notifications/unread-count gives it — which can be one lower than " +
+      "the account-wide count, because a device is never shown (or counted) the " +
+      "login-detected notification raised for its own session.",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
@@ -2091,9 +2095,11 @@ const notificationReadAll = {
     description:
       "Marks every unread notification read, or only those in one tab when `type` " +
       "is given (also accepted as a `type` query param for backward compatibility). " +
-      "The returned `unreadCount` is always the total across ALL tabs, so a per-tab " +
-      "Read All correctly leaves other tabs' unreads counted. Relays " +
-      "notification:all-read over Socket.IO with the same authoritative total.",
+      "The returned `unreadCount` is always across ALL tabs, so a per-tab " +
+      "Read All correctly leaves other tabs' unreads counted, and it is the count " +
+      "THIS session sees — a device is never counted the login-detected " +
+      "notification raised for its own session. Relays notification:all-read over " +
+      "Socket.IO, where each device resolves the same total for itself.",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: false,

@@ -41,6 +41,10 @@ function setup() {
       ...input,
     })),
     getUnreadCount: jest.fn(async () => 0),
+    getUnreadFanout: jest.fn(async () => ({
+      unreadCount: 0,
+      selfHiddenSessions: [],
+    })),
     findActiveByGroupKey: jest.fn(async () => ({
       id: "notif-old",
       type: "community.join_requested",

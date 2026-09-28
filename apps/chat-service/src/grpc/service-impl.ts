@@ -5249,9 +5249,10 @@ export function createNotificationImpl(
             row: Awaited<ReturnType<typeof deps.notificationRepo.create>>
           ) => {
             try {
-              const unreadCount = await deps.notificationRepo.getUnreadCount(
-                req.userId as string
-              );
+              const { unreadCount, selfHiddenSessions } =
+                await deps.notificationRepo.getUnreadFanout(
+                  req.userId as string
+                );
               const dto = await serializeNotification(
                 row,
                 req.userId as string
@@ -5286,6 +5287,7 @@ export function createNotificationImpl(
                     ? { data: clientData }
                     : {}),
                   unreadCount,
+                  selfHiddenSessions,
                 },
                 data.excludeSessionId
               );
@@ -5293,7 +5295,7 @@ export function createNotificationImpl(
                 redis,
                 req.userId as string,
                 "notification:count_update",
-                { count: unreadCount, unreadCount }
+                { count: unreadCount, unreadCount, selfHiddenSessions }
               );
             } catch (err) {
               logger.warn(
@@ -5340,8 +5342,8 @@ export function createNotificationImpl(
                   raisedAtOrBefore
                 );
               if (ids.length > 0) {
-                const remainingUnread =
-                  await deps.notificationRepo.getUnreadCount(req.userId);
+                const { unreadCount: remainingUnread, selfHiddenSessions } =
+                  await deps.notificationRepo.getUnreadFanout(req.userId);
                 try {
                   // One event per row: clients key their local removal on
                   // notificationId, so a single event would strand the rest.
@@ -5354,6 +5356,7 @@ export function createNotificationImpl(
                         notificationId: deletedId,
                         groupKey,
                         unreadCount: remainingUnread,
+                        selfHiddenSessions,
                       }
                     );
                   }
@@ -5361,7 +5364,11 @@ export function createNotificationImpl(
                     redis,
                     req.userId,
                     "notification:count_update",
-                    { count: remainingUnread, unreadCount: remainingUnread }
+                    {
+                      count: remainingUnread,
+                      unreadCount: remainingUnread,
+                      selfHiddenSessions,
+                    }
                   );
                 } catch (err) {
                   logger.warn(
@@ -5610,9 +5617,17 @@ export function createNotificationImpl(
             );
           }
 
-          const remainingUnread =
-            await deps.notificationRepo.getUnreadCount(userId);
-          callback(null, { updatedCount, remainingUnread });
+          // The account-wide count PLUS the sessions it over-counts for: the
+          // gateway fans this out to every device and resolves it per socket,
+          // so the one session that owns an unread login alert is not handed a
+          // number its own list contradicts.
+          const { unreadCount: remainingUnread, selfHiddenSessions } =
+            await deps.notificationRepo.getUnreadFanout(userId);
+          callback(null, {
+            updatedCount,
+            remainingUnread,
+            selfHiddenSessions,
+          });
         } catch (err) {
           logger.error(`gRPC markNotificationsRead error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
@@ -5648,8 +5663,8 @@ export function createNotificationImpl(
           );
           const deleted = count > 0;
 
-          const remainingUnread =
-            await deps.notificationRepo.getUnreadCount(userId);
+          const { unreadCount: remainingUnread, selfHiddenSessions } =
+            await deps.notificationRepo.getUnreadFanout(userId);
 
           // Real-time bridge: relay the delete to the user's OTHER connected
           // devices so they drop the row too. The refreshed unread count is
@@ -5666,6 +5681,7 @@ export function createNotificationImpl(
                 {
                   notificationId: req.notificationId,
                   unreadCount: remainingUnread,
+                  selfHiddenSessions,
                 }
               );
             } catch (err) {
@@ -5675,7 +5691,7 @@ export function createNotificationImpl(
             }
           }
 
-          callback(null, { deleted, remainingUnread });
+          callback(null, { deleted, remainingUnread, selfHiddenSessions });
         } catch (err) {
           logger.error(`gRPC deleteNotification error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
@@ -5754,6 +5770,17 @@ export function createNotificationImpl(
                     ...copyTickets(payloadObj.data),
                   },
                 }
+              );
+              // The row is now READ, so the badge moved. `notification:updated`
+              // carries no count, so without this every device kept showing the
+              // pre-action number until something else refetched it.
+              const { unreadCount, selfHiddenSessions } =
+                await deps.notificationRepo.getUnreadFanout(req.userId);
+              await publishUserSocketEvent(
+                redis,
+                req.userId,
+                "notification:count_update",
+                { count: unreadCount, unreadCount, selfHiddenSessions }
               );
             } catch (err) {
               logger.warn(

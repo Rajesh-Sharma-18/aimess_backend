@@ -66,7 +66,13 @@ message MarkNotificationsReadRequest {
 }
 message MarkNotificationsReadResponse {
   int32 updated_count    = 1;
+  // Account-wide, i.e. what EVERY device of this user shares.
   int32 remaining_unread = 2;
+  // Sessions that must not count part of `remaining_unread`: one entry per
+  // unread login-detected row, carrying the session that login created — the
+  // one session the notification list hides that row from. A consumer
+  // subtracts its own occurrences to get the count that session actually sees.
+  repeated string self_hidden_sessions = 3;
 }
 message DeleteNotificationRequest {
   string user_id         = 1;
@@ -75,6 +81,8 @@ message DeleteNotificationRequest {
 message DeleteNotificationResponse {
   bool  deleted          = 1;
   int32 remaining_unread = 2;
+  // See MarkNotificationsReadResponse.self_hidden_sessions.
+  repeated string self_hidden_sessions = 3;
 }
 
 message RecordSessionActionRequest {
