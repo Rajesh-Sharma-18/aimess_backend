@@ -375,6 +375,30 @@ describe("CDN callbacks → stream state", () => {
 
     expect(streamRepo.updateById.mock.calls[0][1].status).toBe("LIVE");
   });
+
+  it("raises peakViewers from the CDN count, never lowers it (peak was stuck at 0)", async () => {
+    // SRS on_play never fires for CDN playback, so this poll is the only
+    // writer of peakViewers for a CDN stream.
+    const stat = (viewers: number) =>
+      new Map([
+        ["public-name", { resolution: null, bitrateKbps: null, fps: null, viewers }],
+      ]);
+    const reconcile = (s: LivestreamService) =>
+      (s as unknown as { reconcileCdn(): Promise<void> }).reconcileCdn();
+
+    const up = makeService(cdnStream({ status: "LIVE", viewerCount: 0, peakViewers: 3 }));
+    up.cdnService.listPublishing.mockResolvedValue(stat(5));
+    await reconcile(up.service);
+    expect(up.streamRepo.updateById.mock.calls[0][1]).toEqual({
+      viewerCount: 5,
+      peakViewers: 5,
+    });
+
+    const down = makeService(cdnStream({ status: "LIVE", viewerCount: 5, peakViewers: 5 }));
+    down.cdnService.listPublishing.mockResolvedValue(stat(2));
+    await reconcile(down.service);
+    expect(down.streamRepo.updateById.mock.calls[0][1]).toEqual({ viewerCount: 2 });
+  });
 });
 
 describe("CDN publish authorization", () => {
