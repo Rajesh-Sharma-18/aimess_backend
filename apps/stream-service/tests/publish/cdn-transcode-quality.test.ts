@@ -34,14 +34,12 @@ describe("CdnService.buildQualityUrls", () => {
     const cdn = await loadCdn("720p,480p");
     const { hls, flv } = cdn.buildQualityUrls("abc123");
 
-    // HLS omits a Source rung — the base hlsUrl already is the source.
+    // No Source rung — the base hlsUrl/flvUrl already is the source.
     expect(hls).toEqual({
       "720p": "https://playback.example.com/live/abc123_720p.m3u8",
       "480p": "https://playback.example.com/live/abc123_480p.m3u8",
     });
-    // FLV includes an explicit Source rung (HTTP-FLV has no ABR/auto tier).
     expect(flv).toEqual({
-      Source: "https://playback.example.com/live/abc123.flv",
       "720p": "https://playback.example.com/live/abc123_720p.flv",
       "480p": "https://playback.example.com/live/abc123_480p.flv",
     });

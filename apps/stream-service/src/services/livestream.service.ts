@@ -94,9 +94,9 @@ export interface StreamView {
   hlsQualities: Record<string, string>;
   flvUrl: string | null;
   /**
-   * Manual FLV quality URLs keyed by rung ("Source" | "480p" | "360p"). Unlike
-   * `hlsQualities` there is no auto/ABR tier — "Source" is the untranscoded
-   * feed. Empty `{}` when SRS_FLV_ABR is off or the stream has no FLV (YOUTUBE).
+   * Manual FLV quality URLs keyed by rendition ("1080p" | "720p" | "480p" | "360p").
+   * The untranscoded feed is `flvUrl`. Empty `{}` when SRS_FLV_ABR is off or the
+   * stream has no FLV (YOUTUBE).
    */
   flvQualities: Record<string, string>;
   dashUrl: string | null;
