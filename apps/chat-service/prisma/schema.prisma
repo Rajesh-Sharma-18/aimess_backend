@@ -305,6 +305,10 @@ model GroupRoom {
   closedAt           DateTime?
   closedBy           String?
   closedReasonCode   String?
+  // Roster size frozen at the ACTIVE -> DISBANDED/CLOSED transition, written in
+  // the same transaction as the GroupClosureMember rows. Null = still ACTIVE, or
+  // a legacy closed room nobody could reconstruct (admin falls back to live).
+  memberCountAtClosure Int?
   // Reaction OVERLAY — see PrivateRoom.reactionActivity* for the full rationale
   // (same fields, same read-time gate, same identity-matched clear).
   reactionActivityAt            DateTime?
@@ -487,6 +491,34 @@ model GroupMember {
   @@index([roomId, status, role])
   @@index([role])
   @@map("group_members")
+}
+
+// -----------------------------------------------------------------------------
+// GroupClosureMember — immutable roster snapshot taken when a group leaves
+// ACTIVE (disband or system-ban close). Answers "who belonged to this group
+// when it was closed?" for the backoffice, independent of later leave/kick/ban
+// or account changes on the live GroupMember rows. Never rewritten afterwards
+// except by the account purge, which erases identity but keeps the row.
+// -----------------------------------------------------------------------------
+model GroupClosureMember {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId      String
+  userId      String
+  // Identity as it was at closure (user-service username / display name /
+  // avatar object key). "" when the lookup failed at closure time.
+  username    String    @default("")
+  displayName String    @default("")
+  avatar      String    @default("")
+  role        String
+  status      String
+  joinedAt    DateTime
+  bannedAt    DateTime?
+  closedAt    DateTime
+
+  @@unique([roomId, userId])
+  @@index([roomId, status, role])
+  @@index([userId])
+  @@map("group_closure_members")
 }
 
 // -----------------------------------------------------------------------------

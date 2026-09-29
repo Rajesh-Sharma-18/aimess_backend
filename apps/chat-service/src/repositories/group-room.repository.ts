@@ -25,6 +25,13 @@ import {
 // deliberately excluded: a disband hides the room everywhere.
 const VISIBLE_ROOM_STATUS: { in: string[] } = { in: ["ACTIVE", "CLOSED"] };
 
+/** Identity frozen onto a GroupClosureMember row. */
+export interface ClosureIdentity {
+  username: string;
+  displayName: string;
+  avatar: string;
+}
+
 /** Clone a date pinned to the end of its UTC calendar day (inclusive upper bound). */
 function endOfDay(d: Date): Date {
   const end = new Date(d);
@@ -540,34 +547,118 @@ export class GroupRoomRepository {
     });
   }
 
-  async disband(roomId: string, userId: string): Promise<GroupRoom | null> {
-    return this.prisma.groupRoom.update({
-      where: { roomId },
-      data: {
-        status: "DISBANDED",
-        disbandedAt: new Date(),
-        disbandedBy: userId,
-      },
-    });
+  /**
+   * Disband, ending every ACTIVE membership at the room's own `disbandedAt`.
+   * An ACTIVE room also gets its closure snapshot in the SAME transaction; a
+   * CLOSED room already has one from its close, so it is kept as-is. Null when
+   * the room does not exist or is already DISBANDED.
+   */
+  async disband(
+    roomId: string,
+    userId: string,
+    identities: Map<string, ClosureIdentity> = new Map()
+  ): Promise<GroupRoom | null> {
+    const at = new Date();
+    return this.closeWithSnapshot(
+      roomId,
+      ["ACTIVE", "CLOSED"],
+      { status: "DISBANDED", disbandedAt: at, disbandedBy: userId },
+      at,
+      identities,
+      true
+    );
   }
 
   // ACTIVE-only guard makes the ban cascade idempotent and stops it resurrecting
-  // a DISBANDED room. `updateMany` + re-read because the guard is not the @unique key.
+  // a DISBANDED room. Memberships stay ACTIVE (the room stays readable).
   async closeForSystemBan(
     roomId: string,
-    actorAdminId: string
+    actorAdminId: string,
+    identities: Map<string, ClosureIdentity> = new Map()
   ): Promise<GroupRoom | null> {
-    const res = await this.prisma.groupRoom.updateMany({
-      where: { roomId, status: "ACTIVE" },
-      data: {
+    const at = new Date();
+    return this.closeWithSnapshot(
+      roomId,
+      ["ACTIVE"],
+      {
         status: "CLOSED",
-        closedAt: new Date(),
+        closedAt: at,
         closedBy: actorAdminId,
         closedReasonCode: "ADMIN_BANNED",
       },
-    });
-    if (res.count === 0) return null;
-    return this.findByRoomId(roomId);
+      at,
+      identities,
+      false
+    );
+  }
+
+  /**
+   * The ACTIVE -> closed transition and the roster snapshot as ONE transaction:
+   * the status flip, the roster read and the snapshot insert see the same
+   * point in time, and a concurrent join/leave/kick writes the same room or
+   * member documents, so Mongo aborts one side with a write conflict instead
+   * of letting it slip between the flip and the snapshot. `identities` is
+   * prefetched by the caller (no network I/O inside the transaction); a member
+   * missing from it is stored with blank identity and resolved live on read.
+   */
+  private closeWithSnapshot(
+    roomId: string,
+    fromStatuses: string[],
+    data: Prisma.GroupRoomUpdateInput,
+    at: Date,
+    identities: Map<string, ClosureIdentity>,
+    endMemberships: boolean
+  ): Promise<GroupRoom | null> {
+    return withWriteConflictRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const room = await tx.groupRoom.findUnique({ where: { roomId } });
+        if (!room || !fromStatuses.includes(room.status)) return null;
+
+        let memberCountAtClosure = room.memberCountAtClosure;
+        if (room.status === "ACTIVE") {
+          const roster = await tx.groupMember.findMany({
+            where: { roomId, status: { in: ["ACTIVE", "BANNED"] } },
+          });
+          if (roster.length) {
+            await tx.groupClosureMember.createMany({
+              data: roster.map((m) => {
+                const id = identities.get(m.userId);
+                return {
+                  roomId,
+                  userId: m.userId,
+                  username: id?.username ?? "",
+                  displayName: id?.displayName ?? "",
+                  avatar: id?.avatar ?? "",
+                  role: m.role,
+                  status: m.status,
+                  joinedAt: m.joinedAt,
+                  bannedAt: m.bannedAt,
+                  closedAt: at,
+                };
+              }),
+            });
+          }
+          memberCountAtClosure = roster.length;
+        }
+
+        // Disband ends memberships as LEFT at `at`: `assertGroupMember`
+        // (ACTIVE-only) then denies writes while `assertGroupReadAccess` keeps
+        // history readable up to that instant.
+        if (endMemberships) {
+          await tx.groupMember.updateMany({
+            where: { roomId, status: "ACTIVE" },
+            data: { status: "LEFT", leftAt: at },
+          });
+        }
+
+        // Guarded on the status we read: a racing transition writes this same
+        // document, so one of the two transactions aborts and retries.
+        return tx.groupRoom.update({
+          where: { roomId, status: room.status },
+          data: { ...data, memberCountAtClosure },
+        });
+      })
+    );
   }
 
   async setArchived(roomId: string, userId: string): Promise<GroupRoom | null> {

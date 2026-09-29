@@ -11,6 +11,7 @@ type Message = Record<string, unknown>;
 let privateMessages: Message[] = [];
 let groupMessages: Message[] = [];
 let generalMessages: Message[] = [];
+let closureMembers: Message[] = [];
 
 function updater(rows: () => Message[], idField: string) {
   return async ({
@@ -37,6 +38,9 @@ jest.mock("../../src/config/prisma.js", () => ({
     groupMessage: { updateMany: updater(() => groupMessages, "senderId") },
     generalRoomMessage: {
       updateMany: updater(() => generalMessages, "sentBy"),
+    },
+    groupClosureMember: {
+      updateMany: updater(() => closureMembers, "userId"),
     },
   },
 }));
@@ -80,6 +84,15 @@ beforeEach(() => {
       senderAvatar: "avatars/jane.jpg",
     },
   ];
+  closureMembers = [
+    {
+      roomId: "grp-1",
+      userId: USER,
+      username: "jane",
+      displayName: "Jane Doe",
+      avatar: "avatars/jane.jpg",
+    },
+  ];
 });
 
 describe("user.purged — chat sender snapshots", () => {
@@ -96,6 +109,22 @@ describe("user.purged — chat sender snapshots", () => {
     expect(groupMessages[0]?.senderAvatar).toBe("");
     // Nullable on this model, unlike the other two.
     expect(generalMessages[0]?.senderAvatar).toBeNull();
+  });
+
+  it("keeps closed-group roster rows but erases their identity", async () => {
+    // The closed group still had this member when it closed — its frozen
+    // count and list must not shrink — but the name goes like everywhere else.
+    await handleUserPurged({ userId: USER } as never);
+
+    expect(closureMembers).toEqual([
+      {
+        roomId: "grp-1",
+        userId: USER,
+        username: "",
+        displayName: "Deleted Account",
+        avatar: "",
+      },
+    ]);
   });
 
   it("keeps the messages themselves", async () => {

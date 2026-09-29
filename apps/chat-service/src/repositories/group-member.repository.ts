@@ -1,4 +1,9 @@
-﻿import type { PrismaClient, GroupMember } from "../generated/prisma/index.js";
+﻿import type {
+  PrismaClient,
+  GroupMember,
+  GroupClosureMember,
+  Prisma,
+} from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 import { isObjectId } from "../lib/object-id.js";
 import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
@@ -304,23 +309,6 @@ export class GroupMemberRepository {
         typeof this.prisma.groupMember.update
       >[0]["data"],
     });
-  }
-
-  /**
-   * End every ACTIVE membership in a room in one write — the membership half of
-   * a disband. Rows become LEFT with `leftAt = at`, which is what every guard
-   * already reads: `assertGroupMember` (ACTIVE-only) then denies all writes,
-   * while `assertGroupReadAccess` keeps the group readable up to that instant,
-   * so a disbanded group behaves like one you left — visible, read-only, dead.
-   *
-   * Returns how many memberships were ended (0 on a re-run — idempotent).
-   */
-  async markAllLeft(roomId: string, at: Date): Promise<number> {
-    const result = await this.prisma.groupMember.updateMany({
-      where: { roomId, status: "ACTIVE" },
-      data: { status: "LEFT", leftAt: at },
-    });
-    return result.count;
   }
 
   async updateRole(
@@ -718,6 +706,68 @@ export class GroupMemberRepository {
     ]);
 
     return { rows, total };
+  }
+
+  /**
+   * {@link adminListMembers} over a CLOSED/DISBANDED room's closure snapshot
+   * instead of the live rows. Default (no status) is the whole snapshot; "ALL"
+   * the same; anything else exact. `q` also matches the snapshot's own
+   * username/displayName, so a member renamed or deleted after closure is still
+   * found by the name the group knew them by.
+   */
+  async adminListClosureMembers(params: {
+    roomId: string;
+    role?: string;
+    status?: string;
+    q?: string;
+    userIdsFromSearch?: string[] | null;
+    qExactUserId?: string | null;
+    skip: number;
+    take: number;
+  }): Promise<{ rows: GroupClosureMember[]; total: number }> {
+    const { roomId, role, q, userIdsFromSearch, qExactUserId, skip, take } =
+      params;
+    const status = (params.status || "").toUpperCase();
+    const where: Prisma.GroupClosureMemberWhereInput = {
+      roomId,
+      ...(status && status !== "ALL" ? { status } : {}),
+      ...(role ? { role } : {}),
+    };
+    if (q) {
+      const ids = [
+        ...new Set([
+          ...(userIdsFromSearch ?? []),
+          ...(qExactUserId ? [qExactUserId] : []),
+        ]),
+      ];
+      where.OR = [
+        { userId: { in: ids } },
+        { username: { contains: q, mode: "insensitive" } },
+        { displayName: { contains: q, mode: "insensitive" } },
+      ];
+    }
+    const [rows, total] = await Promise.all([
+      this.prisma.groupClosureMember.findMany({
+        where,
+        orderBy: { joinedAt: "asc" },
+        skip,
+        take,
+      }),
+      this.prisma.groupClosureMember.count({ where }),
+    ]);
+    return { rows, total };
+  }
+
+  /** The owner ban that closed a room is part of that closure — mirror it. */
+  async markClosureMemberBanned(
+    roomId: string,
+    userId: string,
+    bannedAt: Date
+  ): Promise<void> {
+    await this.prisma.groupClosureMember.updateMany({
+      where: { roomId, userId },
+      data: { status: "BANNED", bannedAt },
+    });
   }
 
   async upsert(

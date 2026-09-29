@@ -48,7 +48,10 @@ import {
   getGroupVisibilityCutoff,
   isHiddenByCutoff,
 } from "../lib/deletion-cutoff.js";
-import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
+import type {
+  ClosureIdentity,
+  GroupRoomRepository,
+} from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
@@ -948,19 +951,19 @@ export class GroupRoomService {
       }
     }
 
-    const disbanded = await this.roomRepo.disband(roomId, userId);
-    if (!disbanded) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
-
-    // Roster snapshot BEFORE markAllLeft: the fan-out below has to reach the
-    // people who were in the room, and markAllLeft empties the ACTIVE set.
+    // Recipients read BEFORE the disband: the fan-out below has to reach the
+    // people who were in the room, and the disband empties the ACTIVE set.
     const recipients = await this.memberRepo.findActiveMembers(roomId);
 
-    // End every membership at the SAME instant the room recorded, so the
-    // read cutoff and the room's `disbandedAt` can never disagree.
-    await this.memberRepo.markAllLeft(
+    // One transaction: status flip, closure roster snapshot, and every
+    // membership ended at the room's own `disbandedAt` (so the read cutoff and
+    // the room timestamp can never disagree).
+    const disbanded = await this.roomRepo.disband(
       roomId,
-      disbanded.disbandedAt ?? new Date()
+      userId,
+      await this.closureIdentities(roomId)
     );
+    if (!disbanded) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
 
     // Revoke all active invite links
     await this.inviteLinkRepo.revokeAllForRoom(roomId, userId);
@@ -1011,6 +1014,43 @@ export class GroupRoomService {
     return disbanded;
   }
 
+  /**
+   * Identity of the current roster (ACTIVE + BANNED), prefetched for the
+   * closure snapshot so the transaction itself does no network I/O. Best-effort:
+   * a failed lookup yields blank identity, which the admin read resolves live.
+   */
+  private async closureIdentities(
+    roomId: string
+  ): Promise<Map<string, ClosureIdentity>> {
+    const out = new Map<string, ClosureIdentity>();
+    if (!this.userSnapshotService || !this.cacheRepo) return out;
+    try {
+      const roster = await this.memberRepo.adminListMembers({
+        roomId,
+        skip: 0,
+        // Roster = ACTIVE (capped by MAX_GROUP_MEMBERS) + BANNED; never near this.
+        take: 10_000,
+      });
+      const snaps = await this.userSnapshotService.getUserSnapshotsMap(
+        roster.rows.map((m) => m.userId),
+        this.cacheRepo
+      );
+      for (const [userId, s] of snaps) {
+        const str = (v: unknown) => (typeof v === "string" ? v : "");
+        out.set(userId, {
+          username: str(s.memberId),
+          displayName: str(s.displayName),
+          avatar: str(s.avatar),
+        });
+      }
+    } catch (err) {
+      logger.warn(
+        `GroupRoomService|closureIdentities|lookup failed room=${roomId}: ${String(err)}`
+      );
+    }
+    return out;
+  }
+
   // Super-admin system-ban close: the room is frozen (every write is refused
   // with CHAT_GROUP_CLOSED_ADMIN_BANNED) but, unlike a disband, memberships are
   // left ACTIVE so the group stays in every member's list and stays readable.
@@ -1019,7 +1059,11 @@ export class GroupRoomService {
     roomId: string,
     actorAdminId: string
   ): Promise<GroupRoom | null> {
-    const closed = await this.roomRepo.closeForSystemBan(roomId, actorAdminId);
+    const closed = await this.roomRepo.closeForSystemBan(
+      roomId,
+      actorAdminId,
+      await this.closureIdentities(roomId)
+    );
     if (!closed) return null;
 
     await this.inviteLinkRepo.revokeAllForRoom(roomId, actorAdminId);
