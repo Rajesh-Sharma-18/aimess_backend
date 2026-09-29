@@ -248,6 +248,57 @@ describe("pushToUser — superseded VoIP tokens", () => {
   });
 });
 
+describe("pushToUser — data-only pushes to WEB tokens", () => {
+  const readDismiss = {
+    userId: USER_ID,
+    category: "chatEnabled" as const,
+    type: "MESSAGE_READ",
+    title: "",
+    body: "",
+    bypassSettings: true,
+    skipInbox: true,
+    dataOnly: true,
+  };
+
+  it("skips a WEB token for a data-only type the web worker ignores", async () => {
+    repo.findTokensByUserId.mockResolvedValue([
+      row({ token: "tok-web", platform: "WEB" }),
+      row({ token: "tok-android", platform: "ANDROID" }),
+    ]);
+
+    await pushToUser(readDismiss);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0].token).toBe("tok-android");
+  });
+
+  it.each([
+    "CALL_INCOMING",
+    "CALL_CANCELLED",
+    "CALL_HANDLED",
+    "MESSAGE_DELETED",
+    "community.join_request_retracted",
+  ])("still sends %s to a WEB token", async (type) => {
+    repo.findTokensByUserId.mockResolvedValue([
+      row({ token: "tok-web", platform: "WEB" }),
+    ]);
+
+    await pushToUser({ ...readDismiss, type });
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("still sends a notification-carrying push to a WEB token", async () => {
+    repo.findTokensByUserId.mockResolvedValue([
+      row({ token: "tok-web", platform: "WEB" }),
+    ]);
+
+    await pushToUser({ ...readDismiss, type: "MESSAGE", dataOnly: false });
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("pushToUser — excludeSessionId", () => {
   it("skips the acting device and still reaches the user's other devices", async () => {
     repo.findTokensByUserId.mockResolvedValue([

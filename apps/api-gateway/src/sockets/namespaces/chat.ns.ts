@@ -1361,6 +1361,7 @@ export function registerChatNamespace(
     // because call legs genuinely are per login.
     const presenceDeviceId = socket.id;
     let socketAppState = "FOREGROUND";
+    let socketFocused = true;
 
     // Server-driven liveness. Clients are asked to send `presence:heartbeat`,
     // but presence must not DEPEND on their cooperation — a mobile client that
@@ -1386,7 +1387,7 @@ export function registerChatNamespace(
       // THIS room, on THIS socket, with its app/tab in the foreground. A tab the
       // user switched away from stops suppressing at once — the notification is
       // useful again the moment they are no longer looking at it.
-      if (appState === "BACKGROUND") {
+      if (appState === "BACKGROUND" || !socketFocused) {
         void clearChatViewer(redisPub, userId, openRoomId, socket.id);
       } else {
         void markChatViewer(redisPub, userId, openRoomId, sessionId, socket.id);
@@ -1502,7 +1503,11 @@ export function registerChatNamespace(
               // Switching conversations must take effect NOW, not at the next
               // presence refresh: until it does, the room just left would keep
               // swallowing this device's notifications.
-              if (sessionId && socketAppState !== "BACKGROUND") {
+              if (
+                sessionId &&
+                socketAppState !== "BACKGROUND" &&
+                socketFocused
+              ) {
                 void markChatViewer(
                   redisPub,
                   userId,
@@ -1786,12 +1791,17 @@ export function registerChatNamespace(
     // real presence input, not a keepalive, and must not be swallowed by the
     // refresh throttle.
     socket.on("presence:heartbeat", (payload: unknown) => {
-      const appState =
-        (payload as { appState?: string } | undefined)?.appState ??
-        "FOREGROUND";
+      const beat = payload as
+        | { appState?: string; focused?: boolean }
+        | undefined;
+      const appState = beat?.appState ?? "FOREGROUND";
+      const focused = beat?.focused !== false;
       const changed = appState !== socketAppState;
+      const focusChanged = focused !== socketFocused;
       socketAppState = appState;
+      socketFocused = focused;
       refreshPresence(appState, changed);
+      if (focusChanged && !changed) refreshAttention(appState);
     });
 
     socket.on(

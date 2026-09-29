@@ -6049,6 +6049,7 @@ components:
         the app is in the foreground.
       properties:
         appState: { type: string, default: FOREGROUND }
+        focused: { type: boolean, default: true }
     PeerIds:
       type: object
       description: |

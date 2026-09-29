@@ -116,6 +116,9 @@ describe("a new attempt supersedes the previous card", () => {
     // Kept alongside the new name so clients built against it keep working.
     expect(data.requestId).toBe(RID);
     expect(data.lifecycle).toBe(lifecycle);
+    // The card's own tag, the one its retraction closes it by.
+    expect(data.tag).toBe(built(1).collapseKey);
+    expect(data.tag).toBe((built(0).data as Record<string, string>).tag);
   });
 
   it("offers Accept and Decline in the tray, in the reader's language", async () => {

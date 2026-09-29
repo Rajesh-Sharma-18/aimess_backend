@@ -119,6 +119,8 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   // clears itself the moment the admin decides.
   CommunityEvents.JOIN_REQUESTED,
   CommunityEvents.JOIN_REQUEST_RETRACTED,
+  // The requester's outcome card: their request was accepted and they are now a member.
+  CommunityEvents.JOIN_REQUEST_APPROVED,
   // Livestream — listed under LIVE_NOW (chat-service notification-category.ts).
   // Still gated like the push: liveStreamEnabled, the community's own
   // streamEnabled toggle, and ACTIVE membership.
@@ -162,6 +164,14 @@ const COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES = new Set<string>([
   CommunityEvents.JOIN_REQUEST_REJECTED,
   CommunityEvents.INVITE_SENT,
   CommunityEvents.MEMBER_UNBANNED,
+]);
+
+const WEB_ACTIONABLE_DATA_ONLY_TYPES = new Set<string>([
+  "CALL_INCOMING",
+  "CALL_CANCELLED",
+  "CALL_HANDLED",
+  "MESSAGE_DELETED",
+  CommunityEvents.JOIN_REQUEST_RETRACTED,
 ]);
 
 export interface PushInput {
@@ -727,6 +737,11 @@ export async function pushToUser(input: PushInput): Promise<void> {
         excludeSessionIds?.length &&
         t.sessionId &&
         excludeSessionIds.includes(t.sessionId)
+      ) &&
+      !(
+        dataOnly &&
+        t.platform === "WEB" &&
+        !WEB_ACTIONABLE_DATA_ONLY_TYPES.has(type)
       ) &&
       // Platform-targeted send (announcements): keep only the sessions running
       // on a requested platform. Exact match, so a row with an unrecognized
