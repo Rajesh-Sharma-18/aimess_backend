@@ -568,7 +568,7 @@ describe("MEMBER_MUTED — personal message with until date/time", () => {
   const MUTED_UNTIL_MS = 1_800_000_000_000; // ~2027
   const MUTED_UNTIL_DATE = new Date(MUTED_UNTIL_MS).toUTCString();
 
-  it("timed mute reads 'X is muted until <date>' for bystanders", () => {
+  it("timed mute names actor + target + expiry for other moderators", () => {
     expect(
       buildCommunitySystemFallbackText(
         "MEMBER_MUTED",
@@ -581,7 +581,7 @@ describe("MEMBER_MUTED — personal message with until date/time", () => {
         "Peter Parker",
         BYSTANDER
       )
-    ).toBe(`Peter Parker is muted until ${MUTED_UNTIL_DATE}`);
+    ).toBe(`Admin User muted Peter Parker until ${MUTED_UNTIL_DATE}`);
   });
 
   it("timed mute reads 'You are muted until <date>' for the target (PERSONAL)", () => {
@@ -609,7 +609,7 @@ describe("MEMBER_MUTED — personal message with until date/time", () => {
         "Peter Parker",
         BYSTANDER
       )
-    ).toBe("Peter Parker is muted indefinitely");
+    ).toBe("Admin User muted Peter Parker indefinitely");
 
     // missing key also degrades to indefinitely
     expect(
@@ -623,7 +623,7 @@ describe("MEMBER_MUTED — personal message with until date/time", () => {
     ).toBe("You are muted indefinitely");
   });
 
-  it("unmute reads 'X was unmuted' / 'You were unmuted'", () => {
+  it("manual unmute reads '{actor} unmuted X' / 'You were unmuted'", () => {
     expect(
       buildCommunitySystemFallbackText(
         "MEMBER_UNMUTED",
@@ -632,7 +632,7 @@ describe("MEMBER_MUTED — personal message with until date/time", () => {
         "Peter Parker",
         BYSTANDER
       )
-    ).toBe("Peter Parker was unmuted");
+    ).toBe("Admin User unmuted Peter Parker");
     expect(
       buildCommunitySystemFallbackText(
         "MEMBER_UNMUTED",
@@ -662,10 +662,10 @@ describe("community moderation lines — actor reads first person", () => {
   it.each([
     ["MEMBER_ADDED", "You added Peter Parker to the community", "Smiley Creatures added you to the community", "Smiley Creatures added Peter Parker to the community"],
     ["MEMBER_REMOVED", "You removed Peter Parker from the community", "You were removed", "Peter Parker was removed"],
-    ["MEMBER_BANNED", "You banned Peter Parker", "You were banned from this community.", "Peter Parker was banned"],
-    ["MEMBER_UNBANNED", "You unbanned Peter Parker", "You were unbanned", "Peter Parker was unbanned"],
-    ["MEMBER_MUTED", "You muted Peter Parker indefinitely", "You are muted indefinitely", "Peter Parker is muted indefinitely"],
-    ["MEMBER_UNMUTED", "You unmuted Peter Parker", "You were unmuted", "Peter Parker was unmuted"],
+    ["MEMBER_BANNED", "You banned Peter Parker", "You were banned from this community.", "Smiley Creatures banned Peter Parker"],
+    ["MEMBER_UNBANNED", "You unbanned Peter Parker", "You were unbanned", "Smiley Creatures unbanned Peter Parker"],
+    ["MEMBER_MUTED", "You muted Peter Parker indefinitely", "You are muted indefinitely", "Smiley Creatures muted Peter Parker indefinitely"],
+    ["MEMBER_UNMUTED", "You unmuted Peter Parker", "You were unmuted", "Smiley Creatures unmuted Peter Parker"],
   ])("%s", (type, asActor, asTarget, asBystander) => {
     expect(render(type, ACTOR)).toBe(asActor);
     expect(render(type, TARGET)).toBe(asTarget);
@@ -676,5 +676,58 @@ describe("community moderation lines — actor reads first person", () => {
     expect(render("MEMBER_MUTED", ACTOR, { mutedUntil: 0 + 86_400_000 })).toBe(
       `You muted Peter Parker until ${new Date(86_400_000).toUTCString()}`
     );
+  });
+});
+
+describe("community moderation lines — manual vs automatic actor", () => {
+  const render = (
+    type: string,
+    metadata: Record<string, unknown>,
+    viewer: string,
+    locale?: "en" | "vi" | "th"
+  ) =>
+    buildCommunitySystemFallbackText(
+      type as never,
+      { targetUserId: TARGET, ...metadata },
+      "Julia Doyle",
+      "Boyd Stevens",
+      viewer,
+      locale
+    );
+
+  it("auto-unmute (source auto, system actor) names no actor for any moderator", () => {
+    const auto = { actorUserId: "system", source: "auto" };
+    expect(render("MEMBER_UNMUTED", auto, BYSTANDER)).toBe("Boyd Stevens was unmuted");
+    expect(render("MEMBER_UNMUTED", auto, ACTOR)).toBe("Boyd Stevens was unmuted");
+    expect(render("MEMBER_UNMUTED", auto, "")).toBe("Boyd Stevens was unmuted");
+    // Target wording unchanged.
+    expect(render("MEMBER_UNMUTED", auto, TARGET)).toBe("You were unmuted");
+  });
+
+  it("source auto wins even if a real-looking actor id is present", () => {
+    expect(
+      render("MEMBER_UNMUTED", { actorUserId: ACTOR, source: "auto" }, BYSTANDER)
+    ).toBe("Boyd Stevens was unmuted");
+  });
+
+  it("legacy row without actorUserId stays passive", () => {
+    expect(render("MEMBER_BANNED", {}, BYSTANDER)).toBe("Boyd Stevens was banned");
+  });
+
+  it("stored (no viewer) audit text names both sides", () => {
+    const manual = { actorUserId: ACTOR };
+    expect(render("MEMBER_MUTED", manual, "")).toBe("Julia Doyle muted Boyd Stevens indefinitely");
+    expect(render("MEMBER_UNMUTED", manual, "")).toBe("Julia Doyle unmuted Boyd Stevens");
+    expect(render("MEMBER_BANNED", manual, "")).toBe("Julia Doyle banned Boyd Stevens");
+    expect(render("MEMBER_UNBANNED", manual, "")).toBe("Julia Doyle unbanned Boyd Stevens");
+  });
+
+  it("localizes per viewer locale (vi/th)", () => {
+    const manual = { actorUserId: ACTOR };
+    expect(render("MEMBER_BANNED", manual, BYSTANDER, "vi")).toBe("Julia Doyle đã cấm Boyd Stevens");
+    expect(render("MEMBER_UNMUTED", manual, BYSTANDER, "th")).toBe("Julia Doyleเปิดสิทธิ์พูดให้Boyd Stevens");
+    expect(
+      render("MEMBER_UNMUTED", { actorUserId: "system", source: "auto" }, BYSTANDER, "vi")
+    ).toBe("Boyd Stevens đã được bỏ cấm nói");
   });
 });

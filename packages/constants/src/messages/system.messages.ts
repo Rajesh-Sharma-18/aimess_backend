@@ -894,6 +894,35 @@ export const SYSTEM_MESSAGES = {
   },
   SYS_COMMUNITY_JOIN_REQUEST_REJECTED: {
     vi: "Yêu cầu tham gia của bạn đã bị từ chối",
+  // What the OTHER owner/admin/moderators read on a MANUAL moderation audit line:
+  // names who acted as well as who was targeted. The passive forms above
+  // ("{{target}} was unmuted") stay for actor-less rows — the auto-unmute sweeper
+  // (metadata.source "auto") and legacy rows without an actorUserId.
+  SYS_COMMUNITY_MEMBER_BANNED_BY: {
+    vi: "{{actor}} đã cấm {{target}}",
+    en: "{{actor}} banned {{target}}",
+    th: "{{actor}}แบน{{target}}",
+  },
+  SYS_COMMUNITY_MEMBER_UNBANNED_BY: {
+    vi: "{{actor}} đã bỏ cấm {{target}}",
+    en: "{{actor}} unbanned {{target}}",
+    th: "{{actor}}ปลดแบน{{target}}",
+  },
+  SYS_COMMUNITY_MEMBER_MUTED_UNTIL_BY: {
+    vi: "{{actor}} đã cấm nói {{target}} đến {{until}}",
+    en: "{{actor}} muted {{target}} until {{until}}",
+    th: "{{actor}}ปิดสิทธิ์พูด{{target}}จนถึง {{until}}",
+  },
+  SYS_COMMUNITY_MEMBER_MUTED_BY: {
+    vi: "{{actor}} đã cấm nói {{target}} vô thời hạn",
+    en: "{{actor}} muted {{target}} indefinitely",
+    th: "{{actor}}ปิดสิทธิ์พูด{{target}}โดยไม่มีกำหนด",
+  },
+  SYS_COMMUNITY_MEMBER_UNMUTED_BY: {
+    vi: "{{actor}} đã bỏ cấm nói {{target}}",
+    en: "{{actor}} unmuted {{target}}",
+    th: "{{actor}}เปิดสิทธิ์พูดให้{{target}}",
+  },
     en: "Your request to join was declined",
     th: "คำขอเข้าร่วมของคุณถูกปฏิเสธ",
   },

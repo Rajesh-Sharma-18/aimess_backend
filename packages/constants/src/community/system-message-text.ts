@@ -165,6 +165,12 @@ export function buildCommunitySystemFallbackText(
   const viewer = viewerUserId?.trim() ?? "";
   const isActor = Boolean(viewer && actorId && viewer === actorId);
   const isTarget = Boolean(viewer && targetId && viewer === targetId);
+  // A moderation line names its actor to the other moderators only when a person
+  // acted: the auto-unmute sweeper posts `source: "auto"` with the "system" actor,
+  // and legacy rows may carry no actorUserId — both stay passive ("X was unmuted").
+  const namesActor = Boolean(
+    actorId && actorId !== "system" && metadata.source !== "auto"
+  );
 
   switch (type) {
     case "COMMUNITY_CREATED":
@@ -299,21 +305,26 @@ export function buildCommunitySystemFallbackText(
         return t("SYS_COMMUNITY_MEMBER_REMOVED_ACTOR", locale, { target });
       return t("SYS_COMMUNITY_MEMBER_REMOVED", locale, { target });
 
+    // Ban / unban / mute / unmute: the target's own wording is checked FIRST and is
+    // unchanged; the acting moderator reads "You …"; every other moderator reads
+    // "{actor} … {target}", or the passive form when no person acted.
     case "MEMBER_BANNED":
-      // PERSONAL message — only the banned member ever reads this.
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_BANNED_SELF", locale);
       if (isActor)
         return t("SYS_COMMUNITY_MEMBER_BANNED_ACTOR", locale, { target });
+      if (namesActor)
+        return t("SYS_COMMUNITY_MEMBER_BANNED_BY", locale, { actor, target });
       return t("SYS_COMMUNITY_MEMBER_BANNED", locale, { target });
 
     case "MEMBER_UNBANNED":
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_UNBANNED_SELF", locale);
       if (isActor)
         return t("SYS_COMMUNITY_MEMBER_UNBANNED_ACTOR", locale, { target });
+      if (namesActor)
+        return t("SYS_COMMUNITY_MEMBER_UNBANNED_BY", locale, { actor, target });
       return t("SYS_COMMUNITY_MEMBER_UNBANNED", locale, { target });
 
     case "MEMBER_MUTED": {
-      // PERSONAL message — only the muted member ever reads this.
       // Show the concrete expiry timestamp so the user knows exactly when they
       // can post again; fall back to "indefinitely" when no expiry was set.
       const mutedUntilMs = Number(metadata.mutedUntil);
@@ -326,11 +337,19 @@ export function buildCommunitySystemFallbackText(
             target,
             until,
           });
+        if (namesActor)
+          return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_BY", locale, {
+            actor,
+            target,
+            until,
+          });
         return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL", locale, { target, until });
       }
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_MUTED_SELF", locale);
       if (isActor)
         return t("SYS_COMMUNITY_MEMBER_MUTED_ACTOR", locale, { target });
+      if (namesActor)
+        return t("SYS_COMMUNITY_MEMBER_MUTED_BY", locale, { actor, target });
       return t("SYS_COMMUNITY_MEMBER_MUTED", locale, { target });
     }
 
@@ -338,6 +357,8 @@ export function buildCommunitySystemFallbackText(
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_UNMUTED_SELF", locale);
       if (isActor)
         return t("SYS_COMMUNITY_MEMBER_UNMUTED_ACTOR", locale, { target });
+      if (namesActor)
+        return t("SYS_COMMUNITY_MEMBER_UNMUTED_BY", locale, { actor, target });
       return t("SYS_COMMUNITY_MEMBER_UNMUTED", locale, { target });
 
     // The ACTOR is a person, never the community — a pin is performed by an

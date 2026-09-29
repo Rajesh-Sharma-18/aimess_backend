@@ -794,7 +794,7 @@ describe("socket fan-out for a moderation system line", () => {
     ]);
   });
 
-  it("posts a MUTE audit line in the third person alongside the member's own notice", async () => {
+  it("posts a MUTE audit line naming actor and target alongside the member's own notice", async () => {
     const { service, createSystemMessage } = makeService({
       findModeratorUserIds: jest.fn(async () => ["mod-1"]),
     });
@@ -812,7 +812,34 @@ describe("socket fan-out for a moderation system line", () => {
       (c: unknown[]) => (c[0] as { fallbackText: string }).fallbackText
     );
     expect(text[0]).toBe("You are muted indefinitely");
-    expect(text[1]).toBe("Bob Member is muted indefinitely");
+    expect(text[1]).toBe("Ann Admin muted Bob Member indefinitely");
+  });
+
+  it("an auto-unmute (sweeper, no human actor) stores the actor-less audit line", async () => {
+    const { service, createSystemMessage } = makeService({
+      findModeratorUserIds: jest.fn(async () => ["mod-1"]),
+    });
+    await service.post({
+      communityId: ROOM,
+      systemMessageType: "MEMBER_UNMUTED" as const,
+      metadata: { targetUserId: TARGET, source: "auto" },
+      triggeredByUserId: "system",
+      eventAt: "2026-06-19T12:00:00.000Z",
+    });
+    await service.post({
+      communityId: ROOM,
+      systemMessageType: "MEMBER_UNMUTED" as const,
+      metadata: { targetUserId: TARGET },
+      triggeredByUserId: "admin-1",
+      eventAt: "2026-06-19T12:05:00.000Z",
+    });
+
+    const rows = createSystemMessage.mock.calls.map(
+      (c: unknown[]) =>
+        c[0] as { fallbackText: string; systemMetadata?: Record<string, unknown> }
+    );
+    expect(rows[0]!.fallbackText).toBe("Bob Member was unmuted");
+    expect(rows[1]!.fallbackText).toBe("Ann Admin unmuted Bob Member");
   });
 });
 
