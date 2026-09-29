@@ -837,6 +837,15 @@ export const SYSTEM_MESSAGES = {
     en: "{{actor}} added you to the community",
     th: "{{actor}}เพิ่มคุณเข้าคอมมูนิตี้",
   },
+  /** Third-person form for the MODERATION audit line, which only the community's
+   *  owner/admin/moderators can read. Names BOTH sides, because "who added whom"
+   *  is the whole content of the audit record. Same sentence shape as
+   *  SYS_COMMUNITY_MEMBER_ADDED_SELF with the second person replaced. */
+  SYS_COMMUNITY_MEMBER_ADDED: {
+    vi: "{{actor}} đã thêm {{target}} vào cộng đồng",
+    en: "{{actor}} added {{target}} to the community",
+    th: "{{actor}}เพิ่ม{{target}}เข้าคอมมูนิตี้",
+  },
   /** Actor-less variant for the community-LIST preview, which is built by
    *  community-service where the adding admin's display name is not resolved
    *  (only chat-service hydrates user snapshots for system lines). */

@@ -350,11 +350,17 @@ export function buildCommunitySystemFallbackText(
     case "COMMUNITY_JOINED":
     case "JOIN_REQUEST_APPROVED":
       return t("SYS_COMMUNITY_MEMBER_JOINED_SELF", locale);
-    // PERSONAL — only the added member reads it, so it is always second-person.
-    // Names the admin who added them; `actor` falls back to "Someone" when the
-    // snapshot is unresolved, same as every other actor-bearing line here.
+    // Two copies, same subtype (see MODERATION_TYPES_WITH_PERSONAL_COPY):
+    //  - the added member's own PERSONAL notice → second-person, names the admin;
+    //  - the MODERATION audit line read by owner/admin/moderators → third-person,
+    //    names both sides, because "who added whom" IS the audit record.
+    // `actor`/`target` fall back to "Someone" when a snapshot is unresolved, same
+    // as every other actor-bearing line here.
     case "MEMBER_ADDED":
-      return t("SYS_COMMUNITY_MEMBER_ADDED_SELF", locale, { actor });
+      if (isTarget) {
+        return t("SYS_COMMUNITY_MEMBER_ADDED_SELF", locale, { actor });
+      }
+      return t("SYS_COMMUNITY_MEMBER_ADDED", locale, { actor, target });
     case "JOIN_REQUEST_REJECTED":
       return t("SYS_COMMUNITY_JOIN_REQUEST_REJECTED", locale);
 
