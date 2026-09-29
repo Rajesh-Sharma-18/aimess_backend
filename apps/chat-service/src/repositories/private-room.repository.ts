@@ -29,6 +29,26 @@ import {
   type AutoDeleteMode,
 } from "../lib/auto-delete.js";
 
+/**
+ * Delete Conversation hides a private room from THIS user's list until a
+ * message newer than their delete arrives (Telegram-style). Clear Chat is not
+ * a hide — it only empties history, so `clearFor` is ignored here. Filtered in
+ * memory: dynamic-key Json path filters on MongoDB+Prisma are unreliable.
+ */
+function isVisibleAfterDelete(
+  room: { deletedFor?: unknown; lastMessageAt?: Date | null },
+  userId: string
+): boolean {
+  const deletedAt = (room.deletedFor as Record<string, string> | null)?.[
+    userId
+  ];
+  if (!deletedAt) return true;
+  return (room.lastMessageAt?.getTime() ?? 0) > new Date(deletedAt).getTime();
+}
+
+/** Batch cap for the hidden-row refill loop in `fillVisible`. */
+const MAX_VISIBLE_FILL_BATCHES = 10;
+
 export class PrivateRoomRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -274,25 +294,53 @@ export class PrivateRoomRepository {
     limit: number;
     cursor?: string | null;
   }): Promise<PrivateRoom[]> {
-    const rows = await this.prisma.privateRoom.findMany({
-      where: {
-        participants: { has: params.userId },
-        lastMessageAt: params.cursor
-          ? { lt: new Date(params.cursor), not: null }
-          : { not: null },
-      },
-      orderBy: { lastMessageAt: "desc" },
-      take: params.limit,
-    });
-    return rows;
+    return this.fillVisible(params.userId, params.limit, (last) =>
+      this.prisma.privateRoom.findMany({
+        where: {
+          participants: { has: params.userId },
+          lastMessageAt: last?.lastMessageAt
+            ? { lt: last.lastMessageAt, not: null }
+            : params.cursor
+              ? { lt: new Date(params.cursor), not: null }
+              : { not: null },
+        },
+        orderBy: { lastMessageAt: "desc" },
+        take: params.limit,
+      })
+    );
+  }
+
+  /**
+   * Pages through `fetchBatch` until `limit` rows visible to `userId` are
+   * collected — a plain post-filter would hand back a short page for every
+   * room this user deleted, and the inbox reads a short page as "no more".
+   * `fetchBatch(last)` returns the batch after `last` (the first when null).
+   */
+  private async fillVisible(
+    userId: string,
+    limit: number,
+    fetchBatch: (last: PrivateRoom | null) => Promise<PrivateRoom[]>
+  ): Promise<PrivateRoom[]> {
+    const visible: PrivateRoom[] = [];
+    let last: PrivateRoom | null = null;
+    // ponytail: capped refill; more than limit*10 consecutive deleted rooms
+    // yields a short page — move the filter into the query if that ever happens.
+    for (let i = 0; i < MAX_VISIBLE_FILL_BATCHES; i++) {
+      const batch = await fetchBatch(last);
+      visible.push(...batch.filter((r) => isVisibleAfterDelete(r, userId)));
+      if (batch.length < limit || visible.length >= limit) break;
+      last = batch[batch.length - 1];
+    }
+    return visible.slice(0, limit);
   }
 
   async countConversations(userId: string): Promise<number> {
-    // Delete/clear Conversation empty the history but keep the row, so every
-    // room with activity counts.
-    return this.prisma.privateRoom.count({
+    // Rooms this user deleted stay out until a newer message arrives.
+    const rows = await this.prisma.privateRoom.findMany({
       where: { participants: { has: userId }, lastMessageAt: { not: null } },
+      select: { deletedFor: true, lastMessageAt: true },
     });
+    return rows.filter((r) => isVisibleAfterDelete(r, userId)).length;
   }
 
   /**
@@ -534,15 +582,27 @@ export class PrivateRoomRepository {
     limit: number;
   }): Promise<PrivateRoom[]> {
     const dir = params.direction === "before" ? "desc" : "asc";
-    const rows = await this.prisma.privateRoom.findMany({
-      where: {
-        participants: { has: params.userId },
-        ...buildRoomKeysetWhere(params),
-      },
-      orderBy: [{ lastMessageAt: dir }, { roomId: dir }],
-      take: params.limit,
-    });
-    return rows;
+    return this.fillVisible(params.userId, params.limit, (last) =>
+      this.prisma.privateRoom.findMany({
+        where: {
+          participants: { has: params.userId },
+          // Refill batches continue strictly past the previous one on the same
+          // compound key the page is ordered by.
+          ...buildRoomKeysetWhere(
+            last?.lastMessageAt
+              ? {
+                  direction: params.direction,
+                  ts: last.lastMessageAt,
+                  boundaryId: last.roomId,
+                  inclusive: false,
+                }
+              : params
+          ),
+        },
+        orderBy: [{ lastMessageAt: dir }, { roomId: dir }],
+        take: params.limit,
+      })
+    );
   }
 
   async updateRoomOnNewMessage(params: {

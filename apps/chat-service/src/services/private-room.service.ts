@@ -1408,14 +1408,20 @@ export class PrivateRoomService {
         .catch(() => {});
     }
 
-    // Delete Conversation empties the caller's history but KEEPS the row —
-    // same list/transcript effect as clear, so it fans out the same events.
-    await this.announceHistoryEmptied(
-      room,
-      userId,
-      cutoff,
-      SystemEvent.CONVERSATION_DELETED
-    );
+    // Delete Conversation hides the row from THIS user's list until a newer
+    // message arrives (the list queries filter on `deletedFor`), so every one
+    // of the caller's devices drops it. Nothing reaches the peer.
+    if (cutoff) {
+      this.redis
+        .publish(
+          `user:${userId}`,
+          JSON.stringify({
+            event: "conv:deleted",
+            data: { roomId, deletedBy: userId, type: "PRIVATE" },
+          })
+        )
+        .catch(() => {});
+    }
   }
 
   /**

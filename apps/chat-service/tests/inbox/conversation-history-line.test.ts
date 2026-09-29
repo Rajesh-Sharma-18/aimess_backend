@@ -9,8 +9,9 @@
  * snapshot, and is pushed on the caller's `user:` channel only — never on the
  * `conv:` room every participant has joined.
  *
- * Delete no longer removes the row: it fans out exactly what clear does
- * (`conv:cleared` + an empty self-only `conv:updated`), never `conv:deleted`.
+ * Private Delete is the exception: it hides the row from the caller's list
+ * until a newer message arrives, so it writes no line and emits `conv:deleted`
+ * to the caller only. Group Delete keeps the row like clear.
  */
 jest.mock("../../src/events/publish-conv-updated.js", () => ({
   publishConvUpdatedSafe: jest.fn(),
@@ -69,12 +70,6 @@ describe.each([
     `/api/chat/private/rooms/${ROOM}/clear`,
     "CONVERSATION_CLEARED",
   ],
-  [
-    "delete",
-    "delete",
-    `/api/chat/private/rooms/${ROOM}`,
-    "CONVERSATION_DELETED",
-  ],
 ] as const)("private %s", (_name, method, url, systemEvent) => {
   it("writes a self-only line after the cutoff and keeps the row", async () => {
     stubPrivateRoom();
@@ -111,6 +106,39 @@ describe.each([
         countInUnread: false,
       })
     );
+  });
+});
+
+describe("private delete", () => {
+  it("hides the row for the caller only — no line, conv:deleted to the caller", async () => {
+    stubPrivateRoom();
+
+    const res = await request(app)
+      .delete(`/api/chat/private/rooms/${ROOM}`)
+      .set(bearer(makeAccessToken()));
+    expect(res.status).toBe(200);
+
+    expect(mocks.privateRoomRepo.setDeletedFor).toHaveBeenCalledWith(
+      ROOM,
+      TEST_USER_ID
+    );
+    expect(mocks.privateMessageRepo.createMessage).not.toHaveBeenCalled();
+    expect(mocks.privateRoomRepo.updateRoomOnNewMessage).not.toHaveBeenCalled();
+    expect(bump).not.toHaveBeenCalled();
+
+    const events = published();
+    expect(events.some(([c]) => c === `user:${PEER}`)).toBe(false);
+    expect(events.some(([, e]) => e.event === "conv:cleared")).toBe(false);
+    const deleted = events.filter(([, e]) => e.event === "conv:deleted");
+    expect(deleted).toEqual([
+      [
+        `user:${TEST_USER_ID}`,
+        {
+          event: "conv:deleted",
+          data: { roomId: ROOM, deletedBy: TEST_USER_ID, type: "PRIVATE" },
+        },
+      ],
+    ]);
   });
 });
 
