@@ -38,6 +38,9 @@ interface TimelineFetchContext {
   direction: "before" | "after";
   limit: number;
   viewerIsActiveMember: boolean;
+  /** Viewer's CURRENT community role — gates MODERATION-restricted system
+   *  lines (add/ban/unban/mute/unmute). Omitted => normal member. */
+  viewerRole?: string | null;
   readCutoff?: Date | null;
 }
 
@@ -48,6 +51,9 @@ interface AroundFetchContext {
   anchor: GeneralRoomMessage;
   limit: number;
   viewerIsActiveMember: boolean;
+  /** Viewer's CURRENT community role — gates MODERATION-restricted system
+   *  lines (add/ban/unban/mute/unmute). Omitted => normal member. */
+  viewerRole?: string | null;
   readCutoff?: Date | null;
 }
 
@@ -56,6 +62,9 @@ export interface CursorProbeContext {
   roomId: string;
   userId: string;
   viewerIsActiveMember: boolean;
+  /** Viewer's CURRENT community role — gates MODERATION-restricted system
+   *  lines (add/ban/unban/mute/unmute). Omitted => normal member. */
+  viewerRole?: string | null;
   readCutoff?: Date | null;
 }
 
@@ -118,6 +127,7 @@ class TimestampTimelineAdapter implements TimelinePaginationAdapter {
       inclusive: this.cursor.inclusive,
       limit: ctx.limit,
       viewerIsActiveMember: ctx.viewerIsActiveMember,
+      viewerRole: ctx.viewerRole,
       readCutoff: ctx.readCutoff,
     });
   }
@@ -129,6 +139,7 @@ class TimestampTimelineAdapter implements TimelinePaginationAdapter {
       anchorDate: ctx.anchor.createdAt,
       limit: ctx.limit,
       viewerIsActiveMember: ctx.viewerIsActiveMember,
+      viewerRole: ctx.viewerRole,
       readCutoff: ctx.readCutoff,
     });
     const cursors = await this.cursors(ctx, rows);
@@ -149,6 +160,7 @@ class TimestampTimelineAdapter implements TimelinePaginationAdapter {
           inclusive: false,
           limit: 1,
           viewerIsActiveMember: ctx.viewerIsActiveMember,
+          viewerRole: ctx.viewerRole,
           readCutoff: ctx.readCutoff,
         })
         .then((r) => r.messages)
@@ -175,6 +187,7 @@ class SequenceTimelineAdapter implements TimelinePaginationAdapter {
       seq: this.cursor.seq,
       limit: ctx.limit,
       viewerIsActiveMember: ctx.viewerIsActiveMember,
+      viewerRole: ctx.viewerRole,
       readCutoff: ctx.readCutoff,
     });
   }
@@ -186,6 +199,7 @@ class SequenceTimelineAdapter implements TimelinePaginationAdapter {
       anchorSeq: ctx.anchor.sequenceNumber,
       limit: ctx.limit,
       viewerIsActiveMember: ctx.viewerIsActiveMember,
+      viewerRole: ctx.viewerRole,
       readCutoff: ctx.readCutoff,
     });
     const cursors = await this.cursors(ctx, rows);
@@ -202,6 +216,7 @@ class SequenceTimelineAdapter implements TimelinePaginationAdapter {
           seq,
           limit: 1,
           viewerIsActiveMember: ctx.viewerIsActiveMember,
+          viewerRole: ctx.viewerRole,
           readCutoff: ctx.readCutoff,
         })
         .then((r) => r.messages)

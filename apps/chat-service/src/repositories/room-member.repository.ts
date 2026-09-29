@@ -1,5 +1,6 @@
 ﻿import type { PrismaClient, RoomMember } from "../generated/prisma/index.js";
 import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
+import { MODERATION_VIEWER_ROLES } from "@aimess/constants";
 
 export class RoomMemberRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -198,6 +199,25 @@ export class RoomMemberRepository {
     return this.prisma.roomMember.findMany({
       where: { roomId, status: "active" },
     });
+  }
+
+  /**
+   * ACTIVE owner / admin / moderator userIds for a community room — the
+   * recipient set for a MODERATION-restricted system line, which must reach
+   * those sessions only and never the room-wide `community:<id>` channel.
+   * Roles come from {@link MODERATION_VIEWER_ROLES} so the socket fan-out and
+   * the read-path gate can never disagree about who is privileged.
+   */
+  async findModeratorUserIds(roomId: string): Promise<string[]> {
+    const rows = await this.prisma.roomMember.findMany({
+      where: {
+        roomId,
+        status: "active",
+        role: { in: [...MODERATION_VIEWER_ROLES] },
+      },
+      select: { userId: true },
+    });
+    return rows.map((r) => r.userId);
   }
 
   /**

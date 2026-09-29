@@ -31,6 +31,7 @@ import { assertAttachmentsVerified } from "../lib/attachment-guard.js";
 import {
   DELETED_ACCOUNT_DISPLAY_NAME,
   buildCommunitySystemFallbackText,
+  canViewSystemMessage,
   currentLocale,
   isCommunityContentType,
   sanitizeCommunitySystemMetadata,
@@ -313,6 +314,15 @@ export class CommunityMessageService {
     if (!msg || msg.roomId !== params.roomId || msg.deletedForAll) {
       return empty;
     }
+    // A SYSTEM line is not reportable content: it is auto-generated, has no
+    // author to act against, and its text is re-rendered per viewer/locale on
+    // read. Treating one as found also made this an unauthenticated-by-role
+    // read-by-id oracle — the report response echoes `reportedContentText`, so a
+    // plain member could file a report against a MODERATION-restricted line's id
+    // and read its content straight back. Not found, for every SYSTEM subtype.
+    if (normalizeMessageType(msg.messageType) === "SYSTEM") {
+      return empty;
+    }
     const atts = Array.isArray(msg.attachments)
       ? (msg.attachments as Record<string, unknown>[])
       : [];
@@ -452,7 +462,21 @@ export class CommunityMessageService {
     let quoteData: CanonicalQuote | undefined;
     if (resolvedParentId) {
       const originalMsg = await this.messageRepo.findById(resolvedParentId);
-      if (originalMsg) {
+      // A quote COPIES the parent's text into a message broadcast to the whole
+      // room, so the parent must be one the SENDER is allowed to read: same
+      // room (cross-room IDOR), and permitted by the ONE system-message
+      // visibility policy — otherwise a member could reply to a
+      // MODERATION-restricted line's id and launder its content into a quote
+      // everybody sees. Not visible ⇒ no quote (the reply itself still sends).
+      const canQuoteParent =
+        !!originalMsg &&
+        originalMsg.roomId === params.roomId &&
+        canViewSystemMessage({
+          message: originalMsg,
+          viewerId: params.sentBy,
+          viewerRole: senderRes.value?.role,
+        });
+      if (originalMsg && canQuoteParent) {
         // Album sends are split one-row-per-file (lib/split-media-album.ts),
         // so the parent row's own attachments can never reveal the true
         // album size — look up its sibling batch for IMAGE/VIDEO parents.
@@ -461,15 +485,15 @@ export class CommunityMessageService {
         const attachmentCountOverride =
           isAlbumRowId(params.parentMessageId) &&
           ["IMAGE", "VIDEO"].includes(
-          normalizeMessageType(originalMsg.messageType)
-        )
-          ? await resolveReplyAttachmentCount(
-              this.messageRepo,
-              params.roomId,
-              originalMsg.sentBy,
-              originalMsg
-            )
-          : undefined;
+            normalizeMessageType(originalMsg.messageType)
+          )
+            ? await resolveReplyAttachmentCount(
+                this.messageRepo,
+                params.roomId,
+                originalMsg.sentBy,
+                originalMsg
+              )
+            : undefined;
         quoteData = buildReplyQuoteSnapshot({
           messageId: originalMsg.id,
           senderId: originalMsg.sentBy,
@@ -649,6 +673,7 @@ export class CommunityMessageService {
         sinceRevision: params.sinceRevision,
         limit,
         viewerIsActiveMember: true,
+        viewerRole: member.role,
         readCutoff: null,
       });
       return {
@@ -674,6 +699,7 @@ export class CommunityMessageService {
           userId: params.userId,
           fromTs: params.sinceTs,
           limit,
+          viewerRole: member.role,
         });
       const lastMsg =
         tsMessages.length > 0 ? tsMessages[tsMessages.length - 1]! : null;
@@ -698,6 +724,7 @@ export class CommunityMessageService {
       userId: params.userId,
       sinceId: params.sinceId,
       limit,
+      viewerRole: member.role,
     });
     const lastId =
       messages.length > 0 ? messages[messages.length - 1]!.id : params.sinceId;
@@ -732,6 +759,8 @@ export class CommunityMessageService {
     sinceRevision: number;
     limit: number;
     viewerIsActiveMember: boolean;
+    /** Viewer's CURRENT community role — gates MODERATION-restricted lines. */
+    viewerRole?: string | null;
     readCutoff: Date | null;
   }): Promise<{
     roomRevision: number;
@@ -765,6 +794,7 @@ export class CommunityMessageService {
         sinceRevision: params.sinceRevision,
         limit: params.limit,
         viewerIsActiveMember: params.viewerIsActiveMember,
+        viewerRole: params.viewerRole,
         readCutoff: params.readCutoff,
       });
 
@@ -819,6 +849,7 @@ export class CommunityMessageService {
       sinceRevision: params.sinceRevision,
       limit: params.limit,
       viewerIsActiveMember,
+      viewerRole: member?.role,
       readCutoff: bannedAtCutoff ?? null,
     });
 
@@ -1643,7 +1674,8 @@ export class CommunityMessageService {
       params.limit,
       params.userId,
       viewerIsActiveMember,
-      bannedAtCutoff
+      bannedAtCutoff,
+      member?.role
     );
     const { urlMap, deletedUserIds, identities } =
       await this.resolveRowsWireContext(rows);
@@ -1834,6 +1866,9 @@ export class CommunityMessageService {
       anchor,
       limit: params.limit,
       viewerIsActiveMember: true,
+      // Platform admin monitoring: full moderation visibility (authorized at the
+      // backoffice API boundary, same as the skipped membership check above).
+      viewerRole: "admin",
     });
     if (!rows.some((row) => row.id === anchor.id)) {
       return { ...EMPTY_MODERATION_PAGE, items: [], found: false };
@@ -1979,6 +2014,10 @@ export class CommunityMessageService {
     const viewerIsActiveMember = params.trustedAdmin
       ? true
       : isActiveMember(member);
+    // MODERATION-restricted system lines are owner/admin/moderator-only. A
+    // trusted platform admin has no community role, so it is granted the
+    // moderation view explicitly rather than falling through as a member.
+    const viewerRole = params.trustedAdmin ? "admin" : (member?.role ?? null);
     const adapter = makeTimelineAdapter(this.messageRepo, params.cursor);
     const [{ messages: pageRows, hasMore }, total, roomRevision] =
       await Promise.all([
@@ -1988,12 +2027,14 @@ export class CommunityMessageService {
           direction: params.direction,
           limit: params.limit,
           viewerIsActiveMember,
+          viewerRole,
           readCutoff: bannedAtCutoff,
         }),
         this.messageRepo.countTimeline({
           roomId: params.roomId,
           userId: params.userId,
           viewerIsActiveMember,
+          viewerRole,
           readCutoff: bannedAtCutoff,
         }),
         // Room change high-water on EVERY page — the client seeds its
@@ -2021,6 +2062,7 @@ export class CommunityMessageService {
           roomId: params.roomId,
           userId: params.userId,
           viewerIsActiveMember,
+          viewerRole,
           readCutoff: bannedAtCutoff,
         },
         orderedItems
@@ -2158,6 +2200,7 @@ export class CommunityMessageService {
       fromTs: params.fromTs,
       limit: params.limit,
       viewerIsActiveMember: member?.status === "active",
+      viewerRole: member?.role,
       readCutoff: bannedAtCutoff,
     });
 
@@ -2360,6 +2403,7 @@ export class CommunityMessageService {
       { allowBannedReadCutoff: true }
     );
     const viewerIsActiveMember = isActiveMember(member);
+    const viewerRole = member?.role ?? null;
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) {
       return { items: [], total: 0, ...EMPTY_AROUND_CURSORS };
@@ -2381,6 +2425,7 @@ export class CommunityMessageService {
         anchor,
         limit: params.limit,
         viewerIsActiveMember,
+        viewerRole,
         readCutoff: bannedAtCutoff,
       }),
       // Use the history-visible count (same filter as the timeline) so `total`
@@ -2390,6 +2435,7 @@ export class CommunityMessageService {
         roomId: params.roomId,
         userId: params.userId,
         viewerIsActiveMember,
+        viewerRole,
         readCutoff: bannedAtCutoff,
       }),
     ]);
@@ -2449,6 +2495,7 @@ export class CommunityMessageService {
         beforeMs,
         skip,
         take: params.limit,
+        viewerRole: member?.role,
       }),
       // Count must match the page's filter (createdAt < beforeMs + per-user
       // deletion exclusion), not the boundary-less countByRoom.
@@ -2456,6 +2503,7 @@ export class CommunityMessageService {
         roomId: params.roomId,
         userId: params.userId,
         beforeMs,
+        viewerRole: member?.role,
       }),
     ]);
 

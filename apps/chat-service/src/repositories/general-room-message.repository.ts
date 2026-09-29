@@ -11,8 +11,11 @@ import {
 import {
   PERSONAL_JOIN_SESSION_TYPES,
   HIDDEN_SYSTEM_MESSAGE_TYPES,
+  MODERATION_ONLY_SYSTEM_MESSAGE_TYPES,
+  MODERATION_TYPES_WITHOUT_PERSONAL_COPY,
   isPersonalJoinSessionType,
-  isHiddenSystemMessage,
+  canViewSystemMessage,
+  isModerationViewerRole,
 } from "@aimess/constants";
 import {
   shouldCountInUnread,
@@ -66,31 +69,76 @@ export function isVisibleToUser(
     sentBy?: string | null;
   },
   userId: string,
-  viewerIsActiveMember = true
+  viewerIsActiveMember = true,
+  /**
+   * The viewer's CURRENT community role. Gates the MODERATION-restricted
+   * broadcast lines (add / ban / unban / mute / unmute) to owner/admin/moderator
+   * only. Omitted => treated as a normal member (FAIL-CLOSED), so a read path
+   * that forgets to pass it under-reports for a moderator rather than leaking
+   * moderation activity to an ordinary member.
+   */
+  viewerRole?: string | null
 ): boolean {
-  // Hidden membership-lifecycle lines (left / joined / removed / banned) are
-  // never shown in the chat timeline. MEMBER_UNBANNED is NOT hidden — lifting a
-  // ban is informational and stays visible (Telegram parity). This also kills
-  // the duplicate "You joined the community" the joiner saw: the legacy
-  // MEMBER_JOINED was personalized to "You joined…", doubling the personal
-  // COMMUNITY_JOINED line; hiding MEMBER_JOINED leaves exactly one personal line.
-  // Applies regardless of membership/visibility, so it runs first.
-  if (isHiddenSystemMessage(msg.systemMessageType)) {
-    return false;
-  }
-  if (msg.visibleToUserId && msg.visibleToUserId !== userId) {
-    return false;
-  }
-  // Membership-session guard: hide the viewer's OWN join-session onboarding line
-  // once they are no longer an active member (a prior session's line).
-  if (
-    !viewerIsActiveMember &&
-    msg.visibleToUserId === userId &&
-    isPersonalJoinSessionType(msg.systemMessageType)
-  ) {
-    return false;
-  }
-  return true;
+  // Delegates to the ONE policy in @aimess/constants (hidden subtypes, PERSONAL
+  // targeting, membership-session guard, moderation-role gate) so no read path
+  // can drift from it — see canViewSystemMessage for the rule order.
+  return canViewSystemMessage({
+    message: msg,
+    viewerId: userId,
+    viewerRole,
+    viewerIsActiveMember,
+  });
+}
+
+/**
+ * Raw-Mongo counterpart to the MODERATION rules in {@link canViewSystemMessage},
+ * for the aggregateRaw read paths. Two clauses, and they answer different
+ * questions:
+ *
+ *  1. UNCONDITIONAL (every viewer, moderators included) — drop a
+ *     TARGET-ADDRESSED row of a moderation subtype that has no companion copy
+ *     (ban / unban / unmute). Such a row can only be a legacy artifact from
+ *     before those bubbles were removed, and re-showing the affected member "You
+ *     were banned" would undo that. `$nin: [null]` selects "targeted" because, as
+ *     in real Mongo, a MISSING field counts as null — so the broadcast audit
+ *     copy (field absent or null) is NOT matched here.
+ *  2. ROLE-GATED — drop the community-scoped (broadcast) AUDIT copy of every
+ *     moderation subtype unless the viewer is currently owner/admin/moderator.
+ *     `$in: [null]` is the mirror image of clause 1's selector, so the PERSONAL
+ *     companion copy of MEMBER_ADDED / MEMBER_MUTED still reaches its target:
+ *     that line is theirs, not an audit record about somebody else.
+ *
+ * Returned as a clause ARRAY so callers can splice it straight into an `$and`. It
+ * must go in `$and`, never be merged as a top-level `$nor`: the non-active-member
+ * session guard owns that key already.
+ */
+function moderationSystemGuard(
+  viewerRole?: string | null
+): Record<string, unknown>[] {
+  const clauses: Record<string, unknown>[] = [
+    {
+      $nor: [
+        {
+          visibleToUserId: { $nin: [null] },
+          systemMessageType: {
+            $in: [...MODERATION_TYPES_WITHOUT_PERSONAL_COPY],
+          },
+        },
+      ],
+    },
+  ];
+  if (isModerationViewerRole(viewerRole)) return clauses;
+  clauses.push({
+    $nor: [
+      {
+        visibleToUserId: { $in: [null] },
+        systemMessageType: {
+          $in: [...MODERATION_ONLY_SYSTEM_MESSAGE_TYPES],
+        },
+      },
+    ],
+  });
+  return clauses;
 }
 
 function personalJoinSessionGuard(
@@ -358,7 +406,9 @@ export class GeneralRoomMessageRepository {
     userId: string,
     viewerIsActiveMember = true,
     /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
-    readCutoff?: Date | null
+    readCutoff?: Date | null,
+    /** Viewer's CURRENT community role — see {@link isVisibleToUser}. */
+    viewerRole?: string | null
   ): Promise<GeneralRoomMessage[]> {
     // A banned viewer's window can never extend past their ban cutoff, even if
     // `beforeTimestamp` (the scroll cursor) is later.
@@ -390,7 +440,7 @@ export class GeneralRoomMessageRepository {
         const deletedBy = (msg.deletedBy ?? []) as string[];
         return (
           !deletedBy.includes(userId) &&
-          isVisibleToUser(msg, userId, viewerIsActiveMember) &&
+          isVisibleToUser(msg, userId, viewerIsActiveMember, viewerRole) &&
           isLatestPersonalJoinSessionForUser(
             msg,
             userId,
@@ -424,6 +474,12 @@ export class GeneralRoomMessageRepository {
     roomId: string;
     userId: string;
     viewerIsActiveMember: boolean;
+    /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
     latestPersonalJoinMessageId?: string | null;
     /**
      * Upper bound for a BANNED viewer: only messages created at/before their
@@ -440,6 +496,9 @@ export class GeneralRoomMessageRepository {
       systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
     };
     const andClauses: Record<string, unknown>[] = [];
+    // MODERATION-restricted broadcast lines (add/ban/unban/mute/unmute) are
+    // dropped for anyone who is not currently an owner/admin/moderator.
+    andClauses.push(...moderationSystemGuard(params.viewerRole));
     if (!params.viewerIsActiveMember) {
       match.$nor = [
         {
@@ -497,6 +556,12 @@ export class GeneralRoomMessageRepository {
     inclusive?: boolean;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
     /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
     readCutoff?: Date | null;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
@@ -509,6 +574,7 @@ export class GeneralRoomMessageRepository {
       roomId: params.roomId,
       userId: params.userId,
       viewerIsActiveMember,
+      viewerRole: params.viewerRole,
       latestPersonalJoinMessageId,
       readCutoff: params.readCutoff,
     });
@@ -692,6 +758,12 @@ export class GeneralRoomMessageRepository {
     roomId: string;
     userId: string;
     viewerIsActiveMember?: boolean;
+    /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
     /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
     readCutoff?: Date | null;
   }): Promise<number> {
@@ -706,6 +778,7 @@ export class GeneralRoomMessageRepository {
             roomId: params.roomId,
             userId: params.userId,
             viewerIsActiveMember,
+            viewerRole: params.viewerRole,
             latestPersonalJoinMessageId,
             readCutoff: params.readCutoff,
           }),
@@ -726,6 +799,12 @@ export class GeneralRoomMessageRepository {
     anchorDate: Date;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
     /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
     readCutoff?: Date | null;
   }): Promise<GeneralRoomMessage[]> {
@@ -773,7 +852,8 @@ export class GeneralRoomMessageRepository {
         isVisibleToUser(
           msg,
           params.userId,
-          params.viewerIsActiveMember ?? true
+          params.viewerIsActiveMember ?? true,
+          params.viewerRole
         ) &&
         isLatestPersonalJoinSessionForUser(
           msg,
@@ -816,6 +896,12 @@ export class GeneralRoomMessageRepository {
     seq: number | null;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
     /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
     readCutoff?: Date | null;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
@@ -828,6 +914,7 @@ export class GeneralRoomMessageRepository {
       roomId: params.roomId,
       userId: params.userId,
       viewerIsActiveMember,
+      viewerRole: params.viewerRole,
       latestPersonalJoinMessageId,
       readCutoff: params.readCutoff,
     });
@@ -855,6 +942,12 @@ export class GeneralRoomMessageRepository {
     anchorSeq: number;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
     /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
     readCutoff?: Date | null;
   }): Promise<GeneralRoomMessage[]> {
@@ -867,6 +960,7 @@ export class GeneralRoomMessageRepository {
       roomId: params.roomId,
       userId: params.userId,
       viewerIsActiveMember,
+      viewerRole: params.viewerRole,
       latestPersonalJoinMessageId,
       readCutoff: params.readCutoff,
     });
@@ -899,6 +993,12 @@ export class GeneralRoomMessageRepository {
     roomId: string;
     userId: string;
     beforeMs: number;
+    /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
     latestPersonalJoinMessageId?: string | null;
   }): Prisma.InputJsonObject {
     return {
@@ -918,6 +1018,8 @@ export class GeneralRoomMessageRepository {
           params.userId,
           params.latestPersonalJoinMessageId ?? null
         ),
+        // MODERATION-restricted broadcast lines — owner/admin/moderator only.
+        ...moderationSystemGuard(params.viewerRole),
       ] as Prisma.InputJsonValue,
     };
   }
@@ -935,6 +1037,12 @@ export class GeneralRoomMessageRepository {
     beforeMs: number;
     skip: number;
     take: number;
+    /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
   }): Promise<GeneralRoomMessage[]> {
     const latestPersonalJoinMessageId =
       await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);
@@ -975,6 +1083,12 @@ export class GeneralRoomMessageRepository {
     roomId: string;
     userId: string;
     beforeMs: number;
+    /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
   }): Promise<number> {
     const latestPersonalJoinMessageId =
       await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);
@@ -1169,13 +1283,20 @@ export class GeneralRoomMessageRepository {
             // excluded — they're already covered by room.lastMessage).
             visibleToUserId: params.userId,
             deletedBy: { $ne: params.userId },
-            // Same hidden-type exclusion every other read path applies — this
-            // overlay is a list PREVIEW of the timeline, so a line the timeline
-            // refuses to render (MEMBER_BANNED, and any legacy MEMBER_LEFT /
-            // MEMBER_REMOVED / MEMBER_JOINED row) must not become the preview
-            // either. MEMBER_MUTED/MEMBER_UNMUTED and COMMUNITY_JOINED still
-            // surface here like any other PERSONAL line.
-            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+            // Same exclusions every other read path applies — this overlay is a
+            // list PREVIEW of the timeline, so a line the timeline refuses to
+            // render must not become the preview either: the hidden lifecycle
+            // types (legacy MEMBER_LEFT / MEMBER_REMOVED / MEMBER_JOINED) plus
+            // any legacy TARGET-ADDRESSED ban / unban / unmute row, whose bubble
+            // the product removed. MEMBER_ADDED / MEMBER_MUTED — the two
+            // moderation subtypes that DO have a personal companion copy — and
+            // COMMUNITY_JOINED still surface here like any other PERSONAL line.
+            systemMessageType: {
+              $nin: [
+                ...HIDDEN_SYSTEM_MESSAGE_TYPES,
+                ...MODERATION_TYPES_WITHOUT_PERSONAL_COPY,
+              ],
+            },
           },
         },
         { $sort: { createdAt: -1 } },
@@ -1410,7 +1531,6 @@ export class GeneralRoomMessageRepository {
       },
     });
   }
-
 
   private reactionIndexRepo: MessageReactionRepository | null = null;
 
@@ -1717,6 +1837,8 @@ export class GeneralRoomMessageRepository {
     userId: string;
     sinceId: string;
     limit: number;
+    /** Viewer's CURRENT community role — see {@link isVisibleToUser}. */
+    viewerRole?: string | null;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
     // Note: deletedForAll is intentionally NOT filtered here so that tombstones
     // are visible to the client. The client uses `isDeleted` to reconcile
@@ -1735,6 +1857,8 @@ export class GeneralRoomMessageRepository {
       await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);
     matchStage.$and = [
       personalJoinSessionGuard(params.userId, latestPersonalJoinMessageId),
+      // MODERATION-restricted broadcast lines — owner/admin/moderator only.
+      ...moderationSystemGuard(params.viewerRole),
     ];
     if (params.sinceId) {
       matchStage["_id"] = { $gt: { $oid: params.sinceId } };
@@ -1789,6 +1913,12 @@ export class GeneralRoomMessageRepository {
     limit: number;
     viewerIsActiveMember?: boolean;
     /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
+    /**
      * Upper bound for a BANNED viewer — a resync must never surface a message
      * CREATED after the ban, even if its `updatedAt` (a later reaction/edit by
      * someone else, or the ban's own mirrored membership row) falls after
@@ -1829,7 +1959,8 @@ export class GeneralRoomMessageRepository {
         isVisibleToUser(
           msg,
           params.userId,
-          params.viewerIsActiveMember ?? true
+          params.viewerIsActiveMember ?? true,
+          params.viewerRole
         ) &&
         isLatestPersonalJoinSessionForUser(
           msg,
@@ -1871,6 +2002,12 @@ export class GeneralRoomMessageRepository {
     sinceRevision: number;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /**
+     * The viewer's CURRENT community role. Gates the MODERATION-restricted
+     * broadcast lines (add/ban/unban/mute/unmute) — see {@link isVisibleToUser}.
+     * Omitted => normal member (fail-closed).
+     */
+    viewerRole?: string | null;
     /** Upper bound for a BANNED viewer — see {@link findUpdatedAtSince}. */
     readCutoff?: Date | null;
   }): Promise<{
@@ -1907,7 +2044,8 @@ export class GeneralRoomMessageRepository {
         isVisibleToUser(
           msg,
           params.userId,
-          params.viewerIsActiveMember ?? true
+          params.viewerIsActiveMember ?? true,
+          params.viewerRole
         ) &&
         isLatestPersonalJoinSessionForUser(
           msg,
@@ -1999,8 +2137,16 @@ export class GeneralRoomMessageRepository {
             // Personal system messages must not become the community-wide preview.
             // $in:[null] also matches docs where the field is absent.
             visibleToUserId: { $in: [null] },
-            // Hidden lifecycle lines (member joined/left) are never shown.
-            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+            // Hidden lifecycle lines (member joined/left) are never shown, and
+            // a MODERATION-restricted line (add/ban/unban/mute/unmute) must
+            // never become the community-wide preview for anyone — mirrors
+            // SYSTEM_MESSAGE_BUMPS_ACTIVITY=false for all five subtypes.
+            systemMessageType: {
+              $nin: [
+                ...HIDDEN_SYSTEM_MESSAGE_TYPES,
+                ...MODERATION_ONLY_SYSTEM_MESSAGE_TYPES,
+              ],
+            },
           },
         },
         // Ordered by `sequenceNumber`, NOT `createdAt`: the sequence is allocated by
@@ -2042,7 +2188,13 @@ export class GeneralRoomMessageRepository {
             deletedForAll: false,
             deletedBy: { $nin: [userId] },
             visibleToUserId: { $in: [null] },
-            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+            // See findPreviousVisibleMessage — moderation lines are never a preview.
+            systemMessageType: {
+              $nin: [
+                ...HIDDEN_SYSTEM_MESSAGE_TYPES,
+                ...MODERATION_ONLY_SYSTEM_MESSAGE_TYPES,
+              ],
+            },
             ...(readCutoff
               ? { createdAt: { $lte: { $date: readCutoff.toISOString() } } }
               : {}),
