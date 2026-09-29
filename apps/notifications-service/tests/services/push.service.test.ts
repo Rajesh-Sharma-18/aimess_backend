@@ -100,6 +100,20 @@ describe("pushToUser — skipInbox", () => {
     expect(chatNotificationClient.createNotification).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
   });
+
+  it("writes the requester's inbox row when their join request is approved", async () => {
+    await pushToUser({
+      userId: USER_ID,
+      category: "communityEnabled",
+      type: "community.join_request_approved",
+      title: "Club",
+      body: "Ann accepted your request to join Club",
+      data: { communityId: "c1" },
+    });
+
+    expect(chatNotificationClient.createNotification).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("pushToUser — the settings gate", () => {

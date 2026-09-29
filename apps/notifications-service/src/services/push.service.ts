@@ -119,6 +119,8 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   // clears itself the moment the admin decides.
   CommunityEvents.JOIN_REQUESTED,
   CommunityEvents.JOIN_REQUEST_RETRACTED,
+  // The requester's outcome card: their request was accepted and they are now a member.
+  CommunityEvents.JOIN_REQUEST_APPROVED,
   // Livestream — listed under LIVE_NOW (chat-service notification-category.ts).
   // Still gated like the push: liveStreamEnabled, the community's own
   // streamEnabled toggle, and ACTIVE membership.
