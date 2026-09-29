@@ -316,3 +316,37 @@ describe("selectListPreview — reader language", () => {
     );
   });
 });
+
+/**
+ * A moderation line is stored third-person ("Smiley added Mind to the
+ * community"); the admin who performed it must read "You added …" on the list
+ * row too, while the target and bystanders keep the stored names.
+ */
+describe("selectListPreview — actor reads first person", () => {
+  const added = {
+    lastActivityType: "system",
+    lastActivityPreview: "Smiley Creatures added Mind Flayer to the community",
+    lastActivitySystemType: "MEMBER_ADDED",
+    lastActivitySystemMetadata: {
+      actorUserId: "u-actor",
+      actorName: "Smiley Creatures",
+      targetUserId: "u-target",
+      targetName: "Mind Flayer",
+    },
+  };
+
+  it("actor, target and bystander each get their own wording", () => {
+    expect(selectListPreview(added, "u-actor")).toBe(
+      "You added Mind Flayer to the community"
+    );
+    expect(selectListPreview(added, "u-target")).toBe(
+      "Smiley Creatures added you to the community"
+    );
+    expect(selectListPreview(added, "u-other")).toBe(
+      "Smiley Creatures added Mind Flayer to the community"
+    );
+    expect(
+      runWithLocale("vi", () => selectListPreview(added, "u-actor"))
+    ).toBe("Bạn đã thêm Mind Flayer vào cộng đồng");
+  });
+});

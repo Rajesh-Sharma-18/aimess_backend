@@ -295,15 +295,21 @@ export function buildCommunitySystemFallbackText(
 
     case "MEMBER_REMOVED":
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_REMOVED_SELF", locale);
+      if (isActor)
+        return t("SYS_COMMUNITY_MEMBER_REMOVED_ACTOR", locale, { target });
       return t("SYS_COMMUNITY_MEMBER_REMOVED", locale, { target });
 
     case "MEMBER_BANNED":
       // PERSONAL message — only the banned member ever reads this.
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_BANNED_SELF", locale);
+      if (isActor)
+        return t("SYS_COMMUNITY_MEMBER_BANNED_ACTOR", locale, { target });
       return t("SYS_COMMUNITY_MEMBER_BANNED", locale, { target });
 
     case "MEMBER_UNBANNED":
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_UNBANNED_SELF", locale);
+      if (isActor)
+        return t("SYS_COMMUNITY_MEMBER_UNBANNED_ACTOR", locale, { target });
       return t("SYS_COMMUNITY_MEMBER_UNBANNED", locale, { target });
 
     case "MEMBER_MUTED": {
@@ -315,14 +321,23 @@ export function buildCommunitySystemFallbackText(
         const until = formatSystemDateTime(mutedUntilMs, locale);
         if (isTarget)
           return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_SELF", locale, { until });
+        if (isActor)
+          return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_ACTOR", locale, {
+            target,
+            until,
+          });
         return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL", locale, { target, until });
       }
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_MUTED_SELF", locale);
+      if (isActor)
+        return t("SYS_COMMUNITY_MEMBER_MUTED_ACTOR", locale, { target });
       return t("SYS_COMMUNITY_MEMBER_MUTED", locale, { target });
     }
 
     case "MEMBER_UNMUTED":
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_UNMUTED_SELF", locale);
+      if (isActor)
+        return t("SYS_COMMUNITY_MEMBER_UNMUTED_ACTOR", locale, { target });
       return t("SYS_COMMUNITY_MEMBER_UNMUTED", locale, { target });
 
     // The ACTOR is a person, never the community — a pin is performed by an
@@ -359,6 +374,9 @@ export function buildCommunitySystemFallbackText(
     case "MEMBER_ADDED":
       if (isTarget) {
         return t("SYS_COMMUNITY_MEMBER_ADDED_SELF", locale, { actor });
+      }
+      if (isActor) {
+        return t("SYS_COMMUNITY_MEMBER_ADDED_ACTOR", locale, { target });
       }
       return t("SYS_COMMUNITY_MEMBER_ADDED", locale, { actor, target });
     case "JOIN_REQUEST_REJECTED":

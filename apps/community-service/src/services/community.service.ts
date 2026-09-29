@@ -16,7 +16,7 @@ import {
   currentLocale,
   isHiddenSystemMessage,
   localizeMessagePreview,
-  personalizeCommunitySystemMessageForViewer,
+  buildCommunitySystemFallbackText,
   STORED_TEXT_LOCALE,
   t,
   type CommunitySystemMessageType,
@@ -484,17 +484,23 @@ function localizeSystemPreview(
     typeof row.lastActivitySystemMetadata === "object"
       ? (row.lastActivitySystemMetadata as Record<string, unknown>)
       : {};
-  const render = (target: SupportedLocale): string =>
-    personalizeCommunitySystemMessageForViewer(
+  const render = (target: SupportedLocale, viewer: string): string =>
+    buildCommunitySystemFallbackText(
       systemType as CommunitySystemMessageType,
       metadata,
-      preview,
       String(metadata.actorName ?? ""),
       String(metadata.targetName ?? ""),
-      viewerId,
+      viewer,
       target
     );
-  return preview === render(STORED_TEXT_LOCALE) ? render(locale) : preview;
+  // The stored preview is either this viewer's own first-person selfPreview or
+  // the shared third-person sentence (e.g. the moderation audit line the ACTOR
+  // reads as "You added …"). Either one is this row's event → re-render for
+  // the viewer; anything else is a personal overlay and stays as stored.
+  const isThisEvent =
+    preview === render(STORED_TEXT_LOCALE, viewerId) ||
+    preview === render(STORED_TEXT_LOCALE, "");
+  return isThisEvent ? render(locale, viewerId) : preview;
 }
 
 /** The stored preview this viewer resolves to, before any translation. */

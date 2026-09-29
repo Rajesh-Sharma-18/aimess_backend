@@ -846,6 +846,44 @@ export const SYSTEM_MESSAGES = {
     en: "{{actor}} added {{target}} to the community",
     th: "{{actor}}เพิ่ม{{target}}เข้าคอมมูนิตี้",
   },
+  // The ACTOR's own view of a moderation line (same `_ACTOR` convention as
+  // SYS_GROUP_MEMBER_REMOVED_ACTOR). Without these the admin who performed the
+  // action read their own name in the third person ("Smiley Creatures added …").
+  SYS_COMMUNITY_MEMBER_ADDED_ACTOR: {
+    vi: "Bạn đã thêm {{target}} vào cộng đồng",
+    en: "You added {{target}} to the community",
+    th: "คุณเพิ่ม{{target}}เข้าคอมมูนิตี้",
+  },
+  SYS_COMMUNITY_MEMBER_REMOVED_ACTOR: {
+    vi: "Bạn đã xóa {{target}} khỏi cộng đồng",
+    en: "You removed {{target}} from the community",
+    th: "คุณนำ{{target}}ออกจากคอมมูนิตี้",
+  },
+  SYS_COMMUNITY_MEMBER_BANNED_ACTOR: {
+    vi: "Bạn đã cấm {{target}}",
+    en: "You banned {{target}}",
+    th: "คุณแบน{{target}}",
+  },
+  SYS_COMMUNITY_MEMBER_UNBANNED_ACTOR: {
+    vi: "Bạn đã bỏ cấm {{target}}",
+    en: "You unbanned {{target}}",
+    th: "คุณปลดแบน{{target}}",
+  },
+  SYS_COMMUNITY_MEMBER_MUTED_UNTIL_ACTOR: {
+    vi: "Bạn đã cấm nói {{target}} đến {{until}}",
+    en: "You muted {{target}} until {{until}}",
+    th: "คุณปิดสิทธิ์พูด{{target}}จนถึง {{until}}",
+  },
+  SYS_COMMUNITY_MEMBER_MUTED_ACTOR: {
+    vi: "Bạn đã cấm nói {{target}} vô thời hạn",
+    en: "You muted {{target}} indefinitely",
+    th: "คุณปิดสิทธิ์พูด{{target}}โดยไม่มีกำหนด",
+  },
+  SYS_COMMUNITY_MEMBER_UNMUTED_ACTOR: {
+    vi: "Bạn đã bỏ cấm nói {{target}}",
+    en: "You unmuted {{target}}",
+    th: "คุณเปิดสิทธิ์พูดให้{{target}}",
+  },
   /** Actor-less variant for the community-LIST preview, which is built by
    *  community-service where the adding admin's display name is not resolved
    *  (only chat-service hydrates user snapshots for system lines). */

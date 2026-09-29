@@ -644,3 +644,37 @@ describe("MEMBER_MUTED — personal message with until date/time", () => {
     ).toBe("You were unmuted");
   });
 });
+
+describe("community moderation lines — actor reads first person", () => {
+  const meta = {
+    actorUserId: ACTOR,
+    targetUserId: TARGET,
+  };
+  const render = (type: string, viewer: string, extra = {}) =>
+    buildCommunitySystemFallbackText(
+      type as never,
+      { ...meta, ...extra },
+      "Smiley Creatures",
+      "Peter Parker",
+      viewer
+    );
+
+  it.each([
+    ["MEMBER_ADDED", "You added Peter Parker to the community", "Smiley Creatures added you to the community", "Smiley Creatures added Peter Parker to the community"],
+    ["MEMBER_REMOVED", "You removed Peter Parker from the community", "You were removed", "Peter Parker was removed"],
+    ["MEMBER_BANNED", "You banned Peter Parker", "You were banned from this community.", "Peter Parker was banned"],
+    ["MEMBER_UNBANNED", "You unbanned Peter Parker", "You were unbanned", "Peter Parker was unbanned"],
+    ["MEMBER_MUTED", "You muted Peter Parker indefinitely", "You are muted indefinitely", "Peter Parker is muted indefinitely"],
+    ["MEMBER_UNMUTED", "You unmuted Peter Parker", "You were unmuted", "Peter Parker was unmuted"],
+  ])("%s", (type, asActor, asTarget, asBystander) => {
+    expect(render(type, ACTOR)).toBe(asActor);
+    expect(render(type, TARGET)).toBe(asTarget);
+    expect(render(type, BYSTANDER)).toBe(asBystander);
+  });
+
+  it("timed mute names the target and expiry for the actor", () => {
+    expect(render("MEMBER_MUTED", ACTOR, { mutedUntil: 0 + 86_400_000 })).toBe(
+      `You muted Peter Parker until ${new Date(86_400_000).toUTCString()}`
+    );
+  });
+});
