@@ -164,6 +164,14 @@ const COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES = new Set<string>([
   CommunityEvents.MEMBER_UNBANNED,
 ]);
 
+const WEB_ACTIONABLE_DATA_ONLY_TYPES = new Set<string>([
+  "CALL_INCOMING",
+  "CALL_CANCELLED",
+  "CALL_HANDLED",
+  "MESSAGE_DELETED",
+  CommunityEvents.JOIN_REQUEST_RETRACTED,
+]);
+
 export interface PushInput {
   userId: string;
   category: NotificationCategory;
@@ -727,6 +735,11 @@ export async function pushToUser(input: PushInput): Promise<void> {
         excludeSessionIds?.length &&
         t.sessionId &&
         excludeSessionIds.includes(t.sessionId)
+      ) &&
+      !(
+        dataOnly &&
+        t.platform === "WEB" &&
+        !WEB_ACTIONABLE_DATA_ONLY_TYPES.has(type)
       ) &&
       // Platform-targeted send (announcements): keep only the sessions running
       // on a requested platform. Exact match, so a row with an unrecognized
