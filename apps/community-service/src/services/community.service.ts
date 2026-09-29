@@ -3170,8 +3170,8 @@ export const communityService = {
       for (const request of pending) {
         const snap = snapshots.get(request.userId);
         try {
-          const result = await communityRepository.autoResolveJoinRequestToMember(
-            {
+          const result =
+            await communityRepository.autoResolveJoinRequestToMember({
               requestId: request.id,
               communityId: community.id,
               userId: request.userId,
@@ -3182,8 +3182,7 @@ export const communityService = {
               },
               resolvedBy: actorId,
               inviteCode: request.inviteCode ?? null,
-            }
-          );
+            });
           if (result.outcome === "ACTIVATED") {
             joined.push({
               request,
@@ -3967,14 +3966,24 @@ export const communityService = {
       return toMemberData(target);
     }
 
-    // NOTE: no MEMBER_BANNED chat SYSTEM message is published — it is in
-    // HIDDEN_SYSTEM_MESSAGE_TYPES (packages/constants) as the authoritative
-    // policy. The banned user learns of the ban from the eviction/ban-notice
-    // events fired by removeActiveMember below (community:member:removed +
-    // community:membership:restricted, isBanned:true), the push notification,
-    // and `isBanned` on the community detail/list — which is what drives the
-    // persistent banned banner in the client. A "You were banned from this
-    // community." bubble in their own history was a second copy of that banner.
+    // MODERATION AUDIT line — no `visibleToUserId`, so the banned user gets no
+    // "You were banned from this community." bubble: they learn of the ban from the
+    // eviction/ban-notice events fired by removeActiveMember below
+    // (community:member:removed + community:membership:restricted, isBanned:true),
+    // the push notification, and `isBanned` on the community detail/list, which is
+    // what drives the persistent banned banner. Ordinary members never see this
+    // line; the community's owner/admin/moderators do.
+    //
+    // Posted BEFORE removeActiveMember so the target's member snapshot is still
+    // ACTIVE when chat-service resolves `targetName` for the sentence, and so the
+    // recipient lookup cannot race the mirror flipping the target to "banned".
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_BANNED",
+      actorId: callerId,
+      targetUserId,
+      ...(reason ? { extra: { reason } } : {}),
+    });
 
     // Ban = automatic leave: reuse the same removal core as leaveCommunity
     // (status flip, memberCount recompute, audit, socket eviction via
@@ -4233,13 +4242,22 @@ export const communityService = {
       };
     }
 
+    // MODERATION AUDIT line, same as the in-app ban path: community-scoped (no
+    // `visibleToUserId`), so the banned user gets no bubble — the banner, the
+    // restricted-membership event and the push already tell them — while the
+    // community's owner/admin/moderators keep the moderation trail. Awaited here so
+    // the line is persisted before the removal below flips the target's mirror.
     await publishCommunitySystemMessageForChatAwaited({
       communityId,
       systemMessageType: "MEMBER_BANNED",
-      metadata: { targetUserId },
+      metadata: {
+        targetUserId,
+        // Distinguishes a platform/backoffice ban from a community admin's own.
+        source: "BO",
+        ...(reason ? { reason } : {}),
+      },
       triggeredByUserId: actorAdminId,
       eventAt: new Date().toISOString(),
-      visibleToUserId: targetUserId,
     });
 
     const { updated } = await this.removeActiveMember(
@@ -4369,14 +4387,24 @@ export const communityService = {
     actorId: string;
     targetUserId?: string;
     extra?: Record<string, unknown>;
-    /** For PERSONAL subtypes (e.g. MEMBER_MUTED): the userId who should see the message. */
+    /**
+     * The one userId who should see this line. Set it for a PERSONAL subtype, and
+     * for the target-addressed COMPANION copy of a MODERATION subtype that has one
+     * (MEMBER_ADDED, MEMBER_MUTED). OMIT it for a MODERATION subtype to post the
+     * room-wide AUDIT line instead — persisted community-scoped, readable and
+     * deliverable only to the community's owner/admin/moderators. Mute and Add call
+     * this method TWICE, once each way; ban / unban / unmute post the audit line
+     * only. See MODERATION_TYPES_WITH_PERSONAL_COPY in @aimess/constants.
+     */
     visibleToUserId?: string;
   }): void {
-    // Telegram silent-kick parity: never post moderation removal/ban lines to the
-    // chat timeline (they pile up across remove→rejoin cycles and the victim sees
+    // Telegram silent-kick parity: joined / left / removed never reach the chat
+    // timeline at all (they pile up across remove→rejoin cycles and the victim sees
     // "You were removed" repeatedly). The domain event, roster socket, and
     // notifications still fire from their own call sites — only the chat SYSTEM
     // message is dropped. chat-service also hides any rows persisted before this.
+    // The MODERATION subtypes are NOT dropped here: they are emitted and scoped to
+    // moderators downstream.
     if (isHiddenSystemMessage(args.systemMessageType)) return;
     publishCommunitySystemMessageForChatSafe({
       communityId: args.communityId,
@@ -4665,6 +4693,26 @@ export const communityService = {
       eventAt: args.eventAt,
       visibleToUserId: member.userId,
     });
+
+    // …and, for an admin ADD only, the MODERATION AUDIT counterpart: same subtype,
+    // community-scoped (no `visibleToUserId`), so it renders third-person
+    // ("{admin} added {member} to the community") for the community's owner/admin/
+    // moderators and is withheld from every ordinary member. Same `eventAt` as the
+    // personal line above — the chat-service dedup key appends `:u:{userId}` for a
+    // personal copy only, so the two rows never collide and a RabbitMQ redelivery
+    // still collapses each of them independently.
+    //
+    // Only MEMBER_ADDED: a self-join / invite / approved request is not a
+    // moderation action, and its COMMUNITY_JOINED line stays purely personal.
+    if (joinLineType === "MEMBER_ADDED") {
+      publishCommunitySystemMessageForChatSafe({
+        communityId: community.id,
+        systemMessageType: "MEMBER_ADDED",
+        metadata: { targetUserId: member.userId },
+        triggeredByUserId: actorId,
+        eventAt: args.eventAt,
+      });
+    }
   },
 
   /**
@@ -5835,7 +5883,19 @@ export const communityService = {
       );
     }
 
-    // NOTE: no system message emitted — mirrors the silent MEMBER_BANNED policy.
+    // MODERATION AUDIT line — community-scoped, so it reaches the owner/admin/
+    // moderators only and closes the ban→unban pair in their trail. Deliberately
+    // NOT addressed to the unbanned user: an unban does not re-add them to the
+    // community, so a bubble in a history they can only read up to their old ban
+    // cutoff would say nothing useful. They learn the ban was lifted from
+    // `community:membership:restricted` (isBanned:false) and the push.
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_UNBANNED",
+      actorId: callerId,
+      targetUserId,
+      ...(opts?.asPlatformAdmin ? { extra: { source: "BO" } } : {}),
+    });
 
     // Personal channel — reaches ALL of the unbanned user's devices. Unban
     // lifts BANNED→LEFT (not auto-re-added) but must NOT evict the community
@@ -5940,21 +6000,32 @@ export const communityService = {
       actorId: callerId,
     });
 
-    // Mute is silent COMMUNITY-wide (no "{name} was muted" line for other
-    // members — MEMBER_MUTED is PERSONAL visibility), but the muted member
-    // themselves gets a private "You were muted in this community." line in
-    // their own history (Telegram parity), delivered only to their own
-    // `user:<id>` channel — never broadcast to the community room.
+    // TWO chat lines, both carrying the same subtype (see the MODERATION scope in
+    // @aimess/constants):
+    //  1. the muted member's own PERSONAL "You are muted until …" notice, on their
+    //     `user:<id>` channel only — it explains why their composer is disabled;
+    //  2. the MODERATION AUDIT line, persisted room-wide but delivered to and
+    //     readable by the community's owner/admin/moderators ONLY, so moderators
+    //     have the moderation trail in the timeline while ordinary members never
+    //     learn from chat that somebody was muted.
+    const muteAudit = {
+      mutedUntil: mutedUntil ? mutedUntil.getTime() : null,
+      durationMinutes: durationMinutes ?? null,
+    };
     this.emitMemberSystemMessage({
       communityId,
       systemMessageType: "MEMBER_MUTED",
       actorId: callerId,
       targetUserId,
       visibleToUserId: targetUserId,
-      extra: {
-        mutedUntil: mutedUntil ? mutedUntil.getTime() : null,
-        durationMinutes: durationMinutes ?? null,
-      },
+      extra: muteAudit,
+    });
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_MUTED",
+      actorId: callerId,
+      targetUserId,
+      extra: muteAudit,
     });
 
     // Best-effort: push a real-time notice to any of the target's currently-LIVE
@@ -6068,17 +6139,17 @@ export const communityService = {
       userId: targetUserId,
     });
 
-    // Unmute is silent COMMUNITY-wide (no "{name} was unmuted" line for other
-    // members — MEMBER_UNMUTED is PERSONAL visibility), but the unmuted member
-    // themselves gets a private "You were unmuted" line in their own history
-    // (Telegram parity), delivered only to their own `user:<id>` channel —
-    // never broadcast to the community room.
+    // MODERATION AUDIT line only — no `visibleToUserId`, so nothing lands in the
+    // unmuted member's own history. They learn the mute is over from the
+    // `community:member:unmuted` socket event (composer re-enables) and from the
+    // retraction above; a "You were unmuted" bubble would be a second copy of the
+    // same fact. Ordinary members never see this line at all; the community's
+    // owner/admin/moderators do, so the mute→unmute pair reads as a trail.
     this.emitMemberSystemMessage({
       communityId,
       systemMessageType: "MEMBER_UNMUTED",
       actorId: callerId,
       targetUserId,
-      visibleToUserId: targetUserId,
     });
   },
 
@@ -6203,13 +6274,19 @@ export const communityService = {
           actorId: "",
         });
 
-        // A lapsed timer IS an unmute, so the member's history must end up in
-        // the same state a moderator unmute leaves it in: retract the now-false
-        // "You are muted until …" line, then post the PERSONAL "You were
-        // unmuted" line. Without this the member was left staring at a mute
-        // notice for a mute that no longer exists, and only ever saw "You were
-        // unmuted" when a human happened to press the button. Push stays
-        // suppressed above — the LINE is history, not a ping.
+        // A lapsed timer IS an unmute, so it must leave both the member's history
+        // and the moderation trail in the same state a manual unmute does: retract
+        // the now-false "You are muted until …" line, then post the MODERATION
+        // AUDIT line. Without this the member was left staring at a mute notice for
+        // a mute that no longer exists, and the moderators' trail showed a mute
+        // with no matching release. Push stays suppressed above — this is history,
+        // not a ping.
+        //
+        // NO DUPLICATE on a race with a manual unmute: only one caller ever gets
+        // here per mute, because the sweeper's claim (the delete above) and
+        // `unmuteMember`'s own read-modify-write contend for the same row and the
+        // loser finds nothing to lift. `metadata.source: "auto"` on the audit row
+        // records which one won.
         publishCommunityMemberMuteRetractedForChatSafe({
           communityId: row.communityId,
           userId: row.userId,
@@ -6217,12 +6294,12 @@ export const communityService = {
         this.emitMemberSystemMessage({
           communityId: row.communityId,
           systemMessageType: "MEMBER_UNMUTED",
-          // No human acted; the audit row above records the same actor. The
-          // target-facing sentence never names an actor, so this only ever
-          // reaches the client as metadata.actorUserId.
+          // No human acted; the audit row above records the same actor. Reaches
+          // the client as metadata.actorUserId so a moderator's timeline can
+          // render "the mute expired" rather than naming someone who did nothing.
           actorId: "system",
           targetUserId: row.userId,
-          visibleToUserId: row.userId,
+          extra: { source: "auto" },
         });
       } catch (err) {
         // The row is already deleted (claim won), so the mute IS lifted and the
@@ -7768,48 +7845,48 @@ export const communityService = {
         );
       }
     } catch (err) {
-        // Lost the race to a concurrent Add Member / second approve / the
-        // PRIVATE→PUBLIC auto-resolve on the same user (unique index on
-        // communityId+userId, or the guarded reactivation). The other path
-        // already activated them and posted their join line, so fall back to
-        // the same graceful no-op as the D1 branch above instead of a 500 —
-        // exactly one membership, one system message, one notification.
-        if (!isConcurrentActivationError(err)) throw err;
-        const winner = await communityRepository.findMemberByUserId(
-          communityId,
-          request.userId
-        );
-        // The winner's own transaction normally settled the request already;
-        // only a row it missed is closed (and announced) here — never twice.
-        const closedHere = await communityRepository.settlePendingJoinRequest(
-          requestId,
-          {
-            status: CommunityJoinReqStatus.AUTO_RESOLVED,
-            decidedBy: callerId,
-            decidedAt: new Date(),
-          }
-        );
-        if (closedHere) {
-          await this.notifyJoinRequestDecided({
-            communityId,
-            requestId,
-            status: "AUTO_RESOLVED",
-            targetUserId: request.userId,
-            actorId: callerId,
-            decidedAt: new Date(),
-          });
+      // Lost the race to a concurrent Add Member / second approve / the
+      // PRIVATE→PUBLIC auto-resolve on the same user (unique index on
+      // communityId+userId, or the guarded reactivation). The other path
+      // already activated them and posted their join line, so fall back to
+      // the same graceful no-op as the D1 branch above instead of a 500 —
+      // exactly one membership, one system message, one notification.
+      if (!isConcurrentActivationError(err)) throw err;
+      const winner = await communityRepository.findMemberByUserId(
+        communityId,
+        request.userId
+      );
+      // The winner's own transaction normally settled the request already;
+      // only a row it missed is closed (and announced) here — never twice.
+      const closedHere = await communityRepository.settlePendingJoinRequest(
+        requestId,
+        {
+          status: CommunityJoinReqStatus.AUTO_RESOLVED,
+          decidedBy: callerId,
+          decidedAt: new Date(),
         }
-        const settled =
-          closedHere ??
-          (await communityRepository.findJoinRequestById(requestId)) ??
-          request;
-        logger.info(
-          `approveJoinRequest: ${request.userId} was activated concurrently in ${communityId}; request ${requestId} auto-resolved`
-        );
-        return {
-          request: toJoinRequestData(settled),
-          member: await toMemberData(winner!),
-        };
+      );
+      if (closedHere) {
+        await this.notifyJoinRequestDecided({
+          communityId,
+          requestId,
+          status: "AUTO_RESOLVED",
+          targetUserId: request.userId,
+          actorId: callerId,
+          decidedAt: new Date(),
+        });
+      }
+      const settled =
+        closedHere ??
+        (await communityRepository.findJoinRequestById(requestId)) ??
+        request;
+      logger.info(
+        `approveJoinRequest: ${request.userId} was activated concurrently in ${communityId}; request ${requestId} auto-resolved`
+      );
+      return {
+        request: toJoinRequestData(settled),
+        member: await toMemberData(winner!),
+      };
     }
 
     const count = await communityRepository.countActiveMembers(communityId);
@@ -10951,10 +11028,7 @@ export const communityService = {
             callerId
           )
         : null;
-    const pendingRow = isLiveJoinRequest(
-      community.type,
-      pendingRequest?.status
-    )
+    const pendingRow = isLiveJoinRequest(community.type, pendingRequest?.status)
       ? pendingRequest
       : null;
 
