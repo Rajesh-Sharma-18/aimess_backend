@@ -586,7 +586,8 @@ const startServer = async () => {
       redis,
       presenceService,
       userGrpcClient,
-      privatePinService
+      privatePinService,
+      privateSystemMessageService
     );
     const privateMessageService = new PrivateMessageService(
       privateMessageRepo,

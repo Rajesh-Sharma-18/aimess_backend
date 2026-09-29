@@ -34,7 +34,7 @@ function repoWith(rooms: RoomFixture[]) {
       r.roomId,
       {
         ...r,
-        truth: r.truth ?? (r.unreadCountByUser[ME] ?? 0),
+        truth: r.truth ?? r.unreadCountByUser[ME] ?? 0,
       } as RoomFixture & { truth: number },
     ])
   );
@@ -68,8 +68,9 @@ function repoWith(rooms: RoomFixture[]) {
       // and `$group`s per room; countRemainingUnread matches one roomId and `$count`s.
       aggregateRaw: jest.fn(
         async ({ pipeline }: { pipeline: Array<Record<string, never>> }) => {
-          const match = (pipeline[0] as unknown as { $match: Record<string, unknown> })
-            .$match;
+          const match = (
+            pipeline[0] as unknown as { $match: Record<string, unknown> }
+          ).$match;
           const roomId = match.roomId;
           if (typeof roomId === "string") {
             return [{ total: stored.get(roomId)?.truth ?? 0 }];
@@ -126,10 +127,10 @@ describe("S1/S10 — the badge is the sum of the rows the Unread tab lists", () 
     });
   });
 
-  it("excludes a room this user deleted for themselves — the list hides that row too", async () => {
+  it("a room deleted for themselves after its last message feeds no badge (the row itself stays listed)", async () => {
     const { repo } = repoWith([
       {
-        // Deleted AFTER the last message ⇒ nothing visible ⇒ no row, no badge.
+        // Deleted AFTER the last message ⇒ nothing visible ⇒ nothing unread.
         roomId: "r1",
         lastMessageAt: new Date("2026-08-21T10:00:00.000Z"),
         deletedFor: { [ME]: "2026-08-21T12:00:00.000Z" },

@@ -569,6 +569,16 @@ export const SYSTEM_MESSAGES = {
     en: "You updated the chat",
     th: "คุณอัปเดตการสนทนา",
   },
+  SYS_CONVERSATION_CLEARED_SELF: {
+    vi: "Bạn đã xóa nội dung cuộc trò chuyện",
+    en: "You cleared the conversation",
+    th: "คุณล้างการสนทนาแล้ว",
+  },
+  SYS_CONVERSATION_DELETED_SELF: {
+    vi: "Bạn đã xóa cuộc trò chuyện",
+    en: "You deleted the conversation",
+    th: "คุณลบการสนทนาแล้ว",
+  },
 
   // ── Community SYSTEM rows ───────────────────────────────────────────────
   SYS_COMMUNITY_CREATED: {
@@ -884,16 +894,6 @@ export const SYSTEM_MESSAGES = {
     en: "You unmuted {{target}}",
     th: "คุณเปิดสิทธิ์พูดให้{{target}}",
   },
-  /** Actor-less variant for the community-LIST preview, which is built by
-   *  community-service where the adding admin's display name is not resolved
-   *  (only chat-service hydrates user snapshots for system lines). */
-  SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT: {
-    vi: "Bạn đã được thêm vào cộng đồng",
-    en: "You were added to the community",
-    th: "คุณถูกเพิ่มเข้าคอมมูนิตี้",
-  },
-  SYS_COMMUNITY_JOIN_REQUEST_REJECTED: {
-    vi: "Yêu cầu tham gia của bạn đã bị từ chối",
   // What the OTHER owner/admin/moderators read on a MANUAL moderation audit line:
   // names who acted as well as who was targeted. The passive forms above
   // ("{{target}} was unmuted") stay for actor-less rows — the auto-unmute sweeper
@@ -923,6 +923,16 @@ export const SYSTEM_MESSAGES = {
     en: "{{actor}} unmuted {{target}}",
     th: "{{actor}}เปิดสิทธิ์พูดให้{{target}}",
   },
+  /** Actor-less variant for the community-LIST preview, which is built by
+   *  community-service where the adding admin's display name is not resolved
+   *  (only chat-service hydrates user snapshots for system lines). */
+  SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT: {
+    vi: "Bạn đã được thêm vào cộng đồng",
+    en: "You were added to the community",
+    th: "คุณถูกเพิ่มเข้าคอมมูนิตี้",
+  },
+  SYS_COMMUNITY_JOIN_REQUEST_REJECTED: {
+    vi: "Yêu cầu tham gia của bạn đã bị từ chối",
     en: "Your request to join was declined",
     th: "คำขอเข้าร่วมของคุณถูกปฏิเสธ",
   },

@@ -118,6 +118,10 @@ export const SystemEvent = {
 
   /** Private-chat auto-delete (disappearing messages) timer enabled/changed/disabled. */
   AUTO_DELETE_UPDATED: "AUTO_DELETE_UPDATED",
+
+  /** Caller cleared / deleted their own history. Persisted hidden from everyone else. */
+  CONVERSATION_CLEARED: "CONVERSATION_CLEARED",
+  CONVERSATION_DELETED: "CONVERSATION_DELETED",
 } as const;
 export type SystemEvent = (typeof SystemEvent)[keyof typeof SystemEvent];
 

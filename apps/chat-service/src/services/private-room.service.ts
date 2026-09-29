@@ -70,6 +70,8 @@ import {
 } from "./user-snapshot.service.js";
 import type { PresenceService, PresenceView } from "./presence.service.js";
 import type { PrivatePinService } from "./private-pin.service.js";
+import type { PrivateSystemMessageService } from "./private-system-message.service.js";
+import { SystemEvent } from "../types/enums.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 import type { ChatFriendshipInfo } from "../grpc/user-snapshot.client.js";
 import type { UnreadStats } from "../lib/unread-count.js";
@@ -512,7 +514,10 @@ export class PrivateRoomService {
     },
     // ponytail: optional — omitted in existing unit tests; pin clearing on
     // delete just becomes a no-op (matches the pre-existing behavior).
-    private readonly pinService?: PrivatePinService
+    private readonly pinService?: PrivatePinService,
+    // ponytail: optional — omitted in existing unit tests; clear/delete then
+    // just skip their "You cleared/deleted the conversation" line.
+    private readonly sysMsg?: PrivateSystemMessageService
   ) {}
 
   /**
@@ -1363,7 +1368,7 @@ export class PrivateRoomService {
     const isParticipant = room.participants?.includes(userId);
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
-    await this.privateRoomRepo.setDeletedFor(roomId, userId);
+    const cutoff = await this.privateRoomRepo.setDeletedFor(roomId, userId);
 
     // `setDeletedFor` zeroed this user's stored unread counter, but the Chats
     // nav badge is a TOTAL the server owns — without this push it keeps
@@ -1403,16 +1408,63 @@ export class PrivateRoomService {
         .catch(() => {});
     }
 
-    // Notify the user that the conversation was deleted from their view.
+    // Delete Conversation empties the caller's history but KEEPS the row —
+    // same list/transcript effect as clear, so it fans out the same events.
+    await this.announceHistoryEmptied(
+      room,
+      userId,
+      cutoff,
+      SystemEvent.CONVERSATION_DELETED
+    );
+  }
+
+  /**
+   * Shared tail of clear and delete: the caller's own devices empty the open
+   * transcript (`conv:cleared`) and the list row (self-only `conv:updated`),
+   * then the self-only system line lands after the cutoff. Nothing reaches the
+   * peer — this is the caller's local view.
+   */
+  private async announceHistoryEmptied(
+    room: { roomId: string; participants?: string[] | null },
+    userId: string,
+    cutoff: Date | null,
+    systemEvent:
+      | typeof SystemEvent.CONVERSATION_CLEARED
+      | typeof SystemEvent.CONVERSATION_DELETED
+  ): Promise<void> {
+    const { roomId } = room;
     this.redis
       .publish(
         `user:${userId}`,
         JSON.stringify({
-          event: "conv:deleted",
-          data: { roomId, deletedBy: userId },
+          event: "conv:cleared",
+          data: {
+            roomId,
+            clearedBy: userId,
+            type: "PRIVATE",
+            // The cutoff, so an open transcript drops only what it hides and
+            // keeps the history line that follows (whatever order they land in).
+            clearedAt: cutoff?.getTime(),
+            action:
+              systemEvent === SystemEvent.CONVERSATION_DELETED
+                ? "DELETE"
+                : "CLEAR",
+          },
         })
       )
       .catch(() => {});
+    await this.publishEmptiedRow(roomId, userId);
+
+    const peerId = room.participants?.find((id) => id !== userId);
+    if (cutoff && peerId) {
+      await this.sysMsg?.post({
+        roomId,
+        actorId: userId,
+        peerId,
+        systemEvent,
+        selfOnlyAfter: cutoff,
+      });
+    }
   }
 
   /**
@@ -1470,19 +1522,17 @@ export class PrivateRoomService {
     const isParticipant = room.participants?.includes(userId);
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
-    await this.privateRoomRepo.setClearFor(roomId, userId);
+    const cutoff = await this.privateRoomRepo.setClearFor(roomId, userId);
+    await this.announceHistoryEmptied(
+      room,
+      userId,
+      cutoff,
+      SystemEvent.CONVERSATION_CLEARED
+    );
+  }
 
-    this.redis
-      .publish(
-        `user:${userId}`,
-        JSON.stringify({
-          event: "conv:cleared",
-          data: { roomId, clearedBy: userId, type: "PRIVATE" },
-        })
-      )
-      .catch(() => {});
-
-    // The row STAYS in the list (clear ≠ delete conversation) but now has no
+  private async publishEmptiedRow(roomId: string, userId: string) {
+    // The row STAYS in the list (after clear AND delete) but now has no
     // visible message, so its effective lastActivity is empty and it must drop
     // to the bottom. `conv:cleared` alone left every other device — and any
     // client that only listens for list bumps — rendering the cleared chat at
@@ -1501,7 +1551,7 @@ export class PrivateRoomService {
       preview: { contentType: "", text: "", createdAt: 0 },
       // An emptied row is not a new message — must never raise an unread badge.
       countInUnread: false,
-      // `setClearFor` above already zeroed this user's stored counter; state it
+      // The cutoff write already zeroed this user's stored counter; state it
       // explicitly so the client SETs 0 instead of keeping a badge for messages
       // it can no longer show.
       resolveUnreadCounts: async () => ({ [userId]: 0 }),

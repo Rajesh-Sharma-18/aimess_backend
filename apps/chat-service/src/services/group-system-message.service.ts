@@ -26,6 +26,7 @@ import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
 import { systemMessageBumpsActivity } from "../lib/system-message-policy.js";
+import { afterCutoff } from "../lib/deletion-cutoff.js";
 
 // Group lifecycle events mirrored into the admin panel's audit log. Everything absent
 // here (calls, pins, invites, friendship, auto-delete) is chatter, not moderation signal.
@@ -115,6 +116,12 @@ export interface PostSystemMessageParams {
    * is still persisted for the remaining members' history.
    */
   excludeUserId?: string | null;
+  /**
+   * Self-only line (clear/delete conversation) — see the private twin. Persisted
+   * hidden for every other member, stamped after this cutoff, never bumps the
+   * room, and is pushed to the actor only.
+   */
+  selfOnlyAfter?: Date;
 }
 
 /**
@@ -206,7 +213,8 @@ export class GroupSystemMessageService {
       // paths, whose actor lives in admin_db and has no snapshot to resolve. That
       // gap is what left every backoffice removal reading "Someone removed X".
       const actorName =
-        this.nameOf(snapshots, actorId) || String(inData.actorName ?? "").trim();
+        this.nameOf(snapshots, actorId) ||
+        String(inData.actorName ?? "").trim();
       const targetName = this.nameOf(snapshots, targetUserId);
       const actorAvatar = actorId
         ? ((snapshots.get(actorId)?.avatar as string) ?? "")
@@ -250,12 +258,23 @@ export class GroupSystemMessageService {
         content,
         sequenceNumber: seq,
         clientMessageId: params.clientMessageId ?? null,
+        ...(params.selfOnlyAfter && actorId
+          ? {
+              // ponytail: one id per roster row; fine at group sizes. A
+              // visibleToUserId column (community's model) if rosters get huge.
+              deletedForUserIds: (
+                await this.memberRepo.findAllUserIds(roomId)
+              ).filter((id) => id !== actorId),
+              createdAt: afterCutoff(params.selfOnlyAfter),
+            }
+          : {}),
       });
+      const selfOnly = Boolean(params.selfOnlyAfter && actorId);
 
       // Bump inbox order/preview (no unread increment) — gated per-subtype so
       // membership churn (join/left/removed) can't reorder the list, matching
       // Community's SYSTEM_MESSAGE_BUMPS_ACTIVITY.
-      if (systemMessageBumpsActivity(systemEvent)) {
+      if (!selfOnly && systemMessageBumpsActivity(systemEvent)) {
         await this.roomRepo.updateLastMessage(roomId, {
           _id: message.id,
           senderId: message.senderId ?? null,
@@ -306,7 +325,7 @@ export class GroupSystemMessageService {
       // -message.service.ts publishCommunityUpdatedSafe). Gated the same as the
       // DB write above — a non-bumping event (member left/removed, unpin, …)
       // must not reorder the recipient's inbox either.
-      if (systemMessageBumpsActivity(systemEvent)) {
+      if (!selfOnly && systemMessageBumpsActivity(systemEvent)) {
         // The subject member's own list row should read "You were added" /
         // "Alex promoted you to admin" rather than the shared third-person
         // line — mirrors Community's subjectUserId/selfPreview personalization.
@@ -345,7 +364,7 @@ export class GroupSystemMessageService {
 
       this.redis
         .publish(
-          `conv:${roomId}`,
+          selfOnly ? `user:${actorId}` : `conv:${roomId}`,
           JSON.stringify({
             event: "message:new",
             ...(params.excludeUserId

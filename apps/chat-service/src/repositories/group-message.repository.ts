@@ -102,6 +102,9 @@ export class GroupMessageRepository {
         deletedPlaceholder: (data.deletedPlaceholder as string) ?? "",
         deletedAt: (data.deletedAt as Date) ?? null,
         deletedBy: (data.deletedBy as string) ?? null,
+        ...(Array.isArray(data.deletedForUserIds)
+          ? { deletedForUserIds: data.deletedForUserIds }
+          : {}),
         createdAt: (data.createdAt as Date) ?? new Date(),
         autoDeleteAt: (data.autoDeleteAt as Date | null) ?? null,
         autoDeleteAfterView: (data.autoDeleteAfterView as boolean) ?? false,

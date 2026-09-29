@@ -97,21 +97,6 @@ export type GroupRoomMembership = GroupRoom & {
 };
 
 /**
- * Post-fetch "delete conversation" visibility gate — mirrors
- * PrivateRoomRepository's `isVisibleAfterDeleteForMe`. A member who cleared
- * their group history stays ACTIVE (unlike Leave), so the room only reappears
- * in their list once a message newer than the clear lands.
- */
-function isVisibleAfterClear(
-  room: { lastMessageAt: Date | null },
-  clearedAt: Date | null | undefined
-): boolean {
-  if (!clearedAt) return true;
-  const lastMs = room.lastMessageAt ? room.lastMessageAt.getTime() : 0;
-  return lastMs > clearedAt.getTime();
-}
-
-/**
  * Normalized per-viewer last-activity DTO for a GROUP row — the same shape
  * `PrivateConversationLastActivity` / `CommunityLastActivity` already expose, so
  * every list surface finally answers "what happened last, and when, FOR ME" in
@@ -1119,23 +1104,20 @@ export class GroupRoomService {
     if (!member || !["ACTIVE", "LEFT", "KICKED"].includes(member.status)) {
       throw new NotFoundError("CHAT_NOT_A_MEMBER");
     }
-    await this.memberRepo.setClearedAt(roomId, userId);
+    const cutoff = await this.memberRepo.setClearedAt(roomId, userId);
 
     // Same reason as PrivateRoomService.deleteForMe: `setClearedAt` zeroed the
     // stored counter, so the nav-badge TOTAL has to be recomputed and pushed or
     // it keeps counting messages this member can no longer see.
     notifyUnreadChanged(userId);
 
-    // Notify the user's other devices the conversation was cleared from their view.
-    this.redis
-      .publish(
-        `user:${userId}`,
-        JSON.stringify({
-          event: "conv:deleted",
-          data: { roomId, deletedBy: userId, type: "GROUP" },
-        })
-      )
-      .catch(() => {});
+    // The row stays listed — same list/transcript effect as clear.
+    await this.announceHistoryEmptied(
+      roomId,
+      userId,
+      cutoff,
+      SystemEvent.CONVERSATION_DELETED
+    );
   }
 
   async clearChat(roomId: string, userId: string): Promise<void> {
@@ -1144,14 +1126,45 @@ export class GroupRoomService {
       userId
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    await this.memberRepo.setClearChatAt(roomId, userId);
+    const cutoff = await this.memberRepo.setClearChatAt(roomId, userId);
+    await this.announceHistoryEmptied(
+      roomId,
+      userId,
+      cutoff,
+      SystemEvent.CONVERSATION_CLEARED
+    );
+  }
 
+  /**
+   * Shared tail of clear and delete (mirrors PrivateRoomService): the caller's
+   * own devices empty the transcript and the list row, then the self-only
+   * system line lands after the cutoff. No other member hears about it.
+   */
+  private async announceHistoryEmptied(
+    roomId: string,
+    userId: string,
+    cutoff: Date | undefined,
+    systemEvent:
+      | typeof SystemEvent.CONVERSATION_CLEARED
+      | typeof SystemEvent.CONVERSATION_DELETED
+  ): Promise<void> {
     this.redis
       .publish(
         `user:${userId}`,
         JSON.stringify({
           event: "conv:cleared",
-          data: { roomId, clearedBy: userId, type: "GROUP" },
+          data: {
+            roomId,
+            clearedBy: userId,
+            type: "GROUP",
+            // The cutoff, so an open transcript drops only what it hides and
+            // keeps the history line that follows (whatever order they land in).
+            clearedAt: cutoff?.getTime(),
+            action:
+              systemEvent === SystemEvent.CONVERSATION_DELETED
+                ? "DELETE"
+                : "CLEAR",
+          },
         })
       )
       .catch(() => {});
@@ -1173,7 +1186,7 @@ export class GroupRoomService {
       preview: { contentType: "", text: "", createdAt: 0 },
       // An emptied row is not a new message — must never raise an unread badge.
       countInUnread: false,
-      // `setClearChatAt` above already zeroed this member's stored counter;
+      // The cutoff write already zeroed this member's stored counter;
       // state it explicitly so the client SETs 0 rather than keeping its cached
       // badge for messages it can no longer show.
       resolveUnreadCounts: async () => ({ [userId]: 0 }),
@@ -1181,6 +1194,16 @@ export class GroupRoomService {
       // the monotonic list guard drops the clear entirely and the row stays
       // pinned at the top with its old preview.
       deleteRecalc: true,
+    });
+
+    // No cutoff, no line: without one the row would post as a normal,
+    // everyone-visible SYSTEM message.
+    if (!cutoff) return;
+    await this.sysMsg.post({
+      roomId,
+      actorId: userId,
+      systemEvent,
+      selfOnlyAfter: cutoff,
     });
   }
 
@@ -1190,13 +1213,8 @@ export class GroupRoomService {
   ): Promise<GroupRoomMembership[]> {
     const memberships = await this.memberRepo.getActiveMemberships(userId);
     if (!memberships.length) return [];
-    const clearedByRoom = new Map(
-      memberships.map((m) => [m.roomId, m.clearedAt])
-    );
-    const roomIds = [...clearedByRoom.keys()];
-    const rawRooms = (
-      await this.roomRepo.getUserGroups(userId, roomIds, params)
-    ).filter((r) => isVisibleAfterClear(r, clearedByRoom.get(r.roomId)));
+    const roomIds = memberships.map((m) => m.roomId);
+    const rawRooms = await this.roomRepo.getUserGroups(userId, roomIds, params);
     const membershipByRoom = new Map(memberships.map((m) => [m.roomId, m]));
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
@@ -1228,16 +1246,11 @@ export class GroupRoomService {
     // stays consistent with what the inbox page actually returns.
     const memberships = await this.memberRepo.getInboxMemberships(userId);
     if (!memberships.length) return 0;
-    const clearedByRoom = new Map(
-      memberships.map((m) => [m.roomId, m.clearedAt])
-    );
     const rows = await this.roomRepo.findLastMessageAtForRooms(
-      [...clearedByRoom.keys()],
+      memberships.map((m) => m.roomId),
       q
     );
-    return rows.filter((r) =>
-      isVisibleAfterClear(r, clearedByRoom.get(r.roomId))
-    ).length;
+    return rows.length;
   }
 
   /**
@@ -1250,28 +1263,29 @@ export class GroupRoomService {
   async countUnreadForUser(userId: string): Promise<UnreadStats> {
     const memberships = await this.memberRepo.getActiveMemberships(userId);
     if (!memberships.length) return { ...EMPTY_UNREAD_STATS };
-    const clearedByRoom = new Map(
-      memberships.map((m) => [m.roomId, m.clearedAt])
-    );
-    const unreadByRoom = new Map(
-      memberships.map((m) => [m.roomId, m.unreadCount])
-    );
+    const membershipByRoom = new Map(memberships.map((m) => [m.roomId, m]));
     const rows = await this.roomRepo.findLastMessageAtForRooms([
-      ...clearedByRoom.keys(),
+      ...membershipByRoom.keys(),
     ]);
-    return rows
-      .filter((r) => isVisibleAfterClear(r, clearedByRoom.get(r.roomId)))
-      .reduce<UnreadStats>(
-        (acc, r) => {
-          const unread = unreadByRoom.get(r.roomId) ?? 0;
-          if (unread <= 0) return acc;
-          return {
-            messages: acc.messages + unread,
-            conversations: acc.conversations + 1,
-          };
-        },
-        { ...EMPTY_UNREAD_STATS }
-      );
+    return rows.reduce<UnreadStats>(
+      (acc, r) => {
+        const member = membershipByRoom.get(r.roomId);
+        // Nothing past this member's clear/delete cutoff ⇒ nothing unread,
+        // whatever the stored counter says (the row itself stays listed).
+        if (
+          !member ||
+          isHiddenByCutoff(r.lastMessageAt, getGroupVisibilityCutoff(member))
+        )
+          return acc;
+        const unread = member.unreadCount ?? 0;
+        if (unread <= 0) return acc;
+        return {
+          messages: acc.messages + unread,
+          conversations: acc.conversations + 1,
+        };
+      },
+      { ...EMPTY_UNREAD_STATS }
+    );
   }
 
   async archiveRoom(roomId: string, userId: string): Promise<GroupRoom> {
@@ -1337,18 +1351,14 @@ export class GroupRoomService {
     const membershipByRoom = new Map(memberships.map((m) => [m.roomId, m]));
     const roomIds = memberships.map((m) => m.roomId);
 
-    const rawRooms = (
-      await this.roomRepo.getInboxGroups({
-        roomIds,
-        direction: params.direction,
-        ts: params.ts,
-        boundaryId: params.boundaryId,
-        inclusive: params.inclusive,
-        limit: params.limit,
-      })
-    ).filter((r) =>
-      isVisibleAfterClear(r, membershipByRoom.get(r.roomId)?.clearedAt)
-    );
+    const rawRooms = await this.roomRepo.getInboxGroups({
+      roomIds,
+      direction: params.direction,
+      ts: params.ts,
+      boundaryId: params.boundaryId,
+      inclusive: params.inclusive,
+      limit: params.limit,
+    });
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
     // No ex-member preview cap here any more — every row this list can produce

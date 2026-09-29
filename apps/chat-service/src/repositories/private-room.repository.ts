@@ -5,6 +5,10 @@
 } from "../generated/prisma/index.js";
 import { logger } from "@aimess/logger";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import {
+  getPrivateDeletionCutoff,
+  isHiddenByCutoff,
+} from "../lib/deletion-cutoff.js";
 import { redis } from "../config/redis.js";
 import {
   newerSnapshotMongoQuery,
@@ -24,21 +28,6 @@ import {
   autoDeletePolicyUpdatePipeline,
   type AutoDeleteMode,
 } from "../lib/auto-delete.js";
-
-// ponytail: post-fetch delete-for-me filter. Reappears when a newer message
-// arrives after the user's deletion timestamp (Telegram-style). Dynamic-key
-// Json path filters on MongoDB+Prisma are unreliable, so filter in memory.
-function isVisibleAfterDeleteForMe(
-  room: { deletedFor?: unknown; lastMessageAt?: Date | null },
-  userId: string
-): boolean {
-  const map = (room.deletedFor ?? {}) as Record<string, string>;
-  const deletedAt = map[userId];
-  if (!deletedAt) return true;
-  const deletedMs = new Date(deletedAt).getTime();
-  const lastMs = room.lastMessageAt ? room.lastMessageAt.getTime() : 0;
-  return lastMs > deletedMs;
-}
 
 export class PrivateRoomRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -295,16 +284,15 @@ export class PrivateRoomRepository {
       orderBy: { lastMessageAt: "desc" },
       take: params.limit,
     });
-    return rows.filter((r) => isVisibleAfterDeleteForMe(r, params.userId));
+    return rows;
   }
 
   async countConversations(userId: string): Promise<number> {
-    // Approximate; excludes rooms fully hidden by this user's delete-for-me.
-    const rows = await this.prisma.privateRoom.findMany({
+    // Delete/clear Conversation empty the history but keep the row, so every
+    // room with activity counts.
+    return this.prisma.privateRoom.count({
       where: { participants: { has: userId }, lastMessageAt: { not: null } },
-      select: { deletedFor: true, lastMessageAt: true },
     });
-    return rows.filter((r) => isVisibleAfterDeleteForMe(r, userId)).length;
   }
 
   /**
@@ -324,13 +312,23 @@ export class PrivateRoomRepository {
       select: {
         roomId: true,
         deletedFor: true,
+        clearFor: true,
         lastMessageAt: true,
         unreadCountByUser: true,
         lastReadMessageIdByUser: true,
       },
     });
     const candidates = rows
-      .filter((r) => isVisibleAfterDeleteForMe(r, userId))
+      // A room whose newest message sits behind this user's clear/delete
+      // cutoff has nothing they could still have unread — whatever the stored
+      // counter says. The row stays listed; it just cannot feed the badge.
+      .filter(
+        (r) =>
+          !isHiddenByCutoff(
+            r.lastMessageAt,
+            getPrivateDeletionCutoff(r, userId)
+          )
+      )
       .map((r) => ({
         roomId: r.roomId,
         stored:
@@ -544,7 +542,7 @@ export class PrivateRoomRepository {
       orderBy: [{ lastMessageAt: dir }, { roomId: dir }],
       take: params.limit,
     });
-    return rows.filter((r) => isVisibleAfterDeleteForMe(r, params.userId));
+    return rows;
   }
 
   async updateRoomOnNewMessage(params: {
@@ -1191,14 +1189,16 @@ export class PrivateRoomRepository {
     });
   }
 
-  async setDeletedFor(roomId: string, userId: string): Promise<void> {
+  /** Returns the cutoff it stamped (null when the room is gone). */
+  async setDeletedFor(roomId: string, userId: string): Promise<Date | null> {
     const existing = await this.prisma.privateRoom.findUnique({
       where: { roomId },
     });
-    if (!existing) return;
+    if (!existing) return null;
 
+    const cutoff = new Date();
     const deletedFor = (existing.deletedFor ?? {}) as Record<string, string>;
-    deletedFor[userId] = new Date().toISOString();
+    deletedFor[userId] = cutoff.toISOString();
 
     // Zero this user's unread state too — everything currently unread is about
     // to become invisible (before the cutoff), so it must not linger as a
@@ -1238,16 +1238,19 @@ export class PrivateRoomRepository {
           lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue,
       },
     });
+    return cutoff;
   }
 
-  async setClearFor(roomId: string, userId: string): Promise<void> {
+  /** Returns the cutoff it stamped (null when the room is gone). */
+  async setClearFor(roomId: string, userId: string): Promise<Date | null> {
     const existing = await this.prisma.privateRoom.findUnique({
       where: { roomId },
     });
-    if (!existing) return;
+    if (!existing) return null;
 
+    const cutoff = new Date();
     const clearFor = (existing.clearFor ?? {}) as Record<string, string>;
-    clearFor[userId] = new Date().toISOString();
+    clearFor[userId] = cutoff.toISOString();
 
     const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
       string,
@@ -1284,6 +1287,7 @@ export class PrivateRoomRepository {
           lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue,
       },
     });
+    return cutoff;
   }
 
   async setMuted(

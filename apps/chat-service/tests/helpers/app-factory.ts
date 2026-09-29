@@ -479,7 +479,8 @@ export function buildApp(): BuiltApp {
     redis,
     presenceService,
     friendshipGrpcClient,
-    privatePinService
+    privatePinService,
+    privateSystemMessageService
   );
   const privateMessageService = new PrivateMessageService(
     privateMessageRepo,

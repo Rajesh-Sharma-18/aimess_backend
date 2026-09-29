@@ -275,26 +275,32 @@ export class GroupMemberRepository {
    * row in their list and must be able to delete it. The caller
    * (GroupRoomService.clearConversation) owns the status check.
    */
-  async setClearedAt(roomId: string, userId: string): Promise<void> {
+  /** Returns the cutoff it stamped. */
+  async setClearedAt(roomId: string, userId: string): Promise<Date> {
+    const cutoff = new Date();
     await this.prisma.groupMember.updateMany({
       where: { roomId, userId },
       data: {
-        clearedAt: new Date(),
+        clearedAt: cutoff,
         unreadCount: 0,
-        lastReadAt: new Date(),
+        lastReadAt: cutoff,
       },
     });
+    return cutoff;
   }
 
-  async setClearChatAt(roomId: string, userId: string): Promise<void> {
+  /** Returns the cutoff it stamped. */
+  async setClearChatAt(roomId: string, userId: string): Promise<Date> {
+    const cutoff = new Date();
     await this.prisma.groupMember.updateMany({
       where: { roomId, userId, status: "ACTIVE" },
       data: {
-        clearChatAt: new Date(),
+        clearChatAt: cutoff,
         unreadCount: 0,
-        lastReadAt: new Date(),
+        lastReadAt: cutoff,
       },
     });
+    return cutoff;
   }
 
   async updateStatus(
