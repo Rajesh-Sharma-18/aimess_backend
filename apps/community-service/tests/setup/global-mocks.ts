@@ -319,6 +319,7 @@ jest.mock("../../src/grpc/chat.client.js", () => ({
   getChatClient: jest.fn().mockReturnValue({
     GetCommunityLastMessages: jest.fn(),
     GetCommunityMemberLastMessages: jest.fn(),
+    bulkMarkCommunityRead: jest.fn().mockResolvedValue(1),
   }),
 }));
 

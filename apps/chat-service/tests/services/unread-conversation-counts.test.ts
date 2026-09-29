@@ -55,7 +55,7 @@ describe("countUnreadForUser — messages vs conversations", () => {
 
   it("communities: 500 unread in one community is 1 conversation", async () => {
     const memberRepo = {
-      findActiveByUser: jest
+      findVisibleByUser: jest
         .fn()
         .mockResolvedValue([
           { roomId: "c1", lastReadAt: null },
@@ -79,6 +79,44 @@ describe("countUnreadForUser — messages vs conversations", () => {
     await expect(service.countUnreadForUser("me")).resolves.toEqual({
       messages: 500,
       conversations: 1,
+    });
+  });
+
+  // The Community list shows a BANNED row with its pre-ban unread (capped at
+  // bannedAt). The badge must count that same row with that same cap, or the
+  // list shows an unread community the badge does not.
+  it("communities: a banned row counts, capped at bannedAt — same thresholds as the list", async () => {
+    const bannedAt = new Date("2026-09-01T10:00:00.000Z");
+    const memberRepo = {
+      findVisibleByUser: jest.fn().mockResolvedValue([
+        { roomId: "c1", lastReadAt: null, status: "active", bannedAt: null },
+        { roomId: "c2", lastReadAt: null, status: "banned", bannedAt },
+      ]),
+    };
+    const messageRepo = {
+      countUnreadBulk: jest.fn().mockResolvedValue({
+        c1: { count: 3, firstUnreadMessageId: "m1" },
+        c2: { count: 2, firstUnreadMessageId: "m2" },
+      }),
+    };
+    const service = new CommunityMessageService(
+      messageRepo as never,
+      null as never,
+      memberRepo as never,
+      null as never,
+      null as never
+    );
+
+    await expect(service.countUnreadForUser("me")).resolves.toEqual({
+      messages: 5,
+      conversations: 2,
+    });
+    expect(messageRepo.countUnreadBulk).toHaveBeenCalledWith({
+      userId: "me",
+      thresholds: [
+        { roomId: "c1", afterDate: new Date(0), beforeDate: null },
+        { roomId: "c2", afterDate: new Date(0), beforeDate: bannedAt },
+      ],
     });
   });
 });

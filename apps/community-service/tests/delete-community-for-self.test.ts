@@ -21,6 +21,7 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { communityService } from "../src/services/community.service.js";
 import { publishCommunityRoomEvent, publishChatUserEvent } from "@aimess/redis";
 import { communityRepository } from "../src/repositories/community.repository.js";
+import { getChatClient } from "../src/grpc/chat.client.js";
 
 const repo = communityRepository as Record<string, jest.Mock>;
 const publishRoomEvent = publishCommunityRoomEvent as jest.Mock;
@@ -146,6 +147,11 @@ describe("deleteCommunityForSelf — banned member (community was still in their
         membershipStatus: "REMOVED",
       })
     );
+    // The nav badge counts banned rows; a dismissed row must leave it too.
+    expect(getChatClient().bulkMarkCommunityRead).toHaveBeenCalledWith({
+      userId: CALLER_ID,
+      communityIds: [COMMUNITY_ID],
+    });
   });
 
   it("already dismissed → idempotent no-op success", async () => {

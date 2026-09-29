@@ -156,8 +156,8 @@ describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
     notifyUnreadChanged.mockClear();
   });
 
-  // The Community nav badge is summed from ACTIVE membership rows only
-  // (RoomMemberRepository.findActiveByUser), so any status flip silently changes
+  // The Community nav badge is summed from ACTIVE + BANNED membership rows
+  // (RoomMemberRepository.findVisibleByUser), so any status flip silently changes
   // the total: a ban/leave subtracts that room's unread, a rejoin adds it back.
   // Nothing else recomputes it, so without this the badge kept its pre-ban value
   // until the user's next mark-read or reconnect.

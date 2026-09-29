@@ -306,7 +306,7 @@ export class CommunityRoomSyncConsumer {
           );
 
           // A status flip changes what the Community nav badge sums: the total
-          // comes from findActiveByUser, which counts ACTIVE rows only, so a ban /
+          // comes from findVisibleByUser (ACTIVE + BANNED rows), so a
           // leave / removal silently subtracts that room's unread and a rejoin
           // adds it back. Nothing else recomputes the badge, so without this it
           // kept the pre-transition total until the user's next mark-read or

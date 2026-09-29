@@ -1030,23 +1030,23 @@ export class CommunityMessageService {
    * per-room exception, batched concurrently).
    */
   /**
-   * Unread stats across every community the user's an ACTIVE member of — the
+   * Unread stats across every community row the user's list shows — the
    * message total plus how many communities carry at least one unread (the
    * nav badge counts communities, not messages). Reuses the same
-   * countUnreadBulk primitive getChatSummaries already uses per-community,
-   * aggregated instead of returned per-room; no banned-cutoff clamping
-   * since a banned member doesn't contribute to the badge (see
-   * RoomMemberRepository.findActiveByUser).
+   * countUnreadBulk primitive and the same thresholds getChatSummaries uses
+   * per-row (banned rows capped at `bannedAt`), aggregated instead of returned
+   * per-room, so the badge and the row badges are one computation.
    */
   async countUnreadForUser(userId: string): Promise<UnreadStats> {
-    const members = await this.memberRepo.findActiveByUser(userId);
+    const members = await this.memberRepo.findVisibleByUser(userId);
     if (!members.length) return { ...EMPTY_UNREAD_STATS };
     const unreadMap = await this.messageRepo.countUnreadBulk({
       userId,
       thresholds: members.map((m) => ({
         roomId: m.roomId,
         afterDate: m.lastReadAt ?? new Date(0),
-        beforeDate: null,
+        beforeDate:
+          m.status === "banned" ? (m.bannedAt ?? new Date(0)) : null,
       })),
     });
     return Object.values(unreadMap).reduce<UnreadStats>(
@@ -2524,11 +2524,41 @@ export class CommunityMessageService {
           newest.createdAt,
           await mayBroadcastReadReceipts(params.userId)
         )
-        .then(() => {
+        .then(async () => {
           // Opening the transcript advances lastReadAt — push a fresh nav-badge
           // summary so communityUnread drops without waiting for an explicit
           // mark-read REST call (which does notifyUnreadChanged).
           notifyUnreadChanged(params.userId);
+          // An older page (newest already behind the pointer) read nothing new.
+          if (member?.lastReadAt && member.lastReadAt >= newest.createdAt)
+            return;
+          // …and the reader's OTHER tabs/devices, which only ever clear their
+          // list row on `community:read_sync` (same payload as markMessageRead).
+          // Without it their nav badge dropped with the summary push while the
+          // row kept its stale unread count: "list unread, badge 0".
+          const counts = await this.messageRepo.countUnreadBulk({
+            userId: params.userId,
+            thresholds: [
+              {
+                roomId: params.roomId,
+                afterDate: newest.createdAt,
+                beforeDate: bannedAtCutoff ?? null,
+              },
+            ],
+          });
+          await redis.publish(
+            `user:${params.userId}`,
+            JSON.stringify({
+              event: "community:read_sync",
+              data: {
+                communityId: params.roomId,
+                readerId: params.userId,
+                upToMessageId: newest.id,
+                unreadCount: counts[params.roomId]?.count ?? 0,
+                readAt: newest.createdAt.getTime(),
+              },
+            })
+          );
         })
         .catch((err: unknown) => {
           logger.warn(

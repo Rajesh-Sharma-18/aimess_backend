@@ -221,15 +221,17 @@ export class RoomMemberRepository {
   }
 
   /**
-   * Every community room a user is an ACTIVE member of — unbounded (no
-   * roomIds filter), for the Community nav badge total. Unlike
-   * findVisibleByUserAndRooms this excludes "banned" rows: a banned member
-   * shouldn't contribute to the badge even though they can still read up to
-   * their cutoff.
+   * Every community room whose row the user's Community list shows — ACTIVE and
+   * BANNED, unbounded (no roomIds filter), for the Community nav badge total.
+   * Same status set as findVisibleByUserAndRooms, which feeds the per-row
+   * counts: a banned row stays listed with its pre-ban unread (clamped at
+   * `bannedAt`), so the badge has to count it too or badge and list disagree.
+   * Dismissing the banned row marks it read (community-service), which is what
+   * takes it back out of this total.
    */
-  async findActiveByUser(userId: string): Promise<RoomMember[]> {
+  async findVisibleByUser(userId: string): Promise<RoomMember[]> {
     return this.prisma.roomMember.findMany({
-      where: { userId, status: "active" },
+      where: { userId, status: { in: ["active", "banned"] } },
     });
   }
 

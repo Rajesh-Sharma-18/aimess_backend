@@ -5413,6 +5413,20 @@ export const communityService = {
         return "ALREADY_REMOVED";
       }
       await communityRepository.setMemberDismissed(community.id, callerId);
+      // The Community nav badge counts BANNED rows (their pre-ban unread, same
+      // as the row shows). A dismissed row leaves the list, so its unread has
+      // to leave the badge too — reading it up to the ban does exactly that
+      // (and pushes the fresh total). Best-effort: the dismiss itself stands.
+      await getChatClient()
+        .bulkMarkCommunityRead({
+          userId: callerId,
+          communityIds: [community.id],
+        })
+        .catch((err: unknown) =>
+          logger.warn(
+            `dismiss: mark-read failed community=${community.id} user=${callerId}: ${String(err)}`
+          )
+        );
       void publishChatUserEvent(
         redis,
         callerId,

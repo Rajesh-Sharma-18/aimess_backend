@@ -5,6 +5,7 @@
 } from "../generated/prisma/index.js";
 import { logger } from "@aimess/logger";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { redis } from "../config/redis.js";
 import {
   newerSnapshotMongoQuery,
   sameSnapshotWhere,
@@ -463,11 +464,32 @@ export class PrivateRoomRepository {
         where: { roomId },
       });
       if (!room) return;
-      await this.reconcileUnreadAtPointer(
+      const healed = await this.reconcileUnreadAtPointer(
         room,
         roomId,
         userId,
         await this.readPointerSeq(room, userId)
+      );
+      // The badge now excludes the ghost, but every open client still holds
+      // the row at its old count — the inbox is cached and nothing else tells
+      // it. `read_sync` is the existing "this row's count for YOU is now N"
+      // frame; it goes out on `user:<id>` BEFORE the summary push that follows
+      // on the same channel, so row and badge land together.
+      await redis.publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "read_sync",
+          data: {
+            conversationId: roomId,
+            readerId: userId,
+            read_to_seq: 0,
+            unreadCount:
+              ((healed.unreadCountByUser ?? {}) as Record<string, number>)[
+                userId
+              ] ?? 0,
+            conversationType: "PRIVATE",
+          },
+        })
       );
     } catch (err: unknown) {
       logger.warn(
