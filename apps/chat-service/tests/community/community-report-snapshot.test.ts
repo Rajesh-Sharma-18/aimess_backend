@@ -107,4 +107,36 @@ describe("CommunityMessageService.getModerationSnapshot", () => {
     expect(snap.found).toBe(false);
     expect(snap.media).toEqual([]);
   });
+
+  // A SYSTEM line has no author to report and its text is re-rendered per
+  // viewer/locale on read. It also has to be `found:false` for a SECURITY
+  // reason: the report response echoes `reportedContentText` back to the
+  // reporter, so a plain member could otherwise file a report against a
+  // MODERATION-restricted line's id (ban/mute/add/unban/unmute) and read the
+  // content straight back — a read-by-id side door around the role gate.
+  it.each(["MEMBER_UNBANNED", "MEMBER_MUTED", "ROLE_CHANGED"])(
+    "found:false for a SYSTEM message (%s) — not reportable, no read-by-id oracle",
+    async (systemMessageType) => {
+      const svc = makeService(
+        jest.fn(async () => ({
+          id: MSG,
+          roomId: ROOM,
+          sentBy: "admin-1",
+          message: "Admin unbanned Bob",
+          messageType: "SYSTEM",
+          systemMessageType,
+          deletedForAll: false,
+          attachments: [],
+          createdAt: new Date(),
+        }))
+      );
+      const snap = await svc.getModerationSnapshot({
+        roomId: ROOM,
+        messageId: MSG,
+      });
+      expect(snap.found).toBe(false);
+      expect(snap.message).toBe("");
+      expect(snap.senderId).toBe("");
+    }
+  );
 });

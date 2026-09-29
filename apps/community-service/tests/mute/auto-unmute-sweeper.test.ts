@@ -91,14 +91,22 @@ describe("communityService.expireDueMutes — auto-unmute sweep", () => {
       expect.objectContaining({ isMuted: false })
     );
     // The lapsed session's mute line is retracted — a timer lapse leaves the
-    // member's history in the same state a moderator unmute does. Unmute is
-    // SILENT: MEMBER_UNMUTED is HIDDEN, so NO "You were unmuted" bubble is posted.
+    // member's history in the same state a moderator unmute does …
     expect(muteRetracted).toHaveBeenCalledTimes(2);
     expect(muteRetracted).toHaveBeenCalledWith({
       communityId: CID,
       userId: U1,
     });
-    expect(systemMessage).not.toHaveBeenCalled();
+    // … and posts the SAME moderator-only MEMBER_UNMUTED audit line, so the
+    // moderators' trail closes the mute whether a human or the timer ended it.
+    // No `visibleToUserId` ⇒ moderator-scoped, so the member still gets no
+    // "You were unmuted" bubble, and `source: "auto"` records which path won.
+    expect(systemMessage).toHaveBeenCalledTimes(2);
+    for (const [payload] of systemMessage.mock.calls) {
+      expect(payload.systemMessageType).toBe("MEMBER_UNMUTED");
+      expect(payload.visibleToUserId).toBeUndefined();
+      expect(payload.metadata).toMatchObject({ source: "auto" });
+    }
     // Auto-unmute is SILENT — no push to the member.
     expect(pushUnmuted).not.toHaveBeenCalled();
   });

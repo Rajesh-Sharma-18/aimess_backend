@@ -421,4 +421,51 @@ describe("notifyMemberJoined — retry idempotency (Test 4)", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0][0].systemMessageType).toBe("MEMBER_ADDED");
   });
+
+  it("Add Member posts BOTH MEMBER_ADDED copies — the member's own notice and the moderator-only audit line", async () => {
+    const eventAt = "2026-06-25T09:30:00.000Z";
+    await communityService.notifyMemberJoined({
+      ...BASE_ARGS,
+      eventAt,
+      via: "add_members",
+    });
+
+    const added = publishSystemMessage.mock.calls
+      .map(([arg]: [Record<string, unknown>]) => arg)
+      .filter((arg) => arg?.systemMessageType === "MEMBER_ADDED");
+    expect(added).toHaveLength(2);
+
+    // 1. The added member's own notice — "{admin} added you to the community".
+    const personal = added.filter((a) => a.visibleToUserId === member.userId);
+    expect(personal).toHaveLength(1);
+
+    // 2. The MODERATION audit line — NO recipient, which is what makes
+    //    chat-service scope it to the community's owner/admin/moderators and
+    //    render it third-person ("{admin} added {member} to the community").
+    const audit = added.filter((a) => !a.visibleToUserId);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.triggeredByUserId).toBe(BASE_ARGS.actorId);
+    expect(audit[0]!.metadata).toMatchObject({ targetUserId: member.userId });
+
+    // One eventAt for both: chat-service's dedup key appends `:u:{userId}` for a
+    // personal copy only, so the two rows never collide and a redelivery still
+    // collapses each of them independently.
+    for (const line of added) expect(line.eventAt).toBe(eventAt);
+  });
+
+  it("a self-join posts NO moderation audit line — joining is not a moderation action", async () => {
+    await communityService.notifyMemberJoined({
+      ...BASE_ARGS,
+      via: "self_join",
+    });
+
+    const posted = publishSystemMessage.mock.calls.map(
+      ([arg]: [Record<string, unknown>]) => arg
+    );
+    // Exactly the one personal COMMUNITY_JOINED line, addressed to the joiner.
+    expect(posted.map((a) => a.systemMessageType)).toEqual([
+      "COMMUNITY_JOINED",
+    ]);
+    expect(posted[0]!.visibleToUserId).toBe(member.userId);
+  });
 });

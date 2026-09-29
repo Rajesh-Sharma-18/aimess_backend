@@ -196,22 +196,25 @@ describe("kickMember — silent-chat policy", () => {
 
 // ─── banMember ───────────────────────────────────────────────────────────────
 
-describe("banMember — silent-chat policy", () => {
+describe("banMember — chat system-message policy", () => {
   beforeEach(setupBanMocks);
 
-  it("publishes NO MEMBER_BANNED chat system message — the ban shows as a sticky banner, not a chat bubble", async () => {
+  it("publishes the MEMBER_BANNED audit line with NO recipient — moderators only, never a bubble for the banned user", async () => {
     await communityService.banMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
 
-    // MEMBER_BANNED is in HIDDEN_SYSTEM_MESSAGE_TYPES, so neither publish
-    // variant may carry it: the banned user's client already renders a
-    // persistent banned banner over the composer, and a
-    // "You were banned from this community." bubble in their own history was a
-    // second copy of that same sentence.
-    expect(publishSystemMsg).not.toHaveBeenCalled();
-    const banCalls = publishSystemMsgAwaited.mock.calls.filter(
+    // The community's owner/admin/moderators get the moderation trail; the
+    // banned user gets NOTHING in their own history, because omitting
+    // `visibleToUserId` is what scopes the line to moderators. Their client
+    // already renders a persistent banned banner over the composer, so a
+    // "You were banned from this community." bubble was a second copy of it.
+    const banCalls = publishSystemMsg.mock.calls.filter(
       (call: any[]) => call[0]?.systemMessageType === "MEMBER_BANNED"
     );
-    expect(banCalls).toHaveLength(0);
+    expect(banCalls).toHaveLength(1);
+    expect(banCalls[0]![0].visibleToUserId).toBeUndefined();
+    expect(banCalls[0]![0].metadata.targetUserId).toBe(TARGET_ID);
+    // The awaited variant belongs to the platform-admin ban path only.
+    expect(publishSystemMsgAwaited).not.toHaveBeenCalled();
   });
 
   it("publishes community:membership:restricted (not :removed) to the banned user's personal channel — the community stays in their list, fully blocked (USER_BANNED)", async () => {
@@ -277,9 +280,19 @@ describe("HIDDEN_SYSTEM_MESSAGE_TYPES policy contract", () => {
     expect(isHiddenSystemMessage("MEMBER_REMOVED")).toBe(true);
   });
 
-  it("MEMBER_BANNED is hidden — the banned user gets a sticky banner, not a chat bubble", async () => {
-    const { isHiddenSystemMessage } = await import("@aimess/constants");
-    expect(isHiddenSystemMessage("MEMBER_BANNED")).toBe(true);
+  it("MEMBER_BANNED is NOT hidden but IS moderation-scoped — an audit line for moderators, no bubble for the banned user", async () => {
+    const {
+      isHiddenSystemMessage,
+      isModerationOnlySystemMessage,
+      hasPersonalModerationCopy,
+    } = await import("@aimess/constants");
+    // Not hidden: the community's owner/admin/moderators must be able to read the
+    // ban in their timeline trail …
+    expect(isHiddenSystemMessage("MEMBER_BANNED")).toBe(false);
+    // … but it is restricted to them, and has no target-addressed companion copy,
+    // so the banned user still gets only their sticky banner + push.
+    expect(isModerationOnlySystemMessage("MEMBER_BANNED")).toBe(true);
+    expect(hasPersonalModerationCopy("MEMBER_BANNED")).toBe(false);
   });
 
   it("MEMBER_LEFT is hidden (voluntary leave is also silent)", async () => {

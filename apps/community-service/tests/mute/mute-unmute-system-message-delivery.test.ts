@@ -1,5 +1,5 @@
 /**
- * communityService.muteMember / unmuteMember — PERSONAL system-message delivery.
+ * communityService.muteMember / unmuteMember — system-message delivery.
  *
  * Regression coverage for a real end-to-end gap that pure unit tests of
  * CommunitySystemMessageService.post() (chat-service) could never catch: they
@@ -9,9 +9,15 @@
  * boundary — repo/redis/RabbitMQ/gRPC — is mocked by tests/setup/global-mocks.ts)
  * and asserts the `community.system_message` event published to chat-service
  * always carries `visibleToUserId: targetUserId`, so:
- *   - the affected member's own channel/history receives the line, and
- *   - the central registry (SYSTEM_MESSAGE_VISIBILITY = PERSONAL) is honored —
- *     never left to default to a community-wide broadcast.
+ *   - the affected member's own channel/history receives their own notice, and
+ *   - the MODERATION audit copy is published WITHOUT a recipient, so
+ *     chat-service scopes it to the community's owner/admin/moderators instead
+ *     of broadcasting it to the room.
+ *
+ * MUTE publishes BOTH copies of MEMBER_MUTED (personal notice + audit line);
+ * UNMUTE publishes the audit line ONLY — the member learns the mute is over from
+ * `community:member:unmuted` plus the retraction of the stale mute line, so a
+ * "You were unmuted" bubble would be a second copy of the same fact.
  */
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import { communityService } from "../../src/services/community.service.js";
@@ -44,7 +50,7 @@ function activeMember(userId: string) {
   };
 }
 
-describe("communityService.muteMember/unmuteMember — PERSONAL system message delivery", () => {
+describe("communityService.muteMember/unmuteMember — system message delivery", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     repo.findById.mockResolvedValue({ id: CID, status: "ACTIVE" });
@@ -62,34 +68,53 @@ describe("communityService.muteMember/unmuteMember — PERSONAL system message d
     repo.deleteMemberMute.mockResolvedValue(undefined);
   });
 
-  it("muteMember emits a PERSONAL MEMBER_MUTED system message targeted at the muted member — never a broadcast", async () => {
+  it("muteMember emits BOTH the muted member's own notice AND the moderator-only audit line", async () => {
     await communityService.muteMember(CID, CALLER, TARGET, 60, "spam");
+
+    expect(sysMsg).toHaveBeenCalledTimes(2);
+    const payloads = sysMsg.mock.calls.map(
+      (c: unknown[]) =>
+        c[0] as {
+          communityId: string;
+          systemMessageType: string;
+          visibleToUserId?: string;
+          metadata: Record<string, unknown>;
+        }
+    );
+    for (const payload of payloads) {
+      expect(payload.communityId).toBe(CID);
+      expect(payload.systemMessageType).toBe("MEMBER_MUTED");
+      expect(payload.metadata.targetUserId).toBe(TARGET);
+    }
+    // The affected member must be the recipient of exactly ONE of them, so
+    // chat-service delivers "You are muted until …" to THEM …
+    const personal = payloads.filter((p) => p.visibleToUserId === TARGET);
+    expect(personal).toHaveLength(1);
+    // … and the other must carry NO recipient, which is what makes chat-service
+    // scope the audit line to owner/admin/moderators instead of the whole room.
+    const audit = payloads.filter((p) => !p.visibleToUserId);
+    expect(audit).toHaveLength(1);
+  });
+
+  it("unmuteMember posts the audit line ONLY — never a bubble in the member's own history", async () => {
+    await communityService.unmuteMember(CID, CALLER, TARGET);
 
     expect(sysMsg).toHaveBeenCalledTimes(1);
     const payload = sysMsg.mock.calls[0][0] as {
-      communityId: string;
       systemMessageType: string;
       visibleToUserId?: string;
       metadata: Record<string, unknown>;
     };
-    expect(payload.communityId).toBe(CID);
-    expect(payload.systemMessageType).toBe("MEMBER_MUTED");
-    // The critical assertion: the affected member must be set as the
-    // recipient so chat-service's PERSONAL routing delivers it to THEM.
-    expect(payload.visibleToUserId).toBe(TARGET);
+    expect(payload.systemMessageType).toBe("MEMBER_UNMUTED");
+    // No recipient ⇒ moderator-scoped audit line. The unmuted member sees
+    // nothing new in chat: the composer re-enables via the separate
+    // `community:member:unmuted` event and the stale mute line is retracted
+    // (asserted below), so a bubble would duplicate that.
+    expect(payload.visibleToUserId).toBeUndefined();
     expect(payload.metadata.targetUserId).toBe(TARGET);
   });
 
-  it("unmuteMember posts NO chat system message — MEMBER_UNMUTED is HIDDEN (silent unmute)", async () => {
-    await communityService.unmuteMember(CID, CALLER, TARGET);
-
-    // Unmute is silent in chat: the composer re-enables via the separate
-    // `community:member:unmuted` socket event and the prior mute line is
-    // retracted (asserted below). No "You were unmuted" bubble is emitted.
-    expect(sysMsg).not.toHaveBeenCalled();
-  });
-
-  it("unmuteMember also retracts the current mute session's PERSONAL MEMBER_MUTED line — the mute and unmute lines never stack together", async () => {
+  it("unmuteMember also retracts the current mute session's PERSONAL MEMBER_MUTED line — the stale mute notice never outlives the mute", async () => {
     await communityService.unmuteMember(CID, CALLER, TARGET);
 
     expect(muteRetracted).toHaveBeenCalledTimes(1);

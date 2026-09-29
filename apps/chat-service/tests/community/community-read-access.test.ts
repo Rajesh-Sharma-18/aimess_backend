@@ -20,6 +20,7 @@ import { CommunityMessageService } from "../../src/services/community-message.se
 import { CommunitySystemMessageService } from "../../src/services/community-system-message.service.js";
 import { CommunityPinService } from "../../src/services/community-pin.service.js";
 import { GeneralRoomMessageRepository } from "../../src/repositories/general-room-message.repository.js";
+import { matchDoc } from "../helpers/timeline-emulator.js";
 import { getCommunityReconcileClient } from "../../src/grpc/community.client.js";
 import {
   HIDDEN_SYSTEM_MESSAGE_TYPES,
@@ -83,91 +84,18 @@ type EmuRow = {
   [k: string]: unknown;
 };
 
-function dateMsOf(v: { $date: string }): number {
-  return new Date(v.$date).getTime();
-}
-
-function emuMatchField(
-  doc: Record<string, unknown>,
-  key: string,
-  cond: unknown
-): boolean {
-  if (key === "$or")
-    return (cond as Array<Record<string, unknown>>).some((s) =>
-      emuMatchDoc(doc, s)
-    );
-  if (key === "$and")
-    return (cond as Array<Record<string, unknown>>).every((s) =>
-      emuMatchDoc(doc, s)
-    );
-  if (key === "$nor")
-    return !(cond as Array<Record<string, unknown>>).some((s) =>
-      emuMatchDoc(doc, s)
-    );
-  const value = doc[key];
-  if (cond === null || typeof cond !== "object") return value === cond;
-  const c = cond as Record<string, unknown>;
-  if ("$oid" in c) return value === (c as { $oid: string }).$oid;
-  if ("$date" in c)
-    return value instanceof Date && value.getTime() === dateMsOf(c as never);
-  if ("$ne" in c)
-    return Array.isArray(value) ? !value.includes(c.$ne) : value !== c.$ne;
-  if ("$in" in c)
-    return (c.$in as Array<string | null>).some((a) =>
-      a === null ? value == null : value === a
-    );
-  if ("$eq" in c) {
-    const against = c.$eq;
-    if (against && typeof against === "object" && "$oid" in against) {
-      return value === (against as { $oid: string }).$oid;
-    }
-    return value === against;
-  }
-  if ("$nin" in c)
-    return !(c.$nin as string[]).includes((value as string) ?? "");
-  // Range ops on createdAt (date) / _id (oid).
-  return Object.entries(c).every(([op, against]) => {
-    if (
-      against &&
-      typeof against === "object" &&
-      "$date" in (against as object)
-    ) {
-      const t = value instanceof Date ? value.getTime() : Number(value);
-      const r = dateMsOf(against as { $date: string });
-      return op === "$lt"
-        ? t < r
-        : op === "$lte"
-          ? t <= r
-          : op === "$gt"
-            ? t > r
-            : op === "$gte"
-              ? t >= r
-              : false;
-    }
-    if (
-      against &&
-      typeof against === "object" &&
-      "$oid" in (against as object)
-    ) {
-      const r = (against as { $oid: string }).$oid;
-      return op === "$eq"
-        ? String(value) === r
-        : op === "$lt"
-          ? String(value) < r
-          : op === "$gt"
-            ? String(value) > r
-            : false;
-    }
-    return false;
-  });
-}
-
-function emuMatchDoc(
+/**
+ * `$match` evaluation is delegated to the SHARED timeline emulator so this
+ * file cannot drift from the operator semantics every other suite is written
+ * against. The file-local copy that used to live here had already diverged: its
+ * `$nin` treated a null/missing field as NOT matching `null`, the opposite of
+ * real Mongo, which silently neutralised the moderation guard clause that keys
+ * off `visibleToUserId: { $nin: [null] }`.
+ */
+const emuMatchDoc = (
   doc: Record<string, unknown>,
   match: Record<string, unknown>
-): boolean {
-  return Object.entries(match).every(([k, v]) => emuMatchField(doc, k, v));
-}
+) => matchDoc(doc as never, match);
 
 /** Build a community-timeline prisma mock from minimal rows. Each row gets a
  *  roomId (ROOM_ID), a strictly-decreasing createdAt by declaration index (so a
@@ -434,7 +362,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
   // saying the same thing was a duplicate. Legacy rows persisted before the
   // policy change are hidden by this same read filter.
   // -------------------------------------------------------------------------
-  it("hides the SILENT moderation/lifecycle lines (left/joined/removed/banned) from everyone including the ban target; unbanned stays visible — Telegram parity", async () => {
+  it("hides the SILENT lifecycle lines (left/joined/removed/banned) from everyone including the ban target, and the MODERATION-restricted unban line from plain members only", async () => {
     const rows = [
       // Hidden: removal must be SILENT from the chat-message perspective —
       // the affected user learns via `community:membership:removed` instead.
@@ -454,7 +382,8 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
         systemMessageType: "MEMBER_BANNED",
         visibleToUserId: "someone-else",
       },
-      // Visible: informational moderation action (NOT in HIDDEN_SYSTEM_MESSAGE_TYPES).
+      // Not HIDDEN, but MODERATION-restricted: a legacy community-scoped unban
+      // line is readable by owner/admin/moderator only, never by a plain member.
       { id: "unbanned", deletedBy: [], systemMessageType: "MEMBER_UNBANNED" },
       // Hidden: voluntary-leave noise.
       { id: "left", deletedBy: [], systemMessageType: "MEMBER_LEFT" },
@@ -481,11 +410,30 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       inclusive: true,
       limit: 30,
       viewerIsActiveMember: true,
+      viewerRole: "member",
     });
 
-    // left + joined + removed + BOTH ban lines dropped; unbanned + role change +
-    // message survive.
-    expect(messages.map((m) => m.id)).toEqual(["unbanned", "rolechg", "msg"]);
+    // left + joined + removed + BOTH ban lines dropped as HIDDEN; the unban
+    // line dropped as MODERATION-restricted; role change + message survive.
+    expect(messages.map((m) => m.id)).toEqual(["rolechg", "msg"]);
+
+    // Same rows, moderator viewer: HIDDEN stays hidden (it is hidden from
+    // EVERYONE), but the MODERATION-restricted unban line is now readable.
+    const asModerator = await repo.findByRoomIdTimeline({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      direction: "before",
+      ts: new Date(),
+      inclusive: true,
+      limit: 30,
+      viewerIsActiveMember: true,
+      viewerRole: "moderator",
+    });
+    expect(asModerator.messages.map((m) => m.id)).toEqual([
+      "unbanned",
+      "rolechg",
+      "msg",
+    ]);
   });
 
   // -------------------------------------------------------------------------
@@ -555,7 +503,10 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       limit: 30,
       viewerIsActiveMember: true,
     });
-    expect(otherViewer.messages.map((m) => m.id)).toEqual(["muted-other", "msg"]);
+    expect(otherViewer.messages.map((m) => m.id)).toEqual([
+      "muted-other",
+      "msg",
+    ]);
   });
 
   it("joiner with a legacy MEMBER_JOINED + personal COMMUNITY_JOINED sees exactly ONE join line (the duplicate fix)", async () => {

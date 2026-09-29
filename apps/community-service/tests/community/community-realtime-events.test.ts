@@ -683,28 +683,36 @@ describe("unbanMember — real-time broadcast", () => {
     expect(pubRoomEvent).toHaveBeenCalledTimes(1);
   });
 
-  it("posts NO chat system message — unban is as silent as the ban it lifts", async () => {
+  it("posts the MEMBER_UNBANNED audit line with NO recipient — moderators only, never the unbanned user", async () => {
     await communityService.unbanMember(CID, ADMIN, TARGET);
 
-    // Deliberate, and the mirror image of MEMBER_BANNED (which IS in
-    // HIDDEN_SYSTEM_MESSAGE_TYPES): emitting only the unban half would show
-    // remaining members "{name} was unbanned" with no preceding ban line, about
-    // someone an unban does not even re-add to the community (BANNED → LEFT).
-    // The lift still reaches the target out-of-band —
-    // `community:membership:restricted` with the post-unban membership block,
-    // the `community.member_unbanned` domain event, and `isBanned:false` on the
-    // community detail/list.
-    //
-    // Note this is an EMISSION policy, not a visibility one: MEMBER_UNBANNED is
-    // intentionally still absent from HIDDEN_SYSTEM_MESSAGE_TYPES, so lines
-    // persisted before this policy stay readable in history rather than being
-    // retroactively erased (chat-service `community-read-access.test.ts` pins
-    // that half).
-    const postedTypes = pubSysMsg.mock.calls.map(
-      ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
+    // Unban closes the ban→unban pair in the moderation trail the community's
+    // owner/admin/moderators read. Omitting `visibleToUserId` is what makes
+    // chat-service scope it to them: publishing it room-wide would show every
+    // remaining member "{name} was unbanned" about someone an unban does not
+    // even re-add (BANNED → LEFT), and addressing it to the target would put a
+    // bubble in a history they can only read up to their old ban cutoff. They
+    // learn the lift out-of-band: `community:membership:restricted` with the
+    // post-unban membership block, the `community.member_unbanned` domain event,
+    // and `isBanned:false` on the community detail/list.
+    const posted = pubSysMsg.mock.calls.map(
+      ([arg]) =>
+        arg as {
+          systemMessageType?: string;
+          visibleToUserId?: string;
+          metadata?: Record<string, unknown>;
+        }
     );
-    expect(postedTypes).not.toContain("MEMBER_UNBANNED");
-    expect(postedTypes).not.toContain("MEMBER_BANNED");
+    const unban = posted.filter(
+      (p) => p.systemMessageType === "MEMBER_UNBANNED"
+    );
+    expect(unban).toHaveLength(1);
+    expect(unban[0]!.visibleToUserId).toBeUndefined();
+    expect(unban[0]!.metadata?.targetUserId).toBe(TARGET);
+    // An unban must not also re-post the ban line.
+    expect(posted.map((p) => p.systemMessageType)).not.toContain(
+      "MEMBER_BANNED"
+    );
   });
 });
 
