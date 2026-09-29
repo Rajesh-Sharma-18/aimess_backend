@@ -346,6 +346,8 @@ async function handleCommunityEvent(
             // that replaced it. See CommunityJoinRequestedPayload.lifecycle.
             lifecycle: p.lifecycle ?? "",
             requesterId: p.userId,
+            // Tray tag, so a visible web tab draws the worker's card and the retraction closes it.
+            tag: joinRequestPushTag(p.communityId, p.userId),
             communityHandle: p.communityHandle,
             requesterDisplayName: p.requesterDisplayName,
             requesterAvatarUrl: p.requesterAvatarUrl ?? "",
