@@ -48,6 +48,7 @@ export const refreshTokenRepository = {
         expiresAt: true,
         revokedAt: true,
         rotatedToId: true,
+        replayOfId: true,
         createdAt: true,
       },
     });
@@ -59,6 +60,7 @@ export const refreshTokenRepository = {
     sessionId: string;
     newTokenHash: string;
     newExpiresAt: Date;
+    replayOfId?: string;
   }) {
     const now = new Date();
 
@@ -69,6 +71,7 @@ export const refreshTokenRepository = {
           sessionId: params.sessionId,
           tokenHash: params.newTokenHash,
           expiresAt: params.newExpiresAt,
+          replayOfId: params.replayOfId ?? null,
         },
         select: { id: true },
       });

@@ -287,6 +287,24 @@ export class LivestreamRepository {
     });
   }
 
+  /**
+   * Monotonic raise of `peakViewers` to `count` — the high-water mark of
+   * CONCURRENT viewers for this stream, never lowered.
+   *
+   * The `lt` guard keeps this a single conditional UPDATE, so two viewers
+   * joining at once cannot lose the larger value: Postgres re-evaluates the
+   * WHERE against the freshly-committed row once the row lock is granted, so
+   * the 5-then-7 and 7-then-5 orderings both settle on 7. A read-then-write in
+   * the service would not survive that.
+   */
+  async raisePeakViewers(id: string, count: number): Promise<void> {
+    if (count <= 0) return;
+    await this.prisma.livestream.updateMany({
+      where: { id, peakViewers: { lt: count } },
+      data: { peakViewers: count },
+    });
+  }
+
   /** Atomic +1 on totalComments. Best-effort — callers should not throw on failure. */
   async incrementTotalComments(id: string): Promise<void> {
     await this.prisma.livestream.update({

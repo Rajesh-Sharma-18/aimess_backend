@@ -732,8 +732,15 @@ export type CommunityInviteLinkData = {
   createdBy: string;
   maxUses: number | null;
   usedCount: number;
-  /** When true, redeeming this link directly adds the member instead of creating a join request. */
-  autoApprove: boolean;
+  /**
+   * RETIRED, always false. It once meant "redeeming this link adds the member
+   * directly instead of creating a join request" — the privacy in force when
+   * the link was minted, frozen, which outlived a PUBLIC → PRIVATE switch. A
+   * redeem now reads the community's CURRENT privacy and nothing else, so no
+   * link auto-approves. The field stays on the response because the published
+   * contract declares it `required`; the literal type is what keeps it honest.
+   */
+  autoApprove: false;
   /** LEGACY, always null: a link lives until it is revoked or spent. */
   expiresAt: string | null;
   revokedAt: string | null;

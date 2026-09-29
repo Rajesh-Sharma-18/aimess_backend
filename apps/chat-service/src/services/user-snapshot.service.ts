@@ -23,6 +23,25 @@ export interface UserSnapshot {
 const INCOMPLETE_SNAPSHOT_TTL_SECONDS = 30;
 
 /**
+ * The identity lookup for this id did not COMPLETE — user-service/auth-service
+ * was unreachable, its circuit breaker was open, or the snapshot cache read
+ * failed. It is NOT the same as "this user does not exist", which produces a
+ * placeholder snapshot without the flag and legitimately renders as
+ * "Unknown User".
+ *
+ * Any serializer whose output a client CACHES (the conversation list, room
+ * details) must refuse rather than render a flagged snapshot: the placeholder
+ * is indistinguishable from a real name on the wire, so a client that stores
+ * the row has nothing to tell it to look again, and a two-second blip shows as
+ * "Unknown User" until the page is reloaded.
+ */
+export function isUnresolvedSnapshot(
+  snapshot: Record<string, unknown> | null | undefined
+): boolean {
+  return snapshot?.isUnresolved === true;
+}
+
+/**
  * Best available display name, in priority order: fullName → displayName →
  * username → memberId → "Unknown User". Centralized here so every caller of
  * getUserSnapshotsMap resolves a name the same way instead of each serializer
@@ -36,6 +55,9 @@ const INCOMPLETE_SNAPSHOT_TTL_SECONDS = 30;
  * makes "Deleted Account" appear on every one of those surfaces at once,
  * rather than each of them hardcoding the string. Checked BEFORE the candidate
  * chain because a stale snapshot may still carry the old memberId.
+ *
+ * Reached only for a snapshot that is NOT {@link isUnresolvedSnapshot} on any
+ * surface a client caches — see that function for why.
  */
 export function resolveDisplayName(
   snapshot: Record<string, unknown> | null | undefined
@@ -106,9 +128,16 @@ export class UserSnapshotService {
 
       const missingIds = uniqueIds.filter((id) => !cached.has(id));
 
+      // Set by either lookup returning `null` — "I could not ask", as opposed to
+      // "I asked and this id is not mine". Only the first of those may be
+      // reported as an unresolved identity; the second is a genuinely missing
+      // user and keeps today's placeholder.
+      let lookupFailed = false;
+
       if (missingIds.length > 0) {
         const fetched = await fetchUsersBatch(missingIds);
-        for (const user of fetched) {
+        if (fetched === null) lookupFailed = true;
+        for (const user of fetched ?? []) {
           const snapshot: Record<string, unknown> = {
             userId: user.userId,
             // Already anonymized upstream for deleted accounts (displayName is
@@ -138,7 +167,8 @@ export class UserSnapshotService {
       const stillMissingIds = uniqueIds.filter((id) => !cached.has(id));
       if (stillMissingIds.length > 0) {
         const accounts = await fetchAccountsBatch(stillMissingIds);
-        for (const entry of accounts) {
+        if (accounts === null) lookupFailed = true;
+        for (const entry of accounts ?? []) {
           const snapshot: Record<string, unknown> = {
             userId: entry.userId,
             displayName: "", // no full name yet
@@ -168,6 +198,8 @@ export class UserSnapshotService {
             memberId: "",
             isDeletedUser: false,
             isOnline: false,
+            // NEVER cached: an outage must not outlive itself in Redis.
+            ...(lookupFailed ? { isUnresolved: true } : {}),
           });
         }
       }
@@ -175,6 +207,8 @@ export class UserSnapshotService {
       return cached;
     } catch (error) {
       logger.warn(`UserSnapshotService|getUserSnapshotsMap|error=${error}`);
+      // Only the cache read can reach here (both fetches report failure by
+      // returning null), so nothing in this batch was looked up at all.
       const fallback = new Map<string, Record<string, unknown>>();
       for (const id of uniqueIds) {
         fallback.set(id, {
@@ -184,6 +218,7 @@ export class UserSnapshotService {
           memberId: "",
           isDeletedUser: false,
           isOnline: false,
+          isUnresolved: true,
         });
       }
       return fallback;

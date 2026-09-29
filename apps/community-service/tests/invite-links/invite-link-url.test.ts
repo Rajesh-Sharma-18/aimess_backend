@@ -102,7 +102,6 @@ const row = (over: Record<string, unknown> = {}) => ({
   createdBy: CALLER,
   maxUses: null,
   usedCount: 0,
-  autoApprove: false,
   expiresAt: null,
   revokedAt: null,
   createdAt: new Date("2026-06-24T00:00:00.000Z"),
@@ -121,7 +120,6 @@ beforeEach(() => {
         createdBy: data.createdBy,
         communityId: data.communityId,
         maxUses: data.maxUses ?? null,
-        autoApprove: data.autoApprove ?? false,
         expiresAt: data.expiresAt ?? null,
       })
   );

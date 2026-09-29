@@ -23,6 +23,11 @@ beforeEach(() => {
   setAccountDefault({});
 });
 
+// Real user ids are UUIDs, and `assertPrivateParticipants` enforces that at the
+// create boundary — see lib/room-id.ts.
+const USER_A = "11111111-1111-4111-8111-111111111111";
+const USER_B = "22222222-2222-4222-8222-222222222222";
+
 const buildDeps = (existing: unknown) => {
   const created = { roomId: "prv_new" };
   return {
@@ -46,7 +51,7 @@ describe("ensurePrivateRoom", () => {
   it("creates the room when none exists", async () => {
     const deps = buildDeps(null);
 
-    const room = await ensurePrivateRoom(deps, "user-a", "user-b");
+    const room = await ensurePrivateRoom(deps, USER_A, USER_B);
 
     expect(room.roomId).toBe("prv_new");
     expect(deps.privateRoomRepo.create).toHaveBeenCalledTimes(1);
@@ -64,7 +69,7 @@ describe("ensurePrivateRoom", () => {
   it("announces NOTHING — a message-less room is not a listable conversation", async () => {
     const deps = buildDeps(null);
 
-    await ensurePrivateRoom(deps, "user-a", "user-b");
+    await ensurePrivateRoom(deps, USER_A, USER_B);
 
     expect(deps.redis.publish).not.toHaveBeenCalled();
   });
@@ -72,7 +77,7 @@ describe("ensurePrivateRoom", () => {
   it("never asks for a peer snapshot — there is no payload left to name", async () => {
     const deps = buildDeps(null);
 
-    await ensurePrivateRoom(deps, "user-a", "user-b");
+    await ensurePrivateRoom(deps, USER_A, USER_B);
 
     expect(deps.userSnapshotService.getUserSnapshotsMap).not.toHaveBeenCalled();
   });
@@ -80,7 +85,7 @@ describe("ensurePrivateRoom", () => {
   it("is idempotent: an existing room is returned untouched and announces nothing", async () => {
     const deps = buildDeps({ roomId: "prv_existing" });
 
-    const room = await ensurePrivateRoom(deps, "user-a", "user-b");
+    const room = await ensurePrivateRoom(deps, USER_A, USER_B);
 
     expect(room.roomId).toBe("prv_existing");
     expect(deps.privateRoomRepo.create).not.toHaveBeenCalled();
@@ -102,13 +107,13 @@ describe("ensurePrivateRoom — Profile default snapshot", () => {
     });
     const deps = buildDeps(null);
 
-    await ensurePrivateRoom(deps, "user-a", "user-b");
+    await ensurePrivateRoom(deps, USER_A, USER_B);
 
     const [created] = deps.privateRoomRepo.create.mock.calls[0]!;
     expect(created.autoDelete).toMatchObject({
       mode: "TIMER",
       ttlSeconds: 604800,
-      setBy: "user-a",
+      setBy: USER_A,
     });
   });
 
@@ -118,7 +123,7 @@ describe("ensurePrivateRoom — Profile default snapshot", () => {
     setAccountDefault({ autoDeleteTimer: "DAYS_30" });
     const deps = buildDeps(null);
 
-    await ensurePrivateRoom(deps, "user-a", "user-b");
+    await ensurePrivateRoom(deps, USER_A, USER_B);
 
     const [created] = deps.privateRoomRepo.create.mock.calls[0]!;
     expect(created.autoDelete).toMatchObject({
@@ -134,7 +139,7 @@ describe("ensurePrivateRoom — Profile default snapshot", () => {
     });
     const deps = buildDeps(null);
 
-    await ensurePrivateRoom(deps, "user-a", "user-b");
+    await ensurePrivateRoom(deps, USER_A, USER_B);
 
     const [created] = deps.privateRoomRepo.create.mock.calls[0]!;
     expect(created.autoDelete).toBeUndefined();
@@ -143,7 +148,7 @@ describe("ensurePrivateRoom — Profile default snapshot", () => {
   it("writes no policy at all when the default is OFF", async () => {
     const deps = buildDeps(null);
 
-    await ensurePrivateRoom(deps, "user-a", "user-b");
+    await ensurePrivateRoom(deps, USER_A, USER_B);
 
     const [created] = deps.privateRoomRepo.create.mock.calls[0]!;
     // Absent, not `{mode:"OFF"}` — a room with no record reads as Off already,
@@ -158,7 +163,7 @@ describe("ensurePrivateRoom — Profile default snapshot", () => {
     });
     const deps = buildDeps({ roomId: "prv_existing" });
 
-    await ensurePrivateRoom(deps, "user-a", "user-b");
+    await ensurePrivateRoom(deps, USER_A, USER_B);
 
     expect(deps.privateRoomRepo.create).not.toHaveBeenCalled();
   });
@@ -169,7 +174,7 @@ describe("ensurePrivateRoom — Profile default snapshot", () => {
     );
     const deps = buildDeps(null);
 
-    const room = await ensurePrivateRoom(deps, "user-a", "user-b");
+    const room = await ensurePrivateRoom(deps, USER_A, USER_B);
 
     expect(room.roomId).toBe("prv_new");
     const [created] = deps.privateRoomRepo.create.mock.calls[0]!;

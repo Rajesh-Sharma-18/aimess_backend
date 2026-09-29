@@ -137,7 +137,6 @@ describe("redeemInviteLink — rejects a BANNED redeemer with no invite", () => 
     id: LINK_ID,
     communityId: CID,
     code: "abc123",
-    autoApprove: true,
     revokedAt: null,
     expiresAt: null,
     maxUses: null,

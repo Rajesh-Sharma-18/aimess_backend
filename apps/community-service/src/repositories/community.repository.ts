@@ -3791,7 +3791,6 @@ export const communityRepository = {
     communityId: string;
     createdBy: string;
     maxUses: number | null;
-    autoApprove: boolean;
     expiresAt: Date | null;
   }) {
     return prisma.communityInviteLink.create({ data });
@@ -3806,10 +3805,15 @@ export const communityRepository = {
   },
 
   /**
-   * The caller's newest still-usable "share this community" link: not revoked,
-   * unlimited-use and request-to-join (i.e. NOT one of the custom limited-use or
-   * auto-approve links, which are deliberate throwaways and must never be handed
-   * back by the plain Invite button).
+   * The caller's newest still-usable "share this community" link: not revoked
+   * and unlimited-use (i.e. NOT one of the custom limited-use links, which are
+   * deliberate throwaways and must never be handed back by the plain Invite
+   * button).
+   *
+   * This used to exclude auto-approve links too. A link no longer carries a join
+   * policy, so a row an older build stamped `autoApprove: true` is now an
+   * ordinary unlimited-use link and is reusable like any other — handing it back
+   * is better than minting a duplicate beside it.
    *
    * `expiresAt` is deliberately NOT consulted: links do not lapse on a clock, so
    * a row still carrying an expiry stamped by an older build stays reusable
@@ -3823,7 +3827,6 @@ export const communityRepository = {
       where: {
         communityId,
         createdBy,
-        autoApprove: false,
         // Both fields are OPTIONAL, so an untouched row simply omits them — and
         // on Mongo `field: null` matches only documents where the field EXISTS
         // and is null. Each needs its own `isSet: false` alternative, ANDed so

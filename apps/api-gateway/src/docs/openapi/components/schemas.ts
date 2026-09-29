@@ -8389,8 +8389,10 @@ export const openApiSchemas = {
       },
       autoApprove: {
         type: "boolean",
+        deprecated: true,
+        enum: [false],
         description:
-          "When true, redeeming this link adds the member directly (no join-request flow).",
+          "RETIRED — always `false`, and no longer stored. It once meant this link skipped the join-request queue, which was the privacy in force when the link was minted, frozen. Redeeming now follows the community's CURRENT privacy and nothing else: PUBLIC adds the member directly, PRIVATE files a join request. Still sent (and still `required`) so existing clients decode; drop it on your next contract update.",
         example: false,
       },
       expiresAt: {
@@ -8651,7 +8653,7 @@ export const openApiSchemas = {
   CreateInviteLinkRequest: {
     type: "object",
     description:
-      "All fields are optional. Omit a field to use its default: unlimited uses, requires moderator approval (autoApprove: false). Invitation links never expire on their own — they stay usable until an admin revokes one.",
+      "`maxUses` is the only field, and it is optional — omit it for unlimited uses. Invitation links never expire on their own; they stay usable until an admin revokes one. A link carries no join policy: who gets in is decided by the community's privacy at redeem time. The retired `autoApprove` field is ignored rather than rejected, so an older client sending it still gets a 201.",
     properties: {
       maxUses: {
         type: "integer",
@@ -8661,17 +8663,9 @@ export const openApiSchemas = {
           "Maximum number of times this link can be redeemed. Omit for unlimited.",
         example: 50,
       },
-      autoApprove: {
-        type: "boolean",
-        default: false,
-        description:
-          "When true, anyone redeeming this link is added as an ACTIVE member directly (no join-request flow). Default false: a PENDING join request is created for moderator review.",
-        example: false,
-      },
     },
     example: {
       maxUses: 50,
-      autoApprove: false,
     },
   },
   InviteLinkListResponseData: {
@@ -8688,8 +8682,8 @@ export const openApiSchemas = {
   RedeemInviteLinkResponseData: {
     type: "object",
     description:
-      "`link` is always present. `member` is set when `autoApprove: true` (caller added directly as ACTIVE); " +
-      "`request` is set when `autoApprove: false` (a PENDING join request was created for moderator review). " +
+      "`link` is always present. Which of `member` / `request` comes back is decided by the community's CURRENT privacy: " +
+      "PUBLIC → `member` (caller added directly as ACTIVE); PRIVATE → `request` (a PENDING join request awaiting admin approval). " +
       "Exactly one of `member` / `request` is non-null on success; both are null for an already-joined caller (idempotent).",
     properties: {
       link: {
@@ -8700,13 +8694,13 @@ export const openApiSchemas = {
         allOf: [{ $ref: "#/components/schemas/CommunityMemberData" }],
         nullable: true,
         description:
-          "Populated when the caller was added directly as an ACTIVE member (`autoApprove: true` or already-joined idempotent case).",
+          "Populated when the caller was added directly as an ACTIVE member (community currently PUBLIC, or the already-joined idempotent case).",
       },
       request: {
         allOf: [{ $ref: "#/components/schemas/JoinRequestData" }],
         nullable: true,
         description:
-          "Populated when a PENDING join request was created (`autoApprove: false`). The caller must wait for moderator approval.",
+          "Populated when a PENDING join request was created (community currently PRIVATE). The caller must wait for admin approval.",
       },
     },
     required: ["link"],

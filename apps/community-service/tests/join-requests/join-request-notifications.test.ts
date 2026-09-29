@@ -15,8 +15,9 @@
  *     AND member_added routed through notifyMemberJoined with the enriched payload
  *     (requestId + communityName + moderatorRecipientIds) and the
  *     `community:member:joined` room broadcast.
- *   - redeemInviteLink (autoApprove) → member_added via notifyMemberJoined
- *     (actor === target so the consumer still welcomes the joiner).
+ *   - redeemInviteLink on a PUBLIC community → member_added via
+ *     notifyMemberJoined (actor === target so the consumer still welcomes the
+ *     joiner).
  */
 
 // Mock user-client so fetchUserSnapshots returns a Map with username: null
@@ -528,7 +529,7 @@ describe("bulkApproveJoinRequests — join-request list refresh", () => {
   });
 });
 
-describe("redeemInviteLink (autoApprove) — member_added with welcome-able actor", () => {
+describe("redeemInviteLink (PUBLIC community) — member_added with welcome-able actor", () => {
   beforeEach(() => {
     repo.findInviteLinkByCode.mockResolvedValue({
       id: "link-1",
@@ -537,14 +538,13 @@ describe("redeemInviteLink (autoApprove) — member_added with welcome-able acto
       createdBy: MOD,
       maxUses: null,
       usedCount: 0,
-      autoApprove: true,
       revokedAt: null,
       expiresAt: null,
       createdAt: new Date("2026-06-01T00:00:00.000Z"),
     });
     repo.findById.mockResolvedValue(community);
-    // Auto-approve is honoured on a PRIVATE community only while the issuer
-    // is still a moderator — checked at redeem time.
+    // The fixture community is PUBLIC, which is the one and only reason this
+    // redeem admits directly rather than filing a request.
     repo.findMembership.mockResolvedValue({
       role: "MODERATOR",
       status: "ACTIVE",
@@ -559,7 +559,6 @@ describe("redeemInviteLink (autoApprove) — member_added with welcome-able acto
       createdBy: MOD,
       maxUses: null,
       usedCount: 1,
-      autoApprove: true,
       revokedAt: null,
       expiresAt: null,
       createdAt: new Date("2026-06-01T00:00:00.000Z"),

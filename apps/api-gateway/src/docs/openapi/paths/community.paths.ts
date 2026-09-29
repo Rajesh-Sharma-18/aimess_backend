@@ -5094,12 +5094,12 @@ export const communityPaths = {
         "`linkId` is the sentinel `permanent:<communityId>`. This is what a *Generate Invitation Link* button should call.\n" +
         "   - **PUBLIC**: a handle-based, deterministic link (`https://aimess.me/<handle>`, `linkType: PUBLIC_HANDLE`) — " +
         "already stable; the code never appears in the share URL.\n\n" +
-        "2. **Parameterized call (any of `maxUses` / `expiresInMinutes` / `autoApprove` present)** — creates a NEW " +
-        "**temporary** invite-link row (multi-use / expiring / auto-approve), the legacy behavior. " +
-        "`maxUses` null/omitted → unlimited; `expiresInMinutes` is clamped to at most 60 and defaults to 60 — " +
-        "no link can outlive the 1-hour rule; " +
-        "`autoApprove: false` (default) keeps moderator approval. Abuse-protected: per-user create rate limit (429) " +
-        "and a per-member cap on simultaneously-active links (403). Use this for one-off or time-boxed invites.\n\n" +
+        "2. **Parameterized call (`maxUses` present)** — creates a NEW " +
+        "**temporary** invite-link row (limited-use), the legacy behavior. " +
+        "`maxUses` null/omitted → unlimited. " +
+        "A link carries no join policy: the retired `autoApprove` is ignored, and a body carrying only it " +
+        "is treated as the bare call above. Abuse-protected: per-user create rate limit (429) " +
+        "and a per-member cap on simultaneously-active links (403). Use this for one-off invites.\n\n" +
         "The same link is ALSO available at the dedicated, richer `GET /communities/:id/invitation-link` " +
         "(returns `invitationCode` / `invitationLink` / `createdAt` / `expiresAt` epoch-ms). Both resolve the same link.",
       security: [{ bearerAuth: [] }],
@@ -5683,7 +5683,7 @@ export const communityPaths = {
       description:
         "Joins through the link according to the community's CURRENT privacy — never the privacy it had when the link was minted. " +
         "PUBLIC now → adds (or reactivates) the caller as an ACTIVE MEMBER (`member` in the response; any leftover PENDING request is AUTO_RESOLVED). " +
-        "PRIVATE now → files (or returns the existing) PENDING join request (`request` in the response), unless the link is `autoApprove` AND its creator is still an ACTIVE moderator/admin. " +
+        "PRIVATE now → files (or returns the existing) PENDING join request (`request` in the response). No link setting overrides this — a link records no join policy at all, and the retired `autoApprove` is reported `false` on every link. " +
         "A privacy change never invalidates a link; only revoking it (Reset Link) does. Consumes a use only for a real join effect. " +
         "Idempotent for already-ACTIVE members (usedCount NOT incremented) and for concurrent taps (one membership / one request). BANNED users cannot redeem.",
       security: [{ bearerAuth: [] }],

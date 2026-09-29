@@ -1,5 +1,10 @@
 import { currentLocale } from "@aimess/constants";
-import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ForbiddenError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
@@ -7,7 +12,11 @@ import type { Redis, Cluster } from "ioredis";
 
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
-import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
+import {
+  assertPrivateParticipants,
+  buildParticipantsKey,
+  generateRoomId,
+} from "../lib/room-id.js";
 import {
   toWireMessage,
   normalizeMessageType,
@@ -54,6 +63,7 @@ import type { PrivateMessageRepository } from "../repositories/private-message.r
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import {
+  isUnresolvedSnapshot,
   resolveDisplayName,
   resolveRealDisplayName,
   type UserSnapshotService,
@@ -82,6 +92,11 @@ export async function ensurePrivateRoom(
   userId: string,
   peerId: string
 ): Promise<PrivateRoom> {
+  // BEFORE the lookup, so a junk peer id is a 400 rather than a wasted round
+  // trip. The repository asserts the same invariant again as the storage-level
+  // backstop for the two invite-share paths that create rooms without coming
+  // through here — see `assertPrivateParticipants`.
+  assertPrivateParticipants([userId, peerId]);
   const participantsKey = buildParticipantsKey(userId, peerId);
   const existing =
     await deps.privateRoomRepo.findByParticipantsKey(participantsKey);
@@ -878,6 +893,32 @@ export class PrivateRoomService {
       [...peerIds, userId],
       this.cacheRepo
     );
+    // Refuse rather than serve a row whose peer identity we could not look up.
+    //
+    // This is THE fix for the reported "Unknown User" row: every id that failed
+    // to resolve ends up with the same empty placeholder as an id that genuinely
+    // does not exist, and `resolveDisplayName` turns both into the literal
+    // "Unknown User". That literal is a terminal value on the wire — the client
+    // stores the row in its inbox cache and has nothing that would make it ask
+    // again, so a two-second user-service blip stayed on screen until a hard
+    // reload, while the chat header (a second call through this same serializer,
+    // made a moment later) showed the real name.
+    //
+    // 503, not 500: the request is well-formed and worth retrying, which every
+    // client's retry policy already does. Same call the media registry guard
+    // makes for the same reason. A genuinely missing/deleted user carries no
+    // `isUnresolved` flag and still renders exactly as designed.
+    //
+    // PEERS only. The CALLER's own snapshot feeds nothing but
+    // `lastActivity.username` on their own messages, which the client relabels
+    // "You:" from `userId === myUserId` regardless — refusing the whole list
+    // over it would turn a harmless gap into an outage.
+    if (peerIds.some((id) => isUnresolvedSnapshot(snapshots.get(id)))) {
+      logger.warn(
+        `PrivateRoomService|enrichConversations|identity lookup unavailable|userId=${userId}`
+      );
+      throw new ServiceUnavailableError("CHAT_IDENTITY_UNAVAILABLE");
+    }
     const myDisplayName = resolveDisplayName(snapshots.get(userId));
 
     const friendshipByPeer = this.friendshipGrpcClient

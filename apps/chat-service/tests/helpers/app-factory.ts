@@ -398,6 +398,12 @@ export function buildApp(): BuiltApp {
     mentions: 0,
     system: 0,
   });
+  // Every read/delete path resolves the badge through this one shape; without a
+  // default the service would destructure `undefined`.
+  notificationRepo.getUnreadFanout.mockResolvedValue({
+    unreadCount: 0,
+    selfHiddenSessions: [],
+  });
   const callRepo = repoMock();
   const messageSearchRepo = repoMock();
 

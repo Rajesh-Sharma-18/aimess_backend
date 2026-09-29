@@ -117,8 +117,9 @@ async function main(): Promise<void> {
   check("fixture: PRIVATE community created", Boolean(CID), `id=${CID}`);
   if (!CID) process.exit(1);
 
-  const link = await api(ADMIN, "POST", `/communities/${CID}/invite-links`, { autoApprove: true });
-  await api(MOD, "POST", `/communities/invite-links/${link.json.data.code}/redeem`, {});
+  // Seated by the admin: a PRIVATE community files a request for every link
+  // redemption now, whatever the link records, so a link cannot seed a roster.
+  await api(ADMIN, "POST", `/communities/${CID}/members`, { userIds: [MOD] });
   await api(ADMIN, "PUT", `/communities/${CID}/members/${MOD}/role`, { role: "MODERATOR" });
 
   const seen = new Set<string>();

@@ -270,3 +270,85 @@ describe("GET /api/v1/users/usernames/validate", () => {
     expect(res.body.success).toBe(false);
   });
 });
+
+/**
+ * The boundaries of the ONE rule, asserted on the endpoint the web client actually calls.
+ *
+ * `updateProfileSchema.username` is not a copy of this rule, it is literally the same schema
+ * object (asserted below), so availability and the write that follows it can never normalize
+ * differently — the failure mode where a handle checks out as free and is then refused, or
+ * checks out as taken under a casing the write does not apply.
+ */
+describe("username rule — boundaries and normalization", () => {
+  beforeEach(() => {
+    repo.findByUsername.mockResolvedValue(null);
+  });
+
+  const ask = (username: string) =>
+    request(app)
+      .get("/api/v1/users/usernames/validate")
+      .set(auth())
+      .query({ username });
+
+  it.each([
+    ["exact minimum (3)", "abc", "abc"],
+    ["exact maximum (30)", "a".repeat(30), "a".repeat(30)],
+    ["underscores", "a_b_c", "a_b_c"],
+    ["digits", "user2024", "user2024"],
+    ["numeric only", "12345", "12345"],
+    ["uppercase is canonicalized, not rejected", "TestUser", "testuser"],
+    ["surrounding whitespace is trimmed", "  testuser  ", "testuser"],
+  ])("accepts %s", async (_label, input, canonical) => {
+    const res = await ask(input);
+    expect(res.status).toBe(200);
+    expect(res.body.data.username).toBe(canonical);
+  });
+
+  it.each([
+    ["empty", ""],
+    ["below minimum (2)", "ab"],
+    ["above maximum (31)", "a".repeat(31)],
+    ["inner space", "test user"],
+    ["hyphen", "test-user"],
+    ["dot", "test.user"],
+    ["unsupported symbol", "test@user"],
+    ["non-Latin script", "пользователь"],
+    ["emoji", "test🎉"],
+    ["absurdly long input", "a".repeat(10_000)],
+  ])("rejects %s with 400 and never reaches the database", async (_label, input) => {
+    const res = await ask(input);
+    expect(res.status).toBe(400);
+    expect(repo.findByUsername).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Casing is not a second identity: `TestUser`, `testuser` and `TESTUSER` are one handle, so
+   * a profile holding `testuser` makes all three unavailable.
+   */
+  it.each(["TestUser", "testuser", "TESTUSER"])(
+    "resolves %s against the same stored handle",
+    async (input) => {
+      repo.findByUsername.mockResolvedValue({ userId: "someone-else" });
+
+      const res = await ask(input);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.available).toBe(false);
+      expect(repo.findByUsername).toHaveBeenCalledWith("testuser");
+    }
+  );
+});
+
+describe("username rule — one definition", () => {
+  it("is the same schema object on the availability check and on the profile write", async () => {
+    const { usernameSchema } = await import(
+      "../../src/api/validators/username.validator.js"
+    );
+    const { updateProfileSchema } = await import(
+      "../../src/api/validators/profile.validator.js"
+    );
+
+    // Same instance, so the two can never drift apart.
+    expect(updateProfileSchema.shape.username.unwrap()).toBe(usernameSchema);
+  });
+});

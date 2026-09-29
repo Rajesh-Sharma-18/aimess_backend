@@ -5,7 +5,7 @@
  * updateMemberStatus / updateMemberRole).
  *
  * The bug: when a previously-LEFT member is re-added (approveJoinRequest /
- * acceptInvite / redeemInviteLink autoApprove / addMembers), this method flipped
+ * acceptInvite / redeemInviteLink / addMembers), this method flipped
  * the community-service row back to ACTIVE but never told chat-service, so the
  * member's RoomMember row stayed stale and they couldn't send/receive in the
  * community general room despite being ACTIVE again.

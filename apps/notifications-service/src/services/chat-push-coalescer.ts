@@ -61,6 +61,8 @@ export interface ChatPushMessage {
   senderAvatar: string;
   preview: string;
   previewImageUrl?: string;
+  /** Permanent object key behind previewImageUrl — lets a client re-mint an expired URL. */
+  previewImageKey?: string;
   messageType: string;
   sentAt: number;
   /** The recipient was @mentioned in this (GROUP) message. */
@@ -416,6 +418,9 @@ async function flush(key: string): Promise<void> {
         preview: subject.preview ?? "",
         ...(subject.previewImageUrl
           ? { previewImageUrl: subject.previewImageUrl }
+          : {}),
+        ...(subject.previewImageKey
+          ? { previewImageKey: subject.previewImageKey }
           : {}),
         sentAt: String(subject.sentAt ?? ""),
         // The client dedups on this. A coalesced push stands for a RANGE, so it

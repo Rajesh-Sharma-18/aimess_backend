@@ -1048,7 +1048,7 @@ export const authPaths = {
       summary: "Trust this login (It's Me)",
       operationId: "trustSession",
       description:
-        'Confirms a new/suspicious login detection for the given session ("It\'s Me"). Marks the related login-detected notification as TRUSTED. The session stays active — this is not a revoke. Pass any `sessionId` from GET /auth/sessions that belongs to the caller.',
+        'Confirms a new/suspicious login detection for the given session ("It\'s Me"). Marks the related login-detected notification as TRUSTED. The session stays active — this is not a revoke. Pass any `sessionId` from GET /auth/sessions that belongs to the caller, EXCEPT the caller\'s own: a login alert may never be answered by the session it is about, and that attempt is refused with 403.',
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -1076,6 +1076,21 @@ export const authPaths = {
           },
         },
         "401": unauthorized,
+        "403": {
+          description:
+            "The caller's own session triggered this login alert — only another session of the account may answer it",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message:
+                  "This login can only be reviewed from one of your other devices.",
+                code: "AUTH_SESSION_SELF_ACTION_FORBIDDEN",
+              },
+            },
+          },
+        },
         "404": {
           description: "Session not found or not owned by the caller",
           content: {

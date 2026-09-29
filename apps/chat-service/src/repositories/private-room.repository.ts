@@ -3,6 +3,7 @@
   PrivateRoom,
   Prisma,
 } from "../generated/prisma/index.js";
+import { logger } from "@aimess/logger";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 import {
   newerSnapshotMongoQuery,
@@ -11,9 +12,11 @@ import {
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
+import { assertPrivateParticipants } from "../lib/room-id.js";
 import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
 import {
-  UNREAD_COUNTABLE_RAW_MATCH,
+  shouldCountInUnread,
+  UNREAD_COUNTABLE_EVENT_RAW_MATCH,
   type UnreadStats,
 } from "../lib/unread-count.js";
 import {
@@ -240,6 +243,10 @@ export class PrivateRoomRepository {
     participantsKey: string;
     [key: string]: unknown;
   }): Promise<PrivateRoom> {
+    // The one choke point every private-room creation passes through — see
+    // `assertPrivateParticipants` for which callers those are, and for why the
+    // friendship gate above it cannot be relied on to stop a junk peer id.
+    assertPrivateParticipants(data.participants);
     return this.prisma.privateRoom.create({
       data: {
         roomId: data.roomId,
@@ -305,35 +312,188 @@ export class PrivateRoomRepository {
    * CONVERSATIONS (one unread room contributes 1, not its message count); the
    * message total stays on the payload for clients that still show it. Same
    * unbounded shape as countConversations (a badge total must cover every
-   * room, not one inbox page) plus the exact `unreadByUser[userId] ?? 0` read
-   * PrivateRoomService.toPrivateItem already uses per-row.
+   * room, not one inbox page), over the same `unreadByUser[userId]` bucket
+   * PrivateRoomService.toPrivateItem reads per-row — but VERIFIED against the
+   * messages rather than trusted, and corrected in place when it disagrees. See
+   * the note in the body for why the badge is the reader that has to do that.
    */
   async countUnreadForUser(userId: string): Promise<UnreadStats> {
     const rows = await this.prisma.privateRoom.findMany({
       where: { participants: { has: userId }, lastMessageAt: { not: null } },
       select: {
+        roomId: true,
         deletedFor: true,
         lastMessageAt: true,
         unreadCountByUser: true,
+        lastReadMessageIdByUser: true,
       },
     });
-    return rows
+    const candidates = rows
       .filter((r) => isVisibleAfterDeleteForMe(r, userId))
-      .reduce<UnreadStats>(
-        (acc, r) => {
-          const unreadByUser = (r.unreadCountByUser ?? {}) as Record<
-            string,
-            number
-          >;
-          const unread = unreadByUser[userId] ?? 0;
-          if (unread <= 0) return acc;
-          return {
-            messages: acc.messages + unread,
-            conversations: acc.conversations + 1,
-          };
+      .map((r) => ({
+        roomId: r.roomId,
+        stored:
+          ((r.unreadCountByUser ?? {}) as Record<string, number>)[userId] ?? 0,
+        pointer:
+          ((r.lastReadMessageIdByUser ?? {}) as Record<string, string | null>)[
+            userId
+          ] ?? null,
+      }))
+      .filter((c) => c.stored > 0);
+    if (!candidates.length) return { messages: 0, conversations: 0 };
+
+    // VERIFY, do not trust. `unreadCountByUser` is a denormalized counter and the
+    // nav badge is the one reader that can never notice it has drifted: a room
+    // the user does not open is never recounted, so a counter credited for
+    // something that is not (or is no longer) countable unread sits on the badge
+    // forever. That is the reported ghost — a room whose only unread content was
+    // an invite card the recount filtered back out — and invites are not the only
+    // way to make one (a send that credited the sender’s own bucket does it too).
+    //
+    // Correcting it in place fixes the LIST ROW in the same step, which matters:
+    // the row and the badge read the same field, so healing one without the
+    // other would only move the disagreement.
+    //
+    // Only rooms already claiming unread are examined, and the recount is ONE
+    // bulk aggregation over them rather than a query per room — this runs on the
+    // real-time `chat:unread_summary` path, once per online recipient of a
+    // fan-out, so an N+1 here would be paid per member per burst. A clean inbox
+    // exits above at zero extra cost.
+    const truth = await this.recountUnreadBulk(userId, candidates);
+    const drifted: string[] = [];
+    const stats = candidates.reduce<UnreadStats>(
+      (acc, c) => {
+        // Corrective-DOWNWARD only, for the reason reconcileUnreadAtPointer
+        // documents: the recount is not bounded by this viewer’s clear-chat
+        // cutoff, so it can legitimately exceed a counter that was already
+        // decremented for messages they cleared.
+        const unread = Math.min(c.stored, truth.get(c.roomId) ?? 0);
+        if (unread !== c.stored) drifted.push(c.roomId);
+        return unread > 0
+          ? {
+              messages: acc.messages + unread,
+              conversations: acc.conversations + 1,
+            }
+          : acc;
+      },
+      { messages: 0, conversations: 0 }
+    );
+
+    // Persist the correction before answering. Awaited rather than fired off, so
+    // a client that fetches the badge and the inbox together cannot be served a
+    // healed badge next to a row that still carries the ghost. Empty in the
+    // healthy case, which is every call after the first.
+    await Promise.all(drifted.map((roomId) => this.healUnread(roomId, userId)));
+    return stats;
+  }
+
+  /**
+   * Countable unread per room for one user, in ONE aggregation: each room is
+   * bounded by that user’s OWN read pointer (a `$switch` per roomId, the same
+   * shape GeneralRoomMessageRepository.countUnreadBulk uses), so a room read to
+   * a non-latest message still reports what remains. Rooms with nothing
+   * countable are absent from the map — the caller treats missing as 0.
+   */
+  private async recountUnreadBulk(
+    userId: string,
+    candidates: Array<{ roomId: string; pointer: string | null }>
+  ): Promise<Map<string, number>> {
+    const pointerIds = candidates
+      .map((c) => c.pointer)
+      .filter((p): p is string => !!p && isObjectId(p));
+    // Keyed by roomId, which also discards a pointer that does not belong to the
+    // room it was stored on — such a boundary must not bound this room’s count.
+    const pointerRows = pointerIds.length
+      ? await this.prisma.privateMessage.findMany({
+          where: {
+            id: { in: pointerIds },
+            roomId: { in: candidates.map((c) => c.roomId) },
+          },
+          select: { roomId: true, sequenceNumber: true },
+        })
+      : [];
+    const seqByRoom = new Map(
+      pointerRows.map((m) => [m.roomId, m.sequenceNumber ?? 0])
+    );
+
+    const result = (await this.prisma.privateMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: { $in: candidates.map((c) => c.roomId) },
+            isDeleted: false,
+            senderId: { $ne: userId },
+            // Personally hidden by this viewer ⇒ invisible ⇒ not unread.
+            [`deletedFor.${userId}`]: { $exists: false },
+            ...UNREAD_COUNTABLE_EVENT_RAW_MATCH,
+          },
         },
-        { messages: 0, conversations: 0 }
+        {
+          $addFields: {
+            _thr: {
+              $switch: {
+                branches: candidates.map((c) => ({
+                  case: { $eq: ["$roomId", c.roomId] },
+                  then: seqByRoom.get(c.roomId) ?? 0,
+                })),
+                default: 0,
+              },
+            },
+          },
+        },
+        // A legacy row with no sequenceNumber compares as null and is excluded —
+        // the same rows countRemainingUnread’s `sequenceNumber: { $gt }` drops.
+        { $match: { $expr: { $gt: ["$sequenceNumber", "$_thr"] } } },
+        { $group: { _id: "$roomId", total: { $sum: 1 } } },
+      ],
+    })) as unknown as Array<{ _id: string; total: number }>;
+    return new Map(result.map((r) => [r._id, r.total]));
+  }
+
+  /**
+   * Re-derive and persist one room’s stored unread for one user. Goes through
+   * {@link reconcileUnreadAtPointer} rather than writing the counter directly so
+   * the companion fields (`hasUnreadByUser`, the unread preview hints) are kept
+   * in step by the one method that owns them. Best-effort: a badge read must
+   * still answer if the correcting write fails.
+   */
+  private async healUnread(roomId: string, userId: string): Promise<void> {
+    try {
+      const room = await this.prisma.privateRoom.findUnique({
+        where: { roomId },
+      });
+      if (!room) return;
+      await this.reconcileUnreadAtPointer(
+        room,
+        roomId,
+        userId,
+        await this.readPointerSeq(room, userId)
       );
+    } catch (err: unknown) {
+      logger.warn(
+        `PrivateRoomRepository|healUnread failed room=${roomId}: ${String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Sequence number of this user’s stored read pointer, or 0 when they have
+   * never read the room (or the pointer no longer resolves to a message in it —
+   * a boundary that was deleted must not freeze the recount).
+   */
+  private async readPointerSeq(
+    room: PrivateRoom,
+    userId: string
+  ): Promise<number> {
+    const pointer = (
+      (room.lastReadMessageIdByUser ?? {}) as Record<string, string | null>
+    )[userId];
+    if (!pointer || !isObjectId(pointer)) return 0;
+    const message = await this.prisma.privateMessage.findFirst({
+      where: { id: pointer, roomId: room.roomId },
+      select: { sequenceNumber: true },
+    });
+    return message?.sequenceNumber ?? 0;
   }
 
   /**
@@ -402,7 +562,24 @@ export class PrivateRoomRepository {
     // one permanently lost unread. Callers all resolve the peer from the room
     // now (`privateRoomPeerId`, dc55e7a4), but this is the single choke point
     // every private send passes through, so the guard belongs here.
-    const unreadIncrement = receiverId ? (params.unreadIncrement ?? 1) : 0;
+    // A caller that does not state an increment gets the POLICY answer, not a
+    // blind 1. Both invite-DM delivery paths (community-room-sync.consumer’s
+    // invite_link_shared, group-invite-link.service’s group_invite_shared) omit
+    // it, so every SYSTEM row they push credited the recipient’s counter while
+    // the row they persisted alongside it derived its own `countInUnread` from
+    // `shouldCountInUnread`. The two could disagree, and when they did the
+    // counter could never be reconciled back down — one permanent unread
+    // conversation on the nav badge. This is the one choke point every private
+    // send passes through, so the rule belongs here.
+    const unreadIncrement = receiverId
+      ? (params.unreadIncrement ??
+        (shouldCountInUnread({
+          messageType: message.messageType,
+          systemEvent: message.systemEvent,
+        })
+          ? 1
+          : 0))
+      : 0;
 
     const lastMessage = {
       content: message.content,
@@ -696,6 +873,13 @@ export class PrivateRoomRepository {
    * hold, without moving any pointer or republishing a receipt. Writes only
    * when the stored counter disagrees, so the common repeat-read (open a chat
    * that is already fully read) stays a pure read.
+   *
+   * CORRECTIVE-DOWNWARD only, for the same reason the advancing path clamps with
+   * `Math.min`: the recount is bounded by the read pointer but not by this
+   * viewer's clear-chat cutoff, so it can legitimately come back HIGHER than a
+   * counter that was already decremented for messages they cleared. Raising it
+   * would resurrect those. Removing ghosts is what a recount is for; discovering
+   * unread the `$inc` never credited is not.
    */
   private async reconcileUnreadAtPointer(
     existing: PrivateRoom,
@@ -709,10 +893,9 @@ export class PrivateRoomRepository {
     >;
     const stored = unreadCountByUser[userId] ?? 0;
     if (stored === 0) return existing;
-    const remaining = await this.countRemainingUnread(
-      roomId,
-      userId,
-      pointerSeq
+    const remaining = Math.min(
+      stored,
+      await this.countRemainingUnread(roomId, userId, pointerSeq)
     );
     if (remaining === stored) return existing;
 
@@ -768,12 +951,12 @@ export class PrivateRoomRepository {
             senderId: { $ne: userId },
             // Personally hidden by this viewer ⇒ invisible to them ⇒ not unread.
             [`deletedFor.${userId}`]: { $exists: false },
-            // Hard-exclude SYSTEM rows even if a legacy doc predates
-            // countInUnread (UNREAD_COUNTABLE_RAW_MATCH treats missing as
-            // countable).
-            messageType: { $ne: "SYSTEM" },
-            systemEvent: null,
-            ...UNREAD_COUNTABLE_RAW_MATCH,
+            // The SAME countability rule the write path applies — including the
+            // invite-card exception. Hand-rolling it here (a blanket
+            // `messageType != SYSTEM` + `systemEvent: null`) is what let a room
+            // whose only unread content was an invite keep a counter this
+            // recount could never clear.
+            ...UNREAD_COUNTABLE_EVENT_RAW_MATCH,
           },
         },
         { $count: "total" },
