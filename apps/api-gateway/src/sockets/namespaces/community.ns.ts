@@ -681,6 +681,7 @@ export function registerCommunityNamespace(
     void socket.join(`user:${userId}`);
     void socket.join(`session:${sessionId}`);
     logger.debug(`/community connected userId=${userId}`);
+    let socketViewing = true;
 
     // Resolve sender identity ONCE per connection (gRPC snapshot + avatar
     // presign) so typing broadcasts carry userDetails without a per-event fetch.
@@ -1028,12 +1029,7 @@ export function registerCommunityNamespace(
               redisPub,
               chatOpenRoomKey(userId, communityId)
             );
-            // ponytail: /community carries no app-state heartbeat (only /chat
-            // does), so a community transcript counts as viewed while its socket
-            // is connected, backgrounded tab included. Mirror /chat's
-            // `presence:heartbeat` here if backgrounded community tabs start
-            // swallowing useful notifications.
-            if (sessionId) {
+            if (sessionId && socketViewing) {
               void markChatViewer(
                 redisPub,
                 userId,
@@ -1822,11 +1818,29 @@ export function registerCommunityNamespace(
       if (now - lastAttentionRefreshAt < ATTENTION_REFRESH_MS) return;
       lastAttentionRefreshAt = now;
       void markChatAttention(redisPub, chatOpenRoomKey(userId, openId));
-      if (sessionId) {
+      if (sessionId && socketViewing) {
         void markChatViewer(redisPub, userId, openId, sessionId, socket.id);
       }
     };
     socket.conn.on("packet", onCommunityPacket);
+
+    socket.on("presence:heartbeat", (payload: unknown) => {
+      const beat = payload as
+        | { appState?: string; focused?: boolean }
+        | undefined;
+      const viewing =
+        (beat?.appState ?? "FOREGROUND") !== "BACKGROUND" &&
+        beat?.focused !== false;
+      if (viewing === socketViewing) return;
+      socketViewing = viewing;
+      const openId = socket.data.activeCommunityId as string | undefined;
+      if (!userId || !openId) return;
+      if (!viewing) {
+        void clearChatViewer(redisPub, userId, openId, socket.id);
+      } else if (sessionId) {
+        void markChatViewer(redisPub, userId, openId, sessionId, socket.id);
+      }
+    });
 
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/community disconnected userId=${userId} reason=${reason}`);
