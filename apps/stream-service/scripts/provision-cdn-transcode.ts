@@ -6,7 +6,7 @@
  *
  * The rungs here MUST match `CDN_TRANSCODE_TIERS` (the delivery switch) — the
  * suffixName becomes `<playbackId>_<suffix>` in the playback URL. Keys also match
- * the frontend's quality ladder ("1080p" | "720p" | "480p" | "360p").
+ * the frontend's quality ladder ("720p" | "480p").
  *
  * ⚠️ Transcoding is a BILLED CDNetworks add-on and must be enabled on the account
  * first (same as the StopLivestreaming "forbid" permission). Until then the API
@@ -33,10 +33,9 @@ const APPLY = process.argv.includes("--apply");
  * resolution; suffixName drives both the URL and the frontend quality key.
  */
 const PROFILES: CdnTranscodeProfile[] = [
-  { suffixName: "1080p", priority: 40, resolution: "1920*1080", videoBitrate: 6000 },
+  // Only 720p + 480p are provisioned on the account (2026-09-30).
   { suffixName: "720p", priority: 30, resolution: "1280*720", videoBitrate: 3000 },
   { suffixName: "480p", priority: 20, resolution: "854*480", videoBitrate: 1200 },
-  { suffixName: "360p", priority: 10, resolution: "640*360", videoBitrate: 700 },
 ].map((p) => ({
   ...p,
   videoCodec: "h264",
