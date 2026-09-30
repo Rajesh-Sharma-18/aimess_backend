@@ -36,6 +36,26 @@ function isRecordNotFoundError(err: unknown): boolean {
   return (err as { code?: string } | null)?.code === "P2025";
 }
 
+/** Mongo aborted the transaction on a write conflict / transient error. */
+function isTransactionConflict(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === "P2034";
+}
+
+/**
+ * Filter matching a community that can take members right now: not deleted,
+ * not owner-CLOSED, not platform-SUSPENDED. `not` compiles to Mongo `$ne`,
+ * which also matches legacy rows with the field unset (= ACTIVE) — same
+ * reading as `communityAccessPolicy`.
+ */
+function openCommunityWhere(communityId: string): Prisma.CommunityWhereInput {
+  return {
+    id: communityId,
+    deletedAt: { isSet: false },
+    status: { not: CommunityStatus.CLOSED },
+    moderationStatus: { not: CommunityModerationStatus.SUSPENDED },
+  };
+}
+
 /** Columns every membership (re)activation hands back to its caller. */
 const REACTIVATED_MEMBER_SELECT = {
   id: true,
@@ -937,7 +957,9 @@ export const communityRepository = {
      *  invitation, exactly like the kick/ban markers cleared below. */
     joinedViaInviteCode?: string | null
   ) {
-    let row: Prisma.CommunityMemberGetPayload<{ select: typeof REACTIVATED_MEMBER_SELECT }>;
+    let row: Prisma.CommunityMemberGetPayload<{
+      select: typeof REACTIVATED_MEMBER_SELECT;
+    }>;
     let clearedMutes: { count: number };
     try {
       [row, clearedMutes] = await prisma.$transaction([
@@ -956,12 +978,18 @@ export const communityRepository = {
         // A fresh membership cycle also drops any leftover mute/warning rows from
         // the OLD cycle — otherwise a rejoining member is still muted, or still
         // carries warnings issued to a membership that no longer exists.
-        prisma.communityMemberMute.deleteMany({ where: { communityId, userId } }),
+        prisma.communityMemberMute.deleteMany({
+          where: { communityId, userId },
+        }),
         prisma.communityMemberWarning.deleteMany({
           where: { communityId, userId },
         }),
         // Same transaction as the membership write — see resolvePendingJoinRequestsOp.
-        resolvePendingJoinRequestsOp(communityId, [userId], resolvedBy ?? userId),
+        resolvePendingJoinRequestsOp(
+          communityId,
+          [userId],
+          resolvedBy ?? userId
+        ),
       ]);
     } catch (err) {
       if (isRecordNotFoundError(err)) throw new MemberAlreadyActiveError();
@@ -2076,9 +2104,7 @@ export const communityRepository = {
         },
       }),
       // total is -1 in keyset mode = not counted; the caller pages on the row count it asked for, never on totalPage.
-      params.cursor
-        ? Promise.resolve(-1)
-        : prisma.community.count({ where }),
+      params.cursor ? Promise.resolve(-1) : prisma.community.count({ where }),
     ]);
 
     return { rows, total };
@@ -2932,8 +2958,10 @@ export const communityRepository = {
     decidedBy: string,
     decidedAt: Date
   ) {
+    // Only rows still PENDING: never overwrite one a concurrent path settled
+    // (e.g. EXPIRED by a close that landed after the caller's read).
     return prisma.communityJoinRequest.updateMany({
-      where: { id: { in: requestIds } },
+      where: { id: { in: requestIds }, status: CommunityJoinReqStatus.PENDING },
       data: { status, decidedBy, decidedAt },
     });
   },
@@ -2961,6 +2989,30 @@ export const communityRepository = {
     return prisma.communityJoinRequest.findUnique({ where: { id: requestId } });
   },
 
+  /**
+   * The community stopped taking members (closed, suspended, deleted): every
+   * PENDING request becomes EXPIRED. Conditional on PENDING, so a request a
+   * concurrent path settled first is left alone and a repeat is a no-op.
+   * Returns exactly the rows THIS call expired — they share one `decidedAt`
+   * stamp — so the caller announces each one once.
+   */
+  async expirePendingJoinRequests(communityId: string, actorId: string) {
+    const decidedAt = new Date();
+    const { count } = await prisma.communityJoinRequest.updateMany({
+      where: { communityId, status: CommunityJoinReqStatus.PENDING },
+      data: {
+        status: CommunityJoinReqStatus.EXPIRED,
+        decidedBy: actorId || null,
+        decidedAt,
+      },
+    });
+    if (count === 0) return [];
+    return prisma.communityJoinRequest.findMany({
+      where: { communityId, status: CommunityJoinReqStatus.EXPIRED, decidedAt },
+      select: { id: true, userId: true },
+    });
+  },
+
   /** Every PENDING request of one community (PRIVATE → PUBLIC auto-resolve). */
   findPendingJoinRequestsForCommunity(communityId: string) {
     return prisma.communityJoinRequest.findMany({
@@ -2970,23 +3022,33 @@ export const communityRepository = {
   },
 
   /**
-   * PRIVATE → PUBLIC: turn one PENDING join request into an ACTIVE membership,
-   * as ONE interactive transaction:
+   * Turn one PENDING join request into an ACTIVE membership — admin approve
+   * (status APPROVED) and PRIVATE → PUBLIC auto-resolve (AUTO_RESOLVED) — as
+   * ONE interactive transaction:
    *
-   *   1. claim the request — PENDING → AUTO_RESOLVED, conditional on it still
-   *      being PENDING (a concurrent cancel / reject / approve that got there
-   *      first leaves nothing to claim → "NOT_PENDING", nothing written);
+   *   0. guard the COMMUNITY — a conditional write on the community document
+   *      that only matches while it is open (not deleted / closed / suspended).
+   *      No match → "COMMUNITY_UNAVAILABLE", nothing written. Because it is a
+   *      WRITE, a concurrent close/suspend/delete (which writes the same
+   *      document) conflicts with this transaction instead of slipping past a
+   *      read: either the decision commits first (and the close then expires
+   *      whatever is still pending), or the close commits first and this guard
+   *      no longer matches. A member can never be admitted after the close.
+   *   1. claim the request — PENDING → `status`, conditional on it still
+   *      being PENDING (a concurrent cancel / reject / approve / expiry that got
+   *      there first leaves nothing to claim → "NOT_PENDING");
    *   2. re-read the member row INSIDE the transaction and apply the current
-   *      rules: ACTIVE → nothing more to do; BANNED → roll the claim back (a
-   *      privacy change never lifts a ban); LEFT → start a fresh cycle; none →
-   *      create the row.
+   *      rules: ACTIVE → close the request as AUTO_RESOLVED (nobody granted
+   *      anything); BANNED → roll the claim back; LEFT → start a fresh cycle;
+   *      none → create the row.
    *
-   * Any concurrent writer to the same request or member document makes one of
-   * the two transactions fail with a write conflict (or the create with P2002),
-   * so the membership is created exactly once. The caller treats a thrown error
-   * as "someone else settled it" and re-reads.
+   * Any concurrent writer to the same community, request or member document
+   * makes one of the transactions fail with a write conflict (or the create
+   * with P2002). Write conflicts are retried here — the retry re-reads the
+   * world and lands on the truthful outcome; anything else propagates and the
+   * caller treats it as "someone else settled it".
    */
-  async autoResolveJoinRequestToMember(args: {
+  async settleJoinRequestToMember(args: {
     requestId: string;
     communityId: string;
     userId: string;
@@ -2995,72 +3057,109 @@ export const communityRepository = {
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
     };
+    /** APPROVED (an admin decided) or AUTO_RESOLVED (the community went public). */
+    status: CommunityJoinReqStatus;
     resolvedBy: string;
     /** The invitation the request was raised from — carried to the member row. */
     inviteCode: string | null;
   }): Promise<
     | { outcome: "ACTIVATED"; member: CommunityMember; clearedMutes: number }
-    | { outcome: "ALREADY_MEMBER" | "NOT_PENDING" | "BANNED" }
+    | {
+        outcome:
+          | "ALREADY_MEMBER"
+          | "NOT_PENDING"
+          | "BANNED"
+          | "COMMUNITY_UNAVAILABLE";
+      }
   > {
     const { requestId, communityId, userId } = args;
-    const result = await prisma.$transaction(async (tx) => {
-      const claimed = await tx.communityJoinRequest.updateMany({
-        where: { id: requestId, status: CommunityJoinReqStatus.PENDING },
-        data: {
-          status: CommunityJoinReqStatus.AUTO_RESOLVED,
-          decidedBy: args.resolvedBy || null,
-          decidedAt: new Date(),
-        },
-      });
-      if (claimed.count === 0) return { outcome: "NOT_PENDING" as const };
+    const attempt = () =>
+      prisma.$transaction(async (tx) => {
+        const open = await tx.community.updateMany({
+          where: openCommunityWhere(communityId),
+          data: { updatedAt: new Date() },
+        });
+        if (open.count === 0)
+          return { outcome: "COMMUNITY_UNAVAILABLE" as const };
 
-      const existing = await tx.communityMember.findUnique({
-        where: { communityId_userId: { communityId, userId } },
-      });
-      if (existing?.status === CommunityMemberStatus.ACTIVE) {
-        return { outcome: "ALREADY_MEMBER" as const };
-      }
-      if (existing?.status === CommunityMemberStatus.BANNED) {
-        // Rolls back the claim above: the request stays exactly as it was.
-        throw new BannedMemberAbort();
-      }
-
-      if (existing) {
-        const member = await tx.communityMember.update({
-          where: {
-            communityId_userId: { communityId, userId },
-            status: { not: CommunityMemberStatus.ACTIVE },
+        const claimed = await tx.communityJoinRequest.updateMany({
+          where: { id: requestId, status: CommunityJoinReqStatus.PENDING },
+          data: {
+            status: args.status,
+            decidedBy: args.resolvedBy || null,
+            decidedAt: new Date(),
           },
-          data: memberReactivationData(args.snapshot, args.inviteCode),
         });
-        const cleared = await tx.communityMemberMute.deleteMany({
-          where: { communityId, userId },
-        });
-        await tx.communityMemberWarning.deleteMany({
-          where: { communityId, userId },
-        });
-        return {
-          outcome: "ACTIVATED" as const,
-          member,
-          clearedMutes: cleared.count,
-        };
-      }
+        if (claimed.count === 0) return { outcome: "NOT_PENDING" as const };
 
-      const member = await tx.communityMember.create({
-        data: {
-          communityId,
-          userId,
-          role: CommunityMemberRole.MEMBER,
-          status: CommunityMemberStatus.ACTIVE,
-          ...args.snapshot,
-          joinedViaInviteCode: args.inviteCode,
-        },
+        const existing = await tx.communityMember.findUnique({
+          where: { communityId_userId: { communityId, userId } },
+        });
+        if (existing?.status === CommunityMemberStatus.ACTIVE) {
+          if (args.status !== CommunityJoinReqStatus.AUTO_RESOLVED) {
+            await tx.communityJoinRequest.update({
+              where: { id: requestId },
+              data: { status: CommunityJoinReqStatus.AUTO_RESOLVED },
+            });
+          }
+          return { outcome: "ALREADY_MEMBER" as const };
+        }
+        if (existing?.status === CommunityMemberStatus.BANNED) {
+          // Rolls back the claim above: the request stays exactly as it was.
+          throw new BannedMemberAbort();
+        }
+
+        if (existing) {
+          const member = await tx.communityMember.update({
+            where: {
+              communityId_userId: { communityId, userId },
+              status: { not: CommunityMemberStatus.ACTIVE },
+            },
+            data: memberReactivationData(args.snapshot, args.inviteCode),
+          });
+          const cleared = await tx.communityMemberMute.deleteMany({
+            where: { communityId, userId },
+          });
+          await tx.communityMemberWarning.deleteMany({
+            where: { communityId, userId },
+          });
+          return {
+            outcome: "ACTIVATED" as const,
+            member,
+            clearedMutes: cleared.count,
+          };
+        }
+
+        const member = await tx.communityMember.create({
+          data: {
+            communityId,
+            userId,
+            role: CommunityMemberRole.MEMBER,
+            status: CommunityMemberStatus.ACTIVE,
+            ...args.snapshot,
+            joinedViaInviteCode: args.inviteCode,
+          },
+        });
+        return { outcome: "ACTIVATED" as const, member, clearedMutes: 0 };
       });
-      return { outcome: "ACTIVATED" as const, member, clearedMutes: 0 };
-    }).catch((err: unknown) => {
-      if (err instanceof BannedMemberAbort) return { outcome: "BANNED" as const };
-      throw err;
-    });
+
+    let result: Awaited<ReturnType<typeof attempt>> | { outcome: "BANNED" };
+    for (let tries = 1; ; tries++) {
+      try {
+        result = await attempt();
+        break;
+      } catch (err: unknown) {
+        if (err instanceof BannedMemberAbort) {
+          result = { outcome: "BANNED" as const };
+          break;
+        }
+        // The guarded reactivation found the row already ACTIVE.
+        if (isRecordNotFoundError(err)) throw new MemberAlreadyActiveError();
+        // ponytail: 3 immediate retries; a hot community under constant
+        // conflicting writes would need backoff.
+        if (!isTransactionConflict(err) || tries >= 3) throw err;
+      }
+    }
 
     if (result.outcome === "ACTIVATED") {
       publishCommunityMemberSyncedForChatSafe({

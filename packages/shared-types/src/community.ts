@@ -80,6 +80,8 @@ export interface CommunityMemberJoinedSocketPayload {
  * time without a manual refetch — mirrors the roster-broadcast pattern used
  * by {@link CommunityMemberJoinedSocketPayload}.
  */
+export type JoinRequestExpiryReason = "COMMUNITY_CLOSED" | "COMMUNITY_DELETED";
+
 export interface CommunityJoinRequestUpdatedSocketPayload {
   communityId: string;
   requestId: string;
@@ -92,7 +94,13 @@ export interface CommunityJoinRequestUpdatedSocketPayload {
      *  invite-link redeem, public self-join) while this request was still
      *  PENDING, so the server resolved it. Admin clients must DROP the row —
      *  there is no accept/decline action for a user who is already a member. */
-    | "AUTO_RESOLVED";
+    | "AUTO_RESOLVED"
+    /** The community was closed, suspended or deleted while the request was
+     *  PENDING. Terminal: reopening never revives it — the user must ask again,
+     *  which starts a new attempt with its own lifecycle token. */
+    | "EXPIRED";
+  /** Set with EXPIRED: which unavailable state ended the request. */
+  reason?: JoinRequestExpiryReason;
   /** The requester whose request changed status. */
   userId: string;
   /** Who acted: the requester themself for PENDING/CANCELLED, the

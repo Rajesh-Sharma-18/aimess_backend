@@ -7207,7 +7207,14 @@ export const openApiSchemas = {
       userId: { type: "string", format: "uuid" },
       status: {
         type: "string",
-        enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED", "AUTO_RESOLVED"],
+        enum: [
+          "PENDING",
+          "APPROVED",
+          "REJECTED",
+          "CANCELLED",
+          "AUTO_RESOLVED",
+          "EXPIRED",
+        ],
         description:
           "PENDING — awaiting a moderator decision (the ONLY status the admin " +
           "list returns). APPROVED — a moderator accepted it. REJECTED — a " +
@@ -7216,7 +7223,9 @@ export const openApiSchemas = {
           "this request was still open (admin Add Member, invite accepted, " +
           "invite-link redeem, public self-join); the server closes the request " +
           "in the same transaction as the membership write, so a current member " +
-          "never holds a PENDING request.",
+          "never holds a PENDING request. EXPIRED — the community was " +
+          "closed, suspended or deleted while the request was open; terminal " +
+          "(a reopen never revives it — the user files a new request).",
       },
       message: { type: "string", nullable: true },
       decidedBy: { type: "string", format: "uuid", nullable: true },

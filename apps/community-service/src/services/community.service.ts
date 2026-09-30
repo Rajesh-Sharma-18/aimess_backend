@@ -27,6 +27,7 @@ import {
   filterBannedUserIds,
   publishChatUserEvent,
   publishCommunityRoomEvent,
+  publishUserSocketEvent,
 } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type {
@@ -45,6 +46,7 @@ import type {
   CommunityNotificationSettingUpdatedSocketPayload,
   CommunityReopenedPayload,
   CommunityStatsUpdatedPayload,
+  JoinRequestExpiryReason,
   MediaObject,
 } from "@aimess/shared-types";
 
@@ -3176,19 +3178,21 @@ export const communityService = {
       for (const request of pending) {
         const snap = snapshots.get(request.userId);
         try {
-          const result =
-            await communityRepository.autoResolveJoinRequestToMember({
-              requestId: request.id,
-              communityId: community.id,
-              userId: request.userId,
-              snapshot: {
-                snapshotUsername: snap?.username ?? "",
-                snapshotDisplayName: snap?.displayName ?? "",
-                snapshotAvatarKey: snap?.avatarObjectKey ?? null,
-              },
-              resolvedBy: actorId,
-              inviteCode: request.inviteCode ?? null,
-            });
+          const result = await communityRepository.settleJoinRequestToMember({
+            requestId: request.id,
+            communityId: community.id,
+            userId: request.userId,
+            snapshot: {
+              snapshotUsername: snap?.username ?? "",
+              snapshotDisplayName: snap?.displayName ?? "",
+              snapshotAvatarKey: snap?.avatarObjectKey ?? null,
+            },
+            // COMMUNITY_UNAVAILABLE (closed mid-loop) needs nothing here:
+            // the close expires whatever is still PENDING.
+            status: CommunityJoinReqStatus.AUTO_RESOLVED,
+            resolvedBy: actorId,
+            inviteCode: request.inviteCode ?? null,
+          });
           if (result.outcome === "ACTIVATED") {
             joined.push({
               request,
@@ -4748,6 +4752,11 @@ export const communityService = {
     decidedAt: Date;
     /** Bulk callers hoist this once to avoid an N+1 of identical role reads. */
     moderatorRecipientIds?: string[];
+    /** Same, for the inbox-card retraction. A delete MUST pass it: it evicts
+     *  the admins before the retraction could look them up. */
+    adminRecipientIds?: string[];
+    /** With EXPIRED: which unavailable state ended the request. */
+    reason?: JoinRequestExpiryReason;
   }): Promise<void> {
     const { communityId, requestId, status, targetUserId, actorId, decidedAt } =
       args;
@@ -4766,6 +4775,7 @@ export const communityService = {
         userId: targetUserId,
         actorId,
         updatedAt: decidedAt.getTime(),
+        ...(args.reason ? { reason: args.reason } : {}),
       } satisfies CommunityJoinRequestUpdatedSocketPayload;
 
       await Promise.all([
@@ -4794,9 +4804,10 @@ export const communityService = {
       // each of those call sites.
       if (status !== "PENDING") {
         const adminRecipientIds =
-          await communityRepository.findActiveMemberIdsByRoles(communityId, [
+          args.adminRecipientIds ??
+          (await communityRepository.findActiveMemberIdsByRoles(communityId, [
             CommunityMemberRole.ADMIN,
-          ]);
+          ]));
         if (adminRecipientIds.length > 0) {
           publishCommunityJoinRequestRetractedSafe({
             communityId,
@@ -4813,6 +4824,89 @@ export const communityService = {
         `community:join_request:updated broadcast failed for community=${communityId} request=${requestId}`
       );
       logger.warn(error);
+    }
+  },
+
+  /**
+   * The community can no longer take members — closed (owner, platform
+   * suspension, system ban) or deleted. Expire every PENDING join request and
+   * take back everything that still offers to act on one:
+   *   - admins: the "Accept Requests" rows and the inbox/tray cards, through
+   *     {@link notifyJoinRequestDecided} (the one place retraction lives);
+   *   - requester: "Cancel Request", through the same
+   *     `community:join_request:update` their clients already fold into every
+   *     request surface (detail screen, invite card, invite page).
+   *
+   * Call AFTER the community write that closed/deleted it. `createJoinRequest`
+   * inserts first and re-reads the community second, so between the two any
+   * request filed during the close is expired by one side or the other.
+   * Idempotent (a repeat finds nothing PENDING) and best-effort: it never fails
+   * the close/delete that called it. Approve cannot slip past it either — see
+   * `settleJoinRequestToMember`'s community guard.
+   */
+  async expireJoinRequestsOfUnavailableCommunity(args: {
+    communityId: string;
+    communityName: string;
+    actorId: string;
+    reason: JoinRequestExpiryReason;
+    /** Pass when the members are about to be evicted (delete). */
+    rosters?: { adminIds: string[]; moderatorIds: string[] };
+  }): Promise<void> {
+    const { communityId, actorId, reason } = args;
+    try {
+      const expired = await communityRepository.expirePendingJoinRequests(
+        communityId,
+        actorId
+      );
+      if (expired.length === 0) return;
+
+      const [adminRecipientIds, moderatorRecipientIds] = args.rosters
+        ? [args.rosters.adminIds, args.rosters.moderatorIds]
+        : await Promise.all([
+            communityRepository.findActiveMemberIdsByRoles(communityId, [
+              CommunityMemberRole.ADMIN,
+            ]),
+            communityRepository.findActiveMemberIdsByRoles(communityId, [
+              CommunityMemberRole.ADMIN,
+              CommunityMemberRole.MODERATOR,
+            ]),
+          ]);
+      const decidedAt = new Date();
+      await Promise.allSettled(
+        expired.flatMap((request) => [
+          this.notifyJoinRequestDecided({
+            communityId,
+            requestId: request.id,
+            status: "EXPIRED",
+            targetUserId: request.userId,
+            actorId,
+            decidedAt,
+            moderatorRecipientIds,
+            adminRecipientIds,
+            reason,
+          }),
+          publishUserSocketEvent(
+            redis,
+            request.userId,
+            "community:join_request:update",
+            {
+              communityId,
+              requestId: request.id,
+              status: "EXPIRED",
+              reason,
+              communityName: args.communityName,
+              decidedAt: decidedAt.toISOString(),
+            }
+          ),
+        ])
+      );
+      logger.info(
+        `Join requests expired: community=${communityId} reason=${reason} count=${String(expired.length)}`
+      );
+    } catch (error) {
+      logger.warn(
+        `expireJoinRequestsOfUnavailableCommunity failed for community=${communityId}: ${String(error)}`
+      );
     }
   },
 
@@ -6956,13 +7050,30 @@ export const communityService = {
 
     // Capture the active roster BEFORE eviction so the DELETED event can
     // notify everyone who was a member at delete time.
-    const memberIds =
-      await communityRepository.findActiveMemberIds(communityId);
+    // The admin/moderator rosters too: the join-request cleanup below has to
+    // reach them, and after the eviction nobody holds those roles any more.
+    const [memberIds, adminIds, moderatorIds] = await Promise.all([
+      communityRepository.findActiveMemberIds(communityId),
+      communityRepository.findActiveMemberIdsByRoles(communityId, [
+        CommunityMemberRole.ADMIN,
+      ]),
+      communityRepository.findActiveMemberIdsByRoles(communityId, [
+        CommunityMemberRole.ADMIN,
+        CommunityMemberRole.MODERATOR,
+      ]),
+    ]);
 
     // No $transaction (standalone Mongo). ORDER MATTERS: soft-delete first so
     // any concurrent reader gets COMMUNITY_NOT_FOUND while we evict members.
     await communityRepository.updateCommunity(communityId, {
       deletedAt: new Date(),
+    });
+    await this.expireJoinRequestsOfUnavailableCommunity({
+      communityId,
+      communityName: community.name,
+      actorId: callerId,
+      reason: "COMMUNITY_DELETED",
+      rosters: { adminIds, moderatorIds },
     });
     await communityRepository.markAllActiveMembersLeft(communityId);
     await communityRepository.setMemberCount(communityId, 0);
@@ -7079,6 +7190,12 @@ export const communityService = {
       statusClosedBy: callerId,
       statusClosedReason: reason,
     });
+    await this.expireJoinRequestsOfUnavailableCommunity({
+      communityId,
+      communityName: community.name,
+      actorId: callerId,
+      reason: "COMMUNITY_CLOSED",
+    });
 
     await this.recordAudit({
       communityId,
@@ -7173,6 +7290,12 @@ export const communityService = {
       statusClosedBy: bannedUserId,
       statusClosedReason: reason,
       statusClosedReasonCode: CLOSE_REASON_ADMIN_BANNED,
+    });
+    await this.expireJoinRequestsOfUnavailableCommunity({
+      communityId,
+      communityName: community.name,
+      actorId: actorAdminId,
+      reason: "COMMUNITY_CLOSED",
     });
 
     await this.recordAudit({
@@ -7333,6 +7456,16 @@ export const communityService = {
     // since nobody was evicted.
     const memberIds =
       await communityRepository.findActiveMemberIds(communityId);
+
+    // A request left PENDING by a close that predates expiry-on-close must not
+    // come back to life with the community. Swept while still CLOSED, so no
+    // request filed after the reopen can be caught by it.
+    await this.expireJoinRequestsOfUnavailableCommunity({
+      communityId,
+      communityName: community.name,
+      actorId: callerId,
+      reason: "COMMUNITY_CLOSED",
+    });
 
     const reopenedAt = new Date();
     const updated = await communityRepository.updateCommunity(communityId, {
@@ -7507,6 +7640,24 @@ export const communityService = {
         inviteCode
       );
       isNewOrRecycled = true;
+    }
+
+    if (isNewOrRecycled) {
+      // A close/delete can commit between the writable check above and the
+      // write that just landed. Closing writes the community FIRST and expires
+      // pending requests SECOND; this re-reads the community AFTER writing the
+      // request — so whichever order the two interleave in, one side sees the
+      // other and no PENDING request survives on an unavailable community.
+      const now = await communityRepository.findById(communityId);
+      if (!now || communityAccessPolicy.isEffectivelyClosed(now)) {
+        await communityRepository.settlePendingJoinRequest(row.id, {
+          status: CommunityJoinReqStatus.EXPIRED,
+          decidedBy: null,
+          decidedAt: new Date(),
+        });
+        if (!now) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+        communityAccessPolicy.assertWritable(now);
+      }
     }
 
     logger.info(
@@ -7805,20 +7956,14 @@ export const communityService = {
       };
     }
 
-    // Not a member. An APPROVED row with no member row is a torn write — re-run
-    // the activation below rather than returning a lie.
-    if (request.status === CommunityJoinReqStatus.APPROVED) {
-      logger.warn(
-        `approveJoinRequest: APPROVED request ${requestId} has no member row; re-writing`
-      );
-    } else if (request.status !== CommunityJoinReqStatus.PENDING) {
+    if (request.status !== CommunityJoinReqStatus.PENDING) {
       throw new BadRequestError("COMMUNITY_JOIN_REQUEST_NOT_PENDING");
     }
 
     if (targetMember?.status === CommunityMemberStatus.BANNED) {
       // Defensive: close the request out as REJECTED before throwing.
       try {
-        await communityRepository.updateJoinRequest(requestId, {
+        await communityRepository.settlePendingJoinRequest(requestId, {
           status: CommunityJoinReqStatus.REJECTED,
           decidedBy: callerId,
           decidedAt: new Date(),
@@ -7835,49 +7980,65 @@ export const communityService = {
     const snapshotMap = await fetchUserSnapshots([request.userId]);
     const snap = snapshotMap.get(request.userId)!;
 
+    // The checks above answer the common case; THIS is what makes the decision
+    // safe against everything racing it. One transaction re-checks that the
+    // community is still open (a guarded write, so a concurrent close/delete
+    // conflicts with it rather than slipping past a read), claims the request
+    // only while it is still PENDING, and writes the membership — so a stale
+    // Accept (old tab, push action, second admin) can never admit anyone into
+    // a community that was closed or deleted, nor decide a settled request.
+    let settle: Awaited<
+      ReturnType<typeof communityRepository.settleJoinRequestToMember>
+    >;
+    // True when the concurrent winner (not this call) settled the request and
+    // already announced it.
+    let winnerAnnounced = false;
     try {
-      if (targetMember?.status === CommunityMemberStatus.LEFT) {
-        await communityRepository.reactivateMemberWithSnapshot(
-          communityId,
-          request.userId,
-          {
-            snapshotUsername: snap.username,
-            snapshotDisplayName: snap.displayName,
-            snapshotAvatarKey: snap.avatarObjectKey,
-          },
-          callerId,
-          // The invitation that started this join, carried across the approval.
-          request.inviteCode
-        );
-      } else {
-        await communityRepository.createMember(
-          {
-            communityId,
-            userId: request.userId,
-            role: CommunityMemberRole.MEMBER,
-            status: CommunityMemberStatus.ACTIVE,
-            snapshotUsername: snap.username,
-            snapshotDisplayName: snap.displayName,
-            snapshotAvatarKey: snap.avatarObjectKey,
-            joinedViaInviteCode: request.inviteCode,
-          },
-          callerId
-        );
-      }
+      settle = await communityRepository.settleJoinRequestToMember({
+        requestId,
+        communityId,
+        userId: request.userId,
+        snapshot: {
+          snapshotUsername: snap.username,
+          snapshotDisplayName: snap.displayName,
+          snapshotAvatarKey: snap.avatarObjectKey,
+        },
+        status: CommunityJoinReqStatus.APPROVED,
+        resolvedBy: callerId,
+        // The invitation that started this join, carried across the approval.
+        inviteCode: request.inviteCode,
+      });
     } catch (err) {
-      // Lost the race to a concurrent Add Member / second approve / the
-      // PRIVATE→PUBLIC auto-resolve on the same user (unique index on
-      // communityId+userId, or the guarded reactivation). The other path
-      // already activated them and posted their join line, so fall back to
-      // the same graceful no-op as the D1 branch above instead of a 500 —
-      // exactly one membership, one system message, one notification.
+      // Lost the member write to a concurrent Add Member / the PRIVATE→PUBLIC
+      // auto-resolve on the same user. Handled as ALREADY_MEMBER below.
       if (!isConcurrentActivationError(err)) throw err;
+      settle = { outcome: "ALREADY_MEMBER" };
+      winnerAnnounced = true;
+    }
+
+    if (settle.outcome === "COMMUNITY_UNAVAILABLE") {
+      // Closed / suspended / deleted after the checks above: report which.
+      const current = await communityRepository.findById(communityId);
+      if (!current) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+      communityAccessPolicy.assertWritable(current);
+      throw new BadRequestError("COMMUNITY_JOIN_REQUEST_NOT_PENDING");
+    }
+    if (settle.outcome === "BANNED") {
+      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+    }
+    if (settle.outcome === "NOT_PENDING") {
+      throw new BadRequestError("COMMUNITY_JOIN_REQUEST_NOT_PENDING");
+    }
+    if (settle.outcome === "ALREADY_MEMBER") {
+      // Someone else activated them first and posted their join line — the
+      // same graceful no-op as the D1 branch above instead of a 500: exactly
+      // one membership, one system message, one notification.
       const winner = await communityRepository.findMemberByUserId(
         communityId,
         request.userId
       );
-      // The winner's own transaction normally settled the request already;
-      // only a row it missed is closed (and announced) here — never twice.
+      // Normally already AUTO_RESOLVED (by our transaction or the winner's);
+      // only a row both missed is closed here — and announced once.
       const closedHere = await communityRepository.settlePendingJoinRequest(
         requestId,
         {
@@ -7886,7 +8047,11 @@ export const communityService = {
           decidedAt: new Date(),
         }
       );
-      if (closedHere) {
+      const settled =
+        closedHere ??
+        (await communityRepository.findJoinRequestById(requestId)) ??
+        request;
+      if (closedHere || !winnerAnnounced) {
         await this.notifyJoinRequestDecided({
           communityId,
           requestId,
@@ -7896,10 +8061,6 @@ export const communityService = {
           decidedAt: new Date(),
         });
       }
-      const settled =
-        closedHere ??
-        (await communityRepository.findJoinRequestById(requestId)) ??
-        request;
       logger.info(
         `approveJoinRequest: ${request.userId} was activated concurrently in ${communityId}; request ${requestId} auto-resolved`
       );
@@ -7912,14 +8073,12 @@ export const communityService = {
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
 
-    const updatedRequest = await communityRepository.updateJoinRequest(
-      requestId,
-      {
-        status: CommunityJoinReqStatus.APPROVED,
-        decidedBy: callerId,
-        decidedAt: new Date(),
-      }
-    );
+    const updatedRequest: CommunityJoinRequest = {
+      ...request,
+      status: CommunityJoinReqStatus.APPROVED,
+      decidedBy: callerId,
+      decidedAt: new Date(),
+    };
 
     await this.recordAudit({
       communityId,
@@ -8013,6 +8172,9 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    // A closed community has no live requests to decide (closing expired
+    // them), and a decline must not be able to rewrite that outcome.
+    communityAccessPolicy.assertWritable(community);
 
     const request = await communityRepository.findJoinRequestById(requestId);
     if (!request || request.communityId !== communityId) {
@@ -8170,6 +8332,7 @@ export const communityService = {
     // membership, emit a join line, or push "your request was approved". They
     // are closed out as AUTO_RESOLVED and reported as skipped.
     const autoResolved: string[] = [];
+    const lateSkipped: string[] = [];
     const decidedAt = new Date();
 
     for (const requestId of pending) {
@@ -8186,47 +8349,34 @@ export const communityService = {
       }
 
       const snap = snapshotMap.get(request.userId);
-      const snapshotData = {
-        snapshotUsername: snap?.username ?? "",
-        snapshotDisplayName: snap?.displayName ?? "",
-        snapshotAvatarKey: snap?.avatarObjectKey ?? null,
-      };
-
-      if (existing?.status === CommunityMemberStatus.LEFT) {
-        try {
-          await communityRepository.reactivateMemberWithSnapshot(
-            communityId,
-            request.userId,
-            snapshotData,
-            callerId
-          );
-        } catch (err) {
-          if (!isConcurrentActivationError(err)) throw err;
-          autoResolved.push(requestId);
-          continue;
-        }
-      } else {
-        try {
-          await communityRepository.createMember(
-            {
-              communityId,
-              userId: request.userId,
-              role: CommunityMemberRole.MEMBER,
-              status: CommunityMemberStatus.ACTIVE,
-              ...snapshotData,
-            },
-            callerId
-          );
-        } catch (err) {
-          // Concurrent activation won the unique index — same no-op rule as the
-          // single-request path.
-          if (!isUniqueConstraintError(err)) throw err;
-          autoResolved.push(requestId);
-          continue;
-        }
+      let outcome: string;
+      try {
+        // Same single transaction as the one-by-one approve: community still
+        // open + request still PENDING + membership write, atomically.
+        ({ outcome } = await communityRepository.settleJoinRequestToMember({
+          requestId,
+          communityId,
+          userId: request.userId,
+          snapshot: {
+            snapshotUsername: snap?.username ?? "",
+            snapshotDisplayName: snap?.displayName ?? "",
+            snapshotAvatarKey: snap?.avatarObjectKey ?? null,
+          },
+          status: CommunityJoinReqStatus.APPROVED,
+          resolvedBy: callerId,
+          inviteCode: request.inviteCode ?? null,
+        }));
+      } catch (err) {
+        // Concurrent activation won — same no-op rule as the single path.
+        if (!isConcurrentActivationError(err)) throw err;
+        outcome = "ALREADY_MEMBER";
       }
 
-      approved.push(requestId);
+      if (outcome === "ACTIVATED") approved.push(requestId);
+      else if (outcome === "ALREADY_MEMBER") autoResolved.push(requestId);
+      else if (outcome === "BANNED") bannedSkipped.push(requestId);
+      // NOT_PENDING / COMMUNITY_UNAVAILABLE: settled or closed meanwhile.
+      else lateSkipped.push(requestId);
     }
 
     if (autoResolved.length > 0) {
@@ -8249,13 +8399,6 @@ export const communityService = {
     }
 
     if (approved.length > 0) {
-      await communityRepository.bulkUpdateJoinRequestStatus(
-        approved,
-        CommunityJoinReqStatus.APPROVED,
-        callerId,
-        decidedAt
-      );
-
       const count = await communityRepository.countActiveMembers(communityId);
       await communityRepository.setMemberCount(communityId, count);
 
@@ -8339,13 +8482,13 @@ export const communityService = {
       }
 
       logger.info(
-        `Bulk approve join-requests: community=${communityId} approver=${callerId} approved=${approved.length} skipped=${skipped.length + bannedSkipped.length + autoResolved.length}`
+        `Bulk approve join-requests: community=${communityId} approver=${callerId} approved=${approved.length} skipped=${skipped.length + bannedSkipped.length + autoResolved.length + lateSkipped.length}`
       );
     }
 
     return {
       approved,
-      skipped: [...skipped, ...bannedSkipped, ...autoResolved],
+      skipped: [...skipped, ...bannedSkipped, ...autoResolved, ...lateSkipped],
     };
   },
 
@@ -8362,6 +8505,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    communityAccessPolicy.assertWritable(community);
 
     const rows = await communityRepository.findJoinRequestsByIds(requestIds);
     const rowMap = new Map(rows.map((r) => [r.id, r]));
@@ -8416,14 +8560,23 @@ export const communityService = {
       }
     }
 
+    const rejected: string[] = [];
     if (pending.length > 0) {
       const decidedAt = new Date();
-      await communityRepository.bulkUpdateJoinRequestStatus(
-        pending,
-        CommunityJoinReqStatus.REJECTED,
-        callerId,
-        decidedAt
-      );
+      // One conditional write per row: only a row STILL pending is rejected and
+      // announced — one expired by a concurrent close, or decided by another
+      // admin, since the read above is reported as skipped instead.
+      for (const requestId of pending) {
+        const row = await communityRepository.settlePendingJoinRequest(
+          requestId,
+          {
+            status: CommunityJoinReqStatus.REJECTED,
+            decidedBy: callerId,
+            decidedAt,
+          }
+        );
+        (row ? rejected : skipped).push(requestId);
+      }
 
       const [callerSnapsBulkReject, communityAvatarMediaBulkReject] =
         await Promise.all([
@@ -8438,7 +8591,7 @@ export const communityService = {
           CommunityMemberRole.MODERATOR,
         ]);
 
-      for (const requestId of pending) {
+      for (const requestId of rejected) {
         const request = rowMap.get(requestId)!;
         void this.recordAudit({
           communityId,
@@ -8478,11 +8631,11 @@ export const communityService = {
       }
 
       logger.info(
-        `Bulk reject join-requests: community=${communityId} rejector=${callerId} rejected=${pending.length} skipped=${skipped.length}`
+        `Bulk reject join-requests: community=${communityId} rejector=${callerId} rejected=${rejected.length} skipped=${skipped.length}`
       );
     }
 
-    return { rejected: pending, skipped };
+    return { rejected, skipped };
   },
 
   async cancelJoinRequest(
@@ -10010,6 +10163,15 @@ export const communityService = {
     );
 
     if (result.ok) {
+      if (target === CommunityModerationStatus.SUSPENDED) {
+        const community = await communityRepository.findById(communityId);
+        await this.expireJoinRequestsOfUnavailableCommunity({
+          communityId,
+          communityName: community?.name ?? "",
+          actorId: actorAdminId ?? "",
+          reason: "COMMUNITY_CLOSED",
+        });
+      }
       publishCommunityStatusChangedForChatSafe({
         communityId,
         communityStatus:

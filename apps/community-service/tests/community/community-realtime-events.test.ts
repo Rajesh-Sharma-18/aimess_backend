@@ -59,6 +59,8 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     createAuditLog: jest.fn(),
     createMember: jest.fn(),
     reactivateMemberWithSnapshot: jest.fn(),
+    settleJoinRequestToMember: jest.fn(),
+    expirePendingJoinRequests: jest.fn(async () => []),
     findActiveMemberIdsByRoles: jest.fn(),
     updateJoinRequest: jest.fn(),
     findJoinRequestById: jest.fn(),
@@ -746,7 +748,11 @@ describe("notifyMemberJoined — emits community:stats:updated alongside communi
     repo.findMemberByUserId
       .mockResolvedValueOnce(null)
       .mockResolvedValue(activeMemberTarget);
-    repo.createMember.mockResolvedValue(activeMemberTarget);
+    repo.settleJoinRequestToMember.mockResolvedValue({
+      outcome: "ACTIVATED",
+      member: activeMemberTarget,
+      clearedMutes: 0,
+    });
     repo.countActiveMembers.mockResolvedValue(11);
     repo.setMemberCount.mockResolvedValue(undefined);
     repo.updateLastActivity.mockResolvedValue(undefined);

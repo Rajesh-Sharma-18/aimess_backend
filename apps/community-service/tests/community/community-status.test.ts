@@ -41,6 +41,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     createMember: jest.fn(),
     createAuditLog: jest.fn(),
     findMuteByUserAndCommunity: jest.fn(async () => null),
+    expirePendingJoinRequests: jest.fn(async () => []),
   },
 }));
 

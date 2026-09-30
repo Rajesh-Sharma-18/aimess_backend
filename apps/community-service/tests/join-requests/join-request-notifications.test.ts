@@ -104,6 +104,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMembersByUserIds: jest.fn(),
     createMember: jest.fn(),
     reactivateMemberWithSnapshot: jest.fn(),
+    settleJoinRequestToMember: jest.fn(),
     countActiveMembers: jest.fn(),
     setMemberCount: jest.fn(),
     updateLastActivity: jest.fn(),
@@ -202,6 +203,11 @@ describe("approveJoinRequest — events + member fan-out", () => {
       .mockResolvedValueOnce(null)
       .mockResolvedValue(memberRow);
     repo.createMember.mockResolvedValue(memberRow);
+    repo.settleJoinRequestToMember.mockResolvedValue({
+      outcome: "ACTIVATED",
+      member: memberRow,
+      clearedMutes: 0,
+    });
     repo.countActiveMembers.mockResolvedValue(6);
     repo.setMemberCount.mockResolvedValue(undefined);
     repo.updateLastActivity.mockResolvedValue(undefined);
@@ -426,6 +432,9 @@ describe("bulkRejectJoinRequests — emits one rejected event per pending reques
       },
     ]);
     repo.bulkUpdateJoinRequestStatus.mockResolvedValue(undefined);
+    repo.settlePendingJoinRequest.mockImplementation(
+      async (id: string, data: object) => ({ ...pendingRequest, id, ...data })
+    );
     repo.createAuditLog.mockResolvedValue(undefined);
     repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD, "moderator-2"]);
     // Neither requester is a member — a bulk decline never touches a request
@@ -498,7 +507,11 @@ describe("bulkApproveJoinRequests — join-request list refresh", () => {
       { ...pendingRequest, id: RID2, userId: REQUESTER2 },
     ]);
     repo.findMembersByUserIds.mockResolvedValueOnce([]); // existing-member probe
-    repo.createMember.mockResolvedValue(undefined);
+    repo.settleJoinRequestToMember.mockResolvedValue({
+      outcome: "ACTIVATED",
+      member: memberRow,
+      clearedMutes: 0,
+    });
     repo.bulkUpdateJoinRequestStatus.mockResolvedValue(undefined);
     repo.countActiveMembers.mockResolvedValue(7);
     repo.setMemberCount.mockResolvedValue(undefined);
@@ -600,9 +613,7 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
     // service asked for ADMIN+MODERATOR in both places.
     repo.findActiveMemberIdsByRoles.mockImplementation(
       async (_communityId: string, roles: string[]) =>
-        roles.includes("MODERATOR")
-          ? [ADMIN, MOD, MOD_2]
-          : [ADMIN]
+        roles.includes("MODERATOR") ? [ADMIN, MOD, MOD_2] : [ADMIN]
     );
   });
 
@@ -696,7 +707,9 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
     // The row is unique per (community, requester) and recycled, so its id is
     // the same on every attempt — the admin surfaces need the attempt itself,
     // and `updatedAt` is what moves when the row is recycled.
-    expect(payload.lifecycle).toBe(`${RID}:${pendingRequest.updatedAt.getTime()}`);
+    expect(payload.lifecycle).toBe(
+      `${RID}:${pendingRequest.updatedAt.getTime()}`
+    );
     expect(payload.requestId).toBe(RID);
   });
 

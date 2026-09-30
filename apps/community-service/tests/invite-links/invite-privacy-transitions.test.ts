@@ -233,7 +233,7 @@ const fake = {
   },
   // Emulates the interactive transaction: atomic (no await between the claim
   // and the member write), re-reading current state inside it.
-  autoResolveJoinRequestToMember: async (args: {
+  settleJoinRequestToMember: async (args: {
     requestId: string;
     userId: string;
     snapshot: Record<string, unknown>;
@@ -544,7 +544,7 @@ describe("PRIVATE → PUBLIC settles pending requests", () => {
 
   it("a request whose resolution fails stays PENDING but gates nothing: the user joins directly", async () => {
     await communityService.redeemInviteLink(LINK_A, A);
-    (repo.autoResolveJoinRequestToMember as unknown) = async () => {
+    (repo.settleJoinRequestToMember as unknown) = async () => {
       throw new Error("write conflict");
     };
     await setType("PUBLIC"); // the privacy change itself still succeeds

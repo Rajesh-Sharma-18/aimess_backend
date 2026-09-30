@@ -258,6 +258,7 @@ describe("approveJoinRequest — rejects when the requester was banned after req
 
     expect(repo.createMember).not.toHaveBeenCalled();
     expect(repo.reactivateMemberWithSnapshot).not.toHaveBeenCalled();
+    expect(repo.settleJoinRequestToMember).not.toHaveBeenCalled();
   });
 
   it("closes the request as REJECTED instead of leaving it PENDING", async () => {
@@ -265,7 +266,8 @@ describe("approveJoinRequest — rejects when the requester was banned after req
       communityService.approveJoinRequest(CID, ADMIN, REQUEST_ID)
     ).rejects.toBeTruthy();
 
-    expect(repo.updateJoinRequest).toHaveBeenCalledWith(REQUEST_ID, {
+    // Conditional on PENDING: never overwrites a request settled meanwhile.
+    expect(repo.settlePendingJoinRequest).toHaveBeenCalledWith(REQUEST_ID, {
       status: "REJECTED",
       decidedBy: ADMIN,
       decidedAt: expect.any(Date),

@@ -3176,6 +3176,7 @@ export const communityPaths = {
               "REJECTED",
               "CANCELLED",
               "AUTO_RESOLVED",
+              "EXPIRED",
             ],
             default: "PENDING",
           },
