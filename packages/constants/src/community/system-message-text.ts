@@ -230,10 +230,21 @@ export function buildCommunitySystemFallbackText(
       // Stored fallback stays single-line so the community-list preview is clean;
       // the client composes the richer two-line "…ended the livestream / Duration:
       // {duration}" from systemMessageType + systemMetadata.duration.
-      const duration = ((metadata.duration as string) || "").trim();
-      const lead = isActor
-        ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)
-        : t("SYS_COMMUNITY_LIVESTREAM_ENDED", locale, { actor });
+      // `durationSeconds` re-derives the label in the reader's language; the baked
+      // `duration` string is English and only covers rows written without it.
+      const duration =
+        typeof metadata.durationSeconds === "number"
+          ? formatStreamDuration(metadata.durationSeconds, locale)
+          : ((metadata.duration as string) || "").trim();
+      // `endedReason: "SYSTEM"` = the platform ended it (Super Admin force-end,
+      // moderation, account ban). The host never did, so nobody — the host
+      // included — reads a name or "You". Missing on legacy rows ⇒ host-ended.
+      const lead =
+        metadata.endedReason === "SYSTEM"
+          ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale)
+          : isActor
+            ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)
+            : t("SYS_COMMUNITY_LIVESTREAM_ENDED", locale, { actor });
       return duration
         ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION", locale, {
             lead,

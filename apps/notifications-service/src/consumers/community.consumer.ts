@@ -443,11 +443,12 @@ async function handleCommunityEvent(
       };
       await pushToUsers(recipients, (userId) => ({
         userId,
-        copy: communityCopy.livestreamEnded(
-          identity.name,
-          hostName,
-          p.duration
-        ),
+        // A platform end (Super Admin force-end, moderation) never names the
+        // host; the host still rides in data/actorSnapshot as the stream owner.
+        copy:
+          p.endedReason === "SYSTEM"
+            ? communityCopy.livestreamEndedBySystem(identity.name, p.duration)
+            : communityCopy.livestreamEnded(identity.name, hostName, p.duration),
         ...base(
           type,
           identity,
@@ -459,6 +460,7 @@ async function handleCommunityEvent(
             hostAvatarUrl: p.hostAvatarUrl ?? "",
             duration: p.duration ?? "",
             durationSeconds: String(p.durationSeconds ?? 0),
+            endedReason: p.endedReason ?? "USER",
             communityHandle: p.communityHandle ?? "",
             actorSnapshot: JSON.stringify(actorSnapshot),
           },

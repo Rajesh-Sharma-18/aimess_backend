@@ -226,6 +226,68 @@ describe("system message text — display names and You personalization", () => 
       )
     ).toBe("Admin User ended the livestream");
   });
+
+  it('platform end (endedReason SYSTEM) reads "System ended…" — never the host', () => {
+    const meta = {
+      actorUserId: ACTOR,
+      duration: "36m",
+      durationSeconds: 2160,
+      endedReason: "SYSTEM",
+    };
+    expect(
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Admin User", "")
+    ).toBe("System ended the livestream (36m)");
+    // The host's own view is not "You ended…" either — they didn't end it.
+    expect(
+      buildCommunitySystemFallbackText(
+        "LIVE_STREAM_ENDED",
+        meta,
+        "Admin User",
+        "",
+        ACTOR
+      )
+    ).toBe("System ended the livestream (36m)");
+  });
+
+  it("host end with endedReason USER keeps the host name", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "LIVE_STREAM_ENDED",
+        { actorUserId: ACTOR, duration: "36m", durationSeconds: 2160, endedReason: "USER" },
+        "Admin User",
+        ""
+      )
+    ).toBe("Admin User ended the livestream (36m)");
+  });
+
+  it("platform end renders in the reader's locale, duration included", () => {
+    const meta = {
+      actorUserId: ACTOR,
+      duration: "36m",
+      durationSeconds: 2160,
+      endedReason: "SYSTEM",
+    };
+    const vi = buildCommunitySystemFallbackText(
+      "LIVE_STREAM_ENDED",
+      meta,
+      "Admin User",
+      "",
+      "viewer",
+      "vi"
+    );
+    const th = buildCommunitySystemFallbackText(
+      "LIVE_STREAM_ENDED",
+      meta,
+      "Admin User",
+      "",
+      "viewer",
+      "th"
+    );
+    expect(vi.startsWith("Hệ thống đã kết thúc buổi phát trực tiếp (")).toBe(true);
+    expect(th.startsWith("ระบบจบไลฟ์สตรีม (")).toBe(true);
+    expect(vi).not.toContain("Admin User");
+    expect(th).not.toContain("Admin User");
+  });
 });
 
 /**

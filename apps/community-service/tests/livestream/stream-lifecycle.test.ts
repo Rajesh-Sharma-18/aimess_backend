@@ -14,6 +14,7 @@
 import {
   handleStreamStarted,
   handleStreamEnded,
+  streamEndedReason,
 } from "../../src/consumers/stream-lifecycle.consumer.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import { redis } from "../../src/config/redis.js";
@@ -179,5 +180,51 @@ describe("handleStreamEnded", () => {
       durationSeconds: 0,
     });
     expect(sysMsg.mock.calls[0][0].metadata.duration).toBe("0s");
+  });
+
+  it("host End Live (HOST_ENDED) is endedReason USER", async () => {
+    await handleStreamEnded({
+      communityId: CID,
+      streamId: SID,
+      creatorId: HOST,
+      endedAt: 1,
+      durationSeconds: 2160,
+      reason: "HOST_ENDED",
+    });
+    expect(sysMsg.mock.calls[0][0].metadata.endedReason).toBe("USER");
+    expect(pushEnded.mock.calls[0][0].endedReason).toBe("USER");
+  });
+
+  it("Super Admin force-end is endedReason SYSTEM; the host stays the host", async () => {
+    await handleStreamEnded({
+      communityId: CID,
+      streamId: SID,
+      creatorId: HOST,
+      endedAt: 1,
+      durationSeconds: 2160,
+      reason: "MANUAL_ADMIN", // backoffice reasonCode
+    });
+    const sysArg = sysMsg.mock.calls[0][0];
+    expect(sysArg.metadata).toMatchObject({ endedReason: "SYSTEM", duration: "36m" });
+    expect(sysArg.triggeredByUserId).toBe(HOST);
+    // The raw reason code never reaches clients.
+    expect(JSON.stringify(sysArg.metadata)).not.toContain("MANUAL_ADMIN");
+
+    const pushArg = pushEnded.mock.calls[0][0];
+    expect(pushArg.endedReason).toBe("SYSTEM");
+    expect(pushArg.hostUserId).toBe(HOST);
+    expect(pushArg.recipientIds).not.toContain(HOST);
+  });
+
+  it.each([
+    [undefined, "USER"], // PENDING-timeout sweeper / older producer
+    ["HOST_ENDED", "USER"],
+    ["ADMIN_FORCE_ENDED", "SYSTEM"],
+    ["POLICY_VIOLATION", "SYSTEM"],
+    ["ACCOUNT_BANNED", "SYSTEM"],
+    ["MEMBER_BANNED", "SYSTEM"],
+    ["COMMUNITY_CLOSED", "SYSTEM"],
+  ])("reason %s ⇒ %s", (reason, expected) => {
+    expect(streamEndedReason(reason)).toBe(expected);
   });
 });

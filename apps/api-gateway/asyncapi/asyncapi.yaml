@@ -3819,6 +3819,35 @@ components:
               livestreamId: "684abc123def4567890123ff"
               duration: "1h 24m"
               durationSeconds: 5040
+              endedReason: USER
+        - name: community_system_live_ended_by_system
+          summary: "Community lifecycle system message — livestream force-ended by the platform (Super Admin / moderation). Never host-named, for any viewer; actorUserId stays the host."
+          payload:
+            id: "684abc123def456789012352"
+            messageId: "684abc123def456789012352"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: ""
+            senderName: ""
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "System ended the livestream (36m)"
+              files: []
+            message: "System ended the livestream (36m)"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750008500000
+            sentAt: 1750008500000
+            systemMessageType: LIVE_STREAM_ENDED
+            isPersonal: false
+            systemMetadata:
+              actorUserId: user_xyz
+              actorName: Jane Doe
+              livestreamId: "684abc123def4567890123ff"
+              duration: "36m"
+              durationSeconds: 2160
+              endedReason: SYSTEM
         - name: community_system_joined
           summary: >-
             PERSONAL system message — the joining user joined the community.

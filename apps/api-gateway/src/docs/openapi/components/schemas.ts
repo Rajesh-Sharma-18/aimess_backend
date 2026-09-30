@@ -10468,7 +10468,7 @@ export const openApiSchemas = {
           "Per-type extra fields: " +
           "COMMUNITY_CREATED: { communityName }. " +
           "COMMUNITY_NAME_UPDATED: { newName } — the rename target. " +
-          "LIVE_STREAM_ENDED: { duration? } — human-readable runtime, e.g. '2 hours 15 minutes'. " +
+          "LIVE_STREAM_ENDED: { duration?, durationSeconds?, endedReason? } — human-readable runtime, e.g. '2 hours 15 minutes'; endedReason 'SYSTEM' (Super Admin force-end / moderation) renders 'System ended the livestream', 'USER' or absent renders the host name. " +
           "ROLE_CHANGED / MEMBER_ROLE_CHANGED: { targetUserId, targetName, oldRole, newRole }. " +
           "MEMBER_BANNED / MEMBER_UNBANNED / MEMBER_UNMUTED: { targetUserId, targetName }. " +
           "MEMBER_MUTED: { targetUserId, targetName, mutedUntil, durationMinutes } — mutedUntil is an " +

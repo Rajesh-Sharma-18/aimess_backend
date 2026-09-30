@@ -20,8 +20,9 @@ import {
  * Turns the raw stream-service livestream lifecycle events (`stream.started` /
  * `stream.ended` on the topic exchange `aimess.events`) into community-level
  * effects:
- *   1. a host-named chat SYSTEM message ("{host} started a livestream" /
- *      "{host} ended the livestream (1h 24m)") — which also bumps the community
+ *   1. a chat SYSTEM message ("{host} started a livestream" /
+ *      "{host} ended the livestream (1h 24m)", or "System ended the livestream
+ *      (1h 24m)" when the platform ended it) — which also bumps the community
  *      list preview, and
  *   2. a recipient-resolved push fan-out event for notifications-service.
  *
@@ -52,6 +53,22 @@ interface StreamEndedData {
   /** epoch ms */
   endedAt?: number;
   durationSeconds?: number;
+  /**
+   * Raw end reason from stream-service's finalizeAsEnded: "HOST_ENDED" for the
+   * host's own End Live (and the natural ends that default to it), otherwise an
+   * admin reason code (POLICY_VIOLATION, MANUAL_ADMIN, …) or a moderation /
+   * account reason. Absent on the PENDING-timeout sweeper's event.
+   */
+  reason?: string;
+}
+
+/**
+ * Coarsen the raw reason to who ended the stream — the same split
+ * stream-service's audit row makes (actorType USER only for HOST_ENDED). The
+ * raw reason never reaches clients: a moderation code would leak why.
+ */
+export function streamEndedReason(reason?: string): "USER" | "SYSTEM" {
+  return !reason || reason === "HOST_ENDED" ? "USER" : "SYSTEM";
 }
 
 /** Active members eligible for the push (minus the host, minus stream-muted). */
@@ -174,15 +191,23 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
   const eventAt = new Date(data.endedAt || Date.now()).toISOString();
   const durationSeconds = Math.max(0, Math.floor(data.durationSeconds ?? 0));
   const duration = formatStreamDuration(durationSeconds);
+  const endedReason = streamEndedReason(data.reason);
   logger.info(
-    `[LIVE-SIDEBAR:COMMUNITY] stream.ended lifecycle received communityId=${communityId} streamId=${streamId} creatorId=${creatorId} eventAt=${eventAt} durationSeconds=${durationSeconds}`
+    `[LIVE-SIDEBAR:COMMUNITY] stream.ended lifecycle received communityId=${communityId} streamId=${streamId} creatorId=${creatorId} eventAt=${eventAt} durationSeconds=${durationSeconds} reason=${data.reason ?? ""} endedReason=${endedReason}`
   );
 
-  // 1. Host-named chat SYSTEM message ("{host} ended the livestream (1h 24m)").
+  // 1. Chat SYSTEM message: "{host} ended the livestream (1h 24m)", or "System
+  //    ended the livestream (1h 24m)" for endedReason SYSTEM. The host stays the
+  //    triggering user either way — only the rendered actor changes.
   publishCommunitySystemMessageForChatSafe({
     communityId,
     systemMessageType: CommunitySystemMessageType.LIVE_STREAM_ENDED,
-    metadata: { livestreamId: streamId, duration, durationSeconds },
+    metadata: {
+      livestreamId: streamId,
+      duration,
+      durationSeconds,
+      endedReason,
+    },
     triggeredByUserId: creatorId,
     eventAt,
   });
@@ -226,6 +251,7 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
     communityAvatarUrl: communityAvatarView?.url ?? null,
     duration,
     durationSeconds,
+    endedReason,
     recipientIds,
   });
 }

@@ -143,6 +143,12 @@ export interface LivestreamSystemMetadata {
   duration?: string;
   /** LIVE_STREAM_ENDED only — runtime in whole seconds. */
   durationSeconds?: number;
+  /**
+   * LIVE_STREAM_ENDED only — who ended it. `SYSTEM` (Super Admin force-end,
+   * moderation) renders "System ended the livestream" for every viewer, the host
+   * included; `actorUserId` stays the host. Absent on legacy rows ⇒ `USER`.
+   */
+  endedReason?: "USER" | "SYSTEM";
 }
 
 /**
