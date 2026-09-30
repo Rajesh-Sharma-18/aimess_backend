@@ -306,7 +306,7 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
  *   - `call.missed` (handleCallMissed) — the caller cut the ring, the caller's
  *     client reported NO_ANSWER, or the server timeout sweep reaped it.
  *   - `call.activity` (handleCallActivity) — every OTHER terminal settle of an
- *     unanswered ring: the callee ended it, or declined it. These never emit a
+ *     unanswered ring except the callee's own decline. These never emit a
  *     `call.missed`, so before this they created the badged history row with no
  *     push. Now the same predicate that badges the row (`isUnreadCallActivity`)
  *     also fires this.
@@ -679,7 +679,14 @@ export async function handleCallActivity(
   // false for OUTGOING), so the caller never gets a missed push. Fired
   // independently of the inbox rows above: pushToUser swallows its own failures,
   // and the dedup claim makes a redelivery after the throw below a no-op.
-  if (isUnreadCallActivity(status, "INCOMING", ringDurationSec)) {
+  //
+  // Except DECLINED: the callee declined it themselves, so "Missed call" on
+  // their other devices is a push for their own action. The row stays badged;
+  // those devices see it over the socket.
+  if (
+    status !== "DECLINED" &&
+    isUnreadCallActivity(status, "INCOMING", ringDurationSec)
+  ) {
     await sendMissedCallPush({
       callId: data.callId,
       calleeId: data.calleeId,

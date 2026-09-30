@@ -120,9 +120,8 @@ function base(
  * code, or the next source that grows livestreams (groups) and resolves its own
  * roster.
  *
- * Deliberately NOT a blanket rule in push.service: plenty of events legitimately
- * have actor === recipient (a password change alerts the person who made it).
- * The livestream announcement is the one that is third-person by definition.
+ * push.service now also drops any recipient equal to `actorId`; filtering here
+ * first just skips the name/identity lookups for a roster of one.
  */
 function withoutActor(
   recipientIds: string[] | undefined,

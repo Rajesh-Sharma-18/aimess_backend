@@ -451,6 +451,24 @@ export async function pushToUser(input: PushInput): Promise<void> {
     return;
   }
 
+  // The actor is never a recipient of their own action — not the push, not on
+  // any of their devices, and not an inbox row. Their other devices learn about
+  // it over the socket. Every producer routes through here, so this one check
+  // covers rosters that include the actor (community close/delete/reopen reach
+  // the owner who did it) and self-targeted events (invite-link join welcomes
+  // the joiner). Security alerts are exempt: "your password changed" must reach
+  // the person who changed it.
+  if (
+    input.actorId &&
+    input.actorId === input.userId &&
+    !NON_SUPPRESSIBLE_TYPES.has(input.type)
+  ) {
+    logger.info(
+      `Notification suppressed: recipient is the actor user=${input.userId} type=${input.type}`
+    );
+    return;
+  }
+
   const {
     userId,
     category,
