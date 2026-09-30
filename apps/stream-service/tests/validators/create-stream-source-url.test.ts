@@ -49,3 +49,21 @@ describe("createStreamSchema.sourceUrl", () => {
     expect(parsed.success).toBe(true);
   });
 });
+
+describe("createStreamSchema.title", () => {
+  it.each([[""], ["   "], ["\n\t"]])("rejects %j", (title) => {
+    expect(
+      createStreamSchema.safeParse({ ...base, title, sourceUrl: "https://x.tld/a" })
+        .success
+    ).toBe(false);
+  });
+
+  it("trims surrounding whitespace", () => {
+    const parsed = createStreamSchema.safeParse({
+      communityId: "C-1",
+      title: "  Live  ",
+      sourceType: "OBS_RTMP",
+    });
+    expect(parsed.success && parsed.data.title).toBe("Live");
+  });
+});

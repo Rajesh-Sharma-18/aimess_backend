@@ -3,7 +3,8 @@ import { z } from "zod";
 /** POST /streams body — go-live request. */
 export const createStreamSchema = z.object({
   communityId: z.string().min(1),
-  title: z.string().min(1).max(256),
+  // Trimmed first so a whitespace-only title is rejected, matching the clients.
+  title: z.string().trim().min(1).max(256),
   description: z.string().max(1000).optional(),
   thumbnail: z.string().url().optional(),
   sourceType: z
@@ -64,7 +65,7 @@ export const listStreamsQuerySchema = z.object({
 /** PATCH /streams/:id body — owner updates stream metadata. At least one field required. */
 export const updateStreamSchema = z
   .object({
-    title: z.string().min(1).max(256).optional(),
+    title: z.string().trim().min(1).max(256).optional(),
     description: z.string().max(1000).optional(),
     thumbnail: z.string().url().optional(),
   })
