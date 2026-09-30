@@ -99,6 +99,12 @@ jest.mock("../../src/grpc/community.client.js", () => ({
     getCommunityBrief: jest.fn(async () => null),
   },
 }));
+// user-identity.client.js — same import.meta.url-at-load issue. Default =
+// unresolved, so a spec that doesn't care about actor names renders the
+// event-carried name; specs asserting the authoritative name re-mock this.
+jest.mock("../../src/grpc/user-identity.client.js", () => ({
+  userIdentityClient: { getDisplayName: jest.fn(async () => null) },
+}));
 // chat-messaging.client.js — same import.meta.url-at-load issue as
 // community.client.js. Default is fail-open (not muted).
 jest.mock("../../src/grpc/chat-messaging.client.js", () => ({

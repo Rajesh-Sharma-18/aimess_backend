@@ -23,6 +23,16 @@ jest.mock("../../src/lib/user-client.js", () => ({
         ])
       )
   ),
+  // Notification publishers read resolved users only (no placeholder back-fill).
+  fetchUserSnapshotHits: jest.fn(
+    async (ids: string[]) =>
+      new Map(
+        ids.map((id) => [
+          id,
+          { userId: id, username: id, displayName: "Mock User", avatarObjectKey: null },
+        ])
+      )
+  ),
   fetchAcceptedFriendIds: jest.fn(async () => new Set<string>()),
 }));
 

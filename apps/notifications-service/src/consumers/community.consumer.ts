@@ -34,6 +34,7 @@ import {
 
 import { env } from "../config/env.js";
 import { communityClient } from "../grpc/community.client.js";
+import { userIdentityClient } from "../grpc/user-identity.client.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { communityCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
@@ -187,6 +188,30 @@ async function communityIdentityFor(
 }
 
 /**
+ * The ACTOR's name every push in this consumer renders ("<name> approved your
+ * request…", "<name> asked to join…", "<name> is live…").
+ *
+ * Authoritative-first, for the same reason as {@link communityIdentityFor}: the
+ * name the producer captured at emit time is only as good as the lookup it did
+ * then. A transient user-service miss there used to freeze a placeholder
+ * ("Unknown") into the event, and this layer rendered it into the tray card,
+ * the inbox row and the socket frame alike — for an admin whose real name was
+ * one RPC away. Resolving here, by the canonical AIMess userId, gives the name
+ * a second chance after the queue hop and keeps it identical for password,
+ * Google and Apple accounts (they all have one profile keyed by that id).
+ *
+ * "" when neither source knows the name, so the copy layer renders its
+ * localized "Someone" rather than a fabricated name.
+ */
+async function actorNameFor(
+  userId: string | undefined,
+  carriedName?: string | null
+): Promise<string> {
+  const fresh = userId ? await userIdentityClient.getDisplayName(userId) : null;
+  return fresh?.trim() || carriedName?.trim() || "";
+}
+
+/**
  * The tray actions an admin gets on an incoming join request, where the
  * platform renders them (web: Notification API `actions`, iOS: the
  * {@link JOIN_REQUEST_CATEGORY} the app registers). A client that renders none
@@ -297,14 +322,17 @@ async function handleCommunityEvent(
         (id) => id !== p.userId
       );
       if (recipients.length === 0) break;
-      const identity = await communityIdentityFor(
-        p.communityId,
-        p.communityName,
-        p.communityAvatarUrl
-      );
+      const [identity, requesterName] = await Promise.all([
+        communityIdentityFor(
+          p.communityId,
+          p.communityName,
+          p.communityAvatarUrl
+        ),
+        actorNameFor(p.userId, p.requesterDisplayName),
+      ]);
       const actorSnapshot = {
         userId: p.userId,
-        displayName: p.requesterDisplayName,
+        displayName: requesterName,
         avatarUrl: p.requesterAvatarUrl,
       };
       // Clear the previous attempt's card BEFORE writing this one.
@@ -319,10 +347,7 @@ async function handleCommunityEvent(
       await retractJoinRequestCards(recipients, p.communityId, p.userId, "SUPERSEDED");
       await pushToUsers(recipients, (userId) => ({
         userId,
-        copy: communityCopy.joinRequested(
-          identity.name,
-          p.requesterDisplayName
-        ),
+        copy: communityCopy.joinRequested(identity.name, requesterName),
         // Accept / Decline straight from the tray, where the platform renders
         // them. The payload only NAMES the request — every action re-enters the
         // ordinary authenticated endpoint, so a copied or stale push decides
@@ -349,7 +374,7 @@ async function handleCommunityEvent(
             // Tray tag, so a visible web tab draws the worker's card and the retraction closes it.
             tag: joinRequestPushTag(p.communityId, p.userId),
             communityHandle: p.communityHandle,
-            requesterDisplayName: p.requesterDisplayName,
+            requesterDisplayName: requesterName,
             requesterAvatarUrl: p.requesterAvatarUrl ?? "",
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
@@ -385,20 +410,23 @@ async function handleCommunityEvent(
       const p = data as CommunityLivestreamStartedPayload;
       const recipients = withoutActor(p.recipientIds, p.hostUserId);
       if (recipients.length === 0) break;
-      const identity = await communityIdentityFor(
-        p.communityId,
-        p.communityName,
-        p.communityAvatarUrl
-      );
-      const hostName = p.hostDisplayName || "Someone";
+      const [identity, resolvedHostName] = await Promise.all([
+        communityIdentityFor(
+          p.communityId,
+          p.communityName,
+          p.communityAvatarUrl
+        ),
+        actorNameFor(p.hostUserId, p.hostDisplayName),
+      ]);
+      const hostName = resolvedHostName || "Someone";
       const actorSnapshot = {
         userId: p.hostUserId,
-        displayName: p.hostDisplayName,
+        displayName: resolvedHostName,
         avatarUrl: p.hostAvatarUrl,
       };
       await pushToUsers(recipients, (userId) => ({
         userId,
-        copy: communityCopy.livestreamStarted(identity.name, hostName),
+        copy: communityCopy.livestreamStarted(identity.name, resolvedHostName),
         ...base(
           type,
           identity,
@@ -430,15 +458,18 @@ async function handleCommunityEvent(
       const p = data as CommunityLivestreamEndedPayload;
       const recipients = withoutActor(p.recipientIds, p.hostUserId);
       if (recipients.length === 0) break;
-      const identity = await communityIdentityFor(
-        p.communityId,
-        p.communityName,
-        p.communityAvatarUrl
-      );
-      const hostName = p.hostDisplayName || "Someone";
+      const [identity, resolvedHostName] = await Promise.all([
+        communityIdentityFor(
+          p.communityId,
+          p.communityName,
+          p.communityAvatarUrl
+        ),
+        actorNameFor(p.hostUserId, p.hostDisplayName),
+      ]);
+      const hostName = resolvedHostName || "Someone";
       const actorSnapshot = {
         userId: p.hostUserId,
-        displayName: p.hostDisplayName,
+        displayName: resolvedHostName,
         avatarUrl: p.hostAvatarUrl,
       };
       await pushToUsers(recipients, (userId) => ({
@@ -448,7 +479,11 @@ async function handleCommunityEvent(
         copy:
           p.endedReason === "SYSTEM"
             ? communityCopy.livestreamEndedBySystem(identity.name, p.duration)
-            : communityCopy.livestreamEnded(identity.name, hostName, p.duration),
+            : communityCopy.livestreamEnded(
+                identity.name,
+                resolvedHostName,
+                p.duration
+              ),
         ...base(
           type,
           identity,
@@ -478,11 +513,14 @@ async function handleCommunityEvent(
 
     case CommunityEvents.JOIN_REQUEST_APPROVED: {
       const p = data as CommunityJoinRequestApprovedPayload;
-      const identity = await communityIdentityFor(
-        p.communityId,
-        p.communityName,
-        p.communityAvatarUrl
-      );
+      const [identity, decidedByName] = await Promise.all([
+        communityIdentityFor(
+          p.communityId,
+          p.communityName,
+          p.communityAvatarUrl
+        ),
+        actorNameFor(p.decidedBy.userId, p.decidedBy.displayName),
+      ]);
       const navigation: NotificationNavigation = {
         screen: "COMMUNITY_DETAILS",
         communityId: p.communityId,
@@ -493,14 +531,11 @@ async function handleCommunityEvent(
       };
       const actorSnapshot = {
         userId: p.decidedBy.userId,
-        displayName: p.decidedBy.displayName,
+        displayName: decidedByName,
       };
       await pushToUser({
         userId: p.userId,
-        copy: communityCopy.joinRequestApproved(
-          identity.name,
-          p.decidedBy.displayName
-        ),
+        copy: communityCopy.joinRequestApproved(identity.name, decidedByName),
         ...base(
           type,
           identity,
@@ -509,7 +544,7 @@ async function handleCommunityEvent(
             requestId: p.requestId,
             status: "APPROVED",
             communityHandle: p.communityHandle,
-            decidedByDisplayName: p.decidedBy.displayName,
+            decidedByDisplayName: decidedByName,
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
           buildDeepLink("community", p.communityId),
@@ -536,11 +571,14 @@ async function handleCommunityEvent(
 
     case CommunityEvents.JOIN_REQUEST_REJECTED: {
       const p = data as CommunityJoinRequestRejectedPayload;
-      const identity = await communityIdentityFor(
-        p.communityId,
-        p.communityName,
-        p.communityAvatarUrl
-      );
+      const [identity, decidedByName] = await Promise.all([
+        communityIdentityFor(
+          p.communityId,
+          p.communityName,
+          p.communityAvatarUrl
+        ),
+        actorNameFor(p.decidedBy.userId, p.decidedBy.displayName),
+      ]);
       const navigation: NotificationNavigation = {
         screen: "COMMUNITY_DETAILS",
         communityId: p.communityId,
@@ -551,7 +589,7 @@ async function handleCommunityEvent(
       };
       const actorSnapshot = {
         userId: p.decidedBy.userId,
-        displayName: p.decidedBy.displayName,
+        displayName: decidedByName,
       };
       await pushToUser({
         userId: p.userId,
@@ -564,7 +602,7 @@ async function handleCommunityEvent(
             requestId: p.requestId,
             status: "REJECTED",
             communityHandle: p.communityHandle,
-            decidedByDisplayName: p.decidedBy.displayName,
+            decidedByDisplayName: decidedByName,
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
           buildDeepLink("communities"),

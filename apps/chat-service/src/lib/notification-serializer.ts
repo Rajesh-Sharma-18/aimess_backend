@@ -292,6 +292,7 @@ function scrubDeletedActor(
   for (const key of [
     "actorDisplayName",
     "requesterDisplayName",
+    "decidedByDisplayName",
     "actorAvatarUrl",
     "requesterAvatarUrl",
     "actorUsername",
@@ -359,6 +360,26 @@ function localizeRow(
   };
 }
 
+/** The same actor-name keys the deleted-actor scrub blanks, set to the CURRENT name instead. */
+function withActorName(
+  data: Record<string, string>,
+  displayName: string
+): Record<string, string> {
+  const out: Record<string, string> = { ...data };
+  for (const key of [
+    "actorDisplayName",
+    "requesterDisplayName",
+    "decidedByDisplayName",
+  ]) {
+    if (key in out) out[key] = displayName;
+  }
+  const snap = parseJson(data.actorSnapshot) as
+    | Record<string, unknown>
+    | undefined;
+  if (snap) out.actorSnapshot = JSON.stringify({ ...snap, displayName });
+  return out;
+}
+
 /**
  * One-shot Notification row → response DTO. Reuses the existing
  * `resolveNotificationFriendship` enricher (friend actionability) — no new
@@ -423,6 +444,7 @@ export async function serializeNotification(
     actorSnapshot?.displayName ||
     data.requesterDisplayName ||
     data.actorDisplayName ||
+    data.decidedByDisplayName ||
     "";
   const actor = actorId
     ? {
@@ -464,6 +486,7 @@ export async function serializeNotification(
     actorSnapshot?.displayName ?? "",
     data.actorDisplayName ?? "",
     data.requesterDisplayName ?? "",
+    data.decidedByDisplayName ?? "",
   ];
   const scrubbed = freshActor?.isDeleted
     ? scrubDeletedActor(payloadObj, data, publishedActorNames)
@@ -480,6 +503,7 @@ export async function serializeNotification(
           actorSnapshot?.displayName ?? "",
           data.actorDisplayName ?? "",
           data.requesterDisplayName ?? "",
+          data.decidedByDisplayName ?? "",
         ]
           .map((n) => n.trim())
           .filter((n) => n.length > 0 && n !== freshActor.displayName)
@@ -494,7 +518,8 @@ export async function serializeNotification(
     !(
       actorSnapshot?.displayName ||
       data.actorDisplayName ||
-      data.requesterDisplayName
+      data.requesterDisplayName ||
+      data.decidedByDisplayName
     )
   ) {
     for (const locale of ["en", "vi", "th"] as const) {
@@ -527,6 +552,13 @@ export async function serializeNotification(
       : {}),
     ...(payloadObj.body !== undefined
       ? { body: refreshName(payloadObj.body) }
+      : {}),
+    // …and on the raw blob's own name fields, which clients read directly
+    // (mobile renders `actorSnapshot.displayName`). A row stored while the
+    // producer's lookup missed carries "Unknown" / "" there, and leaving it
+    // would contradict the refreshed sentence right next to it.
+    ...(staleActorNames.length > 0 && payloadObj.data
+      ? { data: withActorName(payloadObj.data, freshActor!.displayName) }
       : {}),
   };
   const effectivePayload = stripInternalDirectives(refreshedPayload);

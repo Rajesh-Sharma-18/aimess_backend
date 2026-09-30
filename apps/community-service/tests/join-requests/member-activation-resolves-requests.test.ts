@@ -31,6 +31,16 @@ jest.mock("../../src/lib/user-client.js", () => ({
         ])
       )
   ),
+  // Notification publishers read resolved users only (no placeholder back-fill).
+  fetchUserSnapshotHits: jest.fn(
+    async (ids: string[]) =>
+      new Map(
+        ids.map((id) => [
+          id,
+          { userId: id, username: id, displayName: `User ${id.slice(0, 4)}`, avatarObjectKey: null },
+        ])
+      )
+  ),
   // Everyone is a friend here: addMembers gates on friendship first (AIM-05),
   // and this suite is about join-request resolution, not that gate.
   fetchAcceptedFriendIds: jest.fn(

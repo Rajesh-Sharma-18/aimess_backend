@@ -7688,7 +7688,7 @@ export const communityService = {
         ]),
       ]);
       const [requesterSnaps, communityAvatarMedia] = await Promise.all([
-        fetchUserSnapshots([callerId]),
+        fetchUserSnapshotHits([callerId]),
         buildCommunityImageMedia(community.avatarUrl),
       ]);
       const requesterSnap = requesterSnaps.get(callerId);
@@ -7715,7 +7715,7 @@ export const communityService = {
         // of either notifying the moderators (old behaviour) or dropping the
         // message for an empty roster. Delete with the field.
         moderatorRecipientIds: adminRecipientIds,
-        requesterDisplayName: requesterSnap?.displayName ?? "Unknown",
+        requesterDisplayName: requesterSnap?.displayName ?? "",
         requesterAvatarUrl: requesterAvatarMedia.downloadUrl,
       });
 
@@ -8115,7 +8115,7 @@ export const communityService = {
     // the realtime join-request UI-state update.
     const [callerSnapsApprove, communityAvatarMediaApprove] = await Promise.all(
       [
-        fetchUserSnapshots([callerId]),
+        fetchUserSnapshotHits([callerId]),
         buildCommunityImageMedia(community.avatarUrl),
       ]
     );
@@ -8131,7 +8131,7 @@ export const communityService = {
       decidedBy: {
         userId: callerId,
         username: callerSnapApprove?.username ?? null,
-        displayName: callerSnapApprove?.displayName ?? "Unknown",
+        displayName: callerSnapApprove?.displayName ?? "",
       },
       decidedAt: new Date().toISOString(),
     });
@@ -8244,7 +8244,7 @@ export const communityService = {
     // Dedicated rejected event → notifies the requester (in-app/push) and drives
     // the realtime join-request UI-state update.
     const [callerSnapsReject, communityAvatarMediaReject] = await Promise.all([
-      fetchUserSnapshots([callerId]),
+      fetchUserSnapshotHits([callerId]),
       buildCommunityImageMedia(community.avatarUrl),
     ]);
     const callerSnapReject = callerSnapsReject.get(callerId);
@@ -8259,7 +8259,7 @@ export const communityService = {
       decidedBy: {
         userId: callerId,
         username: callerSnapReject?.username ?? null,
-        displayName: callerSnapReject?.displayName ?? "Unknown",
+        displayName: callerSnapReject?.displayName ?? "",
       },
       decidedAt: new Date().toISOString(),
     });
@@ -8421,7 +8421,7 @@ export const communityService = {
         ]);
 
       const [callerSnapsBulk, communityAvatarMediaBulk] = await Promise.all([
-        fetchUserSnapshots([callerId]),
+        fetchUserSnapshotHits([callerId]),
         buildCommunityImageMedia(community.avatarUrl),
       ]);
       const callerSnapBulk = callerSnapsBulk.get(callerId);
@@ -8463,7 +8463,7 @@ export const communityService = {
           decidedBy: {
             userId: callerId,
             username: callerSnapBulk?.username ?? null,
-            displayName: callerSnapBulk?.displayName ?? "Unknown",
+            displayName: callerSnapBulk?.displayName ?? "",
           },
           decidedAt: decidedAt.toISOString(),
         });
@@ -8580,7 +8580,7 @@ export const communityService = {
 
       const [callerSnapsBulkReject, communityAvatarMediaBulkReject] =
         await Promise.all([
-          fetchUserSnapshots([callerId]),
+          fetchUserSnapshotHits([callerId]),
           buildCommunityImageMedia(community.avatarUrl),
         ]);
       const callerSnapBulkReject = callerSnapsBulkReject.get(callerId);
@@ -8613,7 +8613,7 @@ export const communityService = {
           decidedBy: {
             userId: callerId,
             username: callerSnapBulkReject?.username ?? null,
-            displayName: callerSnapBulkReject?.displayName ?? "Unknown",
+            displayName: callerSnapBulkReject?.displayName ?? "",
           },
           decidedAt: decidedAt.toISOString(),
         });

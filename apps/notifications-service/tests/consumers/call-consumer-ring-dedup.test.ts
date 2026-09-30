@@ -333,3 +333,39 @@ describe("call.consumer — missed-call push", () => {
     ]);
   });
 });
+
+describe("call.consumer — caller name on a producer-side lookup miss", () => {
+  const { userIdentityClient } = jest.requireMock(
+    "../../src/grpc/user-identity.client.js"
+  ) as { userIdentityClient: { getDisplayName: jest.Mock } };
+
+  function ringWithName(callerName: string) {
+    const msg = JSON.parse(ringMessage("call-name").content.toString());
+    msg.data.callerName = callerName;
+    return { content: Buffer.from(JSON.stringify(msg)) };
+  }
+
+  it("re-resolves the caller's real name instead of titling the ring 'Someone'", async () => {
+    userIdentityClient.getDisplayName.mockResolvedValueOnce("Alice Smith");
+    const onMessage = await setupConsumer();
+
+    onMessage(ringWithName(""));
+    await flush();
+    await flush();
+
+    const arg = push.mock.calls[0][0];
+    expect(userIdentityClient.getDisplayName).toHaveBeenCalledWith("caller-1");
+    expect(arg.copy("en").title).toBe("Alice Smith");
+    expect(arg.data.callerName).toBe("Alice Smith");
+  });
+
+  it("does not spend a lookup when the event already names the caller", async () => {
+    const onMessage = await setupConsumer();
+
+    onMessage(ringWithName("Alice"));
+    await flush();
+
+    expect(userIdentityClient.getDisplayName).not.toHaveBeenCalled();
+    expect(push.mock.calls[0][0].copy("en").title).toBe("Alice");
+  });
+});

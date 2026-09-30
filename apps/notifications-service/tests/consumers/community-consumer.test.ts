@@ -58,6 +58,7 @@ import { publishUserSocketEvent } from "@aimess/redis";
 
 import { startCommunityConsumer } from "../../src/consumers/community.consumer.js";
 import { communityClient } from "../../src/grpc/community.client.js";
+import { userIdentityClient } from "../../src/grpc/user-identity.client.js";
 import { pushToUser, pushToUsers } from "../../src/services/push.service.js";
 
 const push = pushToUser as jest.Mock;
@@ -74,9 +75,18 @@ function communityDirectory(byId: Record<string, string>): void {
   );
 }
 
+const getDisplayName = userIdentityClient.getDisplayName as jest.Mock;
+
+/** user-service answers with the CURRENT "Firstname Lastname" for that id. */
+function userDirectory(byId: Record<string, string>): void {
+  getDisplayName.mockImplementation(async (userId: string) => byId[userId] ?? null);
+}
+
 beforeEach(() => {
   getBrief.mockReset();
   getBrief.mockResolvedValue(null);
+  getDisplayName.mockReset();
+  getDisplayName.mockResolvedValue(null);
 });
 
 const CID = "c".repeat(24);
@@ -795,5 +805,131 @@ describe("community consumer — navigation deep-link", () => {
       communityId: CID,
       communityName: "Cool Community",
     });
+  });
+});
+
+/**
+ * Regression: the approver's name used to be taken verbatim from the event, and
+ * a transient user-service miss in community-service froze the lookup
+ * placeholder into it — so the tray card, the inbox row and the socket frame
+ * all read "Unknown approved your request to join …". The consumer now asks
+ * user-service for the actor's CURRENT name (by canonical userId, identical for
+ * password, Google and Apple accounts) and only falls back to the carried name,
+ * then to the localized "Someone".
+ */
+describe("actor name resolution", () => {
+  const APPROVED = {
+    communityId: CID,
+    communityName: "Cool Community",
+    requestId: RID,
+    userId: REQUESTER,
+    decidedBy: { userId: MOD, username: null, displayName: "Unknown" },
+    decidedAt: "2026-09-30T10:00:00.000Z",
+    eventAt: "2026-09-30T10:00:00.000Z",
+  };
+
+  it("renders the approver's real name over a stale placeholder in the event", async () => {
+    userDirectory({ [MOD]: "Smiley Creatures" });
+    await deliver(CommunityEvents.JOIN_REQUEST_APPROVED, APPROVED);
+
+    const arg = push.mock.calls[0][0];
+    expect(getDisplayName).toHaveBeenCalledWith(MOD);
+    expect(arg.copy("en").body).toBe(
+      "Smiley Creatures approved your request to join Cool Community"
+    );
+    // The stored row carries the same name, so list and push agree.
+    expect(arg.data.decidedByDisplayName).toBe("Smiley Creatures");
+    expect(JSON.parse(arg.data.actorSnapshot)).toEqual({
+      userId: MOD,
+      displayName: "Smiley Creatures",
+    });
+  });
+
+  it("keeps each device's language — only the name is data", async () => {
+    userDirectory({ [MOD]: "Smiley Creatures" });
+    await deliver(CommunityEvents.JOIN_REQUEST_APPROVED, APPROVED);
+
+    const copy = push.mock.calls[0][0].copy;
+    expect(copy("vi").body).toBe(
+      "Smiley Creatures đã chấp thuận yêu cầu tham gia Cool Community của bạn"
+    );
+    expect(copy("th").body).toBe(
+      "Smiley Creaturesอนุมัติคำขอเข้าร่วมCool Communityของคุณ"
+    );
+  });
+
+  it("falls back to the carried name when user-service is unreachable", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_APPROVED, {
+      ...APPROVED,
+      decidedBy: { userId: MOD, username: null, displayName: "Admin Person" },
+    });
+
+    expect(push.mock.calls[0][0].copy("en").body).toBe(
+      "Admin Person approved your request to join Cool Community"
+    );
+  });
+
+  it("renders the localized 'Someone' — never 'Unknown' — when no source knows the name", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_APPROVED, {
+      ...APPROVED,
+      decidedBy: { userId: MOD, username: null, displayName: "" },
+    });
+
+    const copy = push.mock.calls[0][0].copy;
+    expect(copy("en").body).toBe(
+      "Someone approved your request to join Cool Community"
+    );
+    expect(copy("en").body).not.toContain("Unknown");
+  });
+
+  it("names the admin on the REJECTED row from the same source", async () => {
+    userDirectory({ [MOD]: "Smiley Creatures" });
+    await deliver(CommunityEvents.JOIN_REQUEST_REJECTED, APPROVED);
+
+    const arg = push.mock.calls[0][0];
+    expect(arg.data.decidedByDisplayName).toBe("Smiley Creatures");
+    expect(JSON.parse(arg.data.actorSnapshot).displayName).toBe(
+      "Smiley Creatures"
+    );
+  });
+
+  it("names the requester on the admin's join-request card", async () => {
+    userDirectory({ [REQUESTER]: "Mind Flayer" });
+    await deliver(CommunityEvents.JOIN_REQUESTED, {
+      communityId: CID,
+      communityName: "Cool Community",
+      userId: REQUESTER,
+      requestId: RID,
+      requesterDisplayName: "",
+      requesterAvatarUrl: null,
+      adminRecipientIds: [ADMIN],
+      eventAt: "2026-09-30T10:00:00.000Z",
+    });
+
+    // calls[1] is the card itself; calls[0] retracts the previous attempt.
+    const arg = (pushMany.mock.calls[1][1] as (id: string) => Record<string, any>)(
+      ADMIN
+    );
+    expect(arg.copy("en").body).toBe("Mind Flayer asked to join Cool Community");
+    expect(arg.data.requesterDisplayName).toBe("Mind Flayer");
+  });
+
+  it("names the livestream host from user-service, not a stale member snapshot", async () => {
+    userDirectory({ [MOD]: "Smiley Creatures" });
+    await deliver(CommunityEvents.LIVESTREAM_STARTED, {
+      communityId: CID,
+      communityName: "Cool Community",
+      livestreamId: "stream-1",
+      hostUserId: MOD,
+      hostDisplayName: "Unknown",
+      recipientIds: [REQUESTER],
+      eventAt: "2026-09-30T10:00:00.000Z",
+    });
+
+    const arg = (pushMany.mock.calls[0][1] as (id: string) => Record<string, any>)(
+      REQUESTER
+    );
+    expect(arg.copy("en").body).toBe("Smiley Creatures is live in Cool Community");
+    expect(arg.data.hostName).toBe("Smiley Creatures");
   });
 });

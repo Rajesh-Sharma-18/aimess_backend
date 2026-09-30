@@ -22,23 +22,27 @@
 
 // Mock user-client so fetchUserSnapshots returns a Map with username: null
 // for any userId — the service uses username ?? null → null as expected.
-jest.mock("../../src/lib/user-client.js", () => ({
-  fetchUserSnapshots: jest.fn(
-    async (ids: string[]) =>
-      new Map(
-        ids.map((id) => [
-          id,
-          {
-            userId: id,
-            username: id,
-            displayName: "Mock User",
-            avatarObjectKey: null,
-          },
-        ])
-      )
-  ),
-  fetchAcceptedFriendIds: jest.fn(async () => new Set<string>()),
-}));
+jest.mock("../../src/lib/user-client.js", () => {
+  const resolved = async (ids: string[]) =>
+    new Map(
+      ids.map((id) => [
+        id,
+        {
+          userId: id,
+          username: id,
+          displayName: "Mock User",
+          avatarObjectKey: null,
+        },
+      ])
+    );
+  return {
+    fetchUserSnapshots: jest.fn(resolved),
+    // What the notification publishers read: resolved users only, no
+    // placeholder back-fill (an unresolved id is simply absent).
+    fetchUserSnapshotHits: jest.fn(resolved),
+    fetchAcceptedFriendIds: jest.fn(async () => new Set<string>()),
+  };
+});
 
 // Mock @aimess/storage so buildCommunityImageMedia / buildAvatarMedia
 // return a minimal MediaObject (downloadUrl: null) without hitting MinIO.
@@ -127,6 +131,7 @@ import { publishCommunityRoomEvent, publishChatUserEvent } from "@aimess/redis";
 
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
+import { fetchUserSnapshotHits } from "../../src/lib/user-client.js";
 import {
   publishCommunityJoinRequestApprovedSafe,
   publishCommunityJoinRequestRejectedSafe,
@@ -235,6 +240,30 @@ describe("approveJoinRequest — events + member fan-out", () => {
     });
     expect(typeof payload.decidedAt).toBe("string");
     expect(typeof payload.eventAt).toBe("string");
+  });
+
+  it("names the approver with their real display name", async () => {
+    await communityService.approveJoinRequest(CID, MOD, RID);
+
+    expect(pubApproved.mock.calls[0][0].decidedBy).toMatchObject({
+      userId: MOD,
+      displayName: "Mock User",
+    });
+  });
+
+  // Regression: a transient user-service miss used to publish the lookup
+  // placeholder "Unknown" as the approver's name, and every push/inbox row
+  // rendered "Unknown approved your request to join …".
+  it("never stamps a placeholder name when the approver lookup misses", async () => {
+    (fetchUserSnapshotHits as jest.Mock).mockResolvedValueOnce(new Map());
+
+    await communityService.approveJoinRequest(CID, MOD, RID);
+
+    expect(pubApproved.mock.calls[0][0].decidedBy).toEqual({
+      userId: MOD,
+      username: null,
+      displayName: "",
+    });
   });
 
   it("routes member_added through notifyMemberJoined with the enriched payload", async () => {
@@ -350,6 +379,14 @@ describe("rejectJoinRequest — previously-silent path now emits an event", () =
     });
     repo.createAuditLog.mockResolvedValue(undefined);
     repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD, "moderator-2"]);
+  });
+
+  it("never stamps a placeholder decider name when the lookup misses", async () => {
+    (fetchUserSnapshotHits as jest.Mock).mockResolvedValueOnce(new Map());
+
+    await communityService.rejectJoinRequest(CID, MOD, RID);
+
+    expect(pubRejected.mock.calls[0][0].decidedBy.displayName).toBe("");
   });
 
   it("publishes community.join_request_rejected addressed to the requester", async () => {
@@ -635,6 +672,17 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
     expect(payload.adminRecipientIds).not.toContain(MOD);
     expect(payload.adminRecipientIds).not.toContain(MOD_2);
     expect(payload.adminRecipientIds).not.toContain(REQUESTER);
+  });
+
+  it("names the requester, and never with a placeholder when the lookup misses", async () => {
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+    expect(pubRequested.mock.calls[0][0].requesterDisplayName).toBe("Mock User");
+
+    pubRequested.mockClear();
+    repo.findJoinRequestByCommunityAndUser.mockResolvedValue(null);
+    (fetchUserSnapshotHits as jest.Mock).mockResolvedValueOnce(new Map());
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+    expect(pubRequested.mock.calls[0][0].requesterDisplayName).toBe("");
   });
 
   it("asks the roster for ADMIN alone when resolving notification recipients", async () => {
