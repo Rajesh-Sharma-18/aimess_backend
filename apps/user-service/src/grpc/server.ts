@@ -443,6 +443,18 @@ export function startUserGrpcServer(): grpc.Server {
             return;
           }
           callback(null, { ok: true, status, errorCode: "" });
+          // Platform ban: close every pending friend request with this user
+          // and tell each peer to drop them. After the reply — the mirror call
+          // must not wait on the sweep.
+          if (status === ProfileStatus.BANNED) {
+            void friendshipService
+              .invalidateForBannedUser(userId)
+              .catch((err: unknown) => {
+                logger.error(
+                  `friend-request ban sweep failed for ${userId}: ${String(err)}`
+                );
+              });
+          }
         } catch (err) {
           logger.error(`gRPC adminSetProfileStatus error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });

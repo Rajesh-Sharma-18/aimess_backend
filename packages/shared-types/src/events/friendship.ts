@@ -45,7 +45,23 @@ export const FriendSocketEvents = {
    * by any presence watcher.
    */
   RELATIONSHIP_SYNC: "friend:relationship:sync",
+  /**
+   * The peer's account became unavailable (Super Admin platform ban): every
+   * pending request with them was closed and they left your friends list.
+   * Payload {@link FriendRequestInvalidatedPayload}. Sent on `self:<id>` to the
+   * OTHER party only, alongside the ordinary `friend:request:cancelled` for
+   * each closed request (older clients keep working off that one). Never names
+   * the reason beyond "unavailable" — peers are not told about bans.
+   */
+  REQUEST_INVALIDATED: "friend:request:invalidated",
 } as const;
+
+export type FriendRequestInvalidatedPayload = {
+  peerId: string;
+  /** The closed pending request, or null when only a friendship was hidden. */
+  friendshipId: string | null;
+  reason: "unavailable";
+};
 
 export type FriendSocketEventType =
   (typeof FriendSocketEvents)[keyof typeof FriendSocketEvents];
