@@ -690,7 +690,10 @@ async function handleCommunityEvent(
           ...base(
             type,
             identity,
-            p.actorId,
+            // Invite-link redeem has actor === target, and the joiner is still
+            // welcomed by design — so no actorId, or push.service's
+            // "actor is never a recipient" guard would drop it.
+            p.actorId === p.targetUserId ? undefined : p.actorId,
             {
               via: p.via,
               ...(p.requestId ? { requestId: p.requestId } : {}),
