@@ -59,6 +59,7 @@ import { mediaUrlStrategy } from "../config/storage.js";
 import { messagingGrpcClient } from "../grpc/messaging.client.js";
 import { communityGrpcClient } from "../grpc/community.client.js";
 import { bannedAmong } from "../lib/banned-users.js";
+import { friendsService } from "./friends.service.js";
 import { avatarService } from "./avatar.service.js";
 import { usernameService } from "./username.service.js";
 import { publishProfileUpdatedSafe } from "../messaging/publish-profile-updated.js";
@@ -409,6 +410,12 @@ export const userProfileService = {
     // BLOCKED collapses to NONE in this vocabulary — `isBlockedByMe` below and
     // the explicit block flag passed to `canSendFriendRequest` carry that state.
     const searchRelationship = toSearchRelationship(view);
+    // Live, not the stored `friendsCount` column: platform-banned friends are
+    // hidden (and restored on unban) without a write, so the stored counter
+    // cannot know about them. Same set the friends list shows.
+    const friendsCount = canViewProfile
+      ? (await friendsService.activeFriendIds(targetUserId)).length
+      : null;
 
     const canSeePresence =
       canViewProfile &&
@@ -438,7 +445,7 @@ export const userProfileService = {
         canSeePresence && profile.lastSeenAt
           ? profile.lastSeenAt.toISOString()
           : null,
-      friendsCount: canViewProfile ? profile.friendsCount : null,
+      friendsCount,
       groupsCount: canViewProfile ? profile.groupsCount : null,
       communitiesCount: canViewProfile ? profile.communitiesCount : null,
       isDeletedUser,

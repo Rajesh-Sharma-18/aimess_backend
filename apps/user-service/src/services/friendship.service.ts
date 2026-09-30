@@ -33,6 +33,7 @@ import {
 } from "../lib/friendship-view.js";
 import { scopeAdmits } from "../lib/privacy-scope.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
+import { friendsRepository } from "../repositories/friends.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { userCache } from "../lib/user-cache.js";
@@ -393,6 +394,67 @@ async function announceCancelled(updated: FriendshipRow): Promise<void> {
   emitConversationFriendRequestRejected(updated, "CANCELLED");
 }
 
+function otherParty(
+  row: { requesterId: string; addresseeId: string },
+  userId: string
+): string {
+  return row.requesterId === userId ? row.addresseeId : row.requesterId;
+}
+
+/** Tell `to` that `bannedId` is gone; never names the ban. */
+function emitInvalidated(
+  to: string,
+  bannedId: string,
+  friendshipId: string | null
+): void {
+  emitFriendSelfEventSafe(to, FriendSocketEvents.REQUEST_INVALIDATED, {
+    peerId: bannedId,
+    friendshipId,
+    reason: "unavailable",
+  } satisfies FriendRequestInvalidatedPayload);
+}
+
+/**
+ * Close one PENDING request with a platform-banned user, quietly, exactly
+ * once. The cancel is PENDING-guarded, so whichever of the ban sweep or a
+ * stale Reject/Delete gets there first announces it and the other finds
+ * nothing (null) — no duplicate notification or socket event.
+ */
+async function closeForBannedUser(
+  row: { id: string },
+  bannedId: string
+): Promise<FriendshipRow | null> {
+  const updated = await friendshipRepository.cancel(row.id).catch(() => null);
+  if (!updated) return null;
+  await announceCancelled(updated);
+  emitInvalidated(otherParty(updated, bannedId), bannedId, updated.id);
+  return updated;
+}
+
+/**
+ * Reject/Delete from a stale card whose peer is platform-banned. The ban
+ * sweep closes these requests; another device may still show the card, and
+ * tapping it must resolve with 200 rather than "not found":
+ *   - CANCELLED (already closed) → the row as-is, no write, no events;
+ *   - PENDING (sweep not landed yet) → closed here the way the sweep would.
+ * Returns null when the peer is not banned or the row is in any other state,
+ * so the caller's ordinary validation (and its 404) still applies.
+ */
+async function resolveWithBannedPeer(
+  row: FriendshipRow,
+  callerId: string
+): Promise<FriendshipRow | null> {
+  if (row.status !== "PENDING" && row.status !== "CANCELLED") return null;
+  const peerId = otherParty(row, callerId);
+  if ((await bannedAmong([peerId])).size === 0) return null;
+  if (row.status === "CANCELLED") return row;
+  return (
+    (await closeForBannedUser(row, peerId)) ??
+    (await friendshipRepository.findById(row.id)) ??
+    row
+  );
+}
+
 export const friendshipService = {
   async listRequests(
     me: string,
@@ -626,17 +688,17 @@ export const friendshipService = {
     userId: string
   ): Promise<FriendshipRow> {
     const friendship = await friendshipRepository.findById(friendshipId);
-    if (
-      !friendship ||
-      friendship.addresseeId !== userId ||
-      friendship.status !== "PENDING"
-    ) {
+    if (!friendship || friendship.addresseeId !== userId) {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
     // Accepting a banned requester's request would mint a friendship with an
-    // account no peer can reach.
+    // account no peer can reach. Checked before the status so a stale card
+    // whose request the ban sweep already closed gets the same answer.
     if ((await bannedAmong([friendship.requesterId])).size > 0) {
       throw new NotFoundError("USER_NO_LONGER_AVAILABLE");
+    }
+    if (friendship.status !== "PENDING") {
+      throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
 
     // The accept is conditional on the row still being PENDING, so a ban sweep
@@ -699,11 +761,12 @@ export const friendshipService = {
     userId: string
   ): Promise<FriendshipRow> {
     const friendship = await friendshipRepository.findById(friendshipId);
-    if (
-      !friendship ||
-      friendship.addresseeId !== userId ||
-      friendship.status !== "PENDING"
-    ) {
+    if (!friendship || friendship.addresseeId !== userId) {
+      throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
+    }
+    const resolved = await resolveWithBannedPeer(friendship, userId);
+    if (resolved) return resolved;
+    if (friendship.status !== "PENDING") {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
 
@@ -753,10 +816,13 @@ export const friendshipService = {
     const friendship = await friendshipRepository.findById(friendshipId);
     if (
       !friendship ||
-      (friendship.requesterId !== userId &&
-        friendship.addresseeId !== userId) ||
-      friendship.status !== "PENDING"
+      (friendship.requesterId !== userId && friendship.addresseeId !== userId)
     ) {
+      throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
+    }
+    const resolved = await resolveWithBannedPeer(friendship, userId);
+    if (resolved) return resolved;
+    if (friendship.status !== "PENDING") {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
 
@@ -787,24 +853,26 @@ export const friendshipService = {
   async invalidateForBannedUser(userId: string): Promise<void> {
     const rows = await friendshipRepository.findAllForUser(userId);
     for (const row of rows) {
-      if (row.status !== "PENDING" && row.status !== "ACCEPTED") continue;
-      const peerId =
-        row.requesterId === userId ? row.addresseeId : row.requesterId;
-      let friendshipId: string | null = null;
       if (row.status === "PENDING") {
-        // A concurrent accept/cancel already moved the row — skip it.
-        const updated = await friendshipRepository
-          .cancel(row.id)
-          .catch(() => null);
-        if (!updated) continue;
-        await announceCancelled(updated);
-        friendshipId = updated.id;
+        await closeForBannedUser(row, userId);
+      } else if (row.status === "ACCEPTED") {
+        emitInvalidated(otherParty(row, userId), userId, null);
       }
-      emitFriendSelfEventSafe(peerId, FriendSocketEvents.REQUEST_INVALIDATED, {
+    }
+  },
+
+  /**
+   * Unban (profile mirror back to ACTIVE): the friendships the ban hid are
+   * visible again, so each friend's list and profile counts re-read. Uses the
+   * verbless `friend:relationship:sync` every client already handles. The
+   * pending requests the ban closed stay closed.
+   */
+  async announceRestoredUser(userId: string): Promise<void> {
+    const friendIds = await friendsRepository.listAcceptedFriendIds(userId);
+    for (const friendId of friendIds) {
+      emitFriendSelfEventSafe(friendId, FriendSocketEvents.RELATIONSHIP_SYNC, {
         peerId: userId,
-        friendshipId,
-        reason: "unavailable",
-      } satisfies FriendRequestInvalidatedPayload);
+      });
     }
   },
 

@@ -460,7 +460,7 @@ export const userPaths = {
       summary: "List my friends",
       operationId: "listFriends",
       description:
-        "Accepted friends only, alphabetical (firstName, lastName). Optional `search` (case-insensitive on first/last name + username). Cursor pagination on userId; returns `nextCursor` (null when no more). Empty list when you have no accepted friends. `avatarUrl` is a presigned GET URL.",
+        "Accepted friends only, alphabetical (firstName, lastName). Platform-banned friends are omitted (the friendship is kept and reappears on unban). Optional `search` (case-insensitive on first/last name + username). Cursor pagination on userId; returns `nextCursor` (null when no more). Empty list when you have no accepted friends. `avatarUrl` is a presigned GET URL.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -641,6 +641,8 @@ export const userPaths = {
         "**Business rules:**\n" +
         "- You cannot befriend yourself (400 SELF_FRIEND_REQUEST).\n" +
         "- Both profiles must exist and be active (404 otherwise).\n" +
+        '- The addressee is platform-banned by a Super Admin → **404 `USER_NO_LONGER_AVAILABLE`** ("This account is no longer available."); no row is written. Peers are never told the account is banned.\n' +
+        "- The caller is platform-banned → **403 `ACCOUNT_BANNED`** (their sessions are revoked at ban time; this covers a token still alive for one round trip); no row is written.\n" +
         "- Blocked in either direction → request refused (400 BLOCKED).\n" +
         "- An existing **ACCEPTED** friendship → 409 (already friends).\n" +
         "- A **PENDING** request you already sent → 409 (already sent).\n" +
@@ -740,15 +742,44 @@ export const userPaths = {
           },
         },
         "401": unauthorized,
-        "404": {
-          description: "Requester or addressee profile not found",
+        "403": {
+          description: "The caller's own account is platform-banned.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
               example: {
                 success: false,
-                message: "User not found",
-                code: "USER_NOT_FOUND",
+                message: "This account has been suspended.",
+                code: "ACCOUNT_BANNED",
+              },
+            },
+          },
+        },
+        "404": {
+          description:
+            "Requester or addressee profile not found, or the addressee is platform-banned.",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                notFound: {
+                  summary: "Profile not found",
+                  value: {
+                    success: false,
+                    message: "User profile not found.",
+                    code: "USER_PROFILE_NOT_FOUND",
+                  },
+                },
+                unavailable: {
+                  summary: "Peer is no longer available",
+                  description:
+                    "The addressee is platform-banned. No friend request is created.",
+                  value: {
+                    success: false,
+                    message: "This account is no longer available.",
+                    code: "USER_NO_LONGER_AVAILABLE",
+                  },
+                },
               },
             },
           },
@@ -789,7 +820,8 @@ export const userPaths = {
       summary: "Accept a friend request",
       operationId: "acceptFriendRequest",
       description:
-        "Accepts a PENDING friend request addressed to the authenticated user. Only the **addressee** of a still-PENDING request may accept; otherwise 404. Bumps both users' friend counts and returns the friendship with `status: ACCEPTED` and `acceptedAt` set.",
+        "Accepts a PENDING friend request addressed to the authenticated user. Only the **addressee** of a still-PENDING request may accept; otherwise 404. Bumps both users' friend counts and returns the friendship with `status: ACCEPTED` and `acceptedAt` set.\n\n" +
+        "**Platform-banned requester**: a Super Admin ban closes every pending request with that user. Accepting one — including from a stale card whose request the ban already closed — returns **404 `USER_NO_LONGER_AVAILABLE`** and never creates a friendship. The accept is also conditional on the row still being PENDING, so a ban landing mid-request rolls it back atomically (no half-friendship, no `friend:accepted`).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -852,14 +884,29 @@ export const userPaths = {
         "401": unauthorized,
         "404": {
           description:
-            "No matching PENDING request addressed to you (wrong id, not the addressee, or already resolved).",
+            "No matching PENDING request addressed to you (wrong id, not the addressee, or already resolved), or the requester is platform-banned.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-              example: {
-                success: false,
-                message: "Pending friend request not found",
-                code: "FRIEND_REQUEST_NOT_FOUND",
+              examples: {
+                notFound: {
+                  summary: "No such pending request",
+                  value: {
+                    success: false,
+                    message: "Friend request not found.",
+                    code: "FRIEND_REQUEST_NOT_FOUND",
+                  },
+                },
+                unavailable: {
+                  summary: "Peer is no longer available",
+                  description:
+                    "The requester is platform-banned (whether or not the ban sweep already closed the request). No friendship is created.",
+                  value: {
+                    success: false,
+                    message: "This account is no longer available.",
+                    code: "USER_NO_LONGER_AVAILABLE",
+                  },
+                },
               },
             },
           },
@@ -873,7 +920,9 @@ export const userPaths = {
       summary: "Reject a friend request",
       operationId: "rejectFriendRequest",
       description:
-        "Declines a PENDING friend request addressed to the authenticated user. Only the **addressee** of a still-PENDING request may reject; otherwise 404. Returns the friendship with `status: REJECTED` and `rejectedAt` set. The row can later be recycled if either party re-sends.",
+        "Declines a PENDING friend request addressed to the authenticated user. Only the **addressee** of a still-PENDING request may reject; otherwise 404. Returns the friendship with `status: REJECTED` and `rejectedAt` set. The row can later be recycled if either party re-sends.\n\n" +
+        '**Platform-banned requester — idempotent 200.** A Super Admin ban closes every pending request with that user (the row becomes CANCELLED). A Reject from a stale card on another device then returns **200** with the closed row (viewer-relative `status: NONE`) and does nothing else: no write, no notification, no socket event. Repeating it keeps returning 200. If the Reject beats the sweep, it closes the request itself the same quiet way the sweep does (`friend:request:cancelled` + `friend:request:invalidated`, notification rows deleted, never a "declined" push) — exactly once, whichever arrives first.\n\n' +
+        "Still **404 `FRIEND_REQUEST_NOT_FOUND`**: an id that does not exist, a request not addressed to you, or an already-resolved request whose requester is NOT banned. A malformed id is 400.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -906,15 +955,39 @@ export const userPaths = {
                   },
                 ],
               },
-              example: {
-                success: true,
-                message: "Friend request declined.",
-                data: {
-                  friendshipId: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
-                  status: "REJECTED",
-                  requesterId: "660e8400-e29b-41d4-a716-446655440001",
-                  addresseeId: "550e8400-e29b-41d4-a716-446655440000",
-                  rejectedAt: "2026-06-25T10:10:00.000Z",
+              examples: {
+                rejected: {
+                  summary: "Request declined",
+                  value: {
+                    success: true,
+                    message: "Friend request declined.",
+                    data: {
+                      friendshipId: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
+                      status: "REJECTED",
+                      requesterId: "660e8400-e29b-41d4-a716-446655440001",
+                      addresseeId: "550e8400-e29b-41d4-a716-446655440000",
+                      rejectedAt: "2026-06-25T10:10:00.000Z",
+                    },
+                  },
+                },
+                staleNoOp: {
+                  summary:
+                    "Stale card — the requester was platform-banned and the request already closed",
+                  value: {
+                    success: true,
+                    message: "Friend request declined.",
+                    data: {
+                      id: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
+                      status: "NONE",
+                      direction: null,
+                      canAccept: false,
+                      canReject: false,
+                      canCancel: false,
+                      requesterId: "660e8400-e29b-41d4-a716-446655440001",
+                      addresseeId: "550e8400-e29b-41d4-a716-446655440000",
+                      cancelledAt: "2026-06-25T10:08:00.000Z",
+                    },
+                  },
                 },
               },
             },
@@ -934,7 +1007,8 @@ export const userPaths = {
         },
         "401": unauthorized,
         "404": {
-          description: "No matching PENDING request addressed to you.",
+          description:
+            "No such request, not addressed to you, or already resolved while the requester is NOT platform-banned (a banned requester's closed request answers 200 — see description).",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -952,10 +1026,11 @@ export const userPaths = {
   "/users/friends/requests/{id}": {
     delete: {
       tags: ["Users"],
-      summary: "Cancel a friend request you sent",
+      summary: "Withdraw a friend request (Cancel / Delete)",
       operationId: "cancelFriendRequest",
       description:
-        "Withdraws a PENDING friend request that the authenticated user **sent**. Only the **requester** of a still-PENDING request may cancel; otherwise 404. Returns the friendship with `status: CANCELLED` and `cancelledAt` set.",
+        'Withdraws a PENDING friend request quietly, for BOTH parties. **Either** party may call it: the requester\'s "Cancel Request" or the addressee\'s "Delete". No declined outcome is recorded or announced; `friend.cancelled` removes both sides\' notification rows. Returns the friendship with `status: CANCELLED` and `cancelledAt` set; otherwise 404.\n\n' +
+        "**Platform-banned peer — idempotent 200.** Same rule as Reject: when the OTHER party is platform-banned and the request is already closed, returns **200** with the closed row and does nothing else (no write, no notification, no socket event), however many times it is called. If the request is still PENDING it is closed exactly once, as the ban sweep would.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -1016,7 +1091,8 @@ export const userPaths = {
         },
         "401": unauthorized,
         "404": {
-          description: "No matching PENDING request that you sent.",
+          description:
+            "No such request, you are not a party to it, or it is already resolved while the peer is NOT platform-banned.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -1960,8 +2036,6 @@ export const userPaths = {
                   dateOfBirth: "1995-03-15",
                   avatarUrl: "https://storage.example.com/avatars/john.jpg",
                   avatarUrlExpiresIn: 3600,
-                  friendsCount: 42,
-                  communitiesCount: 5,
                   isProfileCompleted: true,
                   createdAt: "2026-06-20T10:00:00.000Z",
                 },
@@ -2055,8 +2129,6 @@ export const userPaths = {
                   dateOfBirth: "1995-03-15",
                   avatarUrl: "https://storage.example.com/avatars/john.jpg",
                   avatarUrlExpiresIn: 3600,
-                  friendsCount: 42,
-                  communitiesCount: 5,
                   isProfileCompleted: true,
                   createdAt: "2026-06-20T10:00:00.000Z",
                 },

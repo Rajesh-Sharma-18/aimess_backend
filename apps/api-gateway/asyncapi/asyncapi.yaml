@@ -225,6 +225,10 @@ channels:
       friendRemoved: { $ref: "#/components/messages/FriendRemoved" }
       friendBlocked: { $ref: "#/components/messages/FriendBlocked" }
       friendUnblocked: { $ref: "#/components/messages/FriendUnblocked" }
+      friendRelationshipSync:
+        { $ref: "#/components/messages/FriendRelationshipSync" }
+      friendRequestInvalidated:
+        { $ref: "#/components/messages/FriendRequestInvalidated" }
       sessionExpired: { $ref: "#/components/messages/SessionExpired" }
       # group lifecycle (server -> client)
       groupClosed: { $ref: "#/components/messages/GroupClosed" }
@@ -1094,6 +1098,45 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "friend:unblocked — you unblocked someone (your own other devices only)"
     messages: [{ $ref: "#/channels/chat/messages/friendUnblocked" }]
+  chat.onFriendRelationshipSync:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend:relationship:sync — your relationship with this peer changed; re-read it"
+    description: |
+      Verbless `{ peerId }`, delivered on the private `self:<userId>` room.
+      Sent to the OTHER party of a block/unblock, and to every friend of a
+      user whose Super Admin platform ban was lifted (profile back to ACTIVE):
+      the friendship the ban hid is visible again, so re-fetch the friends
+      list, the peer's profile (its `friendsCount`) and the room. Patch
+      nothing locally — the refetch is the authority. Pending requests the ban
+      closed are NOT restored.
+    messages: [{ $ref: "#/channels/chat/messages/friendRelationshipSync" }]
+  chat.onFriendRequestInvalidated:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend:request:invalidated — a peer became unavailable; drop their request / friend row"
+    description: |
+      Sent by user-service when a Super Admin platform-bans a user, on the
+      private `self:<userId>` room of every OTHER party (never to the banned
+      user, whose sessions are being killed):
+        - each user with a PENDING request with them, either direction — the
+          request was closed (`friendshipId` = that request). The same close
+          also emits the ordinary `friend:request:cancelled` to both parties
+          and a silent `friend.cancelled` that deletes both sides'
+          notification rows, so older clients drop the card too;
+        - each accepted friend (`friendshipId: null`) — the friendship is kept
+          but hidden until unban, so drop them from the friends list and
+          re-read `friendsCount`.
+      Also sent (once) when a stale Reject/Delete closes the request before
+      the sweep does. At most once per closed request: the close is
+      conditional on the row still being PENDING.
+
+      Client: remove the card, decrement the badge, re-fetch the friends list
+      and any open profile of `peerId` (which now answers "This account is
+      no longer available."). Never show a toast and never say "banned" —
+      `reason` is always `unavailable`. After unban the peer comes back via
+      `friend:relationship:sync`.
+    messages: [{ $ref: "#/channels/chat/messages/friendRequestInvalidated" }]
   chat.onSessionExpired:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -3382,6 +3425,31 @@ components:
       title: "friend:unblocked"
       summary: "Pushed to the UNBLOCKER's own devices only."
       payload: { $ref: "#/components/schemas/FriendUnblockedPayload" }
+    FriendRelationshipSync:
+      name: "friend:relationship:sync"
+      title: "friend:relationship:sync"
+      summary: "Re-read your relationship with this peer (the peer blocked/unblocked you, or was unbanned)."
+      payload: { $ref: "#/components/schemas/FriendRelationshipSyncPayload" }
+      examples:
+        - name: A friend was unbanned
+          payload:
+            peerId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+    FriendRequestInvalidated:
+      name: "friend:request:invalidated"
+      title: "friend:request:invalidated"
+      summary: "The peer is no longer available (platform ban): drop their pending request / friends-list row."
+      payload: { $ref: "#/components/schemas/FriendRequestInvalidatedPayload" }
+      examples:
+        - name: A pending request was closed
+          payload:
+            peerId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+            friendshipId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
+            reason: unavailable
+        - name: A friend became unavailable
+          payload:
+            peerId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+            friendshipId: null
+            reason: unavailable
     SessionExpired:
       name: "session:expired"
       title: "session:expired"
@@ -7678,6 +7746,28 @@ components:
         canReject: { type: boolean, enum: [false] }
         canCancel: { type: boolean, enum: [false] }
       required: [peerId, status, direction, canAccept, canReject, canCancel]
+    FriendRelationshipSyncPayload:
+      type: object
+      description: "Server → client, on self:<userId>. Carries no status — re-fetch."
+      properties:
+        peerId: { type: string, format: uuid }
+      required: [peerId]
+    FriendRequestInvalidatedPayload:
+      type: object
+      description: "Server → client, on self:<userId>. Never sent to the banned user."
+      properties:
+        peerId:
+          type: string
+          format: uuid
+          description: "The user who is no longer available."
+        friendshipId:
+          type: [string, "null"]
+          format: uuid
+          description: "The closed pending request, or null when only a friendship was hidden."
+        reason:
+          type: string
+          enum: [unavailable]
+      required: [peerId, friendshipId, reason]
     FriendUnblockedPayload:
       type: object
       description: "Server → client. Pushed to the UNBLOCKER's own devices only."

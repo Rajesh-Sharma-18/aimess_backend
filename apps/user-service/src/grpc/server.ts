@@ -446,15 +446,19 @@ export function startUserGrpcServer(): grpc.Server {
           // Platform ban: close every pending friend request with this user
           // and tell each peer to drop them. After the reply — the mirror call
           // must not wait on the sweep.
-          if (status === ProfileStatus.BANNED) {
-            void friendshipService
-              .invalidateForBannedUser(userId)
-              .catch((err: unknown) => {
-                logger.error(
-                  `friend-request ban sweep failed for ${userId}: ${String(err)}`
-                );
-              });
-          }
+          // Back to ACTIVE (unban / reactivate): friends re-read the
+          // friendship the ban hid.
+          const friendSync =
+            status === ProfileStatus.BANNED
+              ? friendshipService.invalidateForBannedUser(userId)
+              : status === ProfileStatus.ACTIVE
+                ? friendshipService.announceRestoredUser(userId)
+                : null;
+          void friendSync?.catch((err: unknown) => {
+            logger.error(
+              `friendship ${status} sync failed for ${userId}: ${String(err)}`
+            );
+          });
         } catch (err) {
           logger.error(`gRPC adminSetProfileStatus error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });

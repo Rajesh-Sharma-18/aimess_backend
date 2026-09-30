@@ -5535,7 +5535,7 @@ export const openApiSchemas = {
         type: "integer",
         example: 128,
         description:
-          "Total number of accepted friends for the caller (across all pages, ignoring the `search` filter). 0 when you have no friends.",
+          "Total number of accepted friends for the caller (across all pages, ignoring the `search` filter), excluding platform-banned friends. Equals the caller's profile `friendsCount`. 0 when you have no friends.",
       },
     },
     required: ["friends", "nextCursor", "totalCount"],
@@ -12623,7 +12623,13 @@ export const openApiSchemas = {
       coverImageUrl: { type: "string", format: "uri", nullable: true },
       isOnline: { type: "boolean", nullable: true },
       lastSeenAt: { type: "string", format: "date-time", nullable: true },
-      friendsCount: { type: "integer", nullable: true },
+      friendsCount: {
+        type: "integer",
+        nullable: true,
+        minimum: 0,
+        description:
+          "Active friends: accepted friendships minus platform-banned friends — the same set, and the same number, as GET /users/friends `totalCount`. Computed live, so a Super Admin ban drops the banned friend from every friend's count immediately and an unban restores it (a ban hides the friendship, it does not delete it). Null when `whoCanViewProfile` hides counts from this viewer.",
+      },
       groupsCount: { type: "integer", nullable: true },
       communitiesCount: { type: "integer", nullable: true },
       isDeletedUser: { type: "boolean" },

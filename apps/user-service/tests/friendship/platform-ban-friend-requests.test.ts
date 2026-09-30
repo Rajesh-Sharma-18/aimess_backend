@@ -14,8 +14,12 @@ jest.mock("../../src/repositories/friendship.repository.js", () => ({
     findAllBlocks: jest.fn(async () => []),
     create: jest.fn(),
     acceptWithCounters: jest.fn(),
+    reject: jest.fn(),
     cancel: jest.fn(),
   },
+}));
+jest.mock("../../src/repositories/friends.repository.js", () => ({
+  friendsRepository: { listAcceptedFriendIds: jest.fn(async () => []) },
 }));
 jest.mock("../../src/repositories/user-settings.repository.js", () => ({
   userSettingsRepository: {
@@ -76,8 +80,10 @@ import {
 import {
   publishFriendAcceptedSafe,
   publishFriendCancelledSafe,
+  publishFriendRejectedSafe,
 } from "../../src/messaging/publish-friendship.js";
 import { friendshipRepository } from "../../src/repositories/friendship.repository.js";
+import { friendsRepository } from "../../src/repositories/friends.repository.js";
 import { friendshipService } from "../../src/services/friendship.service.js";
 import { TEST_USER_ID, bearer, makeAccessToken } from "../helpers/auth.js";
 
@@ -88,6 +94,7 @@ const selfEmit = emitFriendSelfEventSafe as unknown as jest.Mock;
 const pairEmit = emitFriendEventToPairSafe as unknown as jest.Mock;
 const cancelledPub = publishFriendCancelledSafe as unknown as jest.Mock;
 const acceptedPub = publishFriendAcceptedSafe as unknown as jest.Mock;
+const rejectedPub = publishFriendRejectedSafe as unknown as jest.Mock;
 
 const A = "33333333-3333-4333-8333-333333333333";
 const B = "55555555-5555-4555-8555-555555555555";
@@ -280,5 +287,173 @@ describe("request/accept gates", () => {
 
     expect(res.status).toBe(404);
     expect(res.body.code).toBe("FRIEND_REQUEST_NOT_FOUND");
+  });
+});
+
+describe("stale cards after the sweep (A requested B = TEST_USER_ID, A banned)", () => {
+  const auth = () => bearer(makeAccessToken());
+  const bannedA = () =>
+    banned.mockImplementation(
+      async (ids: string[]) => new Set(ids.filter((id) => id === A))
+    );
+  const anyEvent = () =>
+    selfEmit.mock.calls.length +
+    pairEmit.mock.calls.length +
+    cancelledPub.mock.calls.length +
+    rejectedPub.mock.calls.length;
+
+  it("stale Reject on a request the sweep closed → 200 no-op, nothing written or emitted", async () => {
+    bannedA();
+    fRepo.findById.mockResolvedValue(row(FID_AB, A, TEST_USER_ID, "CANCELLED"));
+
+    const res = await request(app)
+      .post(`/api/v1/users/friends/requests/${FID_AB}/reject`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    // Viewer-relative view of the closed row: no request, no friendship.
+    expect(res.body.data.status).toBe("NONE");
+    expect(fRepo.reject).not.toHaveBeenCalled();
+    expect(fRepo.cancel).not.toHaveBeenCalled();
+    expect(anyEvent()).toBe(0);
+  });
+
+  it("repeated stale Reject stays 200 and silent", async () => {
+    bannedA();
+    fRepo.findById.mockResolvedValue(row(FID_AB, A, TEST_USER_ID, "CANCELLED"));
+
+    for (let i = 0; i < 3; i++) {
+      const res = await request(app)
+        .post(`/api/v1/users/friends/requests/${FID_AB}/reject`)
+        .set(auth());
+      expect(res.status).toBe(200);
+    }
+    expect(fRepo.reject).not.toHaveBeenCalled();
+    expect(anyEvent()).toBe(0);
+  });
+
+  it("stale Delete (website's Reject: DELETE /requests/:id) → 200 no-op", async () => {
+    bannedA();
+    fRepo.findById.mockResolvedValue(row(FID_AB, A, TEST_USER_ID, "CANCELLED"));
+
+    const res = await request(app)
+      .delete(`/api/v1/users/friends/requests/${FID_AB}`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(fRepo.cancel).not.toHaveBeenCalled();
+    expect(anyEvent()).toBe(0);
+  });
+
+  it("Reject that beats the sweep closes the request quietly, exactly once", async () => {
+    bannedA();
+    const pending = row(FID_AB, A, TEST_USER_ID);
+    fRepo.findById.mockResolvedValue(pending);
+    fRepo.findAllForUser.mockResolvedValue([pending]);
+    fRepo.cancel
+      .mockResolvedValueOnce(row(FID_AB, A, TEST_USER_ID, "CANCELLED"))
+      .mockRejectedValue(p2025()); // the row is no longer PENDING
+
+    const res = await request(app)
+      .post(`/api/v1/users/friends/requests/${FID_AB}/reject`)
+      .set(auth());
+    // The sweep arrives afterwards (or runs twice) and finds nothing to do.
+    await friendshipService.invalidateForBannedUser(A);
+    await friendshipService.invalidateForBannedUser(A);
+
+    expect(res.status).toBe(200);
+    // Quiet cancel, never a "declined" outcome pushed to the banned requester.
+    expect(fRepo.reject).not.toHaveBeenCalled();
+    expect(rejectedPub).not.toHaveBeenCalled();
+    expect(cancelledPub).toHaveBeenCalledTimes(1);
+    expect(invalidations()).toHaveLength(1);
+    expect(invalidations()[0][0]).toBe(TEST_USER_ID);
+  });
+
+  it("stale Accept on a request the sweep closed → 404 USER_NO_LONGER_AVAILABLE, no friendship", async () => {
+    bannedA();
+    fRepo.findById.mockResolvedValue(row(FID_AB, A, TEST_USER_ID, "CANCELLED"));
+
+    const res = await request(app)
+      .post(`/api/v1/users/friends/requests/${FID_AB}/accept`)
+      .set(auth());
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe("USER_NO_LONGER_AVAILABLE");
+    expect(fRepo.acceptWithCounters).not.toHaveBeenCalled();
+    expect(acceptedPub).not.toHaveBeenCalled();
+  });
+
+  describe("validation is not weakened", () => {
+    it("unknown request id → 404 FRIEND_REQUEST_NOT_FOUND", async () => {
+      bannedA();
+      fRepo.findById.mockResolvedValue(null);
+      const res = await request(app)
+        .post(`/api/v1/users/friends/requests/${FID_AB}/reject`)
+        .set(auth());
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe("FRIEND_REQUEST_NOT_FOUND");
+    });
+
+    it("someone else's request → 404 even if its requester is banned", async () => {
+      bannedA();
+      fRepo.findById.mockResolvedValue(row(FID_AB, A, C, "CANCELLED"));
+      const res = await request(app)
+        .post(`/api/v1/users/friends/requests/${FID_AB}/reject`)
+        .set(auth());
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe("FRIEND_REQUEST_NOT_FOUND");
+    });
+
+    it("an already-closed request whose requester is NOT banned → 404 as before", async () => {
+      fRepo.findById.mockResolvedValue(
+        row(FID_AB, A, TEST_USER_ID, "CANCELLED")
+      );
+      const res = await request(app)
+        .post(`/api/v1/users/friends/requests/${FID_AB}/reject`)
+        .set(auth());
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe("FRIEND_REQUEST_NOT_FOUND");
+    });
+
+    it("a malformed id → 400, never reaches the service", async () => {
+      const res = await request(app)
+        .post(`/api/v1/users/friends/requests/not-a-uuid/reject`)
+        .set(auth());
+      expect(res.status).toBe(400);
+      expect(fRepo.findById).not.toHaveBeenCalled();
+    });
+
+    it("a normal Reject (requester not banned) still records REJECTED", async () => {
+      fRepo.findById.mockResolvedValue(row(FID_AB, A, TEST_USER_ID));
+      fRepo.reject.mockResolvedValue({
+        ...row(FID_AB, A, TEST_USER_ID, "REJECTED"),
+        rejectedAt: new Date(),
+      });
+      const res = await request(app)
+        .post(`/api/v1/users/friends/requests/${FID_AB}/reject`)
+        .set(auth());
+      expect(res.status).toBe(200);
+      expect(fRepo.reject).toHaveBeenCalledWith(FID_AB);
+      expect(rejectedPub).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe("unban — announceRestoredUser", () => {
+  it("tells each friend to re-read the relationship; resurrects no request", async () => {
+    (friendsRepository.listAcceptedFriendIds as jest.Mock).mockResolvedValue([
+      A,
+      C,
+    ]);
+
+    await friendshipService.announceRestoredUser(B);
+
+    expect(selfEmit.mock.calls.map(([to, e, data]) => [to, e, data])).toEqual([
+      [A, FriendSocketEvents.RELATIONSHIP_SYNC, { peerId: B }],
+      [C, FriendSocketEvents.RELATIONSHIP_SYNC, { peerId: B }],
+    ]);
+    expect(fRepo.cancel).not.toHaveBeenCalled();
+    expect(fRepo.create).not.toHaveBeenCalled();
   });
 });
