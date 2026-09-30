@@ -7190,6 +7190,7 @@ export const communityService = {
       statusClosedBy: callerId,
       statusClosedReason: reason,
     });
+    await communityRepository.captureClosureSnapshot(communityId, closedAt);
     await this.expireJoinRequestsOfUnavailableCommunity({
       communityId,
       communityName: community.name,
@@ -7291,6 +7292,7 @@ export const communityService = {
       statusClosedReason: reason,
       statusClosedReasonCode: CLOSE_REASON_ADMIN_BANNED,
     });
+    await communityRepository.captureClosureSnapshot(communityId, closedAt);
     await this.expireJoinRequestsOfUnavailableCommunity({
       communityId,
       communityName: community.name,
@@ -7477,6 +7479,7 @@ export const communityService = {
       // can never inherit a stale "ADMIN_BANNED" cause.
       statusClosedReasonCode: null,
     });
+    await communityRepository.clearClosureSnapshot(communityId);
 
     await this.recordAudit({
       communityId,

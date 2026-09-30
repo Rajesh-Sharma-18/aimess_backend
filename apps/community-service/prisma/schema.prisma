@@ -170,6 +170,12 @@ model Community {
   // permanently system-banned; such a close outlives the ban (reopenCommunity
   // refuses it) and is surfaced to clients as status CLOSED_BY_SYSTEM_BAN.
   statusClosedReasonCode String?
+  // Super Admin closure snapshot: the ACTIVE member count frozen when the
+  // community first became non-writable (owner CLOSED or platform SUSPENDED),
+  // so later leaves don't shrink the backoffice count. Cleared when both axes
+  // are open again. Null = open, or a legacy close from before this field
+  // (admin falls back to the live count).
+  memberCountAtClosure Int?
   deletedAt   DateTime?
   // Permanent invitation code for PRIVATE communities — generated once, never
   // rotated unless an admin explicitly requests regeneration (future feature).
@@ -257,6 +263,11 @@ model CommunityMember {
   // nothing reads it to authorize anything. Cleared on a fresh membership cycle,
   // like the other per-cycle markers above.
   joinedViaInviteCode String?
+  // Set on every ACTIVE/BANNED row when the community closes (see
+  // Community.memberCountAtClosure); the backoffice member list of a closed
+  // community is exactly these rows, whatever their status became later.
+  // Cleared on reopen.
+  closureRosterAt DateTime?
   joinedAt    DateTime              @default(now())
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt

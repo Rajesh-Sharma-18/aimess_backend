@@ -1262,7 +1262,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
               categoryName: r.category?.name ?? "",
               categorySlug: r.category?.slug ?? "",
               status: moderationStatusToWire(r.moderationStatus),
-              memberCount: r.memberCount,
+              // Same rule as the detail's membersTotal.
+              memberCount: r.memberCountAtClosure ?? r.memberCount,
               livestreamCount: 0, // STUB until stream-service is wired
               createdAt:
                 r.createdAt instanceof Date ? r.createdAt.getTime() : 0,
@@ -1463,7 +1464,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
             categoryName: c.category?.name ?? "",
             categorySlug: c.category?.slug ?? "",
             status: moderationStatusToWire(c.moderationStatus),
-            memberCount: c.memberCount,
+            memberCount: detail.membersTotal,
             livestreamCount: 0, // STUB until stream-service is wired
             createdAt: c.createdAt instanceof Date ? c.createdAt.getTime() : 0,
             communityAvatarUrl: communityAvatarView?.url ?? "",

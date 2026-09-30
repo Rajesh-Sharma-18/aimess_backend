@@ -27,6 +27,7 @@ import {
   normalizeForSearch,
 } from "../lib/community-search.util.js";
 import { CLOSE_REASON_ADMIN_BANNED } from "../constants/index.js";
+import { isEffectivelyClosed } from "../lib/community-access-policy.js";
 import { MemberAlreadyActiveError } from "../lib/member-already-active-error.js";
 
 /** Internal: aborts the auto-resolve transaction when the requester is banned. */
@@ -698,6 +699,62 @@ export const communityRepository = {
     return prisma.community.update({
       where: { id },
       data: { memberCount },
+    });
+  },
+
+  /**
+   * Freeze the Super Admin view of a community that just became non-writable:
+   * stamp the ACTIVE/BANNED rows as the closure roster and store the ACTIVE
+   * count. No-op when a snapshot already exists — the community was already
+   * closed on the other axis, and the first close is the one that counts.
+   */
+  async captureClosureSnapshot(communityId: string, at: Date): Promise<void> {
+    const community = await prisma.community.findUnique({
+      where: { id: communityId },
+      select: { memberCountAtClosure: true },
+    });
+    if (!community || community.memberCountAtClosure != null) return;
+
+    const roster = await prisma.communityMember.findMany({
+      where: {
+        communityId,
+        status: {
+          in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED],
+        },
+      },
+      select: { id: true, status: true },
+    });
+    await prisma.communityMember.updateMany({
+      where: { id: { in: roster.map((r) => r.id) } },
+      data: { closureRosterAt: at },
+    });
+    await prisma.community.update({
+      where: { id: communityId },
+      data: {
+        memberCountAtClosure: roster.filter(
+          (r) => r.status === CommunityMemberStatus.ACTIVE
+        ).length,
+      },
+    });
+  },
+
+  /**
+   * Drop the closure snapshot once the community is writable again. Kept while
+   * either axis is still closed (e.g. owner reopened a platform-suspended one).
+   */
+  async clearClosureSnapshot(communityId: string): Promise<void> {
+    const community = await prisma.community.findUnique({
+      where: { id: communityId },
+      select: { status: true, moderationStatus: true },
+    });
+    if (!community || isEffectivelyClosed(community)) return;
+    await prisma.communityMember.updateMany({
+      where: { communityId, closureRosterAt: { not: null } },
+      data: { closureRosterAt: null },
+    });
+    await prisma.community.update({
+      where: { id: communityId },
+      data: { memberCountAtClosure: null },
     });
   },
 
@@ -2319,6 +2376,7 @@ export const communityRepository = {
           type: true,
           categoryId: true,
           memberCount: true,
+          memberCountAtClosure: true,
           createdAt: true,
           adminId: true,
           moderationStatus: true,
@@ -2398,7 +2456,6 @@ export const communityRepository = {
     const sevenDaysAgo = new Date(Date.now() - 7 * 864e5);
 
     const [
-      membersTotal,
       membersActive,
       membersPending,
       membersBanned,
@@ -2408,7 +2465,6 @@ export const communityRepository = {
       activeInviteLinks,
       adminMember,
     ] = await Promise.all([
-      prisma.communityMember.count({ where: { communityId } }),
       prisma.communityMember.count({
         where: { communityId, status: CommunityMemberStatus.ACTIVE },
       }),
@@ -2451,7 +2507,10 @@ export const communityRepository = {
       adminName: adminMember?.snapshotDisplayName ?? "",
       adminUsername: adminMember?.snapshotUsername ?? "",
       adminAvatar: adminMember?.snapshotAvatarKey ?? "",
-      membersTotal,
+      // The headline "Members" count: current ACTIVE members (same rule as the
+      // user-facing memberCount), or the count frozen at closure. Never every
+      // row ever written — LEFT (left/kicked/unbanned) rows stay for history.
+      membersTotal: community.memberCountAtClosure ?? membersActive,
       membersActive,
       membersPending,
       membersBanned,
@@ -2488,8 +2547,18 @@ export const communityRepository = {
       return { rows: [], total: 0 };
     }
 
+    // Current roster (LEFT = left/kicked/unbanned, no longer a member) or, for
+    // a closed community, the roster frozen at closure whatever each row's
+    // status became afterwards.
+    const community = await prisma.community.findUnique({
+      where: { id: params.communityId },
+      select: { memberCountAtClosure: true },
+    });
     const where: Prisma.CommunityMemberWhereInput = {
       communityId: params.communityId,
+      ...(community?.memberCountAtClosure != null
+        ? { closureRosterAt: { not: null } }
+        : { status: { not: CommunityMemberStatus.LEFT } }),
     };
     if (params.role) {
       where.role = params.role;
@@ -2756,6 +2825,7 @@ export const communityRepository = {
           closedByAdminId: actorAdminId || null,
         },
       });
+      await this.captureClosureSnapshot(communityId, closedAt);
       await this.createAuditLog({
         communityId,
         actorId: actorAdminId || "system",
@@ -2788,6 +2858,7 @@ export const communityRepository = {
         closedByAdminId: null,
       },
     });
+    await this.clearClosureSnapshot(communityId);
     await this.createAuditLog({
       communityId,
       actorId: actorAdminId || "system",

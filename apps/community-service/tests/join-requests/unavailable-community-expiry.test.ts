@@ -27,6 +27,8 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findActiveMemberIds: jest.fn(async () => []),
     findActiveMemberIdsByRoles: jest.fn(),
     updateCommunity: jest.fn(),
+    captureClosureSnapshot: jest.fn(),
+    clearClosureSnapshot: jest.fn(),
     markAllActiveMembersLeft: jest.fn(),
     setMemberCount: jest.fn(),
     countActiveMembers: jest.fn(async () => 1),
