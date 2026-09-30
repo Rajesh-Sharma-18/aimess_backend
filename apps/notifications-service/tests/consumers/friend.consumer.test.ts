@@ -117,6 +117,9 @@ describe("FRIEND_ACCEPTED", () => {
     expect(toAddressee.localizedData("en").resolution).toBe(
       "You are now friends!"
     );
+    // The accepter did this: inbox row only, no push to any of their devices.
+    expect(toAddressee.skipPush).toBe(true);
+    expect(toRequester.skipPush).toBeUndefined();
   });
 });
 
@@ -154,6 +157,8 @@ describe("FRIEND_REJECTED", () => {
     expect(toAddressee.localizedData("en").resolution).toBe(
       "You declined this friend request"
     );
+    expect(toAddressee.skipPush).toBe(true);
+    expect(toRequester.skipPush).toBeUndefined();
   });
 });
 
@@ -178,8 +183,9 @@ describe("FRIEND_CANCELLED", () => {
     );
     // Silent: announcing a cancellation would contradict the row disappearing.
     expect(toAddressee.dataOnly).toBe(true);
+    // The requester cancelled: their row is removed via the inbox, no FCM.
     expect(
-      push.mock.calls.find((c) => c[0].userId === REQUESTER)?.[0].dataOnly
+      push.mock.calls.find((c) => c[0].userId === REQUESTER)?.[0].skipPush
     ).toBe(true);
   });
 });

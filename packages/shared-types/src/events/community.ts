@@ -263,6 +263,13 @@ export type CommunityLivestreamEndedPayload = CommunityEventBase & {
   /** Human-readable runtime, e.g. "1h 24m". */
   duration: string;
   durationSeconds: number;
+  /**
+   * Who ended it, coarsened (same vocabulary as a call's `endedReason`):
+   * `USER` = the host; `SYSTEM` = the platform (Super Admin force-end,
+   * moderation, account ban). The host stays in `hostUserId` either way.
+   * Absent on events from older producers ⇒ treat as `USER`.
+   */
+  endedReason?: "USER" | "SYSTEM";
   recipientIds: string[];
 };
 
@@ -347,7 +354,12 @@ export type CommunityJoinRequestRetractedPayload = CommunityEventBase & {
   /** The user whose request it was. */
   requesterId: string;
   /** How it was resolved — for the log line, not for any copy. */
-  resolution: "APPROVED" | "REJECTED" | "CANCELLED" | "AUTO_RESOLVED";
+  resolution:
+    | "APPROVED"
+    | "REJECTED"
+    | "CANCELLED"
+    | "AUTO_RESOLVED"
+    | "EXPIRED";
   /** Current admin(s) whose inbox card should be removed. */
   adminRecipientIds: string[];
 };

@@ -165,6 +165,12 @@ export function buildCommunitySystemFallbackText(
   const viewer = viewerUserId?.trim() ?? "";
   const isActor = Boolean(viewer && actorId && viewer === actorId);
   const isTarget = Boolean(viewer && targetId && viewer === targetId);
+  // A moderation line names its actor to the other moderators only when a person
+  // acted: the auto-unmute sweeper posts `source: "auto"` with the "system" actor,
+  // and legacy rows may carry no actorUserId — both stay passive ("X was unmuted").
+  const namesActor = Boolean(
+    actorId && actorId !== "system" && metadata.source !== "auto"
+  );
 
   switch (type) {
     case "COMMUNITY_CREATED":
@@ -224,10 +230,21 @@ export function buildCommunitySystemFallbackText(
       // Stored fallback stays single-line so the community-list preview is clean;
       // the client composes the richer two-line "…ended the livestream / Duration:
       // {duration}" from systemMessageType + systemMetadata.duration.
-      const duration = ((metadata.duration as string) || "").trim();
-      const lead = isActor
-        ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)
-        : t("SYS_COMMUNITY_LIVESTREAM_ENDED", locale, { actor });
+      // `durationSeconds` re-derives the label in the reader's language; the baked
+      // `duration` string is English and only covers rows written without it.
+      const duration =
+        typeof metadata.durationSeconds === "number"
+          ? formatStreamDuration(metadata.durationSeconds, locale)
+          : ((metadata.duration as string) || "").trim();
+      // `endedReason: "SYSTEM"` = the platform ended it (Super Admin force-end,
+      // moderation, account ban). The host never did, so nobody — the host
+      // included — reads a name or "You". Missing on legacy rows ⇒ host-ended.
+      const lead =
+        metadata.endedReason === "SYSTEM"
+          ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale)
+          : isActor
+            ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)
+            : t("SYS_COMMUNITY_LIVESTREAM_ENDED", locale, { actor });
       return duration
         ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION", locale, {
             lead,
@@ -295,19 +312,30 @@ export function buildCommunitySystemFallbackText(
 
     case "MEMBER_REMOVED":
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_REMOVED_SELF", locale);
+      if (isActor)
+        return t("SYS_COMMUNITY_MEMBER_REMOVED_ACTOR", locale, { target });
       return t("SYS_COMMUNITY_MEMBER_REMOVED", locale, { target });
 
+    // Ban / unban / mute / unmute: the target's own wording is checked FIRST and is
+    // unchanged; the acting moderator reads "You …"; every other moderator reads
+    // "{actor} … {target}", or the passive form when no person acted.
     case "MEMBER_BANNED":
-      // PERSONAL message — only the banned member ever reads this.
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_BANNED_SELF", locale);
+      if (isActor)
+        return t("SYS_COMMUNITY_MEMBER_BANNED_ACTOR", locale, { target });
+      if (namesActor)
+        return t("SYS_COMMUNITY_MEMBER_BANNED_BY", locale, { actor, target });
       return t("SYS_COMMUNITY_MEMBER_BANNED", locale, { target });
 
     case "MEMBER_UNBANNED":
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_UNBANNED_SELF", locale);
+      if (isActor)
+        return t("SYS_COMMUNITY_MEMBER_UNBANNED_ACTOR", locale, { target });
+      if (namesActor)
+        return t("SYS_COMMUNITY_MEMBER_UNBANNED_BY", locale, { actor, target });
       return t("SYS_COMMUNITY_MEMBER_UNBANNED", locale, { target });
 
     case "MEMBER_MUTED": {
-      // PERSONAL message — only the muted member ever reads this.
       // Show the concrete expiry timestamp so the user knows exactly when they
       // can post again; fall back to "indefinitely" when no expiry was set.
       const mutedUntilMs = Number(metadata.mutedUntil);
@@ -315,14 +343,33 @@ export function buildCommunitySystemFallbackText(
         const until = formatSystemDateTime(mutedUntilMs, locale);
         if (isTarget)
           return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_SELF", locale, { until });
+        if (isActor)
+          return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_ACTOR", locale, {
+            target,
+            until,
+          });
+        if (namesActor)
+          return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_BY", locale, {
+            actor,
+            target,
+            until,
+          });
         return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL", locale, { target, until });
       }
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_MUTED_SELF", locale);
+      if (isActor)
+        return t("SYS_COMMUNITY_MEMBER_MUTED_ACTOR", locale, { target });
+      if (namesActor)
+        return t("SYS_COMMUNITY_MEMBER_MUTED_BY", locale, { actor, target });
       return t("SYS_COMMUNITY_MEMBER_MUTED", locale, { target });
     }
 
     case "MEMBER_UNMUTED":
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_UNMUTED_SELF", locale);
+      if (isActor)
+        return t("SYS_COMMUNITY_MEMBER_UNMUTED_ACTOR", locale, { target });
+      if (namesActor)
+        return t("SYS_COMMUNITY_MEMBER_UNMUTED_BY", locale, { actor, target });
       return t("SYS_COMMUNITY_MEMBER_UNMUTED", locale, { target });
 
     // The ACTOR is a person, never the community — a pin is performed by an
@@ -350,11 +397,20 @@ export function buildCommunitySystemFallbackText(
     case "COMMUNITY_JOINED":
     case "JOIN_REQUEST_APPROVED":
       return t("SYS_COMMUNITY_MEMBER_JOINED_SELF", locale);
-    // PERSONAL — only the added member reads it, so it is always second-person.
-    // Names the admin who added them; `actor` falls back to "Someone" when the
-    // snapshot is unresolved, same as every other actor-bearing line here.
+    // Two copies, same subtype (see MODERATION_TYPES_WITH_PERSONAL_COPY):
+    //  - the added member's own PERSONAL notice → second-person, names the admin;
+    //  - the MODERATION audit line read by owner/admin/moderators → third-person,
+    //    names both sides, because "who added whom" IS the audit record.
+    // `actor`/`target` fall back to "Someone" when a snapshot is unresolved, same
+    // as every other actor-bearing line here.
     case "MEMBER_ADDED":
-      return t("SYS_COMMUNITY_MEMBER_ADDED_SELF", locale, { actor });
+      if (isTarget) {
+        return t("SYS_COMMUNITY_MEMBER_ADDED_SELF", locale, { actor });
+      }
+      if (isActor) {
+        return t("SYS_COMMUNITY_MEMBER_ADDED_ACTOR", locale, { target });
+      }
+      return t("SYS_COMMUNITY_MEMBER_ADDED", locale, { actor, target });
     case "JOIN_REQUEST_REJECTED":
       return t("SYS_COMMUNITY_JOIN_REQUEST_REJECTED", locale);
 

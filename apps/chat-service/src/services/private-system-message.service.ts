@@ -12,6 +12,7 @@ import {
 } from "../lib/chat-message.serializer.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { systemMessageBumpsActivity } from "../lib/system-message-policy.js";
+import { afterCutoff } from "../lib/deletion-cutoff.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
@@ -23,6 +24,12 @@ export interface PostPrivateSystemMessageParams {
   peerId: string;
   systemEvent: SystemEvent;
   systemData?: Record<string, unknown>;
+  /**
+   * Self-only line (clear/delete conversation): persisted already hidden for the
+   * peer, stamped strictly after this history cutoff so the caller's own cutoff
+   * filter keeps it, never bumps the room, and is pushed to the actor only.
+   */
+  selfOnlyAfter?: Date;
 }
 
 /**
@@ -58,7 +65,7 @@ export class PrivateSystemMessageService {
   private async postOne(
     params: PostPrivateSystemMessageParams
   ): Promise<string | null> {
-    const { roomId, actorId, peerId, systemEvent } = params;
+    const { roomId, actorId, peerId, systemEvent, selfOnlyAfter } = params;
     try {
       const ids = [actorId, peerId].filter(Boolean);
       const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
@@ -93,9 +100,15 @@ export class PrivateSystemMessageService {
         countInUnread: false,
         content: { text, urls: [], files: [] },
         sequenceNumber,
+        ...(selfOnlyAfter
+          ? {
+              deletedFor: { [peerId]: new Date().toISOString() },
+              createdAt: afterCutoff(selfOnlyAfter),
+            }
+          : {}),
       });
 
-      const bumps = systemMessageBumpsActivity(systemEvent);
+      const bumps = !selfOnlyAfter && systemMessageBumpsActivity(systemEvent);
       if (bumps) {
         await this.roomRepo
           .updateRoomOnNewMessage({
@@ -141,7 +154,7 @@ export class PrivateSystemMessageService {
 
       await this.redis
         .publish(
-          `conv:${roomId}`,
+          selfOnlyAfter ? `user:${actorId}` : `conv:${roomId}`,
           JSON.stringify({ event: "message:new", data: wire })
         )
         .catch((err: unknown) => {

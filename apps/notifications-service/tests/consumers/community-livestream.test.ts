@@ -140,4 +140,29 @@ describe("LIVESTREAM_ENDED branch", () => {
       livestreamId: SID,
     });
   });
+
+  it("platform end (endedReason SYSTEM) says 'System ended…', never the host, in each locale", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      duration: "36m",
+      durationSeconds: 2160,
+      endedReason: "SYSTEM",
+    });
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const [recipients, build] = pushMany.mock.calls[0];
+    // Host still excluded — no self-notification.
+    expect(recipients).toEqual([U1, U2]);
+    const input = build(U1);
+    expect(input.copy("en").body).toBe(
+      "System ended the livestream in Cool Community after 36m"
+    );
+    expect(input.copy("vi").body).toContain("Hệ thống");
+    expect(input.copy("th").body).toContain("ระบบ");
+    for (const locale of ["en", "vi", "th"]) {
+      expect(input.copy(locale).body).not.toContain("Jane Doe");
+    }
+    expect(input.copy.descriptor.ref).toBe("community.livestreamEndedBySystem");
+    expect(input.data).toMatchObject({ endedReason: "SYSTEM", hostUserId: HOST });
+  });
 });

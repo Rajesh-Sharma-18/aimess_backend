@@ -206,6 +206,24 @@ describe("MEMBER_ADDED via self_join — no duplicate welcome push", () => {
     expect(push.mock.calls[0][0].copy("en").title).toBe("Cool Community");
   });
 
+  // actor === target here; the welcome is kept by design, so it must not carry
+  // an actorId that push.service's actor guard would drop.
+  it("MEMBER_ADDED via invite_link_redeem still welcomes the joiner", async () => {
+    await deliver(CommunityEvents.MEMBER_ADDED, {
+      communityId: CID,
+      eventAt: "2026-06-17T12:00:00.000Z",
+      actorId: USER_ID,
+      targetUserId: USER_ID,
+      via: "invite_link_redeem",
+      communityName: "Cool Community",
+      moderatorRecipientIds: [],
+    });
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].userId).toBe(USER_ID);
+    expect(push.mock.calls[0][0].actorId).toBeUndefined();
+  });
+
   it("MEMBER_ADDED via join_request_auto_accept (community went PUBLIC) — ONE push that never claims an admin added or approved them", async () => {
     await deliver(CommunityEvents.MEMBER_ADDED, {
       communityId: CID,

@@ -5535,7 +5535,7 @@ export const openApiSchemas = {
         type: "integer",
         example: 128,
         description:
-          "Total number of accepted friends for the caller (across all pages, ignoring the `search` filter). 0 when you have no friends.",
+          "Total number of accepted friends for the caller (across all pages, ignoring the `search` filter), excluding platform-banned friends. Equals the caller's profile `friendsCount`. 0 when you have no friends.",
       },
     },
     required: ["friends", "nextCursor", "totalCount"],
@@ -7207,7 +7207,14 @@ export const openApiSchemas = {
       userId: { type: "string", format: "uuid" },
       status: {
         type: "string",
-        enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED", "AUTO_RESOLVED"],
+        enum: [
+          "PENDING",
+          "APPROVED",
+          "REJECTED",
+          "CANCELLED",
+          "AUTO_RESOLVED",
+          "EXPIRED",
+        ],
         description:
           "PENDING — awaiting a moderator decision (the ONLY status the admin " +
           "list returns). APPROVED — a moderator accepted it. REJECTED — a " +
@@ -7216,7 +7223,9 @@ export const openApiSchemas = {
           "this request was still open (admin Add Member, invite accepted, " +
           "invite-link redeem, public self-join); the server closes the request " +
           "in the same transaction as the membership write, so a current member " +
-          "never holds a PENDING request.",
+          "never holds a PENDING request. EXPIRED — the community was " +
+          "closed, suspended or deleted while the request was open; terminal " +
+          "(a reopen never revives it — the user files a new request).",
       },
       message: { type: "string", nullable: true },
       decidedBy: { type: "string", format: "uuid", nullable: true },
@@ -8389,8 +8398,10 @@ export const openApiSchemas = {
       },
       autoApprove: {
         type: "boolean",
+        deprecated: true,
+        enum: [false],
         description:
-          "When true, redeeming this link adds the member directly (no join-request flow).",
+          "RETIRED — always `false`, and no longer stored. It once meant this link skipped the join-request queue, which was the privacy in force when the link was minted, frozen. Redeeming now follows the community's CURRENT privacy and nothing else: PUBLIC adds the member directly, PRIVATE files a join request. Still sent (and still `required`) so existing clients decode; drop it on your next contract update.",
         example: false,
       },
       expiresAt: {
@@ -8651,7 +8662,7 @@ export const openApiSchemas = {
   CreateInviteLinkRequest: {
     type: "object",
     description:
-      "All fields are optional. Omit a field to use its default: unlimited uses, requires moderator approval (autoApprove: false). Invitation links never expire on their own — they stay usable until an admin revokes one.",
+      "`maxUses` is the only field, and it is optional — omit it for unlimited uses. Invitation links never expire on their own; they stay usable until an admin revokes one. A link carries no join policy: who gets in is decided by the community's privacy at redeem time. The retired `autoApprove` field is ignored rather than rejected, so an older client sending it still gets a 201.",
     properties: {
       maxUses: {
         type: "integer",
@@ -8661,17 +8672,9 @@ export const openApiSchemas = {
           "Maximum number of times this link can be redeemed. Omit for unlimited.",
         example: 50,
       },
-      autoApprove: {
-        type: "boolean",
-        default: false,
-        description:
-          "When true, anyone redeeming this link is added as an ACTIVE member directly (no join-request flow). Default false: a PENDING join request is created for moderator review.",
-        example: false,
-      },
     },
     example: {
       maxUses: 50,
-      autoApprove: false,
     },
   },
   InviteLinkListResponseData: {
@@ -8688,8 +8691,8 @@ export const openApiSchemas = {
   RedeemInviteLinkResponseData: {
     type: "object",
     description:
-      "`link` is always present. `member` is set when `autoApprove: true` (caller added directly as ACTIVE); " +
-      "`request` is set when `autoApprove: false` (a PENDING join request was created for moderator review). " +
+      "`link` is always present. Which of `member` / `request` comes back is decided by the community's CURRENT privacy: " +
+      "PUBLIC → `member` (caller added directly as ACTIVE); PRIVATE → `request` (a PENDING join request awaiting admin approval). " +
       "Exactly one of `member` / `request` is non-null on success; both are null for an already-joined caller (idempotent).",
     properties: {
       link: {
@@ -8700,13 +8703,13 @@ export const openApiSchemas = {
         allOf: [{ $ref: "#/components/schemas/CommunityMemberData" }],
         nullable: true,
         description:
-          "Populated when the caller was added directly as an ACTIVE member (`autoApprove: true` or already-joined idempotent case).",
+          "Populated when the caller was added directly as an ACTIVE member (community currently PUBLIC, or the already-joined idempotent case).",
       },
       request: {
         allOf: [{ $ref: "#/components/schemas/JoinRequestData" }],
         nullable: true,
         description:
-          "Populated when a PENDING join request was created (`autoApprove: false`). The caller must wait for moderator approval.",
+          "Populated when a PENDING join request was created (community currently PRIVATE). The caller must wait for admin approval.",
       },
     },
     required: ["link"],
@@ -10465,7 +10468,7 @@ export const openApiSchemas = {
           "Per-type extra fields: " +
           "COMMUNITY_CREATED: { communityName }. " +
           "COMMUNITY_NAME_UPDATED: { newName } — the rename target. " +
-          "LIVE_STREAM_ENDED: { duration? } — human-readable runtime, e.g. '2 hours 15 minutes'. " +
+          "LIVE_STREAM_ENDED: { duration?, durationSeconds?, endedReason? } — human-readable runtime, e.g. '2 hours 15 minutes'; endedReason 'SYSTEM' (Super Admin force-end / moderation) renders 'System ended the livestream', 'USER' or absent renders the host name. " +
           "ROLE_CHANGED / MEMBER_ROLE_CHANGED: { targetUserId, targetName, oldRole, newRole }. " +
           "MEMBER_BANNED / MEMBER_UNBANNED / MEMBER_UNMUTED: { targetUserId, targetName }. " +
           "MEMBER_MUTED: { targetUserId, targetName, mutedUntil, durationMinutes } — mutedUntil is an " +
@@ -12629,7 +12632,13 @@ export const openApiSchemas = {
       coverImageUrl: { type: "string", format: "uri", nullable: true },
       isOnline: { type: "boolean", nullable: true },
       lastSeenAt: { type: "string", format: "date-time", nullable: true },
-      friendsCount: { type: "integer", nullable: true },
+      friendsCount: {
+        type: "integer",
+        nullable: true,
+        minimum: 0,
+        description:
+          "Active friends: accepted friendships minus platform-banned friends — the same set, and the same number, as GET /users/friends `totalCount`. Computed live, so a Super Admin ban drops the banned friend from every friend's count immediately and an unban restores it (a ban hides the friendship, it does not delete it). Null when `whoCanViewProfile` hides counts from this viewer.",
+      },
       groupsCount: { type: "integer", nullable: true },
       communitiesCount: { type: "integer", nullable: true },
       isDeletedUser: { type: "boolean" },

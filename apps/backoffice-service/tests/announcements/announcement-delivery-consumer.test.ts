@@ -5,7 +5,7 @@
  * NX lock), and failed-job retry (attempt counter → FAILED after max).
  */
 jest.mock("../../src/config/redis.js", () => ({
-  redis: { set: jest.fn(), incr: jest.fn(), expire: jest.fn() },
+  redis: { set: jest.fn(), incr: jest.fn(), expire: jest.fn(), del: jest.fn() },
 }));
 jest.mock("../../src/grpc/auth.client.js", () => ({
   authClient: {
@@ -170,6 +170,62 @@ describe("handleAnnouncementDeliverMessage", () => {
     await handleAnnouncementDeliverMessage(baseMessage());
     expect(repo.markFailed).toHaveBeenCalledWith(AID, "gRPC outage");
   });
+  // A Redis NX lock that answers like the real one: set only when absent,
+  // released by del. Lets the tests drive redelivery of the SAME batchId.
+  const realLock = () => {
+    const held = new Set<string>();
+    redisMock.set.mockImplementation(async (key: string) => {
+      if (held.has(key)) return null;
+      held.add(key);
+      return "OK";
+    });
+    redisMock.del.mockImplementation(async (key: string) => {
+      held.delete(key);
+      return 1;
+    });
+  };
+
+  it("failed attempt then redelivery: the retry actually runs and delivers (lock released on failure)", async () => {
+    realLock();
+    redisMock.incr.mockResolvedValueOnce(1);
+    auth.adminListUsers
+      .mockRejectedValueOnce(new Error("gRPC outage"))
+      .mockResolvedValueOnce({ users: [{ id: "u1" }], total: 1 });
+
+    await expect(handleAnnouncementDeliverMessage(baseMessage())).rejects.toThrow("gRPC outage");
+    // Requeued redelivery of the SAME batch.
+    await handleAnnouncementDeliverMessage(baseMessage());
+
+    expect(auth.adminListUsers).toHaveBeenCalledTimes(2);
+    expect(publishBatch).toHaveBeenCalledTimes(1);
+    expect(repo.markSent).toHaveBeenCalledWith(AID);
+  });
+
+  it("success then duplicate delivery: the duplicate is skipped, still one notification batch", async () => {
+    realLock();
+    auth.adminListUsers.mockResolvedValue({ users: [{ id: "u1" }], total: 1 });
+
+    await handleAnnouncementDeliverMessage(baseMessage());
+    await handleAnnouncementDeliverMessage(baseMessage());
+
+    expect(auth.adminListUsers).toHaveBeenCalledTimes(1);
+    expect(publishBatch).toHaveBeenCalledTimes(1);
+    expect(repo.markSent).toHaveBeenCalledTimes(1);
+    expect(redisMock.del).not.toHaveBeenCalled();
+  });
+
+  it("exhausted retries (marked FAILED): the lock stays, a late redelivery is skipped", async () => {
+    realLock();
+    redisMock.incr.mockResolvedValueOnce(3);
+    auth.adminListUsers.mockRejectedValue(new Error("gRPC outage"));
+
+    await handleAnnouncementDeliverMessage(baseMessage());
+    await handleAnnouncementDeliverMessage(baseMessage());
+
+    expect(repo.markFailed).toHaveBeenCalledTimes(1);
+    expect(auth.adminListUsers).toHaveBeenCalledTimes(1);
+  });
+
   it("cancelled between pages: stops the fan-out instead of delivering the rest", async () => {
     repo.getStatus.mockResolvedValue("CANCELLED");
 

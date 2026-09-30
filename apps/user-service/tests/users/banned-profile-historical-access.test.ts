@@ -18,6 +18,10 @@ jest.mock("../../src/repositories/friendship.repository.js", () => ({
     hasMutualFriend: jest.fn(async () => false),
   },
 }));
+// Profile friendsCount is computed live from accepted friendships.
+jest.mock("../../src/repositories/friends.repository.js", () => ({
+  friendsRepository: { listAcceptedFriendIds: jest.fn(async () => []) },
+}));
 jest.mock("../../src/services/avatar.service.js", () => ({
   avatarService: { resolveViewUrlForClient: jest.fn(async () => null) },
 }));

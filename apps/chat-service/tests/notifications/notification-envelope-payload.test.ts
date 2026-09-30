@@ -10,7 +10,12 @@
  * These pin both rewrites the serializer performs: the locale replay, and the
  * stale-actor-name refresh.
  */
-import { authCopy, friendCopy, runWithLocale } from "@aimess/constants";
+import {
+  authCopy,
+  communityCopy,
+  friendCopy,
+  runWithLocale,
+} from "@aimess/constants";
 
 import type { Notification } from "../../src/generated/prisma/index.js";
 import { serializeNotification } from "../../src/lib/notification-serializer.js";
@@ -156,5 +161,91 @@ describe("the stale-actor-name refresh reaches both halves", () => {
 
     expect(payloadOf(dto).body).toBe(named("vi").body);
     expect(dto.body).toBe(named("vi").body);
+  });
+});
+
+describe("a join-request approval stored with the \"Unknown\" placeholder", () => {
+  // The reported row, as community-service wrote it while its user-service
+  // lookup missed: the approver's name frozen as the placeholder everywhere —
+  // the sentence, the replay params and the raw blob mobile clients read.
+  const copy = communityCopy.joinRequestApproved("Expiry r qebvgu8", "Unknown");
+  const stored = row({
+    type: "community.join_request_approved",
+    actorId: "admin-1",
+    payload: {
+      title: copy("en").title,
+      body: copy("en").body,
+      data: {
+        communityId: "c1",
+        communityName: "Expiry r qebvgu8",
+        decidedByDisplayName: "Unknown",
+        actorSnapshot: JSON.stringify({
+          userId: "admin-1",
+          displayName: "Unknown",
+        }),
+        copyRef: JSON.stringify(copy.descriptor),
+      },
+    },
+  });
+  const refresh = (isDeleted = false) => ({
+    actorById: new Map([
+      [
+        "admin-1",
+        {
+          displayName: isDeleted ? "Deleted Account" : "Smiley Creatures",
+          avatarUrl: "",
+          isDeleted,
+        },
+      ],
+    ]),
+    communityById: new Map(),
+  });
+  const dataOf = (dto: { payload: Record<string, unknown> }) =>
+    (dto.payload as { data: Record<string, string> }).data;
+
+  it.each(LOCALES)("names the real approver in %s, on every field", async (locale) => {
+    const dto = await runWithLocale(locale, () =>
+      serializeNotification(stored, "viewer-1", refresh() as never)
+    );
+
+    expect(dto.body).toBe(
+      communityCopy.joinRequestApproved("Expiry r qebvgu8", "Smiley Creatures")(
+        locale
+      ).body
+    );
+    expect(payloadOf(dto).body).toBe(dto.body);
+    expect(dto.actor?.displayName).toBe("Smiley Creatures");
+    expect(dataOf(dto).decidedByDisplayName).toBe("Smiley Creatures");
+    expect(JSON.parse(dataOf(dto).actorSnapshot)).toEqual({
+      userId: "admin-1",
+      displayName: "Smiley Creatures",
+    });
+    expect(JSON.stringify(dto)).not.toContain("Unknown");
+  });
+
+  it("keeps a deleted approver anonymized, decidedByDisplayName included", async () => {
+    const named = communityCopy.joinRequestApproved("Expiry r qebvgu8", "Old Name");
+    const dto = await runWithLocale("en", () =>
+      serializeNotification(
+        row({
+          ...stored,
+          payload: {
+            title: named("en").title,
+            body: named("en").body,
+            data: {
+              communityId: "c1",
+              decidedByDisplayName: "Old Name",
+              actorSnapshot: JSON.stringify({ userId: "admin-1", displayName: "Old Name" }),
+              copyRef: JSON.stringify(named.descriptor),
+            },
+          },
+        }),
+        "viewer-1",
+        refresh(true) as never
+      )
+    );
+
+    expect(dto.body).toContain("Deleted Account");
+    expect(JSON.stringify(dto)).not.toContain("Old Name");
   });
 });

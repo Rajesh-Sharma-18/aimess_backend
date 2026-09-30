@@ -31,6 +31,16 @@ jest.mock("../../src/lib/user-client.js", () => ({
         ])
       )
   ),
+  // Notification publishers read resolved users only (no placeholder back-fill).
+  fetchUserSnapshotHits: jest.fn(
+    async (ids: string[]) =>
+      new Map(
+        ids.map((id) => [
+          id,
+          { userId: id, username: id, displayName: `User ${id.slice(0, 4)}`, avatarObjectKey: null },
+        ])
+      )
+  ),
   // Everyone is a friend here: addMembers gates on friendship first (AIM-05),
   // and this suite is about join-request resolution, not that gate.
   fetchAcceptedFriendIds: jest.fn(
@@ -104,6 +114,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     createMember: jest.fn(),
     createManyMembers: jest.fn(),
     reactivateMemberWithSnapshot: jest.fn(),
+    settleJoinRequestToMember: jest.fn(),
     createAuditLog: jest.fn(),
     findJoinRequestById: jest.fn(),
     findJoinRequestsByIds: jest.fn(),
@@ -246,6 +257,20 @@ function resetAll() {
       return members.get(userId)!;
     }
   );
+  // Approve paths: the one transaction that guards, claims and activates.
+  repo.settleJoinRequestToMember.mockImplementation(
+    async (args: { userId: string }) => {
+      seedMember(args.userId);
+      return {
+        outcome: "ACTIVATED",
+        member: members.get(args.userId)!,
+        clearedMutes: 0,
+      };
+    }
+  );
+  repo.settlePendingJoinRequest.mockImplementation(
+    async (id: string, data: { status: string }) => ({ id, ...data })
+  );
 }
 
 beforeEach(resetAll);
@@ -340,9 +365,12 @@ describe("B. other membership paths and their request handling", () => {
     const res = await communityService.approveJoinRequest(CID, ADMIN, RID);
 
     expect(res.request.status).toBe("APPROVED");
-    expect(repo.createMember).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: B }),
-      ADMIN
+    expect(repo.settleJoinRequestToMember).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: B,
+        status: "APPROVED",
+        resolvedBy: ADMIN,
+      })
     );
     expect(pubApproved).toHaveBeenCalledTimes(1);
     // C1: the chat line describes the membership outcome, not the decision —
@@ -375,7 +403,7 @@ describe("B. other membership paths and their request handling", () => {
     repo.findJoinRequestById.mockResolvedValue(pendingRequest(RID, B));
     // Not a member when approve probes; the concurrent add lands in between and
     // the insert loses the unique index.
-    repo.createMember.mockImplementation(async () => {
+    repo.settleJoinRequestToMember.mockImplementation(async () => {
       seedMember(B);
       throw new Prisma.PrismaClientKnownRequestError("duplicate", {
         code: "P2002",
@@ -707,11 +735,14 @@ describe("bulk approve / reject vs current members", () => {
       ADMIN,
       expect.any(Date)
     );
-    expect(repo.bulkUpdateJoinRequestStatus).toHaveBeenCalledWith(
-      [RID_OTHER],
-      "REJECTED",
-      ADMIN,
-      expect.any(Date)
+    // Rejected per row, conditional on the row still being PENDING.
+    expect(repo.settlePendingJoinRequest).toHaveBeenCalledWith(
+      RID_OTHER,
+      expect.objectContaining({ status: "REJECTED", decidedBy: ADMIN })
+    );
+    expect(repo.settlePendingJoinRequest).not.toHaveBeenCalledWith(
+      RID,
+      expect.anything()
     );
   });
 });

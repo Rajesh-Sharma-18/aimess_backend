@@ -116,8 +116,11 @@ export const friendshipRepository = {
   acceptWithCounters(id: string, requesterId: string, addresseeId: string) {
     const now = new Date();
     return prisma.$transaction([
+      // Conditional on PENDING: a row a concurrent cancel or the platform-ban
+      // sweep already closed throws P2025, and the whole transaction (counters
+      // included) rolls back — never a half-friendship.
       prisma.friendship.update({
-        where: { id },
+        where: { id, status: "PENDING" },
         data: { status: "ACCEPTED", acceptedAt: now },
         select: FRIENDSHIP_SELECT,
       }),
@@ -154,7 +157,7 @@ export const friendshipRepository = {
 
   cancel(id: string) {
     return prisma.friendship.update({
-      where: { id },
+      where: { id, status: "PENDING" },
       data: { status: "CANCELLED", cancelledAt: new Date() },
       select: FRIENDSHIP_SELECT,
     });

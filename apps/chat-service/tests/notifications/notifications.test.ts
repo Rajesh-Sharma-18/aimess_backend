@@ -16,6 +16,7 @@ import {
   makeAccessToken,
   makeExpiredAccessToken,
   makeForgedAccessToken,
+  TEST_SESSION_ID,
   TEST_USER_ID,
 } from "../helpers/auth.js";
 
@@ -127,7 +128,10 @@ describe("GET /api/chat/notifications (list)", () => {
 describe("POST /api/chat/notifications/read", () => {
   it("POSITIVE: marks a notification read, scoped to the caller", async () => {
     mocks.notificationRepo.markManyRead.mockResolvedValue(1);
-    mocks.notificationRepo.getUnreadCount.mockResolvedValue(3);
+    mocks.notificationRepo.getUnreadFanout.mockResolvedValue({
+      unreadCount: 3,
+      selfHiddenSessions: [],
+    });
 
     const res = await request(app)
       .post(`${BASE}/read`)
@@ -148,7 +152,10 @@ describe("POST /api/chat/notifications/read", () => {
   // so the repo matches 0 rows and returns null (no mutation, no leak).
   it("SECURITY: IDOR — marking a foreign notification is scoped out (null result)", async () => {
     mocks.notificationRepo.markManyRead.mockResolvedValue(0);
-    mocks.notificationRepo.getUnreadCount.mockResolvedValue(3);
+    mocks.notificationRepo.getUnreadFanout.mockResolvedValue({
+      unreadCount: 3,
+      selfHiddenSessions: [],
+    });
 
     const res = await request(app)
       .post(`${BASE}/read`)
@@ -216,7 +223,10 @@ describe("POST /api/chat/notifications/read-all", () => {
 describe("DELETE /api/chat/notifications/:id", () => {
   it("POSITIVE: soft-deletes the row and returns the recomputed unread count", async () => {
     mocks.notificationRepo.deleteById.mockResolvedValue({ count: 1 });
-    mocks.notificationRepo.getUnreadCount.mockResolvedValue(4);
+    mocks.notificationRepo.getUnreadFanout.mockResolvedValue({
+      unreadCount: 4,
+      selfHiddenSessions: [],
+    });
 
     const res = await request(app)
       .delete(`${BASE}/notif-1`)
@@ -282,6 +292,87 @@ describe("DELETE /api/chat/notifications/:id", () => {
     const res = await request(app).delete(`${BASE}/notif-1`);
     expect(res.status).toBe(401);
     expect(mocks.notificationRepo.deleteById).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/chat/notifications/:id/action — who may answer a login alert", () => {
+  const loginRow = (loginSessionId: string) => ({
+    id: "login-1",
+    userId: TEST_USER_ID,
+    actorId: "",
+    type: "auth.security_new_login",
+    entity: {},
+    isRead: false,
+    isDeleted: false,
+    version: 1,
+    loginSessionId,
+    loginResolvedAt: null,
+    createdAt: new Date(1000),
+    updatedAt: new Date(1000),
+    payload: {
+      title: "Login Detected",
+      body: "New login detected on a chrome. If this wasn't you, Terminate Session",
+      data: { sessionId: loginSessionId, browser: "Chrome" },
+    },
+  });
+
+  // The whole point of the alert: the device it warns ABOUT must not be able to
+  // wave it away. Same account on both sides, so owner-scoping the row decides
+  // nothing — only the caller's session does. Hiding the row from the list is
+  // UX; this is the part an attacker with cURL runs into.
+  it.each(["CONFIRM", "TERMINATE"])(
+    "SECURITY: 403 when the caller's own session triggered the alert (%s)",
+    async (action) => {
+      mocks.notificationRepo.findById.mockResolvedValue(
+        loginRow(TEST_SESSION_ID)
+      );
+
+      const res = await request(app)
+        .patch(`${BASE}/login-1/action`)
+        .set(bearer(makeAccessToken()))
+        .send({ action, body: "whatever" });
+
+      expect(res.status).toBe(403);
+      expect(mocks.notificationRepo.recordAction).not.toHaveBeenCalled();
+    }
+  );
+
+  it("POSITIVE: another session of the same account may answer it", async () => {
+    mocks.notificationRepo.findById.mockResolvedValue(
+      loginRow("some-other-session")
+    );
+    mocks.notificationRepo.recordAction.mockResolvedValue(null);
+
+    const res = await request(app)
+      .patch(`${BASE}/login-1/action`)
+      .set(bearer(makeAccessToken()))
+      .send({ action: "TERMINATE", body: "Session terminated." });
+
+    expect(res.status).toBe(200);
+    expect(mocks.notificationRepo.recordAction).toHaveBeenCalledWith(
+      "login-1",
+      TEST_USER_ID,
+      "Session terminated.",
+      "TERMINATE"
+    );
+  });
+
+  // The rule is about the login alert only — a friend request from the same
+  // session is not a security decision about that session.
+  it("EDGE: a non-login row is unaffected by the caller's session", async () => {
+    mocks.notificationRepo.findById.mockResolvedValue({
+      ...loginRow(TEST_SESSION_ID),
+      type: "friend.requested",
+    });
+    mocks.notificationRepo.recordAction.mockResolvedValue(null);
+
+    const res = await request(app)
+      .patch(`${BASE}/login-1/action`)
+      .set(bearer(makeAccessToken()))
+      .send({ action: "ACCEPT", body: "You are now friends!" });
+
+    expect(res.status).toBe(200);
+    expect(mocks.notificationRepo.recordAction).toHaveBeenCalled();
   });
 });
 

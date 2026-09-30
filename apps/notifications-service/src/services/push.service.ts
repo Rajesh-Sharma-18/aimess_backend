@@ -15,8 +15,6 @@ import {
 
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { isSessionActiveForRequest } from "../lib/session-active-cache.js";
-import { foregroundSessions } from "@aimess/redis";
-import { redis } from "../config/redis.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
 import { sendVoipPush } from "../providers/apns/sendVoipPush.js";
 import { deviceTokenService } from "./device-token.service.js";
@@ -121,6 +119,8 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   // clears itself the moment the admin decides.
   CommunityEvents.JOIN_REQUESTED,
   CommunityEvents.JOIN_REQUEST_RETRACTED,
+  // The requester's outcome card: their request was accepted and they are now a member.
+  CommunityEvents.JOIN_REQUEST_APPROVED,
   // Livestream — listed under LIVE_NOW (chat-service notification-category.ts).
   // Still gated like the push: liveStreamEnabled, the community's own
   // streamEnabled toggle, and ACTIVE membership.
@@ -164,6 +164,14 @@ const COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES = new Set<string>([
   CommunityEvents.JOIN_REQUEST_REJECTED,
   CommunityEvents.INVITE_SENT,
   CommunityEvents.MEMBER_UNBANNED,
+]);
+
+const WEB_ACTIONABLE_DATA_ONLY_TYPES = new Set<string>([
+  "CALL_INCOMING",
+  "CALL_CANCELLED",
+  "CALL_HANDLED",
+  "MESSAGE_DELETED",
+  CommunityEvents.JOIN_REQUEST_RETRACTED,
 ]);
 
 export interface PushInput {
@@ -332,23 +340,13 @@ export interface PushInput {
    * Plural twin of {@link excludeSessionId}, for a producer that resolved a SET
    * of sessions to skip rather than one.
    *
-   * Chat burst coalescing uses it to honour "the user is reading in the app, on
-   * this device": a session with a live foregrounded socket is already being
-   * told about the message over the socket, so a tray entry on that same device
-   * is pure duplication — while the SAME account signed in on a backgrounded
-   * phone still gets the push, which is the whole point of the split.
+   * Chat burst coalescing uses it to honour "the user is reading THIS
+   * conversation, on that device": the session showing it is already being told
+   * over the socket, so a tray entry on top is pure duplication — while the same
+   * account on a backgrounded tab, in another chat, or on a phone in a pocket
+   * still gets the push, which is the whole point of the split.
    */
   excludeSessionIds?: string[];
-  /**
-   * Skip every device whose login session currently has a FOREGROUNDED socket.
-   *
-   * That device is already being handed the message over the socket and is
-   * showing it in the app, so a tray entry on top is the duplicate users
-   * complain about. The same account's backgrounded phone is untouched — this
-   * filters by session, not by user. Best-effort and FAIL-OPEN: an unreadable
-   * hint means the push goes out.
-   */
-  suppressForegroundSessions?: boolean;
   /**
    * APNs notification category — iOS maps this to registered UNNotificationCategory
    * actions (e.g. "Accept" / "Decline" buttons). Pass "INCOMING_CALL" for call rings.
@@ -453,6 +451,24 @@ export async function pushToUser(input: PushInput): Promise<void> {
     return;
   }
 
+  // The actor is never a recipient of their own action — not the push, not on
+  // any of their devices, and not an inbox row. Their other devices learn about
+  // it over the socket. Every producer routes through here, so this one check
+  // covers rosters that include the actor (community close/delete/reopen reach
+  // the owner who did it) and self-targeted events (invite-link join welcomes
+  // the joiner). Security alerts are exempt: "your password changed" must reach
+  // the person who changed it.
+  if (
+    input.actorId &&
+    input.actorId === input.userId &&
+    !NON_SUPPRESSIBLE_TYPES.has(input.type)
+  ) {
+    logger.info(
+      `Notification suppressed: recipient is the actor user=${input.userId} type=${input.type}`
+    );
+    return;
+  }
+
   const {
     userId,
     category,
@@ -475,7 +491,6 @@ export async function pushToUser(input: PushInput): Promise<void> {
     excludeDeviceId,
     excludeSessionId,
     excludeSessionIds,
-    suppressForegroundSessions = false,
     apnsCategory,
   } = input;
 
@@ -741,27 +756,17 @@ export async function pushToUser(input: PushInput): Promise<void> {
         t.sessionId &&
         excludeSessionIds.includes(t.sessionId)
       ) &&
+      !(
+        dataOnly &&
+        t.platform === "WEB" &&
+        !WEB_ACTIONABLE_DATA_ONLY_TYPES.has(type)
+      ) &&
       // Platform-targeted send (announcements): keep only the sessions running
       // on a requested platform. Exact match, so a row with an unrecognized
       // platform string is excluded rather than delivered to by accident.
       (!platforms ||
         platforms.includes(t.platform as "ANDROID" | "IOS" | "WEB"))
   );
-
-  // "The user is reading this in the app on that device." Resolved here rather
-  // than at the producer because only this function knows which SESSIONS the
-  // recipient actually has push tokens for — the gateway publishes a key per
-  // live foreground session and this is the one place the two lists can meet.
-  const foreground = suppressForegroundSessions
-    ? await foregroundSessions(
-        redis,
-        userId,
-        visible.map((t) => t.sessionId ?? "")
-      )
-    : null;
-  const awake = foreground
-    ? visible.filter((t) => !(t.sessionId && foreground.has(t.sessionId)))
-    : visible;
 
   // Last line of defence against the reported symptom: a device whose session
   // was revoked (logout, remote sign-out, password change, ban, deletion) must
@@ -771,7 +776,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // with no sessionId can never silence a live device.
   const tokens = (
     await Promise.all(
-      awake.map(async (row) => {
+      visible.map(async (row) => {
         if (!row.sessionId) return row;
         if (await isSessionActiveForRequest(row.sessionId)) return row;
         // The event never arrived; delete the row now so this is a one-time cost.

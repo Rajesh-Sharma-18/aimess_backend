@@ -14,7 +14,9 @@
  * case-insensitive substring match message search runs on), dotted
  * `deletedFor.<user>` with `$exists:false` (per-user delete-for-me MAP),
  * `createdAt` range ($lt/$lte/$gt/$gte with {$date}) and equality ({$date}),
- * `_id` range ($lt/$gt with {$oid}), `$or` and `$and`. Pipeline stages: $match,
+ * plain numeric ranges (the `sequenceNumber` / `revision` keysets),
+ * `_id` range ($lt/$gt with {$oid}), `$eq` (incl. {$oid}), `$nin`, `$or`, `$and`
+ * and `$nor`. Pipeline stages: $match,
  * $sort {createdAt,_id}, $limit, $count, and $project (only its `createdAt` key
  * is honoured — search reads the field back to build its keyset cursor).
  */
@@ -52,6 +54,13 @@ function matchField(doc: EmuDoc, key: string, cond: unknown): boolean {
   // and a left/kicked ceiling on `createdAt`), which a plain object cannot hold.
   if (key === "$and") {
     return (cond as Array<Record<string, unknown>>).every((sub) =>
+      matchDoc(doc, sub)
+    );
+  }
+  // `$nor` is how the visibility guards express "none of these shapes" — the
+  // personal-join-session guard and the MODERATION-restricted system-line gate.
+  if (key === "$nor") {
+    return !(cond as Array<Record<string, unknown>>).some((sub) =>
       matchDoc(doc, sub)
     );
   }
@@ -96,6 +105,22 @@ function matchField(doc: EmuDoc, key: string, cond: unknown): boolean {
       want === null ? value === null || value === undefined : value === want
     );
   }
+  // As with `$in`, a MISSING field counts as null: `systemMessageType: { $nin:
+  // [...] }` must KEEP ordinary messages, which carry no such field at all.
+  if ("$nin" in c) {
+    return !(c.$nin as unknown[]).some((want) =>
+      want === null ? value === null || value === undefined : value === want
+    );
+  }
+  // Explicit equality, incl. the extended-JSON `{ $eq: { $oid } }` the
+  // personal-join-session guard emits for `_id`.
+  if ("$eq" in c) {
+    const against = c.$eq;
+    if (against && typeof against === "object" && "$oid" in against) {
+      return value === (against as { $oid: string }).$oid;
+    }
+    return value === against;
+  }
   // Range operators against createdAt (date) or _id (oid string).
   const cmp = (op: string, against: unknown): boolean => {
     if (
@@ -119,6 +144,15 @@ function matchField(doc: EmuDoc, key: string, cond: unknown): boolean {
       if (op === "$lt") return String(value) < r;
       if (op === "$gt") return String(value) > r;
     }
+    // Plain numeric bounds — the `sequenceNumber` / `revision` keysets, which
+    // carry no extended-JSON wrapper.
+    if (typeof against === "number") {
+      const t = Number(value);
+      if (op === "$lt") return t < against;
+      if (op === "$lte") return t <= against;
+      if (op === "$gt") return t > against;
+      if (op === "$gte") return t >= against;
+    }
     return false;
   };
   return Object.entries(c).every(([op, against]) => cmp(op, against));
@@ -133,6 +167,18 @@ export function matchDoc(doc: EmuDoc, match: Record<string, unknown>): boolean {
  * over an in-memory `docs` array. `model` must be the Prisma model accessor the
  * repo uses (e.g. "groupMessage", "privateMessage", "generalRoomMessage").
  */
+/**
+ * Comparable value for one `$sort` key. Dates compare by epoch ms; the
+ * `sequenceNumber` / `revision` keysets are plain numbers and `_id` is a hex
+ * string, so both are used as-is rather than coerced through Date.
+ */
+function sortKey(doc: EmuDoc, key: string): number | string {
+  const value = key === "_id" ? doc._id : doc[key];
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number" || typeof value === "string") return value;
+  return 0;
+}
+
 export function makeTimelinePrisma(model: string, docs: EmuDoc[]) {
   const aggregateRaw = jest.fn(async ({ pipeline }: { pipeline: any[] }) => {
     // EVERY $match stage, not just the first: search emits the keyset bound as
@@ -155,8 +201,8 @@ export function makeTimelinePrisma(model: string, docs: EmuDoc[]) {
       const entries = Object.entries(sort);
       rows = [...rows].sort((a, b) => {
         for (const [k, dir] of entries) {
-          const av = k === "_id" ? a._id : (a[k] as Date).getTime();
-          const bv = k === "_id" ? b._id : (b[k] as Date).getTime();
+          const av = sortKey(a, k);
+          const bv = sortKey(b, k);
           if (av < bv) return -1 * dir;
           if (av > bv) return 1 * dir;
         }

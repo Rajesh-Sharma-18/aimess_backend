@@ -28,7 +28,7 @@ import {
 import { logger } from "@aimess/logger";
 import {
   shouldCountInUnread,
-  UNREAD_COUNTABLE_RAW_MATCH,
+  UNREAD_COUNTABLE_EVENT_RAW_MATCH,
 } from "../lib/unread-count.js";
 import {
   refreshQuoteDataForParent,
@@ -102,6 +102,9 @@ export class GroupMessageRepository {
         deletedPlaceholder: (data.deletedPlaceholder as string) ?? "",
         deletedAt: (data.deletedAt as Date) ?? null,
         deletedBy: (data.deletedBy as string) ?? null,
+        ...(Array.isArray(data.deletedForUserIds)
+          ? { deletedForUserIds: data.deletedForUserIds }
+          : {}),
         createdAt: (data.createdAt as Date) ?? new Date(),
         autoDeleteAt: (data.autoDeleteAt as Date | null) ?? null,
         autoDeleteAfterView: (data.autoDeleteAfterView as boolean) ?? false,
@@ -871,12 +874,11 @@ export class GroupMessageRepository {
             // / getConversation recompute inflated unread whenever the user had
             // sent anything after the new pointer.
             senderId: { $ne: params.userId },
-            // Hard-exclude SYSTEM rows even if a legacy doc is missing
-            // countInUnread:false (UNREAD_COUNTABLE_RAW_MATCH treats missing as
-            // countable).
-            messageType: { $ne: "SYSTEM" },
-            systemEvent: null,
-            ...UNREAD_COUNTABLE_RAW_MATCH,
+            // The SAME countability rule the write path applies — see
+            // UNREAD_COUNTABLE_EVENT_RAW_MATCH. A recount that classifies rows
+            // differently from the `$inc` that credited them leaves a stored
+            // counter nothing can reconcile.
+            ...UNREAD_COUNTABLE_EVENT_RAW_MATCH,
           },
         },
         { $count: "total" },

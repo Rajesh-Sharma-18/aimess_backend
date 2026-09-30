@@ -319,8 +319,8 @@ export async function sendPush({
               notification: {
                 // Sender/community avatar when the payload carries one, so the
                 // tray card is not always the generic app icon.
-                icon: image ?? "/icons/icon-192.png",
-                badge: "/icons/badge-72.png",
+                // The website's own logo; the old /icons/* paths never existed and 404'd.
+                icon: image ?? "/logo/collapsLogo.svg",
                 // requireInteraction keeps the notification visible for calls.
                 requireInteraction: priority === "high",
                 // Tray buttons, for the events that offer a decision (a join

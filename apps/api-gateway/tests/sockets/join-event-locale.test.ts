@@ -36,13 +36,19 @@ const COMMUNITY_ADDED = {
   },
 };
 
-/** The system line the SAME add posts, as chat-service publishes it. */
+/**
+ * The system line the SAME add posts, as chat-service publishes it: the added
+ * member's own PERSONAL copy, addressed to them via `systemMetadata.targetUserId`
+ * — which is what makes it render second-person for that one recipient.
+ */
 const COMMUNITY_JOIN_LINE = {
   contentType: "SYSTEM",
   systemMessageType: "MEMBER_ADDED",
   systemMetadata: {
     actorName: "Harshil Vekariya 5",
     actorUserId: "bff2848c-614e-4162-b228-e2c4ce3f74f8",
+    targetUserId: "u1",
+    targetName: "A member",
   },
   message: t("SYS_COMMUNITY_MEMBER_ADDED_SELF", "en", {
     actor: "Harshil Vekariya 5",
@@ -92,6 +98,27 @@ describe("community:added — the list row follows the recipient's socket", () =
     }
   });
 
+  it("renders the SAME add's moderator-only audit copy in the third person, per locale", () => {
+    // The add posts two rows of one subtype: the member's own notice (above) and
+    // the MODERATION audit line the community's owner/admin/moderators read. A
+    // moderator is not the target, so their copy names both sides — and it is
+    // still rebuilt for THEIR socket's language, never the adding admin's.
+    for (const locale of ["en", "vi", "th"] as const) {
+      const line = lineOf(
+        personalizeCommunitySocketMessage(
+          COMMUNITY_JOIN_LINE,
+          "moderator-1",
+          locale
+        )
+      );
+      expect(line).toBe(
+        t("SYS_COMMUNITY_MEMBER_ADDED", locale, {
+          actor: "Harshil Vekariya 5",
+          target: "A member",
+        })
+      );
+    }
+  });
   it("is the exact reported repro: an English session gets neither row nor line in Vietnamese", () => {
     const row = previewOf(
       personalizeCommunityAddedPreview(COMMUNITY_ADDED, "u1", "en")

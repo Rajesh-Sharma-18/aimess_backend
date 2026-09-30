@@ -71,12 +71,25 @@ describe("POST /:id/invite-links (create)", () => {
     const res = await request(app)
       .post(`/api/v1/communities/${CID}/invite-links`)
       .set(auth())
-      .send({ maxUses: 10, autoApprove: true });
+      .send({ maxUses: 10 });
     expect(res.status).toBe(201);
     expect(svc.createInviteLink.mock.calls[0][2]).toMatchObject({
       maxUses: 10,
-      autoApprove: true,
     });
+  });
+
+  // A link carries no join policy, so `autoApprove` decided nothing and was
+  // removed. An older client still sending it must not be rejected — same
+  // treatment as the legacy `expiresInMinutes` below.
+  it("strips a retired autoApprove instead of rejecting it → 201", async () => {
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/invite-links`)
+      .set(auth())
+      .send({ maxUses: 10, autoApprove: true });
+    expect(res.status).toBe(201);
+    expect(svc.createInviteLink.mock.calls[0][2]).not.toHaveProperty(
+      "autoApprove"
+    );
   });
 
   // Links do not expire, so the field is no longer part of the contract: an
@@ -423,9 +436,11 @@ describe("redeemInviteLink for PRIVATE community", () => {
     svc.redeemInviteLink.mockReset();
   });
 
-  it("autoApprove:true → direct member in response, no request", async () => {
+  // The route is a passthrough: the service decides member-vs-request from the
+  // community's current privacy, and these pin that both shapes survive the hop.
+  it("a member in the service result → member in the response, no request", async () => {
     svc.redeemInviteLink.mockResolvedValue({
-      link: linkDto({ autoApprove: true }),
+      link: linkDto(),
       member: { memberId: "m1", status: "ACTIVE" },
     });
     const res = await request(app)
@@ -436,9 +451,9 @@ describe("redeemInviteLink for PRIVATE community", () => {
     expect(res.body.data.request).toBeUndefined();
   });
 
-  it("autoApprove:false → join request in response, no member", async () => {
+  it("a request in the service result → request in the response, no member", async () => {
     svc.redeemInviteLink.mockResolvedValue({
-      link: linkDto({ autoApprove: false }),
+      link: linkDto(),
       request: { requestId: "r1", status: "PENDING" },
     });
     const res = await request(app)

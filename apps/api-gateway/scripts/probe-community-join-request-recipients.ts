@@ -324,16 +324,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // B, C, D join through an auto-approve invite link (no friend gate).
-  const link = await admin.api("POST", `/communities/${CID}/invite-links`, {
-    autoApprove: true,
-  });
-  const linkData = (link.json.data ?? {}) as Record<string, unknown>;
-  const code = String(linkData.code ?? "");
-  check("setup: auto-approve invite link", Boolean(code), `code=${code}`);
-  for (const c of [modB, modC, member]) {
-    const r = await c.api("POST", `/communities/invite-links/${code}/redeem`, {});
-    check(`setup: ${c.label} joined`, r.status < 300, `status=${r.status}`);
+  // B, C, D are seated by the admin. A link cannot do this any more: a PRIVATE
+  // community files a request no matter what the link says, so an admin add is
+  // the only way to build the roster without approving three requests first.
+  {
+    const r = await admin.api("POST", `/communities/${CID}/members`, {
+      userIds: [modB.userId, modC.userId, member.userId],
+    });
+    check("setup: B, C and D added by the admin", r.status < 300, `status=${r.status}`);
   }
 
   // Promote B and C to MODERATOR; D stays MEMBER.

@@ -408,6 +408,22 @@ export const communityCopy = register("community", {
             }),
       inboxTitle: null,
     }),
+  /** Platform-ended (Super Admin force-end, moderation): never names the host. */
+  livestreamEndedBySystem:
+    (communityName: string, duration?: string | null): LocalizedCopy =>
+    (locale) => ({
+      title: named(communityName, locale),
+      body:
+        duration && !/^0[smh]?$/.test(duration.trim())
+          ? t("NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM_DURATION", locale, {
+              community: named(communityName, locale),
+              duration,
+            })
+          : t("NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale, {
+              community: named(communityName, locale),
+            }),
+      inboxTitle: null,
+    }),
   joinRequestApproved:
     (communityName: string, decidedByName: string): LocalizedCopy =>
     (locale) => ({
@@ -1015,6 +1031,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "community.joinRequested": ["communityName", "requesterName"],
   "community.livestreamStarted": ["communityName", "hostName"],
   "community.livestreamEnded": ["communityName", "hostName", "duration"],
+  "community.livestreamEndedBySystem": ["communityName", "duration"],
   "community.joinRequestApproved": ["communityName", "decidedByName"],
   "community.joinRequestRejected": ["communityName"],
   "community.memberJoined": ["communityName"],

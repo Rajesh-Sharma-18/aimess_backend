@@ -4,8 +4,15 @@ import { z } from "zod";
 import { logger } from "@aimess/logger";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
-import { emitPersonalizedSender } from "../emit-personalized.js";
+import {
+  emitPersonalizedSender,
+  type PersonalizeFn,
+} from "../emit-personalized.js";
 import { localizeNotificationFrame } from "../localize-notification.js";
+import {
+  scopeUnreadFrame,
+  unreadCountForSession,
+} from "../unread-count-scope.js";
 import { scopeSocketLocale } from "../locale-scope.js";
 import { createSessionTimers } from "../session-timers.js";
 import { env } from "../../config/env.js";
@@ -28,6 +35,23 @@ interface RedisSocketEvent {
   event: string;
   data: unknown;
 }
+
+/**
+ * The one rewrite every `/notify` frame goes through: the reader's language,
+ * then the reader's unread count.
+ *
+ * Both are per DEVICE, not per account — two phones on one account can read in
+ * two languages, and only one of them may be shown a given login alert — so a
+ * publisher emits one payload and this resolves it for each socket.
+ */
+const personalizeNotifyFrame: PersonalizeFn = (
+  data,
+  userId,
+  locale,
+  sessionId
+) =>
+  scopeUnreadFrame(localizeNotificationFrame(data, userId, locale), sessionId);
+personalizeNotifyFrame.perSession = true;
 
 export function registerNotifyNamespace(
   io: SocketIOServer,
@@ -58,7 +82,7 @@ export function registerNotifyNamespace(
           room,
           parsed.event,
           parsed.data,
-          localizeNotificationFrame,
+          personalizeNotifyFrame,
           undefined,
           undefined,
           parsed.excludeSessionId
@@ -69,7 +93,7 @@ export function registerNotifyNamespace(
           room,
           parsed.event,
           parsed.data,
-          localizeNotificationFrame
+          personalizeNotifyFrame
         );
       }
     } catch (err) {
@@ -164,26 +188,46 @@ export function registerNotifyNamespace(
             notificationIds: r.data.notificationIds,
           })
           .then((result) => {
-            ackOk(callback, "SOCKET_NOTIFICATIONS_MARKED_READ", locale, result);
+            // The ack is read by THIS device, so it carries THIS session's
+            // count — the account-wide number over-counts a session by its own
+            // login alert, which this device's list never shows it.
+            const { remainingUnread: unreadCount, selfHiddenSessions } = result;
+            ackOk(callback, "SOCKET_NOTIFICATIONS_MARKED_READ", locale, {
+              updatedCount: result.updatedCount,
+              remainingUnread: unreadCountForSession(
+                unreadCount,
+                selfHiddenSessions,
+                sessionId
+              ),
+            });
             // Push the updated unread count to ALL devices for this user
             // immediately after a read action — notifications-service publishes
             // count_update for NEW notifications; read-side changes need this
             // gateway-side push so multi-device count stays in sync. The gRPC
             // response already carries remainingUnread, so no extra round trip.
-            const unreadCount = result.remainingUnread;
+            // Sent through the per-socket seam so each device resolves the
+            // count for itself (see unread-count-scope.ts).
             const isMarkAll = r.data.notificationIds.length === 0;
-            notify
-              .to(`user:${userId}`)
-              .emit(isMarkAll ? "notification:all-read" : "notification:read", {
+            void emitPersonalizedSender(
+              notify,
+              `user:${userId}`,
+              isMarkAll ? "notification:all-read" : "notification:read",
+              {
                 unreadCount,
+                selfHiddenSessions,
                 ...(isMarkAll
                   ? {}
                   : { notificationIds: r.data.notificationIds }),
-              });
-            notify.to(`user:${userId}`).emit("notification:count_update", {
-              count: unreadCount,
-              unreadCount,
-            });
+              },
+              personalizeNotifyFrame
+            );
+            void emitPersonalizedSender(
+              notify,
+              `user:${userId}`,
+              "notification:count_update",
+              { count: unreadCount, unreadCount, selfHiddenSessions },
+              personalizeNotifyFrame
+            );
           })
           .catch((err: unknown) => {
             logger.warn(
@@ -208,15 +252,27 @@ export function registerNotifyNamespace(
             notificationId: r.data.notificationId,
           })
           .then((result) => {
-            ackOk(callback, "SOCKET_NOTIFICATIONS_DELETED", locale, result);
+            const { remainingUnread: unreadCount, selfHiddenSessions } = result;
+            ackOk(callback, "SOCKET_NOTIFICATIONS_DELETED", locale, {
+              deleted: result.deleted,
+              remainingUnread: unreadCountForSession(
+                unreadCount,
+                selfHiddenSessions,
+                sessionId
+              ),
+            });
             // Push the recomputed unread count to ALL devices for this user so
             // multi-device badges stay in sync after a delete (mirrors the
             // mark_read fanout). The deleteNotification gRPC already recomputed
-            // remainingUnread, so reuse it instead of a second round-trip.
-            notify.to(`user:${userId}`).emit("notification:count_update", {
-              count: result.remainingUnread,
-              unreadCount: result.remainingUnread,
-            });
+            // remainingUnread, so reuse it instead of a second round-trip —
+            // resolved per socket, like every other count-bearing frame.
+            void emitPersonalizedSender(
+              notify,
+              `user:${userId}`,
+              "notification:count_update",
+              { count: unreadCount, unreadCount, selfHiddenSessions },
+              personalizeNotifyFrame
+            );
           })
           .catch((err: unknown) => {
             logger.warn(

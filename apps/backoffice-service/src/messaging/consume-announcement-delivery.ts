@@ -185,7 +185,14 @@ export async function handleAnnouncementDeliverMessage(
       return;
     }
 
-    // Below max attempts — rethrow so the wiring requeues this batch.
+    // Below max attempts — release this batch's lock, then rethrow so the
+    // wiring requeues it. The lock only exists to drop DUPLICATE deliveries of
+    // a batch that is running or done; left held here, the requeued retry hit
+    // it, was skipped as a "duplicate" and acked, so the announcement never
+    // reached MAX_ATTEMPTS and sat in PROCESSING. Re-running the page cannot
+    // double-notify: the notification batch id is deterministic per cursor and
+    // the notifications side dedupes on it (`announce:notify:<batchId>`).
+    await redis.del(batchLockKey(data.batchId));
     throw error;
   }
 }

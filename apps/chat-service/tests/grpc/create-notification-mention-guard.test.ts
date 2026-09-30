@@ -42,6 +42,10 @@ function setup(findMessageById: jest.Mock) {
       ...input,
     })),
     getUnreadCount: jest.fn(async () => 1),
+    getUnreadFanout: jest.fn(async () => ({
+      unreadCount: 1,
+      selfHiddenSessions: [],
+    })),
     findActiveByGroupKey: jest.fn(async () => null),
   };
   const deps = {
@@ -185,7 +189,7 @@ describe("CreateNotification — chat.mention write-time guard", () => {
       "mention:m1"
     );
     // publishRow reads the unread count first — never reached.
-    expect(notificationRepo.getUnreadCount).not.toHaveBeenCalled();
+    expect(notificationRepo.getUnreadFanout).not.toHaveBeenCalled();
     expect(findMessageById).toHaveBeenCalledTimes(2);
   });
 

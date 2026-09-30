@@ -62,6 +62,12 @@ export const USER_MESSAGES = {
     en: "User profile not found.",
     th: "ไม่พบโปรไฟล์ผู้ใช้",
   },
+  // A platform-banned peer, as the other party sees it. Never says "banned".
+  USER_NO_LONGER_AVAILABLE: {
+    vi: "Tài khoản này không còn khả dụng",
+    en: "This account is no longer available.",
+    th: "บัญชีนี้ไม่พร้อมใช้งานแล้ว",
+  },
   USER_USERNAME_AVAILABLE: {
     vi: "Tên người dùng này có thể sử dụng",
     en: "This username is available.",

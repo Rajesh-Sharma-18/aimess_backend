@@ -46,15 +46,25 @@ async function toFriendListItem(
 }
 
 export const friendsService = {
+  /**
+   * Accepted friends minus platform-banned ones: the single definition of
+   * "friends" behind both the friends list and the profile `friendsCount`.
+   * A ban keeps the friendship row and only hides it here (off the Redis ban
+   * key, so it is immediate), which is why an unban restores the friend — and
+   * the count — with no write, and why repeated ban processing can never
+   * decrement anything twice.
+   */
+  async activeFriendIds(me: string): Promise<string[]> {
+    const acceptedIds = await friendsRepository.listAcceptedFriendIds(me);
+    const banned = await bannedAmong(acceptedIds);
+    return acceptedIds.filter((id) => !banned.has(id));
+  },
+
   async listFriends(
     me: string,
     params: { search?: string; cursor?: string; limit: number }
   ): Promise<FriendsListResult> {
-    const acceptedIds = await friendsRepository.listAcceptedFriendIds(me);
-    // Platform-banned friends have no row anywhere a peer can see (the
-    // friendship itself is kept, so an unban restores it untouched).
-    const banned = await bannedAmong(acceptedIds);
-    const friendIds = acceptedIds.filter((id) => !banned.has(id));
+    const friendIds = await friendsService.activeFriendIds(me);
 
     // No accepted friends → empty list, not an error.
     if (friendIds.length === 0) {

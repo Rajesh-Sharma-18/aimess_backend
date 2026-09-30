@@ -49,3 +49,12 @@ export function getGroupVisibilityCutoff(
     member?.joinedAt ?? undefined
   );
 }
+
+/**
+ * A timestamp strictly after `cutoff` — every cutoff filter hides
+ * `createdAt <= cutoff`, so a line written "right after" a clear on the same
+ * millisecond would be hidden by the very clear it announces.
+ */
+export function afterCutoff(cutoff: Date): Date {
+  return new Date(Math.max(Date.now(), cutoff.getTime() + 1));
+}

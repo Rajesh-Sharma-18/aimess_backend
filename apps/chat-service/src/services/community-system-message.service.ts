@@ -4,7 +4,9 @@ import type { Redis, Cluster } from "ioredis";
 import {
   SYSTEM_MESSAGE_VISIBILITY,
   isEligibleForLastActivity,
+  hasPersonalModerationCopy,
   isHiddenSystemMessage,
+  isModerationOnlySystemMessage,
   isActorLessSystemMessage,
   isPersonalJoinSessionType,
   sanitizeCommunitySystemMetadata,
@@ -102,11 +104,11 @@ export class CommunitySystemMessageService {
     const { communityId, systemMessageType, metadata, triggeredByUserId } =
       params;
 
-    // Backstop: hidden membership-lifecycle lines (left / removed / banned /
-    // unbanned / joined) are never persisted OR broadcast. community-service's
-    // emitMemberSystemMessage already drops them at the source, but a redelivered
-    // legacy event could still reach here — skip so it can't flash on a live
-    // socket (the read-time filter can't catch a real-time push).
+    // Backstop: hidden membership-lifecycle lines (left / removed / joined) are
+    // never persisted OR broadcast. community-service's emitMemberSystemMessage
+    // already drops them at the source, but a redelivered legacy event could still
+    // reach here — skip so it can't flash on a live socket (the read-time filter
+    // can't catch a real-time push).
     if (isHiddenSystemMessage(systemMessageType)) {
       logger.debug(
         `CommunitySystemMessageService|skip hidden type=${systemMessageType}`
@@ -120,7 +122,32 @@ export class CommunitySystemMessageService {
     // is NOT eligible to bump or become the community-list lastActivity preview.
     const eligibleForLastActivity =
       isEligibleForLastActivity(systemMessageType);
-    const isPersonal = visibility === "PERSONAL";
+
+    // A MODERATION subtype has TWO possible copies and the CALLER picks which one
+    // it is posting, by passing `visibleToUserId` or not: the target-addressed
+    // companion notice ("{admin} added you", "You are muted until …"), or the
+    // room-wide AUDIT line that only owner/admin/moderators can read. This is the
+    // one place visibility is not fully derived from the subtype, because the
+    // subtype alone cannot distinguish two rows that legitimately coexist. The
+    // registry still decides WHICH subtypes may have a companion copy, so a caller
+    // cannot invent one: a target on ban / unban / unmute is dropped and the row is
+    // persisted as the audit copy (the product posts no such bubble — see
+    // MODERATION_TYPES_WITH_PERSONAL_COPY).
+    const isModerationScope = visibility === "MODERATION";
+    if (
+      isModerationScope &&
+      params.visibleToUserId &&
+      !hasPersonalModerationCopy(systemMessageType)
+    ) {
+      logger.warn(
+        `CommunitySystemMessageService|ignoring visibleToUserId on ${systemMessageType} (no personal companion copy) — posting the audit line instead`
+      );
+    }
+    const isPersonal =
+      visibility === "PERSONAL" ||
+      (isModerationScope &&
+        Boolean(params.visibleToUserId) &&
+        hasPersonalModerationCopy(systemMessageType));
     const visibleToUserId = isPersonal
       ? (params.visibleToUserId ?? null)
       : null;
@@ -338,49 +365,61 @@ export class CommunitySystemMessageService {
           ? message.createdAt.getTime()
           : Date.now();
 
-      // PERSONAL → only the affected user's channel; COMMUNITY → the room.
-      const redisChannel =
+      // RECIPIENT RESOLUTION — decided BEFORE emission, because a socket push
+      // cannot be filtered read-side:
+      //  - PERSONAL        → only the affected user's own channel.
+      //  - MODERATION-only → one `user:<id>` per CURRENT owner/admin/moderator,
+      //    never `community:<id>`: an ordinary member's session must not receive
+      //    the payload at all (Network tab / socket inspection would show it).
+      //    Fails CLOSED — with no member repository wired, the live push is
+      //    skipped rather than risking the room-wide channel; the line is
+      //    persisted, so moderators still pick it up from history/sync.
+      //  - everything else → the room.
+      const moderationOnly = isModerationOnlySystemMessage(systemMessageType);
+      const redisChannels: string[] =
         isPersonal && visibleToUserId
-          ? `user:${visibleToUserId}`
-          : `community:${communityId}`;
+          ? [`user:${visibleToUserId}`]
+          : moderationOnly
+            ? (await this.resolveModerationRecipients(communityId)).map(
+                (id) => `user:${id}`
+              )
+            : [`community:${communityId}`];
 
       // SENDER-LESS wire: senderId/senderName/senderAvatar are intentionally
       // empty for SYSTEM messages — the actor is in systemMetadata only.
-      this.redis
-        .publish(
-          redisChannel,
-          JSON.stringify({
-            event: "community:message:new",
-            data: {
-              id: message.id,
-              messageId: message.id,
-              communityId,
-              roomId: communityId,
-              senderId: "",
-              senderName: "",
-              senderAvatar: "",
-              parentMessageId: "",
-              quoteData: null,
-              content: { text: fallbackText, files: [] },
-              reactions: [],
-              message: fallbackText,
-              contentType: normalizeMessageType("SYSTEM"),
-              clientMessageId: "",
-              serverTs,
-              sentAt: serverTs,
-              sequenceNumber: seq,
-              revision,
-              systemMessageType,
-              isPersonal,
-              systemMetadata: wireMetadata,
-            },
-          })
-        )
-        .catch((err: unknown) => {
+      const wireFrame = JSON.stringify({
+        event: "community:message:new",
+        data: {
+          id: message.id,
+          messageId: message.id,
+          communityId,
+          roomId: communityId,
+          senderId: "",
+          senderName: "",
+          senderAvatar: "",
+          parentMessageId: "",
+          quoteData: null,
+          content: { text: fallbackText, files: [] },
+          reactions: [],
+          message: fallbackText,
+          contentType: normalizeMessageType("SYSTEM"),
+          clientMessageId: "",
+          serverTs,
+          sentAt: serverTs,
+          sequenceNumber: seq,
+          revision,
+          systemMessageType,
+          isPersonal,
+          systemMetadata: wireMetadata,
+        },
+      });
+      for (const channel of redisChannels) {
+        this.redis.publish(channel, wireFrame).catch((err: unknown) => {
           logger.warn(
-            `CommunitySystemMessageService|redis.publish failed channel=${redisChannel}: ${String(err)}`
+            `CommunitySystemMessageService|redis.publish failed channel=${channel}: ${String(err)}`
           );
         });
+      }
 
       if (eligibleForLastActivity) {
         // Self-referential lines (role change / join) carry the subject + a
@@ -559,6 +598,27 @@ export class CommunitySystemMessageService {
       logger.warn(
         `CommunitySystemMessageService|retractPersonalMuteMessage failed community=${communityId} user=${userId}: ${String(err)}`
       );
+    }
+  }
+
+  /**
+   * Recipients for a MODERATION-restricted system line: the community's CURRENT
+   * owner/admin/moderators. Returns EMPTY — meaning no live push at all — when
+   * no member repository is wired or the lookup fails. That is deliberate: the
+   * alternative fallback would be the room-wide `community:<id>` channel, which
+   * is exactly the leak this gate exists to prevent. The line is persisted
+   * either way, so moderators still receive it via history / sync / catch-up.
+   */
+  private async resolveModerationRecipients(
+    communityId: string
+  ): Promise<string[]> {
+    try {
+      return (await this.memberRepo?.findModeratorUserIds?.(communityId)) ?? [];
+    } catch (err) {
+      logger.warn(
+        `CommunitySystemMessageService|moderation recipient lookup failed community=${communityId}: ${String(err)}`
+      );
+      return [];
     }
   }
 

@@ -92,12 +92,14 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
       });
       // Addressee — the side who just accepted. Update their friend.requested
       // inbox row in-place (gRPC) with a resolution line; keep the Friend Request
-      // card title/body intact.
+      // card title/body intact. Inbox only: they did this, so no push to any of
+      // their devices — the row update reaches the others over the socket.
       const deepLinkForAddressee = buildDeepLink("user", p.requesterId);
       await pushToUser({
         userId: p.addresseeId,
         category: "friendRequestEnabled",
         type,
+        skipPush: true,
         actorId: p.requesterId,
         copy: friendCopy.acceptedForAddressee(p.requesterName),
         localizedData: resolutionCopy.friendNowFriends(),
@@ -157,10 +159,12 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
       // persists the "I have declined" state across reloads. The gRPC handler
       // detects type="friend.rejected" and replaces the existing friend.requested
       // row instead of creating a new notification (mirrors the friend.accepted path).
+      // Inbox only: the addressee is the one who declined.
       await pushToUser({
         userId: p.addresseeId,
         category: "friendRequestEnabled",
         type,
+        skipPush: true,
         actorId: p.requesterId,
         copy: friendCopy.rejectedSelf(p.requesterName),
         localizedData: resolutionCopy.friendDeclinedSelf(),
@@ -183,26 +187,6 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
     case FriendshipEvents.FRIEND_CANCELLED: {
       const p = data as FriendCancelledPayload;
       const deepLink = buildDeepLink("user", p.requesterId);
-      // Withdrawing a request must leave NOTHING behind, on either side. The
-      // addressee's incoming card is removed below; this removes the requester's
-      // own copy of the same friendship group so a cancel from one device doesn't
-      // leave a ghost card on their other devices. Both resolve to the same
-      // groupKey (friend:<friendshipId>), so the delete branch handles each.
-      await pushToUser({
-        userId: p.requesterId,
-        category: "friendRequestEnabled",
-        type,
-        actorId: p.addresseeId,
-        copy: friendCopy.cancelled(p.requesterName),
-        localizedData: resolutionCopy.friendCancelled(),
-        dataOnly: true,
-        apnsThreadId: `friend_${p.friendshipId}`,
-        data: {
-          friendshipId: p.friendshipId,
-          addresseeId: p.addresseeId,
-          requesterId: p.requesterId,
-        },
-      });
       await pushToUser({
         userId: p.addresseeId,
         category: "friendRequestEnabled",
@@ -231,6 +215,29 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
             screen: "FRIEND_REQUESTS",
             userId: p.requesterId,
           } satisfies NotificationNavigation),
+        },
+      });
+      // Withdrawing a request must leave NOTHING behind, on either side. The
+      // addressee's incoming card is removed above; this removes the requester's
+      // own copy of the same friendship group so a cancel from one device doesn't
+      // leave a ghost card on their other devices. Both resolve to the same
+      // groupKey (friend:<friendshipId>), so the delete branch handles each.
+      // Inbox only — the requester cancelled, so no FCM to their devices; the
+      // row delete reaches them over the socket. Last, because an inbox-only
+      // write rethrows on failure and must not cost the addressee their update.
+      await pushToUser({
+        userId: p.requesterId,
+        category: "friendRequestEnabled",
+        type,
+        actorId: p.addresseeId,
+        copy: friendCopy.cancelled(p.requesterName),
+        localizedData: resolutionCopy.friendCancelled(),
+        skipPush: true,
+        apnsThreadId: `friend_${p.friendshipId}`,
+        data: {
+          friendshipId: p.friendshipId,
+          addresseeId: p.addresseeId,
+          requesterId: p.requesterId,
         },
       });
       break;

@@ -2,7 +2,7 @@
  * Service-layer tests for `communityService.redeemInviteLink()` usage accounting.
  *
  * Regression guard for the fix: a usage slot is consumed ONLY when a redeem
- * produces a real join effect (new/reactivated membership on autoApprove, or a
+ * produces a real join effect (a new/reactivated membership, or a
  * NEW/recycled join request). Idempotent re-taps (already ACTIVE, or already
  * PENDING) must NOT increment `usedCount`, else a single user re-tapping a
  * maxUses-limited link would exhaust it for everyone.
@@ -22,6 +22,16 @@ jest.mock("../../src/lib/user-client.js", () => ({
             displayName: "Mock User",
             avatarObjectKey: null,
           },
+        ])
+      )
+  ),
+  // Notification publishers read resolved users only (no placeholder back-fill).
+  fetchUserSnapshotHits: jest.fn(
+    async (ids: string[]) =>
+      new Map(
+        ids.map((id) => [
+          id,
+          { userId: id, username: id, displayName: "Mock User", avatarObjectKey: null },
         ])
       )
   ),
@@ -106,7 +116,6 @@ const link = (over: Record<string, unknown> = {}) => ({
   createdBy: CALLER,
   maxUses: 1,
   usedCount: 0,
-  autoApprove: false,
   expiresAt: null,
   revokedAt: null,
   createdAt: new Date("2026-06-23T00:00:00.000Z"),
@@ -125,11 +134,17 @@ const pendingRequest = {
   updatedAt: new Date("2026-06-23T00:00:00.000Z"),
 };
 
+/**
+ * Direct join is the CURRENT privacy's doing and nothing else's: only a PUBLIC
+ * community admits through a link, so the direct-join cases below open the
+ * community. A link records no join policy at all any more.
+ */
+const goPublic = () =>
+  repo.findById.mockResolvedValue({ ...community, type: "PUBLIC" });
+
 beforeEach(() => {
   jest.clearAllMocks();
   repo.findById.mockResolvedValue(community);
-  // The link issuer: auto-approve on a PRIVATE community is honoured only
-  // while they are still a moderator (checked at redeem time).
   repo.findMembership.mockResolvedValue({ role: "MODERATOR", status: "ACTIVE" });
   repo.findInviteLinkById.mockResolvedValue(link());
   repo.incrementInviteLinkUsageIfUnder.mockResolvedValue({ count: 1 });
@@ -139,7 +154,7 @@ beforeEach(() => {
   repo.createAuditLog.mockResolvedValue(undefined);
 });
 
-describe("redeemInviteLink — usage accounting (autoApprove=false)", () => {
+describe("redeemInviteLink — usage accounting (PRIVATE community, join request)", () => {
   it("consumes a use for a NEW join request", async () => {
     repo.findInviteLinkByCode.mockResolvedValue(link());
     repo.findMemberByUserId.mockResolvedValue(null);
@@ -195,10 +210,11 @@ describe("redeemInviteLink — usage accounting (autoApprove=false)", () => {
   });
 });
 
-describe("redeemInviteLink — usage accounting (autoApprove=true)", () => {
+describe("redeemInviteLink — usage accounting (PUBLIC community, direct join)", () => {
   it("consumes a use when a membership is created", async () => {
-    repo.findInviteLinkByCode.mockResolvedValue(link({ autoApprove: true }));
-    repo.findInviteLinkById.mockResolvedValue(link({ autoApprove: true }));
+    goPublic();
+    repo.findInviteLinkByCode.mockResolvedValue(link());
+    repo.findInviteLinkById.mockResolvedValue(link());
     repo.findMemberByUserId.mockResolvedValue(null);
     repo.createMember.mockResolvedValue({
       userId: CALLER,
@@ -220,8 +236,9 @@ describe("redeemInviteLink — usage accounting (autoApprove=true)", () => {
   });
 
   it("reactivates a LEFT (unbanned-but-not-rejoined) member instead of creating a fresh row", async () => {
-    repo.findInviteLinkByCode.mockResolvedValue(link({ autoApprove: true }));
-    repo.findInviteLinkById.mockResolvedValue(link({ autoApprove: true }));
+    goPublic();
+    repo.findInviteLinkByCode.mockResolvedValue(link());
+    repo.findInviteLinkById.mockResolvedValue(link());
     repo.findMemberByUserId.mockResolvedValue({
       userId: CALLER,
       role: "MEMBER",
@@ -258,9 +275,10 @@ describe("redeemInviteLink — usage accounting (autoApprove=true)", () => {
  * reset link turns every card the community ever sent into "View Community".
  */
 describe("redeemInviteLink — records WHICH invitation admitted the caller", () => {
-  it("autoApprove: stamps the code on the new membership", async () => {
-    repo.findInviteLinkByCode.mockResolvedValue(link({ autoApprove: true }));
-    repo.findInviteLinkById.mockResolvedValue(link({ autoApprove: true }));
+  it("direct join: stamps the code on the new membership", async () => {
+    goPublic();
+    repo.findInviteLinkByCode.mockResolvedValue(link());
+    repo.findInviteLinkById.mockResolvedValue(link());
     repo.findMemberByUserId.mockResolvedValue(null);
     repo.createMember.mockResolvedValue({
       userId: CALLER,
@@ -282,9 +300,10 @@ describe("redeemInviteLink — records WHICH invitation admitted the caller", ()
     );
   });
 
-  it("autoApprove: a reactivated member is stamped with the code too", async () => {
-    repo.findInviteLinkByCode.mockResolvedValue(link({ autoApprove: true }));
-    repo.findInviteLinkById.mockResolvedValue(link({ autoApprove: true }));
+  it("direct join: a reactivated member is stamped with the code too", async () => {
+    goPublic();
+    repo.findInviteLinkByCode.mockResolvedValue(link());
+    repo.findInviteLinkById.mockResolvedValue(link());
     repo.findMemberByUserId.mockResolvedValue({
       userId: CALLER,
       role: "MEMBER",
@@ -330,7 +349,7 @@ describe("redeemInviteLink — records WHICH invitation admitted the caller", ()
 
 describe("redeemInviteLink — a BANNED caller is rejected outright, no bypass of the ban", () => {
   it("throws COMMUNITY_JOIN_BANNED and never touches usage accounting or membership", async () => {
-    repo.findInviteLinkByCode.mockResolvedValue(link({ autoApprove: true }));
+    repo.findInviteLinkByCode.mockResolvedValue(link());
     repo.findMemberByUserId.mockResolvedValue({
       userId: CALLER,
       role: "MEMBER",

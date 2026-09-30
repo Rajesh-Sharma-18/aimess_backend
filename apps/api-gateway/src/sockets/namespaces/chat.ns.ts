@@ -3,10 +3,11 @@ import type { Redis } from "ioredis";
 import { z } from "zod";
 import { logger } from "@aimess/logger";
 import {
-  chatForegroundSessionKey,
   chatOpenRoomKey,
   clearChatAttention,
+  clearChatViewer,
   markChatAttention,
+  markChatViewer,
   readPresenceSnapshots,
 } from "@aimess/redis";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
@@ -1360,6 +1361,7 @@ export function registerChatNamespace(
     // because call legs genuinely are per login.
     const presenceDeviceId = socket.id;
     let socketAppState = "FOREGROUND";
+    let socketFocused = true;
 
     // Server-driven liveness. Clients are asked to send `presence:heartbeat`,
     // but presence must not DEPEND on their cooperation — a mobile client that
@@ -1376,15 +1378,19 @@ export function registerChatNamespace(
     const refreshAttention = (appState: string): void => {
       if (!userId) return;
       const openRoomId = socket.data.activeConvId as string | undefined;
-      if (openRoomId) {
-        void markChatAttention(redisPub, chatOpenRoomKey(userId, openRoomId));
-      }
+      if (!openRoomId) return;
+      // User-wide "the room is open": unread suppression and read state. True
+      // whatever the app state — a backgrounded tab still has it on screen.
+      void markChatAttention(redisPub, chatOpenRoomKey(userId, openRoomId));
       if (!sessionId) return;
-      const key = chatForegroundSessionKey(userId, sessionId);
-      if (appState === "BACKGROUND") {
-        void clearChatAttention(redisPub, key);
+      // "Actively viewing", which is what push delivery may skip a device for:
+      // THIS room, on THIS socket, with its app/tab in the foreground. A tab the
+      // user switched away from stops suppressing at once — the notification is
+      // useful again the moment they are no longer looking at it.
+      if (appState === "BACKGROUND" || !socketFocused) {
+        void clearChatViewer(redisPub, userId, openRoomId, socket.id);
       } else {
-        void markChatAttention(redisPub, key);
+        void markChatViewer(redisPub, userId, openRoomId, sessionId, socket.id);
       }
     };
 
@@ -1487,12 +1493,29 @@ export function registerChatNamespace(
                   redisPub,
                   chatOpenRoomKey(userId, previous)
                 );
+                void clearChatViewer(redisPub, userId, previous, socket.id);
               }
               socket.data.activeConvId = r.data.conversationId;
               void markChatAttention(
                 redisPub,
                 chatOpenRoomKey(userId, r.data.conversationId)
               );
+              // Switching conversations must take effect NOW, not at the next
+              // presence refresh: until it does, the room just left would keep
+              // swallowing this device's notifications.
+              if (
+                sessionId &&
+                socketAppState !== "BACKGROUND" &&
+                socketFocused
+              ) {
+                void markChatViewer(
+                  redisPub,
+                  userId,
+                  r.data.conversationId,
+                  sessionId,
+                  socket.id
+                );
+              }
             }
             ackOk(callback, "SOCKET_CONVERSATION_JOINED", locale);
           } catch (err) {
@@ -1528,6 +1551,12 @@ export function registerChatNamespace(
           void clearChatAttention(
             redisPub,
             chatOpenRoomKey(userId, r.data.conversationId)
+          );
+          void clearChatViewer(
+            redisPub,
+            userId,
+            r.data.conversationId,
+            socket.id
           );
         }
         ackOk(callback, "SOCKET_CONVERSATION_LEFT", locale);
@@ -1762,12 +1791,17 @@ export function registerChatNamespace(
     // real presence input, not a keepalive, and must not be swallowed by the
     // refresh throttle.
     socket.on("presence:heartbeat", (payload: unknown) => {
-      const appState =
-        (payload as { appState?: string } | undefined)?.appState ??
-        "FOREGROUND";
+      const beat = payload as
+        | { appState?: string; focused?: boolean }
+        | undefined;
+      const appState = beat?.appState ?? "FOREGROUND";
+      const focused = beat?.focused !== false;
       const changed = appState !== socketAppState;
+      const focusChanged = focused !== socketFocused;
       socketAppState = appState;
+      socketFocused = focused;
       refreshPresence(appState, changed);
+      if (focusChanged && !changed) refreshAttention(appState);
     });
 
     socket.on(
@@ -2668,12 +2702,7 @@ export function registerChatNamespace(
             redisPub,
             chatOpenRoomKey(userId, openRoomId)
           );
-        }
-        if (sessionId) {
-          void clearChatAttention(
-            redisPub,
-            chatForegroundSessionKey(userId, sessionId)
-          );
+          void clearChatViewer(redisPub, userId, openRoomId, socket.id);
         }
         // Only THIS socket's session ends here. chat-service re-derives the
         // aggregate from whatever sessions remain, so another tab or the phone

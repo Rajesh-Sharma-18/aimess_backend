@@ -424,9 +424,12 @@ describe("POST /api/chat/groups/rooms/:roomId/disband", () => {
     expect(res.status).toBe(200);
     // Same instant the room recorded — the read cutoff and disbandedAt must
     // never disagree.
-    expect(mocks.groupMemberRepo.markAllLeft).toHaveBeenCalledWith(
+    // (the repository ends memberships in the same transaction as the flip
+    // and the closure snapshot — see GroupRoomRepository.closeWithSnapshot)
+    expect(mocks.groupRoomRepo.disband).toHaveBeenCalledWith(
       "grp_1",
-      disbandedAt
+      TEST_USER_ID,
+      expect.any(Map)
     );
   });
 

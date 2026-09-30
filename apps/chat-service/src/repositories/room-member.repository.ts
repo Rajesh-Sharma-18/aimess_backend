@@ -1,5 +1,6 @@
 ﻿import type { PrismaClient, RoomMember } from "../generated/prisma/index.js";
 import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
+import { MODERATION_VIEWER_ROLES } from "@aimess/constants";
 
 export class RoomMemberRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -201,15 +202,36 @@ export class RoomMemberRepository {
   }
 
   /**
-   * Every community room a user is an ACTIVE member of — unbounded (no
-   * roomIds filter), for the Community nav badge total. Unlike
-   * findVisibleByUserAndRooms this excludes "banned" rows: a banned member
-   * shouldn't contribute to the badge even though they can still read up to
-   * their cutoff.
+   * ACTIVE owner / admin / moderator userIds for a community room — the
+   * recipient set for a MODERATION-restricted system line, which must reach
+   * those sessions only and never the room-wide `community:<id>` channel.
+   * Roles come from {@link MODERATION_VIEWER_ROLES} so the socket fan-out and
+   * the read-path gate can never disagree about who is privileged.
    */
-  async findActiveByUser(userId: string): Promise<RoomMember[]> {
+  async findModeratorUserIds(roomId: string): Promise<string[]> {
+    const rows = await this.prisma.roomMember.findMany({
+      where: {
+        roomId,
+        status: "active",
+        role: { in: [...MODERATION_VIEWER_ROLES] },
+      },
+      select: { userId: true },
+    });
+    return rows.map((r) => r.userId);
+  }
+
+  /**
+   * Every community room whose row the user's Community list shows — ACTIVE and
+   * BANNED, unbounded (no roomIds filter), for the Community nav badge total.
+   * Same status set as findVisibleByUserAndRooms, which feeds the per-row
+   * counts: a banned row stays listed with its pre-ban unread (clamped at
+   * `bannedAt`), so the badge has to count it too or badge and list disagree.
+   * Dismissing the banned row marks it read (community-service), which is what
+   * takes it back out of this total.
+   */
+  async findVisibleByUser(userId: string): Promise<RoomMember[]> {
     return this.prisma.roomMember.findMany({
-      where: { userId, status: "active" },
+      where: { userId, status: { in: ["active", "banned"] } },
     });
   }
 

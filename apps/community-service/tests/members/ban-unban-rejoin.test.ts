@@ -243,10 +243,18 @@ describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership, b
     expect(result.status).toBe("LEFT");
   });
 
-  it("does NOT emit a community-wide or personal 'rejoined' system message", async () => {
+  it("emits only the moderator-only unban audit line — never a 'rejoined' line for members or the target", async () => {
     await communityService.unbanMember(CID, ADMIN, TARGET);
 
-    expect(pubSysMsg).not.toHaveBeenCalled();
+    // An unban lifts BANNED → LEFT; it does not restore membership, so nothing
+    // may read as a rejoin. The single line published is the MEMBER_UNBANNED
+    // audit record, and it carries no recipient — chat-service therefore scopes
+    // it to the community's owner/admin/moderators.
+    const posted = pubSysMsg.mock.calls.map(
+      ([arg]) => arg as { systemMessageType?: string; visibleToUserId?: string }
+    );
+    expect(posted.map((p) => p.systemMessageType)).toEqual(["MEMBER_UNBANNED"]);
+    expect(posted[0]!.visibleToUserId).toBeUndefined();
   });
 
   it("does NOT evict the community from the target's list — unban must never remove it, only an explicit self-dismiss does", async () => {

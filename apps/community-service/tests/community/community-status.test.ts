@@ -32,6 +32,8 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMembership: jest.fn(),
     findActiveMemberIds: jest.fn(),
     updateCommunity: jest.fn(),
+    captureClosureSnapshot: jest.fn(),
+    clearClosureSnapshot: jest.fn(),
     // Kept as mocks (never called by close/reopen) so tests can assert they
     // stay untouched — the whole point of this refactor is that member/role
     // data survives a close/reopen cycle unchanged.
@@ -41,6 +43,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     createMember: jest.fn(),
     createAuditLog: jest.fn(),
     findMuteByUserAndCommunity: jest.fn(async () => null),
+    expirePendingJoinRequests: jest.fn(async () => []),
   },
 }));
 
@@ -145,6 +148,11 @@ describe("closeCommunity", () => {
     );
     expect(repo.markAllActiveMembersLeft).not.toHaveBeenCalled();
     expect(repo.setMemberCount).not.toHaveBeenCalled();
+    // Super Admin keeps the roster/count as of this close.
+    expect(repo.captureClosureSnapshot).toHaveBeenCalledWith(
+      CID,
+      expect.any(Date)
+    );
   });
 
   it("broadcasts community:closed to the room AND to each active member's user room", async () => {
@@ -187,6 +195,7 @@ describe("closeCommunity", () => {
     await communityService.closeCommunity(CID, ADMIN, null);
 
     expect(repo.updateCommunity).not.toHaveBeenCalled();
+    expect(repo.captureClosureSnapshot).not.toHaveBeenCalled();
     expect(pubRoom).not.toHaveBeenCalled();
   });
 
@@ -228,6 +237,7 @@ describe("reopenCommunity", () => {
     expect(repo.reactivateAdminMember).not.toHaveBeenCalled();
     expect(repo.createMember).not.toHaveBeenCalled();
     expect(repo.setMemberCount).not.toHaveBeenCalled();
+    expect(repo.clearClosureSnapshot).toHaveBeenCalledWith(CID);
     expect(result.status).toBe("ACTIVE");
   });
 

@@ -45,7 +45,10 @@ export interface MarkNotificationsReadParams {
 }
 export interface MarkNotificationsReadResult {
   updatedCount: number;
+  /** Account-wide — resolve it per session with `unreadCountForSession`. */
   remainingUnread: number;
+  /** Sessions `remainingUnread` over-counts; see the proto for the rule. */
+  selfHiddenSessions?: string[];
 }
 export interface DeleteNotificationParams {
   userId: string;
@@ -53,7 +56,10 @@ export interface DeleteNotificationParams {
 }
 export interface DeleteNotificationResult {
   deleted: boolean;
+  /** Account-wide — resolve it per session with `unreadCountForSession`. */
   remainingUnread: number;
+  /** Sessions `remainingUnread` over-counts; see the proto for the rule. */
+  selfHiddenSessions?: string[];
 }
 
 export interface NotificationClient {

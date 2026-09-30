@@ -8,6 +8,7 @@ import {
 
 import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
+import { userIdentityClient } from "../grpc/user-identity.client.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { callCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
@@ -62,6 +63,21 @@ function attemptOf(message: amqp.ConsumeMessage): number {
  * the row to the FRIENDS tab (chat-service lib/notification-category.ts).
  */
 const CALL_ACTIVITY_TYPE = "call.activity";
+
+/**
+ * The caller's name for the ring / missed-call card. chat-service sends "" when
+ * its own user-service lookup missed at call time; that used to title the card
+ * "Someone" for a caller whose real name was one RPC away. Retry the lookup
+ * here — only on a miss, so the normal ring path pays nothing extra.
+ */
+async function callerNameFor(
+  callerId: string,
+  carriedName?: string
+): Promise<string> {
+  if (carriedName?.trim()) return carriedName.trim();
+  if (!callerId) return "";
+  return (await userIdentityClient.getDisplayName(callerId))?.trim() ?? "";
+}
 
 interface CallIncomingPayload {
   callId: string;
@@ -223,7 +239,8 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
   }
 
   const isVideo = String(data.callType).toUpperCase() === "VIDEO";
-  const caller = data.callerName || "Someone";
+  const callerName = await callerNameFor(data.callerId, data.callerName);
+  const caller = callerName || "Someone";
   const deepLink = buildDeepLink("call", data.callId);
 
   await pushToUser({
@@ -269,7 +286,7 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
       type: "CALL_INCOMING",
       callId: data.callId,
       callerId: data.callerId,
-      callerName: data.callerName || "Someone",
+      callerName: caller,
       callerAvatar: data.callerAvatar ?? "",
       callType: isVideo ? "VIDEO" : "AUDIO",
       initiatedAt: String(data.initiatedAt ?? ""),
@@ -324,7 +341,8 @@ async function sendMissedCallPush(data: {
   }
 
   const isVideo = String(data.callType).toUpperCase() === "VIDEO";
-  const caller = data.callerName || "Someone";
+  const callerName = await callerNameFor(data.callerId, data.callerName);
+  const caller = callerName || "Someone";
   // The DM, not the call. A missed call is over — there is nothing to open on
   // `aimess://call/<callId>`, and the matching Notification-Center row already
   // deep-links to the conversation. Tapping either now lands in the same place,
@@ -362,7 +380,7 @@ async function sendMissedCallPush(data: {
       type: "CALL_MISSED",
       callId: data.callId,
       callerId: data.callerId,
-      callerName: data.callerName ?? "",
+      callerName,
       callerAvatar: data.callerAvatar ?? "",
       callType: isVideo ? "VIDEO" : "AUDIO",
       missedAt: String(data.missedAt ?? ""),

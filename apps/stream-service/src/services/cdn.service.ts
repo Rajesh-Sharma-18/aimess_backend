@@ -246,9 +246,8 @@ export class CdnService {
    * Driven by `CDN_TRANSCODE_TIERS`. Empty ⇒ `{ hls:{}, flv:{} }`: we never
    * advertise a rendition the domain isn't transcoding (it would 404 in the
    * player), the same gate as {@link buildHlsQualityUrls}. Keys match the SRS map
-   * key strings the web/mobile player already reads: HLS `"720p"` etc.; FLV adds
-   * an explicit `"Source"` rung (no ABR/auto tier for HTTP-FLV), mirroring
-   * {@link buildFlvQualityUrls}. HLS omits `"Source"` — the base `hlsUrl` is it.
+   * key strings the web/mobile player already reads (`"720p"` etc.) for both HLS
+   * and FLV — no `"Source"` rung; the base `hlsUrl`/`flvUrl` already is it.
    */
   buildQualityUrls(name: string): {
     hls: Record<string, string>;
@@ -257,9 +256,7 @@ export class CdnService {
     const tiers = cdnTranscodeTiers();
     if (tiers.length === 0) return { hls: {}, flv: {} };
     const hls: Record<string, string> = {};
-    const flv: Record<string, string> = {
-      Source: this.buildPlaybackUrls(name).flvUrl,
-    };
+    const flv: Record<string, string> = {};
     for (const suffix of tiers) {
       const urls = this.buildPlaybackUrls(`${name}_${suffix}`);
       hls[suffix] = urls.hlsUrl;

@@ -135,7 +135,7 @@ export async function assertGroupWritable(
  * (`getInboxMemberships`).
  *
  * The ONE surviving widening is a DISBANDED room, where the ROOM is the thing
- * that died rather than the membership: `markAllLeft` ends every membership at
+ * that died rather than the membership: the disband ends every membership at
  * exactly the room's `disbandedAt`, and an open client has to keep rendering
  * the history it already holds. So a LEFT row is admitted only when its
  * `leftAt` IS that disband instant — someone who left or was removed earlier,

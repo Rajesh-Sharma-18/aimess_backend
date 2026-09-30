@@ -113,7 +113,7 @@ const createStream = {
         "application/json": {
           schema: {
             type: "object" as const,
-            required: ["communityId", "title", "sourceType"],
+            required: ["communityId", "title"],
             properties: {
               communityId: {
                 type: "string" as const,
@@ -123,12 +123,13 @@ const createStream = {
               title: {
                 type: "string" as const,
                 minLength: 1,
-                maxLength: 200,
+                maxLength: 256,
                 example: "Weekly Dev Q&A",
+                description: "Trimmed server-side; whitespace-only is rejected.",
               },
               description: {
                 type: "string" as const,
-                maxLength: 2000,
+                maxLength: 1000,
                 example: "Ask me anything about the new release.",
               },
               thumbnail: {
@@ -140,6 +141,7 @@ const createStream = {
               sourceType: {
                 type: "string" as const,
                 enum: SOURCE_TYPES,
+                default: "PHONE_CAMERA",
                 example: "PHONE_CAMERA",
               },
               sourceUrl: {

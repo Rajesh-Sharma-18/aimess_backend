@@ -4,7 +4,11 @@ import { userGrpcClient } from "../grpc/user-snapshot.client.js";
 import { isGroupMemberMuted } from "../lib/access-guard.js";
 import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
 
-import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
+import type {
+  GroupRoom,
+  GroupMember,
+  GroupClosureMember,
+} from "../generated/prisma/index.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
@@ -72,6 +76,16 @@ export interface AdminListGroupMembersRequest {
   status?: string;
   skip: number;
   take: number;
+}
+
+/**
+ * Roster size frozen when the group left ACTIVE, or null when the live roster
+ * applies (ACTIVE group, or a legacy closed group with no snapshot).
+ */
+function closureCount(row: GroupRoom): number | null {
+  return row.status !== "ACTIVE" && row.memberCountAtClosure != null
+    ? row.memberCountAtClosure
+    : null;
 }
 
 const UUID_RE =
@@ -151,7 +165,8 @@ export class AdminGroupService {
     const groups = rows.map((row) => {
       const ownerId = ownerMap.get(row.roomId) ?? row.createdBy;
       const group = this.toGroupRow(row, ownerId, snapshots, authMap, urlMap);
-      group.memberCount = memberCountMap.get(row.roomId) ?? 0;
+      group.memberCount =
+        closureCount(row) ?? memberCountMap.get(row.roomId) ?? 0;
       return group;
     });
 
@@ -173,10 +188,11 @@ export class AdminGroupService {
 
     const group = this.toGroupRow(row, ownerId, snapshots, authMap, urlMap);
     // Denormalized row.memberCount drifts (counts LEFT/KICKED members); the
-    // detail header must match the roster list, so report the live count.
-    group.memberCount = await this.groupMemberRepo.countRosterMembers(
-      row.roomId
-    );
+    // detail header must match the roster list, so report the live count —
+    // or, for a closed group, the roster frozen at closure.
+    group.memberCount =
+      closureCount(row) ??
+      (await this.groupMemberRepo.countRosterMembers(row.roomId));
 
     return { found: true, group };
   }
@@ -200,6 +216,26 @@ export class AdminGroupService {
       ]);
       userIdsFromSearch = [...new Set([...authIds, ...profileIds])];
       if (UUID_RE.test(q)) qExactUserId = q;
+    }
+
+    // A closed group lists the roster frozen at closure, never the live rows
+    // (a disband ends every membership; later leave/kick/ban must not matter).
+    if (closureCount(room) !== null) {
+      const snap = await this.groupMemberRepo.adminListClosureMembers({
+        roomId: req.groupId,
+        role: req.role,
+        status: req.status,
+        q,
+        userIdsFromSearch,
+        qExactUserId,
+        skip: req.skip,
+        take: req.take,
+      });
+      return {
+        found: true,
+        members: await this.toClosureMemberRows(snap.rows),
+        total: snap.total,
+      };
     }
 
     const { rows, total } = await this.groupMemberRepo.adminListMembers({
@@ -352,15 +388,21 @@ export class AdminGroupService {
         params.groupId,
         params.actorAdminId
       );
+      const bannedAt = new Date();
       await this.groupMemberRepo.updateStatus(
         params.groupId,
         params.userId,
         "BANNED",
         {
-          bannedAt: new Date(),
+          bannedAt,
           bannedBy: params.actorAdminId,
           kickReason: params.reason || null,
         }
+      );
+      await this.groupMemberRepo.markClosureMemberBanned(
+        params.groupId,
+        params.userId,
+        bannedAt
       );
       return { ok: true, found: true, errorCode: "", closedGroup: true };
     }
@@ -528,6 +570,39 @@ export class AdminGroupService {
       disbandedAt:
         row.disbandedAt instanceof Date ? row.disbandedAt.getTime() : 0,
     };
+  }
+
+  /**
+   * Closure-snapshot rows → member rows. Identity comes from the snapshot (the
+   * name/avatar the group knew at closure); only a blank snapshot (lookup
+   * failed at closure time) falls back to the live identity.
+   */
+  private async toClosureMemberRows(
+    rows: GroupClosureMember[]
+  ): Promise<AdminGroupMemberRowResult[]> {
+    const { snapshots, authMap } = await this.resolveIdentities(
+      rows.map((r) => r.userId)
+    );
+    const keys = rows.map(
+      (r) => r.avatar || ((snapshots.get(r.userId)?.avatar as string) ?? "")
+    );
+    const urlMap = await resolveMediaUrlMap(keys.filter(Boolean));
+    return rows.map((r, i) => {
+      const live = snapshots.get(r.userId);
+      return {
+        userId: r.userId,
+        username:
+          r.username || r.displayName || ((live?.memberId as string) ?? ""),
+        email: authMap.get(r.userId)?.email ?? "",
+        avatarUrl: urlFromMap(urlMap, keys[i] ?? ""),
+        role: r.role,
+        joinedAt: r.joinedAt.getTime(),
+        status: r.status,
+        moderationMuted: false,
+        kickedAt: 0,
+        bannedAt: r.bannedAt ? r.bannedAt.getTime() : 0,
+      };
+    });
   }
 
   private toMemberRow(

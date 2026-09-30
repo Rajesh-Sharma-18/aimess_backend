@@ -1,12 +1,18 @@
 import type { Redis, Cluster } from "ioredis";
 import { copyTickets } from "@aimess/constants";
+import { ForbiddenError } from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
 
-import type { NotificationRepository } from "../repositories/notification.repository.js";
+import {
+  unreadCountForSession,
+  type NotificationRepository,
+  type UnreadFanout,
+} from "../repositories/notification.repository.js";
 import type { Notification } from "../generated/prisma/index.js";
 import {
   categoryWhere,
   categorize,
+  LOGIN_DETECTED_TYPE,
   type NotificationCategory,
 } from "../lib/notification-category.js";
 import {
@@ -101,7 +107,15 @@ export class NotificationService {
     });
     const refresh = await resolveAvatarRefresh(rows);
     return Promise.all(
-      rows.map((n) => serializeNotification(n, userId, refresh))
+      rows.map((n) =>
+        serializeNotification(
+          n,
+          userId,
+          refresh,
+          undefined,
+          params.viewerSessionId
+        )
+      )
     );
   }
 
@@ -146,7 +160,15 @@ export class NotificationService {
     );
     const refresh = await resolveAvatarRefresh(rows);
     const notifications = await Promise.all(
-      rows.map((n) => serializeNotification(n, userId, refresh))
+      rows.map((n) =>
+        serializeNotification(
+          n,
+          userId,
+          refresh,
+          undefined,
+          params.viewerSessionId
+        )
+      )
     );
     const hasMore = rows.length === params.limit;
     const nextSince = rows.length
@@ -173,7 +195,9 @@ export class NotificationService {
   // notifications:mark_read path so REST and socket clients stay in sync).
   async markManyRead(
     notificationIds: string[],
-    userId: string
+    userId: string,
+    /** The calling device's session — the returned count is the one IT sees. */
+    viewerSessionId?: string | null
   ): Promise<{ updatedCount: number; unreadCount: number }> {
     // One updateMany, not a read+write per id — the 500-id cap made this up to
     // 1000 Mongo ops for a single request.
@@ -181,14 +205,17 @@ export class NotificationService {
       notificationIds,
       userId
     );
-    const unreadCount = await this.notificationRepo.getUnreadCount(userId);
+    const fanout = await this.notificationRepo.getUnreadFanout(userId);
 
     if (updatedCount > 0) {
-      await this.publishCountEvent(userId, "notification:read", unreadCount, {
+      await this.publishCountEvent(userId, "notification:read", fanout, {
         notificationIds,
       });
     }
-    return { updatedCount, unreadCount };
+    return {
+      updatedCount,
+      unreadCount: unreadCountForSession(fanout, viewerSessionId),
+    };
   }
 
   /**
@@ -202,13 +229,15 @@ export class NotificationService {
   async markAllRead(
     userId: string,
     category: NotificationCategory = "ALL",
-    before?: Date | null
+    before?: Date | null,
+    /** The calling device's session — the returned count is the one IT sees. */
+    viewerSessionId?: string | null
   ): Promise<{ unreadCount: number }> {
     const extraWhere = category === "ALL" ? undefined : categoryWhere(category);
     await this.notificationRepo.markAllRead(userId, extraWhere, before ?? null);
-    const unreadCount = await this.notificationRepo.getUnreadCount(userId);
-    await this.publishCountEvent(userId, "notification:all-read", unreadCount);
-    return { unreadCount };
+    const fanout = await this.notificationRepo.getUnreadFanout(userId);
+    await this.publishCountEvent(userId, "notification:all-read", fanout);
+    return { unreadCount: unreadCountForSession(fanout, viewerSessionId) };
   }
 
   async getUnreadCount(
@@ -234,24 +263,24 @@ export class NotificationService {
    */
   async deleteNotification(
     notificationId: string,
-    userId: string
+    userId: string,
+    /** The calling device's session — the returned count is the one IT sees. */
+    viewerSessionId?: string | null
   ): Promise<{ deleted: boolean; unreadCount: number }> {
     const { count } = await this.notificationRepo.deleteById(
       notificationId,
       userId
     );
-    const unreadCount = await this.notificationRepo.getUnreadCount(userId);
+    const fanout = await this.notificationRepo.getUnreadFanout(userId);
     if (count > 0) {
-      await this.publishCountEvent(
-        userId,
-        "notification:deleted",
-        unreadCount,
-        {
-          notificationId,
-        }
-      );
+      await this.publishCountEvent(userId, "notification:deleted", fanout, {
+        notificationId,
+      });
     }
-    return { deleted: count > 0, unreadCount };
+    return {
+      deleted: count > 0,
+      unreadCount: unreadCountForSession(fanout, viewerSessionId),
+    };
   }
 
   /**
@@ -264,8 +293,28 @@ export class NotificationService {
     id: string,
     userId: string,
     body: string,
-    action: string
+    action: string,
+    /**
+     * The acting device's own session. A Login Detected alert may never be
+     * answered by the session it is ABOUT — both sides belong to the same
+     * account, so owner-scoping the row (which `recordAction` below does)
+     * separates nothing, and a stolen new session could otherwise clear its
+     * own warning off the owner's other devices. The list already withholds
+     * that row from that session; this is the same rule for a caller that
+     * skips the list and PATCHes the id directly.
+     */
+    callerSessionId?: string | null
   ): Promise<void> {
+    if (callerSessionId) {
+      const row = await this.notificationRepo.findById(id, userId);
+      if (
+        row &&
+        row.type === LOGIN_DETECTED_TYPE &&
+        row.loginSessionId === callerSessionId
+      ) {
+        throw new ForbiddenError("AUTH_SESSION_SELF_ACTION_FORBIDDEN");
+      }
+    }
     const updated = await this.notificationRepo.recordAction(
       id,
       userId,
@@ -366,35 +415,58 @@ export class NotificationService {
           ...copyTickets(payloadObj.data),
         },
       });
+      // `recordAction` marks the row READ, so the badge moved — and this frame
+      // carries no count. Without the alias below, acting on a Login Detected
+      // card (or the expiry sweep resolving it as "It's Me") left every device
+      // showing the pre-action number until something else refetched it.
+      await this.publishCountOnly(
+        userId,
+        await this.notificationRepo.getUnreadFanout(userId)
+      );
     } catch {
       // best-effort — the DB write already succeeded
     }
   }
 
   // Best-effort realtime relay: publishes the named event plus the legacy
-  // "notification:count_update" alias, both carrying the same unreadCount.
+  // "notification:count_update" alias, both carrying the same count.
+  //
+  // `selfHiddenSessions` rides along on every count-bearing frame: one payload
+  // reaches every device of the account, and the gateway subtracts per socket
+  // so the session that owns an unread login alert is not told about a row its
+  // own list withholds from it.
   private async publishCountEvent(
     userId: string,
     event: string,
-    unreadCount: number,
+    fanout: UnreadFanout,
     extra: Record<string, unknown> = {}
   ): Promise<void> {
     try {
       await publishUserSocketEvent(this.redis, userId, event, {
-        unreadCount,
+        unreadCount: fanout.unreadCount,
+        selfHiddenSessions: fanout.selfHiddenSessions,
         ...extra,
       });
-      await publishUserSocketEvent(
-        this.redis,
-        userId,
-        "notification:count_update",
-        {
-          count: unreadCount,
-          unreadCount,
-        }
-      );
+      await this.publishCountOnly(userId, fanout);
     } catch {
       // never fail the mutation because the realtime relay failed
     }
+  }
+
+  /** The count alias on its own — for mutations that carry their own event. */
+  private async publishCountOnly(
+    userId: string,
+    fanout: UnreadFanout
+  ): Promise<void> {
+    await publishUserSocketEvent(
+      this.redis,
+      userId,
+      "notification:count_update",
+      {
+        count: fanout.unreadCount,
+        unreadCount: fanout.unreadCount,
+        selfHiddenSessions: fanout.selfHiddenSessions,
+      }
+    );
   }
 }

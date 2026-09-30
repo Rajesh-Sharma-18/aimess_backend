@@ -1,5 +1,10 @@
 import { currentLocale } from "@aimess/constants";
-import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ForbiddenError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
@@ -7,7 +12,11 @@ import type { Redis, Cluster } from "ioredis";
 
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
-import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
+import {
+  assertPrivateParticipants,
+  buildParticipantsKey,
+  generateRoomId,
+} from "../lib/room-id.js";
 import {
   toWireMessage,
   normalizeMessageType,
@@ -54,12 +63,15 @@ import type { PrivateMessageRepository } from "../repositories/private-message.r
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import {
+  isUnresolvedSnapshot,
   resolveDisplayName,
   resolveRealDisplayName,
   type UserSnapshotService,
 } from "./user-snapshot.service.js";
 import type { PresenceService, PresenceView } from "./presence.service.js";
 import type { PrivatePinService } from "./private-pin.service.js";
+import type { PrivateSystemMessageService } from "./private-system-message.service.js";
+import { SystemEvent } from "../types/enums.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 import type { ChatFriendshipInfo } from "../grpc/user-snapshot.client.js";
 import type { UnreadStats } from "../lib/unread-count.js";
@@ -82,6 +94,11 @@ export async function ensurePrivateRoom(
   userId: string,
   peerId: string
 ): Promise<PrivateRoom> {
+  // BEFORE the lookup, so a junk peer id is a 400 rather than a wasted round
+  // trip. The repository asserts the same invariant again as the storage-level
+  // backstop for the two invite-share paths that create rooms without coming
+  // through here — see `assertPrivateParticipants`.
+  assertPrivateParticipants([userId, peerId]);
   const participantsKey = buildParticipantsKey(userId, peerId);
   const existing =
     await deps.privateRoomRepo.findByParticipantsKey(participantsKey);
@@ -497,7 +514,10 @@ export class PrivateRoomService {
     },
     // ponytail: optional — omitted in existing unit tests; pin clearing on
     // delete just becomes a no-op (matches the pre-existing behavior).
-    private readonly pinService?: PrivatePinService
+    private readonly pinService?: PrivatePinService,
+    // ponytail: optional — omitted in existing unit tests; clear/delete then
+    // just skip their "You cleared/deleted the conversation" line.
+    private readonly sysMsg?: PrivateSystemMessageService
   ) {}
 
   /**
@@ -878,6 +898,32 @@ export class PrivateRoomService {
       [...peerIds, userId],
       this.cacheRepo
     );
+    // Refuse rather than serve a row whose peer identity we could not look up.
+    //
+    // This is THE fix for the reported "Unknown User" row: every id that failed
+    // to resolve ends up with the same empty placeholder as an id that genuinely
+    // does not exist, and `resolveDisplayName` turns both into the literal
+    // "Unknown User". That literal is a terminal value on the wire — the client
+    // stores the row in its inbox cache and has nothing that would make it ask
+    // again, so a two-second user-service blip stayed on screen until a hard
+    // reload, while the chat header (a second call through this same serializer,
+    // made a moment later) showed the real name.
+    //
+    // 503, not 500: the request is well-formed and worth retrying, which every
+    // client's retry policy already does. Same call the media registry guard
+    // makes for the same reason. A genuinely missing/deleted user carries no
+    // `isUnresolved` flag and still renders exactly as designed.
+    //
+    // PEERS only. The CALLER's own snapshot feeds nothing but
+    // `lastActivity.username` on their own messages, which the client relabels
+    // "You:" from `userId === myUserId` regardless — refusing the whole list
+    // over it would turn a harmless gap into an outage.
+    if (peerIds.some((id) => isUnresolvedSnapshot(snapshots.get(id)))) {
+      logger.warn(
+        `PrivateRoomService|enrichConversations|identity lookup unavailable|userId=${userId}`
+      );
+      throw new ServiceUnavailableError("CHAT_IDENTITY_UNAVAILABLE");
+    }
     const myDisplayName = resolveDisplayName(snapshots.get(userId));
 
     const friendshipByPeer = this.friendshipGrpcClient
@@ -1322,7 +1368,7 @@ export class PrivateRoomService {
     const isParticipant = room.participants?.includes(userId);
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
-    await this.privateRoomRepo.setDeletedFor(roomId, userId);
+    const cutoff = await this.privateRoomRepo.setDeletedFor(roomId, userId);
 
     // `setDeletedFor` zeroed this user's stored unread counter, but the Chats
     // nav badge is a TOTAL the server owns — without this push it keeps
@@ -1362,16 +1408,69 @@ export class PrivateRoomService {
         .catch(() => {});
     }
 
-    // Notify the user that the conversation was deleted from their view.
+    // Delete Conversation hides the row from THIS user's list until a newer
+    // message arrives (the list queries filter on `deletedFor`), so every one
+    // of the caller's devices drops it. Nothing reaches the peer.
+    if (cutoff) {
+      this.redis
+        .publish(
+          `user:${userId}`,
+          JSON.stringify({
+            event: "conv:deleted",
+            data: { roomId, deletedBy: userId, type: "PRIVATE" },
+          })
+        )
+        .catch(() => {});
+    }
+  }
+
+  /**
+   * Shared tail of clear and delete: the caller's own devices empty the open
+   * transcript (`conv:cleared`) and the list row (self-only `conv:updated`),
+   * then the self-only system line lands after the cutoff. Nothing reaches the
+   * peer — this is the caller's local view.
+   */
+  private async announceHistoryEmptied(
+    room: { roomId: string; participants?: string[] | null },
+    userId: string,
+    cutoff: Date | null,
+    systemEvent:
+      | typeof SystemEvent.CONVERSATION_CLEARED
+      | typeof SystemEvent.CONVERSATION_DELETED
+  ): Promise<void> {
+    const { roomId } = room;
     this.redis
       .publish(
         `user:${userId}`,
         JSON.stringify({
-          event: "conv:deleted",
-          data: { roomId, deletedBy: userId },
+          event: "conv:cleared",
+          data: {
+            roomId,
+            clearedBy: userId,
+            type: "PRIVATE",
+            // The cutoff, so an open transcript drops only what it hides and
+            // keeps the history line that follows (whatever order they land in).
+            clearedAt: cutoff?.getTime(),
+            action:
+              systemEvent === SystemEvent.CONVERSATION_DELETED
+                ? "DELETE"
+                : "CLEAR",
+          },
         })
       )
       .catch(() => {});
+    await this.publishEmptiedRow(roomId, userId);
+
+    const peerId = room.participants?.find((id) => id !== userId);
+    if (cutoff && peerId) {
+      await this.sysMsg?.post({
+        roomId,
+        actorId: userId,
+        peerId,
+        systemEvent,
+        selfOnlyAfter: cutoff,
+      });
+    }
   }
 
   /**
@@ -1429,19 +1528,17 @@ export class PrivateRoomService {
     const isParticipant = room.participants?.includes(userId);
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
-    await this.privateRoomRepo.setClearFor(roomId, userId);
+    const cutoff = await this.privateRoomRepo.setClearFor(roomId, userId);
+    await this.announceHistoryEmptied(
+      room,
+      userId,
+      cutoff,
+      SystemEvent.CONVERSATION_CLEARED
+    );
+  }
 
-    this.redis
-      .publish(
-        `user:${userId}`,
-        JSON.stringify({
-          event: "conv:cleared",
-          data: { roomId, clearedBy: userId, type: "PRIVATE" },
-        })
-      )
-      .catch(() => {});
-
-    // The row STAYS in the list (clear ≠ delete conversation) but now has no
+  private async publishEmptiedRow(roomId: string, userId: string) {
+    // The row STAYS in the list (after clear AND delete) but now has no
     // visible message, so its effective lastActivity is empty and it must drop
     // to the bottom. `conv:cleared` alone left every other device — and any
     // client that only listens for list bumps — rendering the cleared chat at
@@ -1460,7 +1557,7 @@ export class PrivateRoomService {
       preview: { contentType: "", text: "", createdAt: 0 },
       // An emptied row is not a new message — must never raise an unread badge.
       countInUnread: false,
-      // `setClearFor` above already zeroed this user's stored counter; state it
+      // The cutoff write already zeroed this user's stored counter; state it
       // explicitly so the client SETs 0 instead of keeping a badge for messages
       // it can no longer show.
       resolveUnreadCounts: async () => ({ [userId]: 0 }),

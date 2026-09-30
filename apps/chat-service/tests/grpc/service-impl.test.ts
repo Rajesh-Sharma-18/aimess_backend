@@ -823,6 +823,10 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
         ...input,
       })),
       getUnreadCount: jest.fn(async () => 3),
+      getUnreadFanout: jest.fn(async () => ({
+        unreadCount: 3,
+        selfHiddenSessions: [],
+      })),
       findByUserId: jest.fn(async () => []),
       markAllRead: jest.fn(async () => undefined),
       // Grouped notifications look for a live row to update in place before
@@ -1146,6 +1150,10 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
         },
       ]),
       getUnreadCount: jest.fn(async () => 0),
+      getUnreadFanout: jest.fn(async () => ({
+        unreadCount: 0,
+        selfHiddenSessions: [],
+      })),
     });
 
     const deps = makeDeps({ notificationRepo: notifRepo });

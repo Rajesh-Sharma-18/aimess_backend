@@ -248,6 +248,107 @@ describe("pushToUser — superseded VoIP tokens", () => {
   });
 });
 
+describe("pushToUser — data-only pushes to WEB tokens", () => {
+  const readDismiss = {
+    userId: USER_ID,
+    category: "chatEnabled" as const,
+    type: "MESSAGE_READ",
+    title: "",
+    body: "",
+    bypassSettings: true,
+    skipInbox: true,
+    dataOnly: true,
+  };
+
+  it("skips a WEB token for a data-only type the web worker ignores", async () => {
+    repo.findTokensByUserId.mockResolvedValue([
+      row({ token: "tok-web", platform: "WEB" }),
+      row({ token: "tok-android", platform: "ANDROID" }),
+    ]);
+
+    await pushToUser(readDismiss);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0].token).toBe("tok-android");
+  });
+
+  it.each([
+    "CALL_INCOMING",
+    "CALL_CANCELLED",
+    "CALL_HANDLED",
+    "MESSAGE_DELETED",
+    "community.join_request_retracted",
+  ])("still sends %s to a WEB token", async (type) => {
+    repo.findTokensByUserId.mockResolvedValue([
+      row({ token: "tok-web", platform: "WEB" }),
+    ]);
+
+    await pushToUser({ ...readDismiss, type });
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("still sends a notification-carrying push to a WEB token", async () => {
+    repo.findTokensByUserId.mockResolvedValue([
+      row({ token: "tok-web", platform: "WEB" }),
+    ]);
+
+    await pushToUser({ ...readDismiss, type: "MESSAGE", dataOnly: false });
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Whoever performed the action is never pushed for it, on any device — the
+// livestream host, the community owner who closed it, the invite-link joiner.
+describe("pushToUser — the actor is not a recipient", () => {
+  const event = {
+    category: "liveStreamEnabled" as const,
+    type: "community.livestream_started",
+    title: "Smiley_Creatures is live",
+    body: "Tap to watch",
+    bypassSettings: true,
+    skipInbox: true,
+    actorId: USER_ID,
+  };
+
+  it("sends nothing to any of the actor's devices", async () => {
+    repo.findTokensByUserId.mockResolvedValue([
+      row({ token: "tok-phone", sessionId: "sess-phone" }),
+      row({ token: "tok-web", platform: "WEB", sessionId: "sess-web" }),
+    ]);
+
+    await pushToUser({ ...event, userId: USER_ID });
+
+    expect(repo.findTokensByUserId).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("still pushes every other member", async () => {
+    repo.findTokensByUserId.mockResolvedValue([row({ token: "tok-member" })]);
+
+    await pushToUser({
+      ...event,
+      userId: "44444444-4444-4444-8444-444444444444",
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("still delivers a security alert the user triggered themselves", async () => {
+    repo.findTokensByUserId.mockResolvedValue([row({ token: "tok-phone" })]);
+
+    await pushToUser({
+      ...event,
+      userId: USER_ID,
+      category: "systemEnabled",
+      type: "auth.password_changed",
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("pushToUser — excludeSessionId", () => {
   it("skips the acting device and still reaches the user's other devices", async () => {
     repo.findTokensByUserId.mockResolvedValue([

@@ -16,6 +16,7 @@
     "db:repair:report-duplicates": "tsx scripts/repair-community-report-duplicates.ts --apply",
     "fix:search": "tsx scripts/fix-community-search.ts",
     "db:backfill:audit-activity": "tsx scripts/backfill-audit-activity.ts",
+    "db:backfill:closure-snapshot": "tsx scripts/backfill-community-closure-snapshot.ts",
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",
     "lint": "eslint .",

@@ -284,6 +284,7 @@ model RefreshToken {
   expiresAt   DateTime  @db.Timestamptz(3)
   revokedAt   DateTime? @db.Timestamptz(3)
   rotatedToId String?   @db.Uuid // points to the successor token after refresh
+  replayOfId  String?   @db.Uuid // set when minted for a benign replay: the spent token that was replayed
   createdAt   DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([userId])

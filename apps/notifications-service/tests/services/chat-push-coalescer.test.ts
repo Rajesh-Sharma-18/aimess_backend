@@ -16,6 +16,7 @@ const redisMock = {
   get: jest.fn(async () => null as string | null),
   set: jest.fn(async () => "OK"),
   del: jest.fn(async () => 0),
+  hgetall: jest.fn(async () => ({}) as Record<string, string>),
   pipeline: jest.fn(),
 };
 jest.mock("../../src/config/redis.js", () => ({ redis: redisMock }));
@@ -39,13 +40,29 @@ const push = pushToUser as unknown as jest.Mock;
 const USER = "11111111-1111-4111-8111-111111111111";
 const ROOM = "prv_burst_room";
 
-/** `usersWithRoomOpen` reads through a pipeline of EXISTS; 0 = not looking. */
-function roomOpen(open: boolean) {
-  redisMock.pipeline.mockReturnValue({
-    exists: jest.fn(),
-    get: jest.fn(),
-    exec: jest.fn(async () => [[null, open ? 1 : 0]]),
+/**
+ * `sessionsViewingRoom` reads the per-(user, room) viewers hash the gateway
+ * writes: one field per SOCKET, valued `<sessionId>|<expiry ms>`. The helper
+ * below states which sessions are looking at which room, so a test can say
+ * "session A is reading THIS chat while session B sits elsewhere" — the exact
+ * distinction the suppression rule turns on.
+ */
+function viewers(byRoom: Record<string, string[]>, expiresInMs = 60_000) {
+  redisMock.hgetall.mockImplementation(async (key: string) => {
+    const room = key.slice(key.lastIndexOf(":") + 1);
+    const sessions = byRoom[room] ?? [];
+    return Object.fromEntries(
+      sessions.map((sessionId, i) => [
+        `socket-${room}-${String(i)}`,
+        `${sessionId}|${String(Date.now() + expiresInMs)}`,
+      ])
+    );
   });
+}
+
+/** Nobody is looking at anything — the ordinary "recipient is elsewhere" case. */
+function nobodyViewing() {
+  viewers({});
 }
 
 const context = (over: Partial<ChatPushContext> = {}): ChatPushContext => ({
@@ -75,7 +92,7 @@ const message = (
 
 beforeEach(() => {
   jest.clearAllMocks();
-  roomOpen(false);
+  nobodyViewing();
 });
 
 afterEach(async () => {
@@ -112,20 +129,23 @@ describe("chat push coalescing", () => {
     expect(second.collapseKey).toBe(first.collapseKey);
   });
 
-  it("D3/D5: nothing is pushed when the recipient has the room open at flush time", async () => {
+  it("D3/D5: the session reading this chat at flush time is excluded from delivery", async () => {
     for (let i = 1; i <= 5; i++) enqueueChatPush(context(), message(i));
-    roomOpen(true); // they opened the chat while the window was running
+    // They opened the chat while the window was running.
+    viewers({ [ROOM]: ["session-laptop"] });
 
     await flushAllChatPushes();
 
-    expect(push).not.toHaveBeenCalled();
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].excludeSessionIds).toEqual(["session-laptop"]);
   });
 
-  it("D4: delivery skips sessions whose app is foregrounded", async () => {
+  it("D4: a recipient who is nowhere near the chat is excluded from nothing", async () => {
     enqueueChatPush(context(), message(1));
     await flushAllChatPushes();
 
-    expect(push.mock.calls[0][0].suppressForegroundSessions).toBe(true);
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].excludeSessionIds).toBeUndefined();
   });
 
   it("D6: a message deleted inside the window is never pushed", async () => {
@@ -191,6 +211,101 @@ describe("chat push coalescing", () => {
     expect(push).toHaveBeenCalledTimes(2);
     const rooms = push.mock.calls.map((c) => c[0].data.conversationId).sort();
     expect(rooms).toEqual(["grp_other", "prv_burst_room"]);
+  });
+
+  // ── "actively viewing" is not "online", "connected" or "in the app" ──────
+  //
+  // The reported bug: a recipient sitting ANYWHERE in AIMess — another chat,
+  // Settings, the conversation list — never received a push, because delivery
+  // suppressed every session whose app was merely foregrounded. These pin the
+  // only thing that may silence a device: that device showing THIS room.
+
+  it("S1: a recipient reading a DIFFERENT conversation still gets the push", async () => {
+    viewers({ prv_some_other_chat: ["session-laptop"] });
+    enqueueChatPush(context(), message(1));
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].excludeSessionIds).toBeUndefined();
+  });
+
+  it("S2: a recipient in a community room still gets the private-chat push", async () => {
+    viewers({ "community-42": ["session-laptop"] });
+    enqueueChatPush(context(), message(1));
+
+    await flushAllChatPushes();
+
+    expect(push.mock.calls[0][0].excludeSessionIds).toBeUndefined();
+  });
+
+  it("S3: only the session viewing the room is skipped — the other devices are not", async () => {
+    viewers({ [ROOM]: ["session-laptop"] });
+    enqueueChatPush(context(), message(1));
+
+    await flushAllChatPushes();
+
+    const sent = push.mock.calls[0][0];
+    // The push is still dispatched; push.service drops just this session's
+    // tokens, so the same account's phone and second browser still buzz.
+    expect(sent.userId).toBe(USER);
+    expect(sent.excludeSessionIds).toEqual(["session-laptop"]);
+  });
+
+  it("S4: two tabs of the same login, one reading and one elsewhere, excludes only the reader's session", async () => {
+    viewers({ [ROOM]: ["session-browser"] });
+    enqueueChatPush(context(), message(1));
+
+    await flushAllChatPushes();
+
+    // Both tabs share ONE login session, so the browser is skipped once — and
+    // the second SESSION (the phone) is never named, so it is still delivered to.
+    expect(push.mock.calls[0][0].excludeSessionIds).toEqual(["session-browser"]);
+  });
+
+  it("S5: the same conversation open on two devices skips both, and nothing else", async () => {
+    viewers({ [ROOM]: ["session-laptop", "session-phone"] });
+    enqueueChatPush(context(), message(1));
+
+    await flushAllChatPushes();
+
+    expect([...push.mock.calls[0][0].excludeSessionIds].sort()).toEqual([
+      "session-laptop",
+      "session-phone",
+    ]);
+  });
+
+  it("S6: a viewer entry whose own stamp has lapsed cannot silence the device forever", async () => {
+    // A tab that crashed, a gateway that died: the hash field outlives the
+    // socket. Its embedded expiry is what stops it suppressing for ever.
+    viewers({ [ROOM]: ["session-laptop"] }, -1);
+    enqueueChatPush(context(), message(1));
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].excludeSessionIds).toBeUndefined();
+  });
+
+  it("S7: an unreadable presence hint fails OPEN — the push goes out", async () => {
+    redisMock.hgetall.mockRejectedValue(new Error("redis down"));
+    enqueueChatPush(context(), message(1));
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].excludeSessionIds).toBeUndefined();
+  });
+
+  it("S8: a burst of five messages is still ONE notification, never five", async () => {
+    for (let i = 1; i <= 5; i++) enqueueChatPush(context(), message(i));
+
+    await flushAllChatPushes();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].data.messageCount).toBe("5");
+    // The client dedups on this, so one idempotency key stands for the burst.
+    expect(push.mock.calls[0][0].data.idempotencyKey).toBe("m5");
   });
 
   it("a group burst titles on the group and still carries the count", async () => {
@@ -364,13 +479,14 @@ describe("chat push coalescing — group @mentions", () => {
     expect(sent.showPreviewOverride("en")).toBe("You were mentioned");
   });
 
-  it("room-open suppression still cancels a mention", async () => {
+  it("the session reading the group is excluded from a mention push too", async () => {
     enqueueChatPush(groupCtx(), message(1, { mentioned: true }));
-    roomOpen(true);
+    viewers({ [GROUP]: ["session-laptop"] });
 
     await flushAllChatPushes();
 
-    expect(push).not.toHaveBeenCalled();
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].excludeSessionIds).toEqual(["session-laptop"]);
   });
 
   it("an edit that removes the mention cancels a push that was only that mention", async () => {

@@ -33,9 +33,9 @@ export type HlsQuality = (typeof HLS_QUALITY_LADDER)[number];
 /**
  * Rungs of the manual FLV quality picker we advertise to viewers. Same FFmpeg
  * renditions as {@link HLS_QUALITY_LADDER}, served as standalone HTTP-FLV
- * streams (`{key}_480p.flv`, `{key}_360p.flv`) by the SRS `abr` vhost. There is
- * no ABR/auto tier for HTTP-FLV — the source `{key}.flv` is offered as an
- * explicit "Source" rung instead. Must match the srs.conf `transcode` engines.
+ * streams (`{key}_480p.flv`, `{key}_360p.flv`) by the SRS `abr` vhost. The
+ * untranscoded `{key}.flv` stays available as `flvUrl` but is not a picker rung.
+ * Must match the srs.conf `transcode` engines.
  */
 export const FLV_QUALITY_LADDER = ["1080p", "720p", "480p", "360p"] as const;
 export type FlvQuality = (typeof FLV_QUALITY_LADDER)[number];
@@ -395,10 +395,10 @@ export function buildHlsQualityUrls(
  * isn't producing — they'd 404 in the player), same discipline as
  * {@link buildHlsQualityUrls}.
  *
- * Unlike HLS, the map includes an explicit **"Source"** rung (the untranscoded
- * `{key}.flv`) — HTTP-FLV has no ABR/auto tier. Pure function of the stored
- * `flvUrl` so the rungs stay consistent with the URL persisted on the row even
- * if `SRS_HLS_BASE` later changes.
+ * Keys are exactly {@link FLV_QUALITY_LADDER}; the untranscoded `{key}.flv` is
+ * the stream's `flvUrl`, not a rung. Pure function of the stored `flvUrl` so the
+ * rungs stay consistent with the URL persisted on the row even if
+ * `SRS_HLS_BASE` later changes.
  *
  * ⚠️ Only works when SRS runs the `transcode` block + `abr` vhost producing
  * `{key}_480p.flv` / `{key}_360p.flv` (see docker/srs/aimess.conf).
@@ -408,7 +408,7 @@ export function buildFlvQualityUrls(
 ): Record<string, string> {
   if (!flvUrl || !env.SRS_FLV_ABR) return {};
   if (!flvUrl.endsWith(".flv")) return {};
-  const map: Record<string, string> = { Source: flvUrl };
+  const map: Record<string, string> = {};
   for (const q of FLV_QUALITY_LADDER) {
     map[q] = flvUrl.replace(/\.flv$/, `_${q}.flv`);
   }

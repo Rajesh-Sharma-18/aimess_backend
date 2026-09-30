@@ -170,6 +170,12 @@ model Community {
   // permanently system-banned; such a close outlives the ban (reopenCommunity
   // refuses it) and is surfaced to clients as status CLOSED_BY_SYSTEM_BAN.
   statusClosedReasonCode String?
+  // Super Admin closure snapshot: the ACTIVE member count frozen when the
+  // community first became non-writable (owner CLOSED or platform SUSPENDED),
+  // so later leaves don't shrink the backoffice count. Cleared when both axes
+  // are open again. Null = open, or a legacy close from before this field
+  // (admin falls back to the live count).
+  memberCountAtClosure Int?
   deletedAt   DateTime?
   // Permanent invitation code for PRIVATE communities — generated once, never
   // rotated unless an admin explicitly requests regeneration (future feature).
@@ -257,6 +263,11 @@ model CommunityMember {
   // nothing reads it to authorize anything. Cleared on a fresh membership cycle,
   // like the other per-cycle markers above.
   joinedViaInviteCode String?
+  // Set on every ACTIVE/BANNED row when the community closes (see
+  // Community.memberCountAtClosure); the backoffice member list of a closed
+  // community is exactly these rows, whatever their status became later.
+  // Cleared on reopen.
+  closureRosterAt DateTime?
   joinedAt    DateTime              @default(now())
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
@@ -455,6 +466,12 @@ model CommunityMemberWarning {
 // CommunityInviteLink — shareable join link (distinct from 1:1 CommunityInvite).
 // `code` is server-generated, URL-safe; revoked / expired / exhausted is computed
 // at redeem time. Atomic conditional-update guards against over-redemption.
+//
+// A link carries no join POLICY: who gets in is the community's current privacy
+// alone (see `redeemInviteLink`). The retired `autoApprove` flag lived here and
+// said otherwise — it was the privacy in force when the link was minted, frozen,
+// and it outlived the switch that closed the community. Documents written by
+// older builds still carry it; nothing reads it.
 // -----------------------------------------------------------------------------
 model CommunityInviteLink {
   id          String    @id @default(auto()) @map("_id") @db.ObjectId
@@ -463,7 +480,6 @@ model CommunityInviteLink {
   createdBy   String // AuthUser.id of issuer
   maxUses     Int?
   usedCount   Int       @default(0)
-  autoApprove Boolean   @default(false)
   expiresAt   DateTime?
   revokedAt   DateTime?
   createdAt   DateTime  @default(now())
@@ -537,6 +553,11 @@ enum CommunityJoinReqStatus {
   // (the admin acted on the request) and CANCELLED (the user withdrew it), so
   // the audit trail and the system-message copy stay truthful.
   AUTO_RESOLVED
+  // The community became unable to take members (owner close, platform
+  // suspension, system-ban close, delete) while the request was PENDING.
+  // Terminal: a reopen never revives it — the user must file a new attempt.
+  // Which of those states ended it is on the community itself.
+  EXPIRED
 }
 
 enum CommunityInviteStatus {

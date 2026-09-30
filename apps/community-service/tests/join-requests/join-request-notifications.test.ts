@@ -15,29 +15,34 @@
  *     AND member_added routed through notifyMemberJoined with the enriched payload
  *     (requestId + communityName + moderatorRecipientIds) and the
  *     `community:member:joined` room broadcast.
- *   - redeemInviteLink (autoApprove) → member_added via notifyMemberJoined
- *     (actor === target so the consumer still welcomes the joiner).
+ *   - redeemInviteLink on a PUBLIC community → member_added via
+ *     notifyMemberJoined (actor === target so the consumer still welcomes the
+ *     joiner).
  */
 
 // Mock user-client so fetchUserSnapshots returns a Map with username: null
 // for any userId — the service uses username ?? null → null as expected.
-jest.mock("../../src/lib/user-client.js", () => ({
-  fetchUserSnapshots: jest.fn(
-    async (ids: string[]) =>
-      new Map(
-        ids.map((id) => [
-          id,
-          {
-            userId: id,
-            username: id,
-            displayName: "Mock User",
-            avatarObjectKey: null,
-          },
-        ])
-      )
-  ),
-  fetchAcceptedFriendIds: jest.fn(async () => new Set<string>()),
-}));
+jest.mock("../../src/lib/user-client.js", () => {
+  const resolved = async (ids: string[]) =>
+    new Map(
+      ids.map((id) => [
+        id,
+        {
+          userId: id,
+          username: id,
+          displayName: "Mock User",
+          avatarObjectKey: null,
+        },
+      ])
+    );
+  return {
+    fetchUserSnapshots: jest.fn(resolved),
+    // What the notification publishers read: resolved users only, no
+    // placeholder back-fill (an unresolved id is simply absent).
+    fetchUserSnapshotHits: jest.fn(resolved),
+    fetchAcceptedFriendIds: jest.fn(async () => new Set<string>()),
+  };
+});
 
 // Mock @aimess/storage so buildCommunityImageMedia / buildAvatarMedia
 // return a minimal MediaObject (downloadUrl: null) without hitting MinIO.
@@ -103,6 +108,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMembersByUserIds: jest.fn(),
     createMember: jest.fn(),
     reactivateMemberWithSnapshot: jest.fn(),
+    settleJoinRequestToMember: jest.fn(),
     countActiveMembers: jest.fn(),
     setMemberCount: jest.fn(),
     updateLastActivity: jest.fn(),
@@ -125,6 +131,7 @@ import { publishCommunityRoomEvent, publishChatUserEvent } from "@aimess/redis";
 
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
+import { fetchUserSnapshotHits } from "../../src/lib/user-client.js";
 import {
   publishCommunityJoinRequestApprovedSafe,
   publishCommunityJoinRequestRejectedSafe,
@@ -201,6 +208,11 @@ describe("approveJoinRequest — events + member fan-out", () => {
       .mockResolvedValueOnce(null)
       .mockResolvedValue(memberRow);
     repo.createMember.mockResolvedValue(memberRow);
+    repo.settleJoinRequestToMember.mockResolvedValue({
+      outcome: "ACTIVATED",
+      member: memberRow,
+      clearedMutes: 0,
+    });
     repo.countActiveMembers.mockResolvedValue(6);
     repo.setMemberCount.mockResolvedValue(undefined);
     repo.updateLastActivity.mockResolvedValue(undefined);
@@ -228,6 +240,30 @@ describe("approveJoinRequest — events + member fan-out", () => {
     });
     expect(typeof payload.decidedAt).toBe("string");
     expect(typeof payload.eventAt).toBe("string");
+  });
+
+  it("names the approver with their real display name", async () => {
+    await communityService.approveJoinRequest(CID, MOD, RID);
+
+    expect(pubApproved.mock.calls[0][0].decidedBy).toMatchObject({
+      userId: MOD,
+      displayName: "Mock User",
+    });
+  });
+
+  // Regression: a transient user-service miss used to publish the lookup
+  // placeholder "Unknown" as the approver's name, and every push/inbox row
+  // rendered "Unknown approved your request to join …".
+  it("never stamps a placeholder name when the approver lookup misses", async () => {
+    (fetchUserSnapshotHits as jest.Mock).mockResolvedValueOnce(new Map());
+
+    await communityService.approveJoinRequest(CID, MOD, RID);
+
+    expect(pubApproved.mock.calls[0][0].decidedBy).toEqual({
+      userId: MOD,
+      username: null,
+      displayName: "",
+    });
   });
 
   it("routes member_added through notifyMemberJoined with the enriched payload", async () => {
@@ -345,6 +381,14 @@ describe("rejectJoinRequest — previously-silent path now emits an event", () =
     repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD, "moderator-2"]);
   });
 
+  it("never stamps a placeholder decider name when the lookup misses", async () => {
+    (fetchUserSnapshotHits as jest.Mock).mockResolvedValueOnce(new Map());
+
+    await communityService.rejectJoinRequest(CID, MOD, RID);
+
+    expect(pubRejected.mock.calls[0][0].decidedBy.displayName).toBe("");
+  });
+
   it("publishes community.join_request_rejected addressed to the requester", async () => {
     await communityService.rejectJoinRequest(CID, MOD, RID);
 
@@ -425,6 +469,9 @@ describe("bulkRejectJoinRequests — emits one rejected event per pending reques
       },
     ]);
     repo.bulkUpdateJoinRequestStatus.mockResolvedValue(undefined);
+    repo.settlePendingJoinRequest.mockImplementation(
+      async (id: string, data: object) => ({ ...pendingRequest, id, ...data })
+    );
     repo.createAuditLog.mockResolvedValue(undefined);
     repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD, "moderator-2"]);
     // Neither requester is a member — a bulk decline never touches a request
@@ -497,7 +544,11 @@ describe("bulkApproveJoinRequests — join-request list refresh", () => {
       { ...pendingRequest, id: RID2, userId: REQUESTER2 },
     ]);
     repo.findMembersByUserIds.mockResolvedValueOnce([]); // existing-member probe
-    repo.createMember.mockResolvedValue(undefined);
+    repo.settleJoinRequestToMember.mockResolvedValue({
+      outcome: "ACTIVATED",
+      member: memberRow,
+      clearedMutes: 0,
+    });
     repo.bulkUpdateJoinRequestStatus.mockResolvedValue(undefined);
     repo.countActiveMembers.mockResolvedValue(7);
     repo.setMemberCount.mockResolvedValue(undefined);
@@ -528,7 +579,7 @@ describe("bulkApproveJoinRequests — join-request list refresh", () => {
   });
 });
 
-describe("redeemInviteLink (autoApprove) — member_added with welcome-able actor", () => {
+describe("redeemInviteLink (PUBLIC community) — member_added with welcome-able actor", () => {
   beforeEach(() => {
     repo.findInviteLinkByCode.mockResolvedValue({
       id: "link-1",
@@ -537,14 +588,13 @@ describe("redeemInviteLink (autoApprove) — member_added with welcome-able acto
       createdBy: MOD,
       maxUses: null,
       usedCount: 0,
-      autoApprove: true,
       revokedAt: null,
       expiresAt: null,
       createdAt: new Date("2026-06-01T00:00:00.000Z"),
     });
     repo.findById.mockResolvedValue(community);
-    // Auto-approve is honoured on a PRIVATE community only while the issuer
-    // is still a moderator — checked at redeem time.
+    // The fixture community is PUBLIC, which is the one and only reason this
+    // redeem admits directly rather than filing a request.
     repo.findMembership.mockResolvedValue({
       role: "MODERATOR",
       status: "ACTIVE",
@@ -559,7 +609,6 @@ describe("redeemInviteLink (autoApprove) — member_added with welcome-able acto
       createdBy: MOD,
       maxUses: null,
       usedCount: 1,
-      autoApprove: true,
       revokedAt: null,
       expiresAt: null,
       createdAt: new Date("2026-06-01T00:00:00.000Z"),
@@ -601,9 +650,7 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
     // service asked for ADMIN+MODERATOR in both places.
     repo.findActiveMemberIdsByRoles.mockImplementation(
       async (_communityId: string, roles: string[]) =>
-        roles.includes("MODERATOR")
-          ? [ADMIN, MOD, MOD_2]
-          : [ADMIN]
+        roles.includes("MODERATOR") ? [ADMIN, MOD, MOD_2] : [ADMIN]
     );
   });
 
@@ -625,6 +672,17 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
     expect(payload.adminRecipientIds).not.toContain(MOD);
     expect(payload.adminRecipientIds).not.toContain(MOD_2);
     expect(payload.adminRecipientIds).not.toContain(REQUESTER);
+  });
+
+  it("names the requester, and never with a placeholder when the lookup misses", async () => {
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+    expect(pubRequested.mock.calls[0][0].requesterDisplayName).toBe("Mock User");
+
+    pubRequested.mockClear();
+    repo.findJoinRequestByCommunityAndUser.mockResolvedValue(null);
+    (fetchUserSnapshotHits as jest.Mock).mockResolvedValueOnce(new Map());
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+    expect(pubRequested.mock.calls[0][0].requesterDisplayName).toBe("");
   });
 
   it("asks the roster for ADMIN alone when resolving notification recipients", async () => {
@@ -697,7 +755,9 @@ describe("createJoinRequest — realtime 'new request' list refresh (was complet
     // The row is unique per (community, requester) and recycled, so its id is
     // the same on every attempt — the admin surfaces need the attempt itself,
     // and `updatedAt` is what moves when the row is recycled.
-    expect(payload.lifecycle).toBe(`${RID}:${pendingRequest.updatedAt.getTime()}`);
+    expect(payload.lifecycle).toBe(
+      `${RID}:${pendingRequest.updatedAt.getTime()}`
+    );
     expect(payload.requestId).toBe(RID);
   });
 

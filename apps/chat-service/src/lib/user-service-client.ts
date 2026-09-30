@@ -13,9 +13,19 @@ export interface UserBatchEntry {
   isDeleted: boolean;
 }
 
+/**
+ * `null` means the LOOKUP FAILED (transport error, open circuit breaker); `[]`
+ * means the lookup succeeded and the service holds none of these ids.
+ *
+ * The two used to collapse into `[]`, and that is what let a transient blip be
+ * serialized as a permanent answer: the caller could not tell "this user does
+ * not exist" from "I could not ask", so it fell through to the
+ * `resolveDisplayName` placeholder and shipped "Unknown User" on a conversation
+ * row whose peer is perfectly real. See `UserSnapshotService.getUserSnapshotsMap`.
+ */
 export async function fetchUsersBatch(
   userIds: string[]
-): Promise<UserBatchEntry[]> {
+): Promise<UserBatchEntry[] | null> {
   if (userIds.length === 0) return [];
 
   try {
@@ -32,13 +42,14 @@ export async function fetchUsersBatch(
     logger.warn(
       `userGrpcClient|bulkGetUserSnapshots error: ${err instanceof Error ? err.message : String(err)}`
     );
-    return [];
+    return null;
   }
 }
 
+/** Same `null` = lookup failed / `[]` = nothing found contract as {@link fetchUsersBatch}. */
 export async function fetchAccountsBatch(
   userIds: string[]
-): Promise<Array<{ userId: string; account: string }>> {
+): Promise<Array<{ userId: string; account: string }> | null> {
   if (userIds.length === 0) return [];
 
   try {
@@ -47,6 +58,6 @@ export async function fetchAccountsBatch(
     logger.warn(
       `authGrpcClient|bulkGetAccounts error: ${err instanceof Error ? err.message : String(err)}`
     );
-    return [];
+    return null;
   }
 }

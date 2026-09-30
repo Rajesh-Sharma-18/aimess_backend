@@ -34,7 +34,9 @@ import { createMessageBatcher } from "../message-batcher.js";
 import {
   chatOpenRoomKey,
   clearChatAttention,
+  clearChatViewer,
   markChatAttention,
+  markChatViewer,
 } from "@aimess/redis";
 
 /** Re-stamp the open-community hint at most this often (its TTL is 120 s). */
@@ -679,6 +681,7 @@ export function registerCommunityNamespace(
     void socket.join(`user:${userId}`);
     void socket.join(`session:${sessionId}`);
     logger.debug(`/community connected userId=${userId}`);
+    let socketViewing = true;
 
     // Resolve sender identity ONCE per connection (gRPC snapshot + avatar
     // presign) so typing broadcasts carry userDetails without a per-event fetch.
@@ -1015,14 +1018,26 @@ export function registerCommunityNamespace(
                 redisPub,
                 chatOpenRoomKey(userId, previous)
               );
+              void clearChatViewer(redisPub, userId, previous, socket.id);
             }
             socket.data.activeCommunityId = communityId;
-            // Push suppression reads the same key family the /chat side writes,
-            // so "already reading it" means one thing across all three surfaces.
+            // Both attention facts, written the same way the /chat side writes
+            // them, so "already reading it" means one thing across all three
+            // surfaces: the user-wide open-room hint for unread/read state, and
+            // the per-socket viewer entry that push delivery skips a device for.
             void markChatAttention(
               redisPub,
               chatOpenRoomKey(userId, communityId)
             );
+            if (sessionId && socketViewing) {
+              void markChatViewer(
+                redisPub,
+                userId,
+                communityId,
+                sessionId,
+                socket.id
+              );
+            }
           }
           // Also join the typing room (idempotent — safe even if auto-joined
           // at connect; does NOT get left on community:leave so sidebar typing
@@ -1050,6 +1065,7 @@ export function registerCommunityNamespace(
             redisPub,
             chatOpenRoomKey(userId, r.data.communityId)
           );
+          void clearChatViewer(redisPub, userId, r.data.communityId, socket.id);
         }
         ackOk(callback, "SOCKET_COMMUNITY_LEFT", locale);
       }
@@ -1802,8 +1818,29 @@ export function registerCommunityNamespace(
       if (now - lastAttentionRefreshAt < ATTENTION_REFRESH_MS) return;
       lastAttentionRefreshAt = now;
       void markChatAttention(redisPub, chatOpenRoomKey(userId, openId));
+      if (sessionId && socketViewing) {
+        void markChatViewer(redisPub, userId, openId, sessionId, socket.id);
+      }
     };
     socket.conn.on("packet", onCommunityPacket);
+
+    socket.on("presence:heartbeat", (payload: unknown) => {
+      const beat = payload as
+        | { appState?: string; focused?: boolean }
+        | undefined;
+      const viewing =
+        (beat?.appState ?? "FOREGROUND") !== "BACKGROUND" &&
+        beat?.focused !== false;
+      if (viewing === socketViewing) return;
+      socketViewing = viewing;
+      const openId = socket.data.activeCommunityId as string | undefined;
+      if (!userId || !openId) return;
+      if (!viewing) {
+        void clearChatViewer(redisPub, userId, openId, socket.id);
+      } else if (sessionId) {
+        void markChatViewer(redisPub, userId, openId, sessionId, socket.id);
+      }
+    });
 
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/community disconnected userId=${userId} reason=${reason}`);
@@ -1811,6 +1848,7 @@ export function registerCommunityNamespace(
       const openId = socket.data.activeCommunityId as string | undefined;
       if (userId && openId) {
         void clearChatAttention(redisPub, chatOpenRoomKey(userId, openId));
+        void clearChatViewer(redisPub, userId, openId, socket.id);
       }
 
       // Clear session expiry timers.

@@ -1,5 +1,5 @@
 import { signAccessToken } from "@aimess/auth-jwt";
-import { NotFoundError, UnauthorizedError } from "@aimess/errors";
+import { ForbiddenError, NotFoundError, UnauthorizedError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import {
   publishAdminActivitySafe,
@@ -51,7 +51,7 @@ function parseExpiresInSeconds(value: string): number {
   return Math.floor(seconds);
 }
 
-// Refresh-token reuse trips the tripwire and pulls EVERY session for the account. The
+// Refresh-token reuse trips the tripwire and pulls the replayed session. The
 // platform did that, not the user, so it is recorded as SYSTEM against the user.
 function auditTokenReuseRevoke(userId: string, revokedSessions: number): void {
   publishAdminActivitySafe({
@@ -82,61 +82,134 @@ function auditTokenReuseRevoke(userId: string, revokedSessions: number): void {
 const REFRESH_ROTATION_GRACE_SECONDS = 60;
 
 /**
+ * A "Login Detected" alert is ABOUT one session, and that session may not
+ * answer it — not "It's Me", not "Terminate". Both sides belong to the same
+ * account, so a `userId` check proves nothing; session identity is the only
+ * thing that separates the device raising the alarm from the device that
+ * caused it.
+ *
+ * Deliberately NOT applied to `revokeSession`: signing the current device out
+ * is what "Sign out this device" in Connected Devices does, it leaves the
+ * alert PENDING for the account's other sessions (only a REMOTE_SIGNOUT
+ * records TERMINATED), and so it gives the new session nothing.
+ */
+function assertNotSelfSecurityAction(
+  currentSessionId: string,
+  targetSessionId: string
+): void {
+  if (currentSessionId && currentSessionId === targetSessionId) {
+    throw new ForbiddenError("AUTH_SESSION_SELF_ACTION_FORBIDDEN");
+  }
+}
+
+/**
  * Decide whether a reuse of an already-rotated refresh token is a benign replay
- * or a stolen credential — and revoke everything if it is the latter.
+ * or a stolen credential — and revoke the session if it is the latter.
  *
- * Returns normally for a replay inside the grace window. Throws
- * AUTH_REFRESH_TOKEN_INVALID otherwise, after revoking every session for the
- * account, which is the tripwire that makes rotation worth doing at all.
- *
- * The rotation time is the successor's `createdAt`: the successor is created in
- * the same transaction that revokes its parent, so it needs no extra column.
+ * Returns the chain head to rotate for a concurrent race (inside the grace
+ * window) or a lost response (see `lostResponseHead`). Throws
+ * AUTH_REFRESH_TOKEN_INVALID otherwise, after revoking the replayed session.
  */
 async function assertNotStolenReplay(stored: {
   id: string;
   userId: string;
+  sessionId: string;
   rotatedToId: string | null;
 }): Promise<{ benignReplayOfTokenId: string } | null> {
   if (stored.rotatedToId) {
     const successor = await refreshTokenRepository.findSuccessor(
       stored.rotatedToId
     );
-    const rotatedAt = successor?.createdAt;
-    const withinGrace =
-      rotatedAt !== undefined &&
-      Date.now() - rotatedAt.getTime() <= REFRESH_ROTATION_GRACE_SECONDS * 1000;
+    const headId = successor
+      ? (concurrentRaceHead(successor) ??
+        (await lostResponseHead(stored.id, successor)))
+      : null;
 
-    // A successor that has itself been rotated or revoked means the chain moved
-    // on: this is not the immediate race, so the grace does not apply.
-    const successorStillCurrent =
-      successor !== null &&
-      successor !== undefined &&
-      successor.rotatedToId === null &&
-      successor.revokedAt === null;
-
-    if (withinGrace && successorStillCurrent) {
-      logger.warn("refresh token replayed inside the rotation grace window", {
+    if (headId) {
+      logger.warn("refresh token replay accepted as benign", {
         service: "auth-service",
         userId: stored.userId,
       });
-      // The caller continues from the SUCCESSOR, not from the token it was
+      // The caller continues from the chain HEAD, not from the token it was
       // handed: that one is spent, and its `revokedAt` would otherwise reject
-      // the request a few lines further down. Rotating the successor keeps the
-      // chain single-threaded, so a second replay still trips the tripwire.
-      return { benignReplayOfTokenId: successor.id };
+      // the request a few lines further down. Rotating the head keeps the
+      // chain single-threaded.
+      return { benignReplayOfTokenId: headId };
     }
   }
 
-  const active = await sessionRepository.listActiveSessionIds(stored.userId);
-  await sessionRepository.revokeAllForUser(
+  // Theft is contained to the session whose chain was replayed: the thief only
+  // ever held this session's token, and the account's other devices did nothing
+  // wrong — signing them all out made every lost response an account-wide logout.
+  const deviceId = await sessionRepository.getDeviceId(
+    stored.sessionId,
+    stored.userId
+  );
+  const result = await sessionRepository.revokeForUser(
     stored.userId,
+    stored.sessionId,
     SessionRevokeReason.TOKEN_REUSE_DETECTED
   );
-  await markSessionsRevoked(active.map((row) => row.id));
-  // All sessions revoked, so all push tokens go with them.
-  publishAllSessionsRevokedSafe({ userId: stored.userId });
-  auditTokenReuseRevoke(stored.userId, active.length);
+  if (result.revoked) {
+    await markSessionRevoked(stored.sessionId);
+    publishSessionDeviceRevokedSafe({
+      userId: stored.userId,
+      sessionId: stored.sessionId,
+      deviceId,
+    });
+    void publishSessionRevokedEvent(redis, stored.userId, stored.sessionId).catch(
+      () => undefined
+    );
+    auditTokenReuseRevoke(stored.userId, 1);
+  }
   throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
+}
+
+type ChainLink = {
+  id: string;
+  revokedAt: Date | null;
+  rotatedToId: string | null;
+  replayOfId: string | null;
+  createdAt: Date;
+};
+
+const isCurrent = (link: ChainLink) =>
+  link.rotatedToId === null && link.revokedAt === null;
+
+// Two callers refreshing at once with the same token: the successor was minted
+// moments ago and nobody has moved past it yet.
+function concurrentRaceHead(successor: ChainLink): string | null {
+  const withinGrace =
+    Date.now() - successor.createdAt.getTime() <=
+    REFRESH_ROTATION_GRACE_SECONDS * 1000;
+  return withinGrace && isCurrent(successor) ? successor.id : null;
+}
+
+const MAX_REPLAY_CHAIN = 5;
+
+// The holder never received the rotation's response (timeout, frozen or killed
+// app) and is replaying its last stored token, however long ago that was. Benign
+// only while nobody else has presented any token after it: the successor was
+// minted by the original rotation or by an earlier replay of this same token,
+// and every later link by a replay of this same token. Two holders alternating
+// on one chain break that on the first alternation — each replays a token whose
+// successor was minted for the other — so theft still trips the wire.
+async function lostResponseHead(
+  presentedId: string,
+  successor: ChainLink
+): Promise<string | null> {
+  if (successor.replayOfId !== null && successor.replayOfId !== presentedId) {
+    return null;
+  }
+  let link = successor;
+  for (let hop = 0; hop < MAX_REPLAY_CHAIN; hop++) {
+    if (isCurrent(link)) return link.id;
+    if (!link.rotatedToId) return null;
+    const next = await refreshTokenRepository.findSuccessor(link.rotatedToId);
+    if (!next || next.replayOfId !== presentedId) return null;
+    link = next;
+  }
+  return null;
 }
 
 // The refresh token carries its own lifetime: whatever window it was minted
@@ -175,8 +248,8 @@ export const sessionService = {
     }
 
     // Reuse of an already-rotated token. `assertNotStolenReplay` reports the
-    // narrow race where the client had not yet stored the replacement, and
-    // otherwise revokes every session and throws — the tripwire that makes
+    // race or lost response where the client never stored the replacement, and
+    // otherwise revokes the session and throws — the tripwire that makes
     // rotation worth doing.
     const replay = stored.rotatedToId
       ? await assertNotStolenReplay(stored)
@@ -241,6 +314,7 @@ export const sessionService = {
       sessionId: stored.sessionId,
       newTokenHash: hashToken(newRefreshToken),
       newExpiresAt: newRefreshExpiresAt,
+      replayOfId: replay ? stored.id : undefined,
     });
 
     const accessToken = signAccessToken({
@@ -270,8 +344,8 @@ export const sessionService = {
     }
 
     // A token that has already been rotated is either a replay we caused, or a
-    // stolen one. `assertNotStolenReplay` tells them apart by how long ago the
-    // rotation happened; a genuine reuse revokes every session.
+    // stolen one. `assertNotStolenReplay` tells them apart by what happened to
+    // the chain after it; a genuine reuse revokes the session.
     const replay = stored.rotatedToId
       ? await assertNotStolenReplay(stored)
       : null;
@@ -311,8 +385,11 @@ export const sessionService = {
     const accessTokenExpiresIn = parseExpiresInSeconds(
       env.JWT_ACCESS_EXPIRES_IN
     );
-    const refreshTokenExpiresIn = parseExpiresInSeconds(
-      env.JWT_REFRESH_EXPIRES_IN
+    // Same as refresh(): the session keeps the lifetime it was issued with, or a
+    // single socket refresh collapses a 30-day "remember me" session to 7 days.
+    const refreshTokenExpiresIn = rotatedTokenLifetimeSeconds(
+      stored.createdAt,
+      stored.expiresAt
     );
 
     // Rotate, exactly as `refresh()` does.
@@ -322,7 +399,7 @@ export const sessionService = {
     // tripped the reuse detection that protects `refresh()` — the thief simply
     // avoided the endpoint that rotates. Rotating here closes that: the moment
     // either party uses the old token again, the replay check below fires and
-    // every session is revoked.
+    // the session is revoked.
     //
     // The new token is RETURNED, so the caller can store it. The gateway's
     // `auth:refresh` socket handler relays it to the client for the same
@@ -334,6 +411,7 @@ export const sessionService = {
       sessionId: stored.sessionId,
       newTokenHash: hashToken(newRefreshToken),
       newExpiresAt: new Date(Date.now() + refreshTokenExpiresIn * 1000),
+      replayOfId: replay ? stored.id : undefined,
     });
 
     const accessToken = signAccessToken({
@@ -515,7 +593,18 @@ export const sessionService = {
    * trusted. The session itself is untouched; only the notification status
    * changes so the UI resolves without action buttons.
    */
-  async trustSession(userId: string, targetSessionId: string): Promise<void> {
+  async trustSession(
+    userId: string,
+    currentSessionId: string,
+    targetSessionId: string
+  ): Promise<void> {
+    // A "Login Detected" alert may never be answered by the session it is
+    // ABOUT. Same user on both sides, so `userId` decides nothing here — only
+    // the session identity does. Without this an attacker who has just signed
+    // in with stolen credentials clears the warning off the owner's other
+    // devices with one call, which is the whole point of the alert.
+    assertNotSelfSecurityAction(currentSessionId, targetSessionId);
+
     // Verify the session belongs to this user (IDOR guard).
     const session = await sessionRepository.findActiveForUser(
       userId,

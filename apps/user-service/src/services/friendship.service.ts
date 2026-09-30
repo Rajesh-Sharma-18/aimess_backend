@@ -7,6 +7,7 @@ import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import {
   FriendSocketEvents,
   ConversationSocketEvents,
+  type FriendRequestInvalidatedPayload,
   type PendingFriendRequestConversation,
 } from "@aimess/shared-types";
 
@@ -32,6 +33,7 @@ import {
 } from "../lib/friendship-view.js";
 import { scopeAdmits } from "../lib/privacy-scope.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
+import { friendsRepository } from "../repositories/friends.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { userCache } from "../lib/user-cache.js";
@@ -374,6 +376,85 @@ function emitToPair(
   );
 }
 
+/** Side effects of a PENDING → CANCELLED row, shared by cancel and the ban sweep. */
+async function announceCancelled(updated: FriendshipRow): Promise<void> {
+  const { requesterName, requesterAvatarUrl } = await loadFriendshipParties(
+    updated.requesterId,
+    updated.addresseeId
+  );
+  publishFriendCancelledSafe({
+    friendshipId: updated.id,
+    requesterId: updated.requesterId,
+    addresseeId: updated.addresseeId,
+    requesterName,
+    requesterAvatarUrl,
+    cancelledAt: updated.cancelledAt!.toISOString(),
+  });
+  emitToPair(updated, FriendSocketEvents.REQUEST_CANCELLED);
+  emitConversationFriendRequestRejected(updated, "CANCELLED");
+}
+
+function otherParty(
+  row: { requesterId: string; addresseeId: string },
+  userId: string
+): string {
+  return row.requesterId === userId ? row.addresseeId : row.requesterId;
+}
+
+/** Tell `to` that `bannedId` is gone; never names the ban. */
+function emitInvalidated(
+  to: string,
+  bannedId: string,
+  friendshipId: string | null
+): void {
+  emitFriendSelfEventSafe(to, FriendSocketEvents.REQUEST_INVALIDATED, {
+    peerId: bannedId,
+    friendshipId,
+    reason: "unavailable",
+  } satisfies FriendRequestInvalidatedPayload);
+}
+
+/**
+ * Close one PENDING request with a platform-banned user, quietly, exactly
+ * once. The cancel is PENDING-guarded, so whichever of the ban sweep or a
+ * stale Reject/Delete gets there first announces it and the other finds
+ * nothing (null) — no duplicate notification or socket event.
+ */
+async function closeForBannedUser(
+  row: { id: string },
+  bannedId: string
+): Promise<FriendshipRow | null> {
+  const updated = await friendshipRepository.cancel(row.id).catch(() => null);
+  if (!updated) return null;
+  await announceCancelled(updated);
+  emitInvalidated(otherParty(updated, bannedId), bannedId, updated.id);
+  return updated;
+}
+
+/**
+ * Reject/Delete from a stale card whose peer is platform-banned. The ban
+ * sweep closes these requests; another device may still show the card, and
+ * tapping it must resolve with 200 rather than "not found":
+ *   - CANCELLED (already closed) → the row as-is, no write, no events;
+ *   - PENDING (sweep not landed yet) → closed here the way the sweep would.
+ * Returns null when the peer is not banned or the row is in any other state,
+ * so the caller's ordinary validation (and its 404) still applies.
+ */
+async function resolveWithBannedPeer(
+  row: FriendshipRow,
+  callerId: string
+): Promise<FriendshipRow | null> {
+  if (row.status !== "PENDING" && row.status !== "CANCELLED") return null;
+  const peerId = otherParty(row, callerId);
+  if ((await bannedAmong([peerId])).size === 0) return null;
+  if (row.status === "CANCELLED") return row;
+  return (
+    (await closeForBannedUser(row, peerId)) ??
+    (await friendshipRepository.findById(row.id)) ??
+    row
+  );
+}
+
 export const friendshipService = {
   async listRequests(
     me: string,
@@ -477,9 +558,10 @@ export const friendshipService = {
     if (!addresseeProfile || addresseeProfile.deletedAt) {
       throw new NotFoundError("USER_PROFILE_NOT_FOUND");
     }
-    // A platform-banned account answers exactly like a missing one.
+    // Platform-banned: 404 with the peer-facing "no longer available" key, and
+    // no row is written.
     if ((await bannedAmong([addresseeId])).size > 0) {
-      throw new NotFoundError("USER_PROFILE_NOT_FOUND");
+      throw new NotFoundError("USER_NO_LONGER_AVAILABLE");
     }
 
     const blocks = await friendshipRepository.findAllBlocks(requesterId);
@@ -606,24 +688,35 @@ export const friendshipService = {
     userId: string
   ): Promise<FriendshipRow> {
     const friendship = await friendshipRepository.findById(friendshipId);
-    if (
-      !friendship ||
-      friendship.addresseeId !== userId ||
-      friendship.status !== "PENDING"
-    ) {
+    if (!friendship || friendship.addresseeId !== userId) {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
     // Accepting a banned requester's request would mint a friendship with an
-    // account no peer can reach; it reads as a request that no longer exists.
+    // account no peer can reach. Checked before the status so a stale card
+    // whose request the ban sweep already closed gets the same answer.
     if ((await bannedAmong([friendship.requesterId])).size > 0) {
+      throw new NotFoundError("USER_NO_LONGER_AVAILABLE");
+    }
+    if (friendship.status !== "PENDING") {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
 
-    const [updated] = await friendshipRepository.acceptWithCounters(
-      friendshipId,
-      friendship.requesterId,
-      friendship.addresseeId
-    );
+    // The accept is conditional on the row still being PENDING, so a ban sweep
+    // (or cancel) that landed after the read above makes it fail atomically.
+    const [updated] = await friendshipRepository
+      .acceptWithCounters(
+        friendshipId,
+        friendship.requesterId,
+        friendship.addresseeId
+      )
+      .catch(async (err: unknown) => {
+        if ((err as { code?: string })?.code !== "P2025") throw err;
+        throw new NotFoundError(
+          (await bannedAmong([friendship.requesterId])).size > 0
+            ? "USER_NO_LONGER_AVAILABLE"
+            : "FRIEND_REQUEST_NOT_FOUND"
+        );
+      });
 
     await Promise.all([
       userCache.invalidateProfile(friendship.requesterId),
@@ -668,11 +761,12 @@ export const friendshipService = {
     userId: string
   ): Promise<FriendshipRow> {
     const friendship = await friendshipRepository.findById(friendshipId);
-    if (
-      !friendship ||
-      friendship.addresseeId !== userId ||
-      friendship.status !== "PENDING"
-    ) {
+    if (!friendship || friendship.addresseeId !== userId) {
+      throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
+    }
+    const resolved = await resolveWithBannedPeer(friendship, userId);
+    if (resolved) return resolved;
+    if (friendship.status !== "PENDING") {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
 
@@ -722,29 +816,64 @@ export const friendshipService = {
     const friendship = await friendshipRepository.findById(friendshipId);
     if (
       !friendship ||
-      (friendship.requesterId !== userId &&
-        friendship.addresseeId !== userId) ||
-      friendship.status !== "PENDING"
+      (friendship.requesterId !== userId && friendship.addresseeId !== userId)
     ) {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
+    const resolved = await resolveWithBannedPeer(friendship, userId);
+    if (resolved) return resolved;
+    if (friendship.status !== "PENDING") {
+      throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
+    }
 
-    const updated = await friendshipRepository.cancel(friendshipId);
-    const { requesterName, requesterAvatarUrl } = await loadFriendshipParties(
-      friendship.requesterId,
-      friendship.addresseeId
-    );
-    publishFriendCancelledSafe({
-      friendshipId: updated.id,
-      requesterId: friendship.requesterId,
-      addresseeId: friendship.addresseeId,
-      requesterName,
-      requesterAvatarUrl,
-      cancelledAt: updated.cancelledAt!.toISOString(),
-    });
-    emitToPair(updated, FriendSocketEvents.REQUEST_CANCELLED);
-    emitConversationFriendRequestRejected(updated, "CANCELLED");
+    const updated = await friendshipRepository
+      .cancel(friendshipId)
+      .catch((err: unknown) => {
+        if ((err as { code?: string })?.code !== "P2025") throw err;
+        throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
+      });
+    await announceCancelled(updated);
     return updated;
+  },
+
+  /**
+   * Platform-ban sweep (called when the profile mirror flips to BANNED).
+   *
+   * Every PENDING request with `userId`, either direction, is cancelled the
+   * same quiet way {@link cancelRequest} does — `friend.cancelled` deletes both
+   * sides' notification rows (badge included) and the pair gets the ordinary
+   * `friend:request:cancelled`. Friendships are NOT touched: the friends list
+   * already hides banned peers off the Redis ban key, so an unban restores
+   * them for free. Each other party additionally gets `friend:request:
+   * invalidated` so an open requests screen, friends list or profile drops
+   * the peer live. Pending requests are never resurrected on unban.
+   *
+   * Idempotent: a second run finds no PENDING rows.
+   */
+  async invalidateForBannedUser(userId: string): Promise<void> {
+    const rows = await friendshipRepository.findAllForUser(userId);
+    for (const row of rows) {
+      if (row.status === "PENDING") {
+        await closeForBannedUser(row, userId);
+      } else if (row.status === "ACCEPTED") {
+        emitInvalidated(otherParty(row, userId), userId, null);
+      }
+    }
+  },
+
+  /**
+   * Unban (profile mirror back to ACTIVE): the friendships the ban hid are
+   * visible again, so each friend's list and profile counts re-read. Uses the
+   * verbless `friend:relationship:sync` every client already handles. The
+   * pending requests the ban closed stay closed.
+   */
+  async announceRestoredUser(userId: string): Promise<void> {
+    const friendIds = await friendsRepository.listAcceptedFriendIds(userId);
+    for (const friendId of friendIds) {
+      emitFriendSelfEventSafe(friendId, FriendSocketEvents.RELATIONSHIP_SYNC, {
+        peerId: userId,
+      });
+    }
   },
 
   async autoConnectAll(callerId: string): Promise<AutoConnectResult> {

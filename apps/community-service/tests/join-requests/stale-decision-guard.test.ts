@@ -23,6 +23,16 @@ jest.mock("../../src/lib/user-client.js", () => ({
         ])
       )
   ),
+  // Notification publishers read resolved users only (no placeholder back-fill).
+  fetchUserSnapshotHits: jest.fn(
+    async (ids: string[]) =>
+      new Map(
+        ids.map((id) => [
+          id,
+          { userId: id, username: id, displayName: "Mock User", avatarObjectKey: null },
+        ])
+      )
+  ),
   fetchAcceptedFriendIds: jest.fn(async () => new Set<string>()),
 }));
 
@@ -50,6 +60,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMemberByUserId: jest.fn(),
     createMember: jest.fn(),
     reactivateMemberWithSnapshot: jest.fn(),
+    settleJoinRequestToMember: jest.fn(),
     settlePendingJoinRequest: jest.fn(),
     updateJoinRequest: jest.fn(),
     countActiveMembers: jest.fn(),
@@ -139,6 +150,11 @@ beforeEach(() => {
     snapshotDisplayName: "The Requester",
     snapshotAvatarKey: null,
   });
+  repo.settleJoinRequestToMember.mockResolvedValue({
+    outcome: "ACTIVATED",
+    member: { userId: REQUESTER, role: "MEMBER" },
+    clearedMutes: 0,
+  });
   repo.settlePendingJoinRequest.mockResolvedValue({
     ...currentAttempt,
     status: "REJECTED",
@@ -160,8 +176,7 @@ describe("approve", () => {
     ).rejects.toMatchObject({ message: "COMMUNITY_JOIN_REQUEST_NOT_PENDING" });
 
     // The decisive part: nobody was admitted off the stale card.
-    expect(repo.createMember).not.toHaveBeenCalled();
-    expect(repo.reactivateMemberWithSnapshot).not.toHaveBeenCalled();
+    expect(repo.settleJoinRequestToMember).not.toHaveBeenCalled();
   });
 
   it("accepts a decision raised for the attempt that is actually pending", async () => {
@@ -169,7 +184,7 @@ describe("approve", () => {
       communityService.approveJoinRequest(CID, ADMIN, RID, CURRENT_LIFECYCLE)
     ).resolves.toMatchObject({ request: { requestId: RID } });
 
-    expect(repo.createMember).toHaveBeenCalledTimes(1);
+    expect(repo.settleJoinRequestToMember).toHaveBeenCalledTimes(1);
   });
 
   it("leaves the in-app requests list alone — it sends no token", async () => {
@@ -177,7 +192,7 @@ describe("approve", () => {
       communityService.approveJoinRequest(CID, ADMIN, RID)
     ).resolves.toMatchObject({ request: { requestId: RID } });
 
-    expect(repo.createMember).toHaveBeenCalledTimes(1);
+    expect(repo.settleJoinRequestToMember).toHaveBeenCalledTimes(1);
   });
 });
 

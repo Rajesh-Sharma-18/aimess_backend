@@ -97,6 +97,17 @@ export interface NotificationDTO {
    * on whether the buttons still apply.
    */
   expiresAt?: Date;
+  /**
+   * Login Detected rows only: whether THIS session may answer THIS alert.
+   *
+   * An authorization verdict, not an identifier — the viewer never has to
+   * compare session ids itself, and no id that isn't already on the row is put
+   * on the wire to let it. False for the session the alert is about, and false
+   * once the alert is resolved. The server re-checks both on the action
+   * endpoints; this exists so the buttons are not offered where they would be
+   * refused.
+   */
+  actions?: { canTerminate: boolean; canConfirm: boolean };
   /** Kept for backward compatibility with clients that dug into it. */
   payload: Record<string, unknown>;
   actor?: {
@@ -194,6 +205,32 @@ function repairLoginBody(data: Record<string, string>): string {
 }
 
 /**
+ * May the reading session answer this Login Detected alert?
+ *
+ * Two independent reasons it may not, and both are per NOTIFICATION, never per
+ * device: the alert is ABOUT this very session (it must not be able to approve
+ * or terminate its own login — the same account owns both sides, so `userId`
+ * separates nothing), or somebody has already resolved it. The same pair is
+ * re-checked on the action endpoints; this is only what keeps a button from
+ * being offered where it would be refused.
+ *
+ * `resolvedRow` is `loginResolvedAt` OR `data.actionTaken`: the claim column
+ * is the authority for rows written since it existed, the context bag is what
+ * older rows carry.
+ */
+function loginActionsFor(
+  row: Notification,
+  data: Record<string, string>,
+  viewerSessionId?: string | null
+): { canTerminate: boolean; canConfirm: boolean } {
+  const resolved = Boolean(row.loginResolvedAt) || Boolean(nonEmpty(data.actionTaken));
+  const isTriggeringSession =
+    Boolean(viewerSessionId) && row.loginSessionId === viewerSessionId;
+  const allowed = !resolved && !isTriggeringSession;
+  return { canTerminate: allowed, canConfirm: allowed };
+}
+
+/**
  * Freshly-resolved actor/community avatars, keyed by id, built once per page
  * by `resolveAvatarRefresh` (notification.service.ts) and threaded through to
  * every row. Takes priority over anything stored in `payload.data` — the
@@ -255,6 +292,7 @@ function scrubDeletedActor(
   for (const key of [
     "actorDisplayName",
     "requesterDisplayName",
+    "decidedByDisplayName",
     "actorAvatarUrl",
     "requesterAvatarUrl",
     "actorUsername",
@@ -322,6 +360,26 @@ function localizeRow(
   };
 }
 
+/** The same actor-name keys the deleted-actor scrub blanks, set to the CURRENT name instead. */
+function withActorName(
+  data: Record<string, string>,
+  displayName: string
+): Record<string, string> {
+  const out: Record<string, string> = { ...data };
+  for (const key of [
+    "actorDisplayName",
+    "requesterDisplayName",
+    "decidedByDisplayName",
+  ]) {
+    if (key in out) out[key] = displayName;
+  }
+  const snap = parseJson(data.actorSnapshot) as
+    | Record<string, unknown>
+    | undefined;
+  if (snap) out.actorSnapshot = JSON.stringify({ ...snap, displayName });
+  return out;
+}
+
 /**
  * One-shot Notification row → response DTO. Reuses the existing
  * `resolveNotificationFriendship` enricher (friend actionability) — no new
@@ -335,7 +393,15 @@ export async function serializeNotification(
   // Defaults to the ambient request locale (`x-lang` on REST, the socket
   // handshake's language over gRPC), which is what makes the SAME row read
   // English on one device and Vietnamese on another.
-  locale: SupportedLocale = currentLocale()
+  locale: SupportedLocale = currentLocale(),
+  /**
+   * The reading device's own session. Only Login Detected rows care: it is
+   * what decides whether this session may act on the alert (see `actions` on
+   * the DTO). Absent on the realtime `notification:new` publish, which is
+   * correct — that frame is already withheld from the triggering session by
+   * `excludeSessionId`, so every socket that receives it may act.
+   */
+  viewerSessionId?: string | null
 ): Promise<NotificationDTO> {
   const storedPayload = (row.payload ?? {}) as {
     title?: string;
@@ -378,6 +444,7 @@ export async function serializeNotification(
     actorSnapshot?.displayName ||
     data.requesterDisplayName ||
     data.actorDisplayName ||
+    data.decidedByDisplayName ||
     "";
   const actor = actorId
     ? {
@@ -419,6 +486,7 @@ export async function serializeNotification(
     actorSnapshot?.displayName ?? "",
     data.actorDisplayName ?? "",
     data.requesterDisplayName ?? "",
+    data.decidedByDisplayName ?? "",
   ];
   const scrubbed = freshActor?.isDeleted
     ? scrubDeletedActor(payloadObj, data, publishedActorNames)
@@ -435,6 +503,7 @@ export async function serializeNotification(
           actorSnapshot?.displayName ?? "",
           data.actorDisplayName ?? "",
           data.requesterDisplayName ?? "",
+          data.decidedByDisplayName ?? "",
         ]
           .map((n) => n.trim())
           .filter((n) => n.length > 0 && n !== freshActor.displayName)
@@ -449,7 +518,8 @@ export async function serializeNotification(
     !(
       actorSnapshot?.displayName ||
       data.actorDisplayName ||
-      data.requesterDisplayName
+      data.requesterDisplayName ||
+      data.decidedByDisplayName
     )
   ) {
     for (const locale of ["en", "vi", "th"] as const) {
@@ -482,6 +552,13 @@ export async function serializeNotification(
       : {}),
     ...(payloadObj.body !== undefined
       ? { body: refreshName(payloadObj.body) }
+      : {}),
+    // …and on the raw blob's own name fields, which clients read directly
+    // (mobile renders `actorSnapshot.displayName`). A row stored while the
+    // producer's lookup missed carries "Unknown" / "" there, and leaving it
+    // would contradict the refreshed sentence right next to it.
+    ...(staleActorNames.length > 0 && payloadObj.data
+      ? { data: withActorName(payloadObj.data, freshActor!.displayName) }
       : {}),
   };
   const effectivePayload = stripInternalDirectives(refreshedPayload);
@@ -553,6 +630,9 @@ export async function serializeNotification(
       : {}),
     ...(nonEmpty(data.actionTaken) ? { actionTaken: data.actionTaken } : {}),
     ...(row.loginExpiresAt ? { expiresAt: row.loginExpiresAt } : {}),
+    ...(row.type === LOGIN_DETECTED_TYPE
+      ? { actions: loginActionsFor(row, data, viewerSessionId) }
+      : {}),
     payload: effectivePayload as Record<string, unknown>,
     ...(actor ? { actor } : {}),
     ...(community ? { community } : {}),

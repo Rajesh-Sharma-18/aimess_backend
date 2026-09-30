@@ -96,6 +96,16 @@ export const NOTIFICATION_MESSAGES = {
     en: "{{name}} ended the livestream in {{community}} after {{duration}}",
     th: "{{name}}จบไลฟ์สตรีมใน{{community}}หลังจาก {{duration}}",
   },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM: {
+    vi: "Hệ thống đã kết thúc buổi phát trực tiếp trong {{community}}",
+    en: "System ended the livestream in {{community}}",
+    th: "ระบบจบไลฟ์สตรีมใน{{community}}แล้ว",
+  },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM_DURATION: {
+    vi: "Hệ thống đã kết thúc buổi phát trực tiếp trong {{community}} sau {{duration}}",
+    en: "System ended the livestream in {{community}} after {{duration}}",
+    th: "ระบบจบไลฟ์สตรีมใน{{community}}หลังจาก {{duration}}",
+  },
   NOTIF_COMMUNITY_JOIN_REQUEST_APPROVED: {
     vi: "{{name}} đã chấp thuận yêu cầu tham gia {{community}} của bạn",
     en: "{{name}} approved your request to join {{community}}",

@@ -66,6 +66,7 @@ jest.mock("@aimess/redis", () => ({
   ...jest.requireActual("@aimess/redis"),
   publishChatUserEvent: jest.fn().mockResolvedValue(undefined),
   publishCommunityRoomEvent: jest.fn().mockResolvedValue(undefined),
+  publishUserSocketEvent: jest.fn().mockResolvedValue(undefined),
 }));
 
 // --- Storage strategy: prevent real MinIO connections ---------------------
@@ -98,6 +99,12 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     createMember: jest.fn(),
     createManyMembers: jest.fn().mockResolvedValue({ count: 0 }),
     reactivateMemberWithSnapshot: jest.fn(),
+    // Approve / bulk approve / PRIVATE→PUBLIC: guard + claim + member write in
+    // one transaction. Suites that approve set the outcome they need.
+    settleJoinRequestToMember: jest.fn(),
+    // Close / suspend / delete / reopen: default "nothing was pending".
+    expirePendingJoinRequests: jest.fn().mockResolvedValue([]),
+    settlePendingJoinRequest: jest.fn(),
     updateMember: jest.fn(),
     updateMemberStatus: jest.fn(),
     setMemberDismissed: jest.fn(),
@@ -173,6 +180,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityJoinRequestCancelledSafe: jest.fn(),
   publishCommunityJoinRequestedSafe: jest.fn(),
   publishCommunityJoinRequestRejectedSafe: jest.fn(),
+  publishCommunityJoinRequestRetractedSafe: jest.fn(),
   publishCommunityReportActionedSafe: jest.fn(),
   publishCommunityReportCreatedSafe: jest.fn(),
   publishCommunityLivestreamStartedSafe: jest.fn(),
@@ -319,6 +327,7 @@ jest.mock("../../src/grpc/chat.client.js", () => ({
   getChatClient: jest.fn().mockReturnValue({
     GetCommunityLastMessages: jest.fn(),
     GetCommunityMemberLastMessages: jest.fn(),
+    bulkMarkCommunityRead: jest.fn().mockResolvedValue(1),
   }),
 }));
 

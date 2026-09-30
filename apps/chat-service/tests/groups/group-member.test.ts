@@ -282,9 +282,9 @@ describe("POST /api/chat/group-members/:roomId/leave", () => {
     expect(res.status).toBe(200);
     expect(mocks.groupRoomRepo.disband).toHaveBeenCalledWith(
       ROOM,
-      TEST_USER_ID
+      TEST_USER_ID,
+      expect.any(Map)
     );
-    expect(mocks.groupMemberRepo.markAllLeft).toHaveBeenCalled();
     expect(mocks.groupMemberRepo.updateStatus).not.toHaveBeenCalled();
     expect(mocks.redis.publish).toHaveBeenCalledWith(
       `user:${TEST_USER_ID}`,

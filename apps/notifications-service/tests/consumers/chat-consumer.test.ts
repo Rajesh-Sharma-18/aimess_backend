@@ -58,6 +58,9 @@ jest.mock("../../src/config/redis.js", () => ({
     get: jest.fn(async () => null),
     set: jest.fn(async () => "OK"),
     del: mockRedisDel,
+    // Per-(user, room) viewers hash. Nobody is looking at anything here — the
+    // coalescer's session-level suppression has its own suite.
+    hgetall: jest.fn(async () => ({})),
     pipeline: () => {
       const replies: Array<[null, unknown]> = [];
       let claims = false;

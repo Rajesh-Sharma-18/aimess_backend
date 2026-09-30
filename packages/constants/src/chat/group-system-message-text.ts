@@ -31,6 +31,9 @@ export const ChatSystemMessageType = {
   FRIENDSHIP_BLOCKED: "FRIENDSHIP_BLOCKED",
   FRIENDSHIP_BANNED: "FRIENDSHIP_BANNED",
   AUTO_DELETE_UPDATED: "AUTO_DELETE_UPDATED",
+  /** Caller cleared / deleted their own copy of the history. Visible to that caller only. */
+  CONVERSATION_CLEARED: "CONVERSATION_CLEARED",
+  CONVERSATION_DELETED: "CONVERSATION_DELETED",
 } as const;
 
 export type ChatSystemMessageType =
@@ -73,7 +76,27 @@ export const CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   // A privacy setting change is chat-relevant enough to reorder the inbox — it
   // tells the other side their next message will disappear.
   AUTO_DELETE_UPDATED: true,
+  // Personal line on a history the caller just emptied: it must not become the
+  // row's preview (for everyone else it does not exist; for the caller the
+  // emptied row keeps reading as empty).
+  CONVERSATION_CLEARED: false,
+  CONVERSATION_DELETED: false,
 };
+
+/**
+ * The self-only clear/delete lines. Only the caller can ever read the row (it is
+ * hidden for everyone else at write time), so there is no third-person form.
+ */
+function conversationHistoryText(
+  event: string,
+  locale: SupportedLocale
+): string | null {
+  if (event === "CONVERSATION_CLEARED")
+    return t("SYS_CONVERSATION_CLEARED_SELF", locale);
+  if (event === "CONVERSATION_DELETED")
+    return t("SYS_CONVERSATION_DELETED_SELF", locale);
+  return null;
+}
 
 export function chatSystemMessageBumpsActivity(event: string): boolean {
   return (
@@ -229,6 +252,8 @@ export function buildGroupSystemFallbackText(
   viewerUserId?: string | null,
   locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
+  const historyLine = conversationHistoryText(event, locale);
+  if (historyLine) return historyLine;
   // Same legacy invite aliasing as buildPrivateSystemFallbackText below.
   const actor =
     (data.actorName as string) ||
@@ -517,6 +542,8 @@ export function buildPrivateSystemFallbackText(
   viewerUserId?: string | null,
   locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
+  const historyLine = conversationHistoryText(event, locale);
+  if (historyLine) return historyLine;
   // `inviterId`/`inviterName` is the SAME person under the older field names the
   // two invite writers used before they also wrote `actorId`/`actorName`. Rows
   // persisted then carry only the invite pair, so without this every one of them

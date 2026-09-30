@@ -20,6 +20,7 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import { assertAttachmentsVerified } from "../lib/attachment-guard.js";
+import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import {
   buildGroupSystemFallbackText,
   currentLocale,
@@ -1227,6 +1228,36 @@ export class GroupMessageService {
           // pointer freezes and this read stays unpublishable forever.
           await mayBroadcastReadReceipts(params.userId)
         )
+        .then((updated) => {
+          // Opening the transcript is a READ like any explicit mark-read, so it
+          // owes the same two effects: the nav badge is pushed only on
+          // `chat:unread_summary`, and the reader's other tabs/devices clear
+          // their row only on `read_sync`. Without them this path zeroed the
+          // stored counter silently — the list re-fetched 0 while the badge kept
+          // the pre-read total ("badge 1, no unread chat") until a reload.
+          if (!updated || member.unreadCount === updated.unreadCount) return;
+          notifyUnreadChanged(params.userId);
+          void this.redis
+            ?.publish(
+              `user:${params.userId}`,
+              JSON.stringify({
+                event: "read_sync",
+                data: {
+                  conversationId: params.roomId,
+                  readerId: params.userId,
+                  read_to_seq:
+                    (newest as { sequenceNumber?: number }).sequenceNumber ?? 0,
+                  unreadCount: updated.unreadCount,
+                  conversationType: "GROUP",
+                },
+              })
+            )
+            .catch((err: unknown) =>
+              logger.warn(
+                `GroupMessageService|getConversation|read_sync failed: ${String(err)}`
+              )
+            );
+        })
         .catch((err: unknown) => {
           logger.warn(
             `GroupMessageService|getConversation|advanceReadPointer failed: ${String(err)}`
