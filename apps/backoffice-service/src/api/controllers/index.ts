@@ -42,8 +42,11 @@ export {
   getBanReasons,
   listUserReports,
   listUserDevices,
+  listUserHistory,
   listUserCommunities,
   listOtherCommunityMembers,
+  listUserGroups,
+  listOtherGroupMembers,
   banUser,
   suspendUser,
   unbanUser,
@@ -118,3 +121,8 @@ export {
   getAdminPermissions,
   updateAdminPermissions,
 } from "./admin-account.controller.js";
+export {
+  getUserAccount,
+  updateUserAccount,
+  unlinkUserSocialAccount,
+} from "./user-account.controller.js";

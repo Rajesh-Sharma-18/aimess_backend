@@ -1168,6 +1168,52 @@ export const openApiSchemas = {
       note: { type: "string", maxLength: 2000, nullable: true },
     },
   },
+  AdminUpdateUserAccountRequest: {
+    type: "object",
+    additionalProperties: false,
+    minProperties: 1,
+    description:
+      "PATCH /admin/v1/users/{userId}. Send only changed fields. Profile fields are validated by user-service with the same rules as the user's own profile edit (30-character names, 280-character bio, lowercase a-z 0-9 _ username, minimum age 13). `email` is stored UNVERIFIED so the user proves ownership through the normal forgot-password OTP flow.",
+    properties: {
+      firstName: { type: "string" },
+      lastName: { type: "string" },
+      username: { type: "string" },
+      bio: { type: "string", nullable: true },
+      dateOfBirth: { type: "string", example: "1995-06-15" },
+      gender: {
+        type: "string",
+        nullable: true,
+        enum: ["MALE", "FEMALE", "NON_BINARY", "PREFER_NOT_TO_SAY", "OTHER"],
+      },
+      email: { type: "string", format: "email", maxLength: 254 },
+    },
+  },
+  AdminUserAccount: {
+    type: "object",
+    properties: {
+      userId: { type: "string" },
+      username: { type: "string" },
+      firstName: { type: "string" },
+      lastName: { type: "string" },
+      bio: { type: "string", nullable: true },
+      dateOfBirth: { type: "string", nullable: true, example: "1995-06-15" },
+      gender: { type: "string", nullable: true },
+      email: { type: "string", nullable: true },
+      emailVerified: { type: "boolean" },
+      hasPassword: { type: "boolean" },
+      linkedAccounts: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            provider: { type: "string", enum: ["GOOGLE", "APPLE"] },
+            email: { type: "string", nullable: true },
+            linkedAt: { type: "integer", description: "epoch ms" },
+          },
+        },
+      },
+    },
+  },
   AdminModerationResult: {
     type: "object",
     description:

@@ -90,6 +90,7 @@ const NON_SUPPRESSIBLE_TYPES = new Set<string>([
   AdminUserEvents.USER_BANNED,
   AdminUserEvents.USER_SUSPENDED,
   AdminUserEvents.USER_UNBANNED,
+  AdminUserEvents.USER_ACCOUNT_UPDATED,
 ]);
 
 /**
@@ -148,6 +149,7 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   AdminUserEvents.USER_BANNED,
   AdminUserEvents.USER_SUSPENDED,
   AdminUserEvents.USER_UNBANNED,
+  AdminUserEvents.USER_ACCOUNT_UPDATED,
   "ANNOUNCEMENT",
   "MAINTENANCE",
   "UPDATE_REQUIRED",

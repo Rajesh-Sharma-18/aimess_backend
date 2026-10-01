@@ -315,7 +315,76 @@ export const isUserEmailTakenBreaker: Breaker<
   call<typeof args, { taken: boolean }>("isUserEmailTaken", args)
 );
 
+export interface AdminUserIdentity {
+  ok: boolean;
+  errorCode: string;
+  email: string;
+  emailVerified: boolean;
+  hasPassword: boolean;
+  providers: {
+    provider: "GOOGLE" | "APPLE";
+    providerEmail: string;
+    linkedAt: string;
+  }[];
+}
+
+export interface AdminSetUserEmailResult {
+  ok: boolean;
+  errorCode: string;
+  changed: boolean;
+  previousEmail: string;
+  email: string;
+}
+
+export interface AdminUnlinkSocialResult {
+  ok: boolean;
+  errorCode: string;
+  provider: string;
+}
+
+export const adminGetUserIdentityBreaker: Breaker<
+  { userId: string },
+  AdminUserIdentity
+> = makeBreaker("auth.adminGetUserIdentity", (args: { userId: string }) =>
+  call<typeof args, AdminUserIdentity>("adminGetUserIdentity", args)
+);
+
+export const adminSetUserEmailBreaker: Breaker<
+  { userId: string; email: string },
+  AdminSetUserEmailResult
+> = makeBreaker(
+  "auth.adminSetUserEmail",
+  (args: { userId: string; email: string }) =>
+    call<typeof args, AdminSetUserEmailResult>("adminSetUserEmail", args),
+  { timeout: 8000 }
+);
+
+export const adminUnlinkSocialBreaker: Breaker<
+  { userId: string; provider: string },
+  AdminUnlinkSocialResult
+> = makeBreaker(
+  "auth.adminUnlinkSocial",
+  (args: { userId: string; provider: string }) =>
+    call<typeof args, AdminUnlinkSocialResult>("adminUnlinkSocial", args),
+  { timeout: 8000 }
+);
+
 export const authClient = {
+  adminGetUserIdentity(userId: string): Promise<AdminUserIdentity> {
+    return adminGetUserIdentityBreaker.fire({ userId });
+  },
+  adminSetUserEmail(
+    userId: string,
+    email: string
+  ): Promise<AdminSetUserEmailResult> {
+    return adminSetUserEmailBreaker.fire({ userId, email });
+  },
+  adminUnlinkSocial(
+    userId: string,
+    provider: "GOOGLE" | "APPLE"
+  ): Promise<AdminUnlinkSocialResult> {
+    return adminUnlinkSocialBreaker.fire({ userId, provider });
+  },
   async getUserCounts(): Promise<UserCounts> {
     const r = await getUserCountsBreaker.fire();
     return {

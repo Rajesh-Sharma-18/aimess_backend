@@ -16,6 +16,7 @@ export const PERMISSION_CATALOGUE: { key: string; group: string }[] = [
   { key: "users.read", group: "users" },
   { key: "users.view", group: "users" },
   { key: "users.moderate", group: "users" },
+  { key: "users.edit", group: "users" },
   { key: "reports.read", group: "reports" },
   { key: "reports.view", group: "reports" },
   { key: "reports.action", group: "reports" },

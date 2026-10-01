@@ -290,6 +290,15 @@ export const userDevicesQuerySchema = z.object({
 export type UserDevicesQueryInput = z.infer<typeof userDevicesQuerySchema>;
 
 // ---------------------------------------------------------------------------
+// Moderation history query (GET /users/:userId/history).
+// ---------------------------------------------------------------------------
+export const userHistoryQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(1000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type UserHistoryQueryInput = z.infer<typeof userHistoryQuerySchema>;
+
+// ---------------------------------------------------------------------------
 // Ban.
 // ---------------------------------------------------------------------------
 /** Max length for a free-text custom ban reason (predefined codes are far shorter). */
@@ -649,4 +658,34 @@ export const listOtherMembersQuerySchema = z
   });
 export type ListOtherMembersQueryInput = z.infer<
   typeof listOtherMembersQuerySchema
+>;
+
+export const listUserGroupsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(1000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type ListUserGroupsQueryInput = z.infer<
+  typeof listUserGroupsQuerySchema
+>;
+
+export const userGroupMembersParamSchema = z.object({
+  userId: z.string().trim().min(1).max(64),
+  groupId: z.string().trim().min(1).max(64),
+});
+
+export const listOtherGroupMembersQuerySchema = z
+  .object({
+    q: z.string().trim().min(1).optional(),
+    search: z.string().trim().min(1).optional(),
+    role: otherMemberRoleEnum.optional(),
+    page: z.coerce.number().int().min(1).max(1000).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .transform(({ q, search, role, ...rest }) => ({
+    ...rest,
+    search: q ?? search,
+    role: role === "OWNER" ? "ADMIN" : role,
+  }));
+export type ListOtherGroupMembersQueryInput = z.infer<
+  typeof listOtherGroupMembersQuerySchema
 >;

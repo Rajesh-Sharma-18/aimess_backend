@@ -13,7 +13,12 @@ import { userProfileRepository } from "../repositories/user-profile.repository.j
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { toNotificationSettingsWire } from "./notification-settings.wire.js";
 import { friendshipService } from "../services/friendship.service.js";
-import { buildDisplayName } from "../lib/profile-fields.util.js";
+import {
+  buildDisplayName,
+  formatDateOfBirth,
+} from "../lib/profile-fields.util.js";
+import { updateProfileSchema } from "../api/validators/profile.validator.js";
+import { userProfileService } from "../services/user-profile.service.js";
 import {
   SCHEMA_DEFAULT_SCOPE,
   canSendFriendRequest,
@@ -57,6 +62,35 @@ function toAdminProfileRecord(row: {
     createdAt: row.createdAt.toISOString(),
   };
 }
+const ADMIN_EDITABLE_PROFILE_FIELDS = [
+  "firstName",
+  "lastName",
+  "username",
+  "bio",
+  "dateOfBirth",
+  "gender",
+] as const;
+
+function toAdminEditableProfile(profile: {
+  userId: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+  bio: string | null;
+  dateOfBirth: Date;
+  gender: string | null;
+}) {
+  return {
+    userId: profile.userId,
+    username: profile.username,
+    firstName: profile.firstName,
+    lastName: profile.lastName,
+    bio: profile.bio ?? "",
+    dateOfBirth: formatDateOfBirth(profile.dateOfBirth) ?? "",
+    gender: profile.gender ?? "",
+  };
+}
+
 const PROTO_PATH = path.resolve(
   __dirname,
   "../../../../packages/grpc-contracts/proto/user.proto"
@@ -403,6 +437,94 @@ export function startUserGrpcServer(): grpc.Server {
           });
         } catch (err) {
           logger.error(`gRPC bulkGetUserSnapshots error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    adminGetEditableProfile: (
+      call: grpc.ServerUnaryCall<{ userId: string }, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const profile = await userProfileService.adminGetEditableProfile(
+            call.request.userId ?? ""
+          );
+          callback(null, {
+            ok: true,
+            errorCode: "",
+            profile: toAdminEditableProfile(profile),
+            changedFields: [],
+          });
+        } catch (err) {
+          if (isAppError(err) && err.statusCode < 500) {
+            callback(null, {
+              ok: false,
+              errorCode: err.messageKey ?? err.message,
+            });
+            return;
+          }
+          logger.error(`gRPC adminGetEditableProfile error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    adminUpdateProfile: (
+      call: grpc.ServerUnaryCall<
+        { userId: string; patchJson: string },
+        unknown
+      >,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        let raw: unknown;
+        try {
+          raw = JSON.parse(call.request.patchJson || "{}");
+        } catch {
+          callback(null, { ok: false, errorCode: "VALIDATION_FAILED" });
+          return;
+        }
+        if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+          callback(null, { ok: false, errorCode: "VALIDATION_FAILED" });
+          return;
+        }
+        const source = raw as Record<string, unknown>;
+        const parsed = updateProfileSchema.safeParse(
+          Object.fromEntries(
+            ADMIN_EDITABLE_PROFILE_FIELDS.filter((key) => key in source).map(
+              (key) => [key, source[key]]
+            )
+          )
+        );
+        if (!parsed.success) {
+          callback(null, {
+            ok: false,
+            errorCode: parsed.error.issues[0]?.message ?? "VALIDATION_FAILED",
+          });
+          return;
+        }
+        try {
+          const result = await userProfileService.adminUpdateProfile(
+            call.request.userId ?? "",
+            parsed.data
+          );
+          callback(null, {
+            ok: true,
+            errorCode: "",
+            profile: toAdminEditableProfile(result.profile),
+            changedFields: result.changedFields,
+          });
+        } catch (err) {
+          if (isAppError(err) && err.statusCode < 500) {
+            callback(null, {
+              ok: false,
+              errorCode: err.messageKey ?? err.message,
+            });
+            return;
+          }
+          logger.error(`gRPC adminUpdateProfile error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

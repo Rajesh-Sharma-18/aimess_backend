@@ -265,6 +265,29 @@ export const authRepository = {
     });
   },
 
+  findByIdForAdminIdentity(userId: string) {
+    return prisma.authUser.findUnique({
+      where: { id: userId },
+      select: {
+        email: true,
+        emailVerified: true,
+        passwordHash: true,
+        linkedAccounts: {
+          select: { provider: true, email: true, linkedAt: true },
+          orderBy: { linkedAt: "asc" },
+        },
+      },
+    });
+  },
+
+  setUnverifiedEmail(userId: string, email: string) {
+    return prisma.authUser.update({
+      where: { id: userId },
+      data: { email, emailVerified: false },
+      select: { id: true, email: true },
+    });
+  },
+
   findByEmailForPasswordReset(email: string) {
     return prisma.authUser.findUnique({
       where: { email },

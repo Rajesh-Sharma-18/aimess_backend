@@ -6,6 +6,7 @@ import {
   type AdminListGroupMembersReq,
   type RawAdminGroupRow,
   type RawAdminGroupMemberRow,
+  type RawAdminUserGroupRow,
 } from "../grpc/chat.client.js";
 import type {
   GroupItem,
@@ -13,6 +14,8 @@ import type {
   GroupPagination,
   ListGroupMembersQuery,
   ListGroupsQuery,
+  ListUserGroupsQuery,
+  UserGroupItem,
 } from "../types/group.types.js";
 import { msToEpoch, orNull } from "../lib/grpc-view.js";
 import { resolveAvatarOrNull } from "../lib/avatar-media.js";
@@ -77,6 +80,23 @@ async function rowToMemberItem(
     accountStatus: "ACTIVE",
     kickedAt: epochOrNull(r.kickedAt),
     bannedAt: epochOrNull(r.bannedAt),
+  };
+}
+
+async function rowToUserGroupItem(
+  r: RawAdminUserGroupRow
+): Promise<UserGroupItem> {
+  return {
+    groupId: r.id,
+    name: r.name,
+    avatar: await resolveAvatarOrNull(r.avatarUrl),
+    description: r.description ?? "",
+    memberCount: r.memberCount,
+    memberLimit: r.memberLimit,
+    role: r.role,
+    status: r.status || "ACTIVE",
+    joinedAt: msToEpoch(r.joinedAt),
+    createdAt: msToEpoch(r.createdAt),
   };
 }
 
@@ -165,12 +185,28 @@ export class GrpcGroupRepository {
       page: query.page,
       limit: query.limit,
       status: query.status ?? "",
+      excludeUserId: query.excludeUserId ?? "",
     };
 
     const res = await chatClient.adminListGroupMembers(req);
     return {
       found: res.found,
       items: await Promise.all((res.members ?? []).map(rowToMemberItem)),
+      pagination: buildPagination(res.total, query.page, query.limit),
+    };
+  }
+
+  async listUserGroups(
+    userId: string,
+    query: ListUserGroupsQuery
+  ): Promise<{ items: UserGroupItem[]; pagination: GroupPagination }> {
+    const res = await chatClient.adminListUserGroups({
+      userId,
+      page: query.page,
+      limit: query.limit,
+    });
+    return {
+      items: await Promise.all((res.groups ?? []).map(rowToUserGroupItem)),
       pagination: buildPagination(res.total, query.page, query.limit),
     };
   }

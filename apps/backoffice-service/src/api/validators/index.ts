@@ -87,6 +87,7 @@ export {
   userIdParamSchema,
   userReportsQuerySchema,
   userDevicesQuerySchema,
+  userHistoryQuerySchema,
   banUserSchema,
   unbanUserSchema,
   reactivateUserSchema,
@@ -96,6 +97,9 @@ export {
   listUserCommunitiesQuerySchema,
   listOtherMembersQuerySchema,
   userCommunityMembersParamSchema,
+  listUserGroupsQuerySchema,
+  listOtherGroupMembersQuerySchema,
+  userGroupMembersParamSchema,
   userStatusEnum,
   moderationReasonEnum,
   reportsBucketEnum,
@@ -103,6 +107,7 @@ export {
   type UserIdParam,
   type UserReportsQueryInput,
   type UserDevicesQueryInput,
+  type UserHistoryQueryInput,
   type BanUserInput,
   type SuspendUserInput,
   type UnbanUserInput,
@@ -112,6 +117,8 @@ export {
   type ListUserCommunitiesQueryInput,
   type ListOtherMembersQueryInput,
   type UserCommunityMembersParam,
+  type ListUserGroupsQueryInput,
+  type ListOtherGroupMembersQueryInput,
 } from "./users.validator.js";
 
 export {
@@ -251,3 +258,9 @@ export {
   messageNavigationQueryFields,
   type MessageReactionsQueryInput,
 } from "./message-reactions.validator.js";
+export {
+  updateUserAccountSchema,
+  userSocialProviderParamSchema,
+  type UpdateUserAccountInput,
+  type UserSocialProviderParam,
+} from "./user-account.validator.js";

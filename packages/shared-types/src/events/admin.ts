@@ -30,6 +30,7 @@ export const AdminUserEvents = {
   USER_BANNED: "admin.user_banned",
   USER_UNBANNED: "admin.user_unbanned",
   USER_SUSPENDED: "admin.user_suspended",
+  USER_ACCOUNT_UPDATED: "admin.user_account_updated",
 } as const;
 
 export type AdminUserEventType =

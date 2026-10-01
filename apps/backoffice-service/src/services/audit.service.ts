@@ -8,6 +8,7 @@ import type {
   AuditLogListItem,
   ListAuditLogsQuery,
   Paginated,
+  UserHistoryItem,
 } from "../types/audit-log.types.js";
 import { emitAuditLogCreated } from "../lib/audit-realtime.js";
 
@@ -29,6 +30,15 @@ export const auditService = {
     query: ListAuditLogsQuery
   ): Promise<Paginated<AuditLogListItem>> {
     return auditLogRepository.list(query);
+  },
+
+  /** Moderation timeline for one user (User Management → History tab). */
+  listUserHistory(
+    userId: string,
+    page: number,
+    limit: number
+  ): Promise<Paginated<UserHistoryItem>> {
+    return auditLogRepository.listForUser(userId, page, limit);
   },
 
   /** Fetch one audit log; null is translated to 404 by the controller. */

@@ -446,6 +446,11 @@ export const ADMIN_MESSAGES = {
     en: "Co-members fetched",
     th: "ดึงข้อมูลสมาชิกร่วมแล้ว",
   },
+  ADMIN_GROUP_CO_MEMBERS_FETCHED: {
+    vi: "Đã tải danh sách thành viên nhóm",
+    en: "Group co-members fetched",
+    th: "ดึงข้อมูลสมาชิกกลุ่มร่วมแล้ว",
+  },
 
   // ── Success: groups ──────────────────────────────────────────────────────
   ADMIN_GROUPS_FETCHED: {
@@ -604,10 +609,20 @@ export const ADMIN_MESSAGES = {
     en: "User devices fetched",
     th: "ดึงข้อมูลอุปกรณ์ของผู้ใช้แล้ว",
   },
+  ADMIN_USER_HISTORY_FETCHED: {
+    vi: "Đã tải lịch sử của người dùng",
+    en: "User history fetched",
+    th: "ดึงข้อมูลประวัติของผู้ใช้แล้ว",
+  },
   ADMIN_USER_COMMUNITIES_FETCHED: {
     vi: "Đã tải cộng đồng của người dùng",
     en: "User communities fetched",
     th: "ดึงข้อมูลคอมมูนิตี้ของผู้ใช้แล้ว",
+  },
+  ADMIN_USER_GROUPS_FETCHED: {
+    vi: "Đã tải nhóm của người dùng",
+    en: "User groups fetched",
+    th: "ดึงข้อมูลกลุ่มของผู้ใช้แล้ว",
   },
   ADMIN_USER_BANNED: {
     vi: "Đã cấm người dùng",
@@ -628,6 +643,31 @@ export const ADMIN_MESSAGES = {
     vi: "Đã kích hoạt lại người dùng",
     en: "User reactivated",
     th: "เปิดใช้งานผู้ใช้อีกครั้งแล้ว",
+  },
+  ADMIN_USER_UPDATED: {
+    vi: "Đã cập nhật người dùng",
+    en: "User updated",
+    th: "อัปเดตผู้ใช้แล้ว",
+  },
+  ADMIN_USER_SOCIAL_UNLINKED: {
+    vi: "Đã hủy liên kết tài khoản",
+    en: "Account unlinked",
+    th: "ยกเลิกการเชื่อมโยงบัญชีแล้ว",
+  },
+  ADMIN_USER_NO_CHANGES: {
+    vi: "Không có thay đổi nào để lưu",
+    en: "There are no changes to save",
+    th: "ไม่มีการเปลี่ยนแปลงที่ต้องบันทึก",
+  },
+  ADMIN_USER_LAST_SIGN_IN_METHOD: {
+    vi: "Đây là phương thức đăng nhập duy nhất của người dùng. Hãy thêm email để người dùng đặt mật khẩu trước khi hủy liên kết.",
+    en: "This is the user's only sign-in method. Add an email so the user can set a password before unlinking it.",
+    th: "นี่เป็นวิธีเข้าสู่ระบบเพียงวิธีเดียวของผู้ใช้ เพิ่มอีเมลเพื่อให้ผู้ใช้ตั้งรหัสผ่านก่อนยกเลิกการเชื่อมโยง",
+  },
+  ADMIN_USER_ACCOUNT_NOT_ACTIVE: {
+    vi: "Chỉ có thể thay đổi email hoặc tài khoản liên kết của tài khoản đang hoạt động",
+    en: "Email and linked accounts can only be changed on an active account",
+    th: "เปลี่ยนอีเมลหรือบัญชีที่เชื่อมโยงได้เฉพาะบัญชีที่ใช้งานอยู่เท่านั้น",
   },
   ADMIN_USERS_BULK_BANNED: {
     vi: "Đã xử lý yêu cầu cấm hàng loạt",

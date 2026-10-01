@@ -3,7 +3,7 @@ import type { RequestHandler } from "express";
 import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
-import { userManagementService } from "../../services/index.js";
+import { auditService, userManagementService } from "../../services/index.js";
 import { paginated } from "../lib/respond.js";
 import type { ListUsersQuery } from "../../types/user-management.types.js";
 import type { ListUserCommunitiesQuery } from "../../types/community.types.js";
@@ -16,14 +16,17 @@ import type {
   BanUserInput,
   BulkActivateInput,
   BulkBanInput,
+  ListOtherGroupMembersQueryInput,
   ListOtherMembersQueryInput,
   ListUserCommunitiesQueryInput,
+  ListUserGroupsQueryInput,
   ListUsersQueryInput,
   ReactivateUserInput,
   SuspendUserInput,
   UnbanUserInput,
   UserReportsQueryInput,
   UserDevicesQueryInput,
+  UserHistoryQueryInput,
 } from "../validators/index.js";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
@@ -151,6 +154,32 @@ export const listUserDevices: RequestHandler = (req, res, next) => {
 };
 
 /**
+ * GET /v1/users/:userId/history — the user's moderation timeline (admin/system
+ * actions on the account and decisions on reports against it), newest first.
+ * Gated on USERS_VIEW like the rest of the detail bundle and scoped to `:userId`.
+ */
+export const listUserHistory: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const userId = req.params.userId as string;
+      const { page, limit } = req.query as unknown as UserHistoryQueryInput;
+      const result = await auditService.listUserHistory(userId, page, limit);
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_USER_HISTORY_FETCHED", req.locale)
+          )
+        );
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
  * GET /v1/users/:userId/communities — the "Communities" grid (communities the
  * user is an ACTIVE member of). Responds `{ success, data: { items, pagination } }`.
  */
@@ -211,6 +240,53 @@ export const listOtherCommunityMembers: RequestHandler = (req, res, next) => {
           t("ADMIN_COMMUNITY_CO_MEMBERS_FETCHED", req.locale)
         )
       );
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+export const listUserGroups: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const userId = req.params.userId as string;
+      const query = req.query as unknown as ListUserGroupsQueryInput;
+      const result = await userManagementService.listUserGroups(
+        userId,
+        query,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_USER_GROUPS_FETCHED", req.locale)));
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+export const listOtherGroupMembers: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const userId = req.params.userId as string;
+      const groupId = req.params.groupId as string;
+      const query = req.query as unknown as ListOtherGroupMembersQueryInput;
+      const result = await userManagementService.listOtherGroupMembers(
+        userId,
+        groupId,
+        query,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_GROUP_CO_MEMBERS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
