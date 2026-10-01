@@ -33,12 +33,12 @@ import {
   banUserSchema,
   bulkActivateSchema,
   bulkBanSchema,
-  listOtherMembersQuerySchema,
   listOtherGroupMembersQuerySchema,
+  listOtherMembersQuerySchema,
   listUserCommunitiesQuerySchema,
-  listUsersQuerySchema,
   listUserGroupsQuerySchema,
   userGroupMembersParamSchema,
+  listUsersQuerySchema,
   suspendUserSchema,
   updateUserAccountSchema,
   userCommunityMembersParamSchema,
@@ -149,15 +149,6 @@ usersRoutes.get(
   validateQuery(listUserCommunitiesQuerySchema),
   listUserCommunities
 );
-usersRoutes.post(
-  "/users/:userId/ban",
-  requirePermission(PERMISSIONS.USERS_MODERATE),
-  validateParams(userIdParamSchema),
-  validateBody(banUserSchema),
-  banUser
-);
-usersRoutes.post(
-  "/users/:userId/suspend",
 usersRoutes.get(
   "/users/:userId/groups/:groupId/members",
   requirePermission(PERMISSIONS.USERS_VIEW),
@@ -172,6 +163,15 @@ usersRoutes.get(
   validateQuery(listUserGroupsQuerySchema),
   listUserGroups
 );
+usersRoutes.post(
+  "/users/:userId/ban",
+  requirePermission(PERMISSIONS.USERS_MODERATE),
+  validateParams(userIdParamSchema),
+  validateBody(banUserSchema),
+  banUser
+);
+usersRoutes.post(
+  "/users/:userId/suspend",
   requirePermission(PERMISSIONS.USERS_MODERATE),
   validateParams(userIdParamSchema),
   validateBody(suspendUserSchema),

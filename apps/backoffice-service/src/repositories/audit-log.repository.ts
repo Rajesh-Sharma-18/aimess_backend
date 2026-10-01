@@ -390,11 +390,12 @@ export const auditLogRepository = {
   },
 
   /**
-   * A user's moderation timeline, newest first: every admin/system action whose
+   * A user's moderation timeline, newest first: every admin action whose
    * target is the user (ban, unban, reactivate, account edits, sanctions), plus
    * the decisions on reports filed against them (resolved / dismissed rows target
-   * the report, so they are matched through the report ids). End-user activity and
-   * page-view rows are excluded — this is what was done TO the account.
+   * the report, so they are matched through the report ids). End-user activity,
+   * page views and system (automated) rows are excluded — this is what admins
+   * did TO the account.
    */
   async listForUser(
     userId: string,
@@ -408,7 +409,7 @@ export const auditLogRepository = {
     const reportIds = reports.map((r) => r.id);
 
     const where: Prisma.AuditLogWhereInput = {
-      actorType: { in: ["ADMIN", "SYSTEM"] },
+      actorType: "ADMIN",
       NOT: { action: { endsWith: "viewed" } },
       OR: [
         { targetType: "user", targetId: userId },

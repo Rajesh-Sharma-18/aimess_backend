@@ -246,33 +246,6 @@ export const listOtherCommunityMembers: RequestHandler = (req, res, next) => {
   })();
 };
 
-/**
- * POST /v1/users/:userId/ban.
- * TODO (Phase 2): Add step-up TOTP auth validation via X-Totp-Code header.
- */
-export const banUser: RequestHandler = (req, res, next) => {
-  void (async () => {
-    try {
-      const userId = req.params.userId as string;
-      const body = req.body as BanUserInput;
-      const result = await userManagementService.banUser(
-        userId,
-        body,
-        req.admin!,
-        getRequestContext(req)
-      );
-      res
-        .status(HTTP_STATUS.OK)
-        .json(new ApiResponse(result, t("ADMIN_USER_BANNED", req.locale)));
-    } catch (error) {
-      next(error);
-    }
-  })();
-};
-
-/**
- * POST /v1/users/:userId/suspend.
- * TODO (Phase 2): Add step-up TOTP auth validation via X-Totp-Code header.
 export const listUserGroups: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
@@ -320,6 +293,33 @@ export const listOtherGroupMembers: RequestHandler = (req, res, next) => {
   })();
 };
 
+/**
+ * POST /v1/users/:userId/ban.
+ * TODO (Phase 2): Add step-up TOTP auth validation via X-Totp-Code header.
+ */
+export const banUser: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const userId = req.params.userId as string;
+      const body = req.body as BanUserInput;
+      const result = await userManagementService.banUser(
+        userId,
+        body,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_USER_BANNED", req.locale)));
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * POST /v1/users/:userId/suspend.
+ * TODO (Phase 2): Add step-up TOTP auth validation via X-Totp-Code header.
  */
 export const suspendUser: RequestHandler = (req, res, next) => {
   void (async () => {

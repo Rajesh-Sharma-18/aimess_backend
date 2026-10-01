@@ -619,15 +619,15 @@ export const ADMIN_MESSAGES = {
     en: "User communities fetched",
     th: "ดึงข้อมูลคอมมูนิตี้ของผู้ใช้แล้ว",
   },
-  ADMIN_USER_BANNED: {
-    vi: "Đã cấm người dùng",
-    en: "User banned",
-    th: "แบนผู้ใช้แล้ว",
-  },
   ADMIN_USER_GROUPS_FETCHED: {
     vi: "Đã tải nhóm của người dùng",
     en: "User groups fetched",
     th: "ดึงข้อมูลกลุ่มของผู้ใช้แล้ว",
+  },
+  ADMIN_USER_BANNED: {
+    vi: "Đã cấm người dùng",
+    en: "User banned",
+    th: "แบนผู้ใช้แล้ว",
   },
   ADMIN_USER_SUSPENDED: {
     vi: "Đã tạm khóa người dùng",
