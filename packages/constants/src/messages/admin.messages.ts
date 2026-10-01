@@ -446,6 +446,11 @@ export const ADMIN_MESSAGES = {
     en: "Co-members fetched",
     th: "ดึงข้อมูลสมาชิกร่วมแล้ว",
   },
+  ADMIN_GROUP_CO_MEMBERS_FETCHED: {
+    vi: "Đã tải danh sách thành viên nhóm",
+    en: "Group co-members fetched",
+    th: "ดึงข้อมูลสมาชิกกลุ่มร่วมแล้ว",
+  },
 
   // ── Success: groups ──────────────────────────────────────────────────────
   ADMIN_GROUPS_FETCHED: {
@@ -613,6 +618,11 @@ export const ADMIN_MESSAGES = {
     vi: "Đã cấm người dùng",
     en: "User banned",
     th: "แบนผู้ใช้แล้ว",
+  },
+  ADMIN_USER_GROUPS_FETCHED: {
+    vi: "Đã tải nhóm của người dùng",
+    en: "User groups fetched",
+    th: "ดึงข้อมูลกลุ่มของผู้ใช้แล้ว",
   },
   ADMIN_USER_SUSPENDED: {
     vi: "Đã tạm khóa người dùng",

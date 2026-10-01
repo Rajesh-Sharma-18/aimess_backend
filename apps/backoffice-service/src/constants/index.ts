@@ -72,6 +72,8 @@ export const AUDIT_ACTIONS = {
   USER_BULK_ACTIVATED: "user.bulk_activated",
   USER_COMMUNITIES_VIEWED: "user.communities_viewed",
   USER_COMMUNITY_MEMBERS_VIEWED: "user.community_members_viewed",
+  USER_GROUPS_VIEWED: "user.groups_viewed",
+  USER_GROUP_MEMBERS_VIEWED: "user.group_members_viewed",
   REPORT_RESOLVED: "report.resolved",
   REPORT_DISMISSED: "report.dismissed",
   // A sanction was applied to the reported user as part of a resolution. Distinct

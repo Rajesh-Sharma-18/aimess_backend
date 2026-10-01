@@ -16,8 +16,10 @@ import type {
   BanUserInput,
   BulkActivateInput,
   BulkBanInput,
+  ListOtherGroupMembersQueryInput,
   ListOtherMembersQueryInput,
   ListUserCommunitiesQueryInput,
+  ListUserGroupsQueryInput,
   ListUsersQueryInput,
   ReactivateUserInput,
   SuspendUserInput,
@@ -244,6 +246,53 @@ export const banUser: RequestHandler = (req, res, next) => {
 /**
  * POST /v1/users/:userId/suspend.
  * TODO (Phase 2): Add step-up TOTP auth validation via X-Totp-Code header.
+export const listUserGroups: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const userId = req.params.userId as string;
+      const query = req.query as unknown as ListUserGroupsQueryInput;
+      const result = await userManagementService.listUserGroups(
+        userId,
+        query,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_USER_GROUPS_FETCHED", req.locale)));
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+export const listOtherGroupMembers: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const userId = req.params.userId as string;
+      const groupId = req.params.groupId as string;
+      const query = req.query as unknown as ListOtherGroupMembersQueryInput;
+      const result = await userManagementService.listOtherGroupMembers(
+        userId,
+        groupId,
+        query,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_GROUP_CO_MEMBERS_FETCHED", req.locale)
+          )
+        );
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
  */
 export const suspendUser: RequestHandler = (req, res, next) => {
   void (async () => {

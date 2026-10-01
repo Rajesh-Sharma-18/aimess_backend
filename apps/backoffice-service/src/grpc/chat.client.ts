@@ -92,11 +92,36 @@ export interface AdminListGroupMembersReq {
   limit: number;
   // "" → chat-service keeps its ACTIVE default; "ALL" → no status filter.
   status: string;
+  excludeUserId?: string;
 }
 
 export interface AdminListGroupMembersRes {
   found: boolean;
   members: RawAdminGroupMemberRow[];
+  total: number;
+}
+
+export interface RawAdminUserGroupRow {
+  id: string;
+  name: string;
+  avatarUrl: string;
+  description: string;
+  memberCount: number;
+  memberLimit: number;
+  createdAt: string;
+  status: string;
+  role: string;
+  joinedAt: string;
+}
+
+export interface AdminListUserGroupsReq {
+  userId: string;
+  page: number;
+  limit: number;
+}
+
+export interface AdminListUserGroupsRes {
+  groups: RawAdminUserGroupRow[];
   total: number;
 }
 
@@ -533,6 +558,16 @@ export const adminListGroupMembersBreaker: Breaker<
   )
 );
 
+export const adminListUserGroupsBreaker: Breaker<
+  AdminListUserGroupsReq,
+  AdminListUserGroupsRes
+> = makeBreaker("chat.adminListUserGroups", (req: AdminListUserGroupsReq) =>
+  call<AdminListUserGroupsReq, AdminListUserGroupsRes>(
+    "adminListUserGroups",
+    req
+  )
+);
+
 export const adminApplySystemBanBreaker: Breaker<
   AdminApplySystemBanReq,
   AdminApplySystemBanRes
@@ -685,6 +720,11 @@ export const chatClient = {
     req: AdminListGroupMembersReq
   ): Promise<AdminListGroupMembersRes> {
     return adminListGroupMembersBreaker.fire(req);
+  },
+  adminListUserGroups(
+    req: AdminListUserGroupsReq
+  ): Promise<AdminListUserGroupsRes> {
+    return adminListUserGroupsBreaker.fire(req);
   },
   // repeated fields arrive as [] when empty, but undefined from a callee build
   // that predates this RPC — normalize both.

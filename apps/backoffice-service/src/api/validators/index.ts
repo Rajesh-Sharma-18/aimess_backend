@@ -97,6 +97,9 @@ export {
   listOtherMembersQuerySchema,
   userCommunityMembersParamSchema,
   userStatusEnum,
+  listUserGroupsQuerySchema,
+  listOtherGroupMembersQuerySchema,
+  userGroupMembersParamSchema,
   moderationReasonEnum,
   reportsBucketEnum,
   type ListUsersQueryInput,
@@ -114,6 +117,8 @@ export {
   type UserCommunityMembersParam,
 } from "./users.validator.js";
 
+  type ListUserGroupsQueryInput,
+  type ListOtherGroupMembersQueryInput,
 export {
   listCommunitiesQuerySchema,
   communityIdParamSchema,

@@ -45,6 +45,8 @@ export {
   listUserCommunities,
   listOtherCommunityMembers,
   banUser,
+  listUserGroups,
+  listOtherGroupMembers,
   suspendUser,
   unbanUser,
   reactivateUser,

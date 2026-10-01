@@ -9,7 +9,9 @@ import {
   getUserAccount,
   getUserDetails,
   listOtherCommunityMembers,
+  listOtherGroupMembers,
   listUserCommunities,
+  listUserGroups,
   listUserDevices,
   listUserReports,
   listUsers,
@@ -31,8 +33,11 @@ import {
   bulkActivateSchema,
   bulkBanSchema,
   listOtherMembersQuerySchema,
+  listOtherGroupMembersQuerySchema,
   listUserCommunitiesQuerySchema,
   listUsersQuerySchema,
+  listUserGroupsQuerySchema,
+  userGroupMembersParamSchema,
   suspendUserSchema,
   updateUserAccountSchema,
   userCommunityMembersParamSchema,
@@ -144,6 +149,20 @@ usersRoutes.post(
 );
 usersRoutes.post(
   "/users/:userId/suspend",
+usersRoutes.get(
+  "/users/:userId/groups/:groupId/members",
+  requirePermission(PERMISSIONS.USERS_VIEW),
+  validateParams(userGroupMembersParamSchema),
+  validateQuery(listOtherGroupMembersQuerySchema),
+  listOtherGroupMembers
+);
+usersRoutes.get(
+  "/users/:userId/groups",
+  requirePermission(PERMISSIONS.USERS_VIEW),
+  validateParams(userIdParamSchema),
+  validateQuery(listUserGroupsQuerySchema),
+  listUserGroups
+);
   requirePermission(PERMISSIONS.USERS_MODERATE),
   validateParams(userIdParamSchema),
   validateBody(suspendUserSchema),

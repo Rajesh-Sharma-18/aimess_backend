@@ -16,6 +16,7 @@ import {
 import {
   communityMembersRepository,
   deriveModerationStatus,
+  groupRepository,
   moderationActionRepository,
   reportDetailRepository,
   userCommunitiesRepository,
@@ -35,9 +36,16 @@ import type {
   UserCommunityRow,
 } from "../types/community.types.js";
 import type {
+  GroupMemberItem,
+  GroupPagination,
+  UserGroupItem,
+} from "../types/group.types.js";
+import type {
   BanUserInput,
   BulkActivateInput,
   BulkBanInput,
+  ListOtherGroupMembersQueryInput,
+  ListUserGroupsQueryInput,
   ReactivateUserInput,
   SuspendUserInput,
   UnbanUserInput,
@@ -574,6 +582,92 @@ export const userManagementService = {
       });
 
     return { community, items, pagination: members.pagination };
+  },
+
+  async listUserGroups(
+    userId: string,
+    query: ListUserGroupsQueryInput,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<{ items: UserGroupItem[]; pagination: GroupPagination }> {
+    const result = await groupRepository.listUserGroups(userId, query);
+
+    void auditService
+      .record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.USER_GROUPS_VIEWED,
+        targetType: "user",
+        targetId: userId,
+        after: { page: query.page, limit: query.limit },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      })
+      .catch((err: unknown) => {
+        logger.warn("Failed to record USER_GROUPS_VIEWED audit", { err });
+      });
+
+    return result;
+  },
+
+  async listOtherGroupMembers(
+    userId: string,
+    groupId: string,
+    query: ListOtherGroupMembersQueryInput,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<{
+    group: { groupId: string; name: string; memberCount: number };
+    items: Pick<
+      GroupMemberItem,
+      "userId" | "username" | "email" | "avatar" | "role" | "joinedAt"
+    >[];
+    pagination: GroupPagination;
+  }> {
+    const [group, members] = await Promise.all([
+      groupRepository.getById(groupId),
+      groupRepository.listMembers(groupId, {
+        q: query.search,
+        role: query.role,
+        page: query.page,
+        limit: query.limit,
+        excludeUserId: userId,
+      }),
+    ]);
+    if (!group || !members.found) throw new NotFoundError("GROUP_NOT_FOUND");
+
+    void auditService
+      .record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.USER_GROUP_MEMBERS_VIEWED,
+        targetType: "user",
+        targetId: userId,
+        after: {
+          groupId,
+          page: query.page,
+          limit: query.limit,
+          filters: { search: query.search ?? null, role: query.role ?? null },
+        },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      })
+      .catch((err: unknown) => {
+        logger.warn("Failed to record USER_GROUP_MEMBERS_VIEWED audit", {
+          err,
+        });
+      });
+
+    return {
+      group: { groupId, name: group.name, memberCount: group.memberCount },
+      items: members.items.map((m) => ({
+        userId: m.userId,
+        username: m.username,
+        email: m.email,
+        avatar: m.avatar,
+        role: m.role,
+        joinedAt: m.joinedAt,
+      })),
+      pagination: members.pagination,
+    };
   },
 
   async banUser(
