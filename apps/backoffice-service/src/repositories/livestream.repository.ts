@@ -164,6 +164,7 @@ function toListItem(r: LivestreamDetail): LivestreamListItem {
     endedAt: r.endedAt,
     durationSeconds: r.durationSeconds,
     status: r.status,
+    sourceType: r.streamMetadata.sourceType,
     viewerCount: r.viewerCount,
     reportCount: r.reportCount,
     reportSeverity: r.reportSeverity,
@@ -1052,6 +1053,7 @@ async function toListItemEnriched(
     endedAt: s.endedAt > 0 ? s.endedAt : null,
     durationSeconds: s.durationSeconds,
     status,
+    sourceType: s.sourceType,
     viewerCount: resolveViewerCount(status, s),
     reportCount,
     reportSeverity: severityFromCount(reportCount),
@@ -1600,7 +1602,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
   ): Promise<EndLivestreamResult> {
     const row = await streamClient.adminGetStream(id);
     if (!row) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
-    if (row.status !== "LIVE" && row.status !== "PENDING") {
+    if (!["LIVE", "RECONNECTING", "PENDING"].includes(row.status)) {
       throw new ConflictError("LIVESTREAM_ALREADY_ENDED");
     }
     const res = await streamClient.adminForceEnd(id, input.reasonCode);

@@ -92,6 +92,7 @@ export type LivestreamListItem = {
   endedAt: number | null;
   durationSeconds: number;
   status: LivestreamStatus;
+  sourceType: string;
   viewerCount: number;
   reportCount: number;
   reportSeverity: ReportSeverity;
