@@ -23,6 +23,7 @@ function makeService(over: {
     adminListMembers: jest.fn().mockResolvedValue({ rows: [], total: 0 }),
     findRoomIdsByOwnerUserIds: jest.fn().mockResolvedValue(["r1"]),
     findOwnersForRooms: jest.fn().mockResolvedValue(new Map()),
+    countRosterMembersForRooms: jest.fn().mockResolvedValue(new Map()),
     ...(over.groupMemberRepo ?? {}),
   };
   const userSnapshotService = {

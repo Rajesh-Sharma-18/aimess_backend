@@ -18,13 +18,15 @@
  * and broadcasts. The service.react() primitive is a toggle, so the wrapper makes
  * POST=add and DELETE=remove idempotent.
  *
- * getReactions call accounting per request:
+ * Repo call accounting per request:
  *   - reactDirect reads BEFORE (getMessageReactions → getReactions #1).
- *   - if the op changes state, service.react() reads AGAIN (getReactions #2) then
- *     addReactions.
- *   - reactDirect reads AFTER (getMessageReactions → getReactions #last).
- * So a state-changing op makes THREE getReactions reads (#1 before, #2 inside
- * react, #3 after); an idempotent no-op makes TWO (before + after, react skipped).
+ *   - if the op changes state, service.reactToMessage() → reactCas loads the row
+ *     via findById, runs the friendship/block/ban gate (PRIVATE only), then
+ *     writes with updateReactionsCas(messageId, roomId, map, revision, {userId, emoji}).
+ *   - reactDirect reads AFTER (getMessageReactions → getReactions #2).
+ * So a state-changing op makes TWO getReactions reads; an idempotent no-op makes
+ * ONE (before only — no re-read, no write, no broadcast).
+ * getReactions resolves `{ reactions, mediaReactions, roomId }`, not the bare map.
  */
 import request from "supertest";
 
@@ -42,6 +44,37 @@ const EMOJI = "👍";
 const REACTED_BY_SELF = {
   [EMOJI]: [{ userId: TEST_USER_ID, userName: "", avatar: "", memberId: "" }],
 };
+
+/**
+ * Reactor name when no user snapshot resolves (beforeEach stubs an empty
+ * snapshot map). getMessageReactions names reactors via the shared
+ * `resolveDisplayName` chokepoint, whose documented fallback is "Unknown User"
+ * (src/services/user-snapshot.service.ts — "message reactions" is listed among
+ * the surfaces routed through it).
+ */
+const NO_PROFILE_NAME = "Unknown User";
+
+/** repo.getReactions row shape for `roomId` with the given stored map. */
+const reactionsRow = (roomId: string, reactions: Record<string, unknown>) => ({
+  reactions,
+  mediaReactions: {},
+  roomId,
+});
+
+const REVISION = 7;
+
+/** repo.findById row that reactCas toggles against (CAS on `revision`). */
+const storedMessage = (roomId: string, reactions: Record<string, unknown>) => ({
+  id: MSG,
+  roomId,
+  senderId: "peer_1",
+  messageType: "TEXT",
+  content: "hi",
+  reactions,
+  mediaReactions: {},
+  revision: REVISION,
+  createdAt: new Date(),
+});
 
 /** Filter redis.publish calls that emitted message:reaction on conv:<roomId>. */
 function reactionBroadcasts(redis: BuiltMocks["redis"], roomId: string) {
@@ -71,13 +104,13 @@ describe("POST /private/rooms/:roomId/messages/:messageId/reactions (add)", () =
       id: MSG,
       roomId: ROOM,
     });
-    // #1 before + #2 inside react: not yet reacted → toggle ON fires;
-    // #3 after-read: reacted.
+    // #1 before: not yet reacted → toggle ON fires; #2 after-read: reacted.
     mocks.privateMessageRepo.getReactions
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce(REACTED_BY_SELF);
-    mocks.privateMessageRepo.addReactions.mockResolvedValue({ id: MSG });
+      .mockResolvedValueOnce(reactionsRow(ROOM, {}))
+      .mockResolvedValueOnce(reactionsRow(ROOM, REACTED_BY_SELF));
+    // reactCas loads the row, then CAS-writes against its revision.
+    mocks.privateMessageRepo.findById.mockResolvedValue(storedMessage(ROOM, {}));
+    mocks.privateMessageRepo.updateReactionsCas.mockResolvedValue(true);
 
     const res = await request(app)
       .post(`/api/chat/private/rooms/${ROOM}/messages/${MSG}/reactions`)
@@ -90,11 +123,23 @@ describe("POST /private/rooms/:roomId/messages/:messageId/reactions (add)", () =
       {
         emoji: EMOJI,
         count: 1,
-        users: [{ userId: TEST_USER_ID, displayName: "", avatarUrl: "" }],
+        users: [{ userId: TEST_USER_ID, displayName: NO_PROFILE_NAME, avatarUrl: "" }],
       },
     ]);
-    // Toggle fired exactly once (add when absent).
-    expect(mocks.privateMessageRepo.addReactions).toHaveBeenCalledTimes(1);
+    // Toggle fired exactly once (add when absent), as a CAS on the read revision.
+    expect(mocks.privateMessageRepo.updateReactionsCas).toHaveBeenCalledTimes(1);
+    expect(mocks.privateMessageRepo.updateReactionsCas).toHaveBeenCalledWith(
+      MSG,
+      ROOM,
+      REACTED_BY_SELF,
+      REVISION,
+      { userId: TEST_USER_ID, emoji: EMOJI }
+    );
+    // Friend-only interaction gate ran for the peer (reactCas).
+    expect(mocks.userServiceClient.checkFriendship).toHaveBeenCalledWith(
+      TEST_USER_ID,
+      "peer_1"
+    );
     expect(reactionBroadcasts(mocks.redis, ROOM)).toHaveLength(1);
   });
 
@@ -109,7 +154,9 @@ describe("POST /private/rooms/:roomId/messages/:messageId/reactions (add)", () =
     });
     // Already reacted → add is a no-op (no toggle). S1: the no-op reads ONLY the
     // `before` state and must NOT re-read/publish, so one stub value suffices.
-    mocks.privateMessageRepo.getReactions.mockResolvedValue(REACTED_BY_SELF);
+    mocks.privateMessageRepo.getReactions.mockResolvedValue(
+      reactionsRow(ROOM, REACTED_BY_SELF)
+    );
 
     const res = await request(app)
       .post(`/api/chat/private/rooms/${ROOM}/messages/${MSG}/reactions`)
@@ -122,10 +169,11 @@ describe("POST /private/rooms/:roomId/messages/:messageId/reactions (add)", () =
       {
         emoji: EMOJI,
         count: 1,
-        users: [{ userId: TEST_USER_ID, displayName: "", avatarUrl: "" }],
+        users: [{ userId: TEST_USER_ID, displayName: NO_PROFILE_NAME, avatarUrl: "" }],
       },
     ]);
     // The underlying toggle must NOT run on an idempotent re-add.
+    expect(mocks.privateMessageRepo.updateReactionsCas).not.toHaveBeenCalled();
     expect(mocks.privateMessageRepo.addReactions).not.toHaveBeenCalled();
     // S1: a no-op fans nothing out — no message:reaction broadcast.
     expect(reactionBroadcasts(mocks.redis, ROOM)).toHaveLength(0);
@@ -145,6 +193,7 @@ describe("POST /private/rooms/:roomId/messages/:messageId/reactions (add)", () =
       .set(bearer(makeAccessToken()))
       .send({ emoji: "" });
     expect(res.status).toBe(400);
+    expect(mocks.privateMessageRepo.updateReactionsCas).not.toHaveBeenCalled();
     expect(mocks.privateMessageRepo.addReactions).not.toHaveBeenCalled();
   });
 
@@ -154,6 +203,7 @@ describe("POST /private/rooms/:roomId/messages/:messageId/reactions (add)", () =
       .set(bearer(makeAccessToken()))
       .send({ emoji: "x".repeat(33) });
     expect(res.status).toBe(400);
+    expect(mocks.privateMessageRepo.updateReactionsCas).not.toHaveBeenCalled();
     expect(mocks.privateMessageRepo.addReactions).not.toHaveBeenCalled();
   });
 
@@ -172,6 +222,7 @@ describe("POST /private/rooms/:roomId/messages/:messageId/reactions (add)", () =
     expect(res.status).toBe(403);
     // Guard runs BEFORE any reaction read/write.
     expect(mocks.privateMessageRepo.getReactions).not.toHaveBeenCalled();
+    expect(mocks.privateMessageRepo.updateReactionsCas).not.toHaveBeenCalled();
     expect(mocks.privateMessageRepo.addReactions).not.toHaveBeenCalled();
   });
 });
@@ -186,12 +237,14 @@ describe("DELETE /private/rooms/:roomId/messages/:messageId/reactions/:emoji (re
       id: MSG,
       roomId: ROOM,
     });
-    // #1 before + #2 inside react: reacted → toggle OFF fires; #3 after: empty.
+    // #1 before: reacted → toggle OFF fires; #2 after: empty.
     mocks.privateMessageRepo.getReactions
-      .mockResolvedValueOnce(REACTED_BY_SELF)
-      .mockResolvedValueOnce(REACTED_BY_SELF)
-      .mockResolvedValueOnce({});
-    mocks.privateMessageRepo.addReactions.mockResolvedValue({ id: MSG });
+      .mockResolvedValueOnce(reactionsRow(ROOM, REACTED_BY_SELF))
+      .mockResolvedValueOnce(reactionsRow(ROOM, {}));
+    mocks.privateMessageRepo.findById.mockResolvedValue(
+      storedMessage(ROOM, REACTED_BY_SELF)
+    );
+    mocks.privateMessageRepo.updateReactionsCas.mockResolvedValue(true);
 
     const res = await request(app)
       .delete(
@@ -202,7 +255,15 @@ describe("DELETE /private/rooms/:roomId/messages/:messageId/reactions/:emoji (re
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.reactions).toEqual([]);
-    expect(mocks.privateMessageRepo.addReactions).toHaveBeenCalledTimes(1);
+    // Toggle OFF: the caller is stripped (empty map) and the index row cleared.
+    expect(mocks.privateMessageRepo.updateReactionsCas).toHaveBeenCalledTimes(1);
+    expect(mocks.privateMessageRepo.updateReactionsCas).toHaveBeenCalledWith(
+      MSG,
+      ROOM,
+      {},
+      REVISION,
+      { userId: TEST_USER_ID, emoji: null }
+    );
     expect(reactionBroadcasts(mocks.redis, ROOM)).toHaveLength(1);
   });
 
@@ -216,7 +277,7 @@ describe("DELETE /private/rooms/:roomId/messages/:messageId/reactions/:emoji (re
       roomId: ROOM,
     });
     // No reaction present → remove is a no-op (reads only `before`, no publish).
-    mocks.privateMessageRepo.getReactions.mockResolvedValue({});
+    mocks.privateMessageRepo.getReactions.mockResolvedValue(reactionsRow(ROOM, {}));
 
     const res = await request(app)
       .delete(
@@ -226,6 +287,7 @@ describe("DELETE /private/rooms/:roomId/messages/:messageId/reactions/:emoji (re
 
     expect(res.status).toBe(200);
     expect(res.body.data.reactions).toEqual([]);
+    expect(mocks.privateMessageRepo.updateReactionsCas).not.toHaveBeenCalled();
     expect(mocks.privateMessageRepo.addReactions).not.toHaveBeenCalled();
     // S1: removing an absent reaction broadcasts nothing.
     expect(reactionBroadcasts(mocks.redis, ROOM)).toHaveLength(0);
@@ -243,21 +305,24 @@ describe("GROUP react routes (orchestrator GROUP branch + member guard)", () => 
   const GROUP = "grp_room_1";
 
   it("POSITIVE: 200 add — active-member guard passes, react fires, broadcasts message:reaction", async () => {
-    // assertGroupMember → groupMemberRepo.findActiveByRoomAndUser.
+    // Write guard (assertCanWrite → assertGroupMember) → findActiveByRoomAndUser.
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
-    // message-in-room guard → groupMessageRepo.findById; message belongs to GROUP.
-    mocks.groupMessageRepo.findById.mockResolvedValue({
-      id: MSG,
-      roomId: GROUP,
+    // Read guard inside getMessageReactions (assertGroupReadAccess) →
+    // findByRoomAndUser, which admits only an ACTIVE row.
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+      status: "ACTIVE",
     });
-    // #1 before + #2 inside react: empty; #3 after: reacted.
+    // message-in-room guard + reactCas row load → groupMessageRepo.findById;
+    // message belongs to GROUP.
+    mocks.groupMessageRepo.findById.mockResolvedValue(storedMessage(GROUP, {}));
+    // #1 before: empty → toggle ON fires; #2 after: reacted.
     mocks.groupMessageRepo.getReactions
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce(REACTED_BY_SELF);
-    mocks.groupMessageRepo.addReactions.mockResolvedValue({ id: MSG });
+      .mockResolvedValueOnce(reactionsRow(GROUP, {}))
+      .mockResolvedValueOnce(reactionsRow(GROUP, REACTED_BY_SELF));
+    mocks.groupMessageRepo.updateReactionsCas.mockResolvedValue(true);
 
     const res = await request(app)
       .post(`/api/chat/groups/rooms/${GROUP}/messages/${MSG}/reactions`)
@@ -266,7 +331,14 @@ describe("GROUP react routes (orchestrator GROUP branch + member guard)", () => 
 
     expect(res.status).toBe(200);
     expect(res.body.data.reactions).toHaveLength(1);
-    expect(mocks.groupMessageRepo.addReactions).toHaveBeenCalledTimes(1);
+    expect(mocks.groupMessageRepo.updateReactionsCas).toHaveBeenCalledTimes(1);
+    expect(mocks.groupMessageRepo.updateReactionsCas).toHaveBeenCalledWith(
+      MSG,
+      GROUP,
+      REACTED_BY_SELF,
+      REVISION,
+      { userId: TEST_USER_ID, emoji: EMOJI }
+    );
     expect(reactionBroadcasts(mocks.redis, GROUP)).toHaveLength(1);
   });
 
@@ -281,6 +353,7 @@ describe("GROUP react routes (orchestrator GROUP branch + member guard)", () => 
 
     expect(res.status).toBe(403);
     expect(mocks.groupMessageRepo.getReactions).not.toHaveBeenCalled();
+    expect(mocks.groupMessageRepo.updateReactionsCas).not.toHaveBeenCalled();
     expect(mocks.groupMessageRepo.addReactions).not.toHaveBeenCalled();
   });
 });
@@ -289,7 +362,7 @@ describe("GROUP react routes (orchestrator GROUP branch + member guard)", () => 
  * B1 regression — cross-room IDOR. The caller is legitimately authorized for the
  * URL room (participant / active member), but the target messageId resolves to a
  * DIFFERENT room they are NOT in. The message-in-room guard must reject with 404
- * BEFORE any reaction read (getReactions) or write (addReactions), and emit NO
+ * BEFORE any reaction read (getReactions) or write (updateReactionsCas), and emit NO
  * message:reaction broadcast — otherwise a member of room A could mutate a foreign
  * message and fan its id out on conv:A.
  */
@@ -314,6 +387,7 @@ describe("B1: cross-room IDOR — message does not belong to the URL room", () =
     expect(res.status).toBe(404);
     // The guard binds message↔room BEFORE touching reactions.
     expect(mocks.privateMessageRepo.getReactions).not.toHaveBeenCalled();
+    expect(mocks.privateMessageRepo.updateReactionsCas).not.toHaveBeenCalled();
     expect(mocks.privateMessageRepo.addReactions).not.toHaveBeenCalled();
     // No foreign-message broadcast leaked onto conv:ROOM.
     expect(reactionBroadcasts(mocks.redis, ROOM)).toHaveLength(0);
@@ -337,6 +411,7 @@ describe("B1: cross-room IDOR — message does not belong to the URL room", () =
 
     expect(res.status).toBe(404);
     expect(mocks.groupMessageRepo.getReactions).not.toHaveBeenCalled();
+    expect(mocks.groupMessageRepo.updateReactionsCas).not.toHaveBeenCalled();
     expect(mocks.groupMessageRepo.addReactions).not.toHaveBeenCalled();
     expect(reactionBroadcasts(mocks.redis, GROUP)).toHaveLength(0);
   });

@@ -55,6 +55,10 @@ function editPublishesOn(redis: BuiltMocks["redis"], channel: string) {
 beforeEach(() => {
   ({ app, mocks } = buildApp());
   mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
+  // reactToMessage now persists via the revision-guarded CAS write
+  // (updateReactionsCas, formerly updateById); a falsy result is a lost race
+  // → retries → 409 CHAT_REACTION_CONFLICT. Single-writer tests: CAS applies.
+  mocks.generalRoomMessageRepo.updateReactionsCas.mockResolvedValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -80,7 +84,7 @@ describe("POST /community/messages/:messageId/react — POSITIVE", () => {
       .send({ communityId: ROOM, emoji: EMOJI });
 
     expect(res.status).toBe(200);
-    expect(mocks.generalRoomMessageRepo.updateById).toHaveBeenCalledTimes(1);
+    expect(mocks.generalRoomMessageRepo.updateReactionsCas).toHaveBeenCalledTimes(1);
     expect(reactionPublishesOn(mocks.redis, `community:${ROOM}`)).toHaveLength(
       1
     );
@@ -101,7 +105,7 @@ describe("POST /community/messages/:messageId/react — POSITIVE", () => {
       .send({ communityId: ROOM, emoji: EMOJI });
 
     expect(res.status).toBe(403);
-    expect(mocks.generalRoomMessageRepo.updateById).not.toHaveBeenCalled();
+    expect(mocks.generalRoomMessageRepo.updateReactionsCas).not.toHaveBeenCalled();
     expect(reactionPublishesOn(mocks.redis, `community:${ROOM}`)).toHaveLength(
       0
     );

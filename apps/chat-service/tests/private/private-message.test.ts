@@ -1489,9 +1489,22 @@ describe("POST /rooms/:roomId/messages/:messageId/forward", () => {
 });
 
 describe("GET /rooms/:roomId/messages/:messageId/reactions", () => {
+  beforeEach(() => {
+    // getMessageReactions binds message↔room (assertMessageInRoom →
+    // findMessageMeta) before reading reactions, so the 404 below must come
+    // from the missing reactions record, not from this guard.
+    mocks.privateMessageRepo.findMessageMeta.mockResolvedValue({
+      id: "m1",
+      roomId: ROOM,
+    });
+  });
+
   it("POSITIVE: returns grouped reactions with selfReacted", async () => {
+    // repo.getReactions returns { reactions, mediaReactions, roomId } (not the bare map).
     mocks.privateMessageRepo.getReactions.mockResolvedValue({
-      "👍": [TEST_USER_ID, "peer"],
+      reactions: { "👍": [TEST_USER_ID, "peer"] },
+      mediaReactions: {},
+      roomId: ROOM,
     });
 
     const res = await request(app)
@@ -1511,5 +1524,7 @@ describe("GET /rooms/:roomId/messages/:messageId/reactions", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(404);
+    // The 404 is the missing-record branch, not the message-in-room guard.
+    expect(mocks.privateMessageRepo.getReactions).toHaveBeenCalledWith("m1");
   });
 });
