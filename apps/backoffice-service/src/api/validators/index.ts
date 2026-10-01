@@ -230,6 +230,8 @@ export {
   type DisconnectAllFriendshipsInput,
   setCallingEnabledSchema,
   type SetCallingEnabledInput,
+  appUpdatePolicySchema,
+  type AppUpdatePolicyInput,
 } from "./system-maintenance.validator.js";
 
 export {

@@ -68,7 +68,9 @@ export class PresenceService {
     // missing dependency must not turn into an open disclosure.
     private readonly visibilityGate?: PresenceVisibilityGate
   ) {
-    this.backgroundTimeoutMs = options?.backgroundTimeoutMs || 5 * 60 * 1000;
+    // WhatsApp/Telegram: offline almost as soon as the app leaves the screen. The short grace only
+    // absorbs a quick app switch.
+    this.backgroundTimeoutMs = options?.backgroundTimeoutMs || 10 * 1000;
     this.staleAfterMs = options?.staleAfterMs || 3 * 60 * 1000;
   }
 

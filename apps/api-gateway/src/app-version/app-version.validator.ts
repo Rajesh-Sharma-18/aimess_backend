@@ -19,6 +19,9 @@ export const checkAppVersionSchema = z.object({
         });
       }
     }),
+  // Android API level / iOS major version. Optional: shipped clients don't send it,
+  // and without it the minimum-OS rung simply never fires.
+  osLevel: z.number().int().min(0).max(1000).optional(),
 });
 
 export type CheckAppVersionInput = z.infer<typeof checkAppVersionSchema>;

@@ -104,6 +104,8 @@ export {
   disconnectAllFriendships,
   getCallingEnabled,
   setCallingEnabled,
+  getAppUpdatePolicy,
+  setAppUpdatePolicy,
 } from "./system-maintenance.controller.js";
 export {
   listAdminAccounts,

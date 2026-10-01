@@ -1360,7 +1360,13 @@ export function registerChatNamespace(
     // multi-device rule presence needs. `deviceId` above stays session-granular
     // because call legs genuinely are per login.
     const presenceDeviceId = socket.id;
-    let socketAppState = "FOREGROUND";
+    // Mobile clients send their real state in the CONNECT payload; a socket opened by a push or
+    // call wake is BACKGROUND and must not show the user online. Older clients send nothing.
+    const handshakeAppState =
+      (socket.handshake.auth as { appState?: string } | undefined)?.appState === "BACKGROUND"
+        ? "BACKGROUND"
+        : "FOREGROUND";
+    let socketAppState = handshakeAppState;
     let socketFocused = true;
 
     // Server-driven liveness. Clients are asked to send `presence:heartbeat`,
@@ -1424,14 +1430,14 @@ export function registerChatNamespace(
       // Stamp the foreground hint NOW, not on the first refresh tick 45s later:
       // a burst that lands in the first minute of a session would otherwise push
       // to the very device the user is typing on.
-      refreshAttention("FOREGROUND");
+      refreshAttention(handshakeAppState);
       messagingClient
         .presenceConnect({
           userId,
           deviceId: presenceDeviceId,
           platform,
           clientType,
-          appState: "FOREGROUND",
+          appState: handshakeAppState,
         })
         .catch((err: unknown) =>
           logger.warn(`/chat presence:connect error: ${String(err)}`)

@@ -40,6 +40,12 @@ export const COMMON_MESSAGES = {
     en: "App version checked",
     th: "ตรวจสอบเวอร์ชันแอปแล้ว",
   },
+  /** HTTP 426 — an admin FORCE rule refuses this app version at the edge. */
+  APP_UPDATE_REQUIRED: {
+    vi: "Vui lòng cập nhật ứng dụng lên phiên bản mới nhất để tiếp tục.",
+    en: "Please update the app to the latest version to continue.",
+    th: "กรุณาอัปเดตแอปเป็นเวอร์ชันล่าสุดเพื่อใช้งานต่อ",
+  },
 
   // --- Unified search (api-gateway GET /api/v1/search) -----------------------
   // The gateway threw SEARCH_UNAVAILABLE as a literal key with no catalog entry,

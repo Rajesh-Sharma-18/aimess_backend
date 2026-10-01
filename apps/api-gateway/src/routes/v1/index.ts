@@ -20,6 +20,7 @@ import {
 import { getServicesForVersion } from "../../versioning/registry.js";
 import { env } from "../../config/env.js";
 import { appVersionRouter } from "./app-version.routes.js";
+import { createAppUpdateGate } from "../../middleware/app-update-gate.js";
 import { createLegacyUploadsRouter } from "./legacy-uploads.routes.js";
 import {
   createNotificationCategoriesAliasRouter,
@@ -34,6 +35,10 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   const v1Router: IRouter = Router();
 
   v1Router.use("/app-version", appVersionRouter);
+
+  // Admin FORCE enforcement (426). After /app-version so a refused client can
+  // still learn why; before every proxy so nothing downstream is reachable.
+  v1Router.use(createAppUpdateGate());
 
   // Stable alias: POST /api/v1/users/uploads/url is forwarded to media-service's
   // POST /api/v1/media/upload-url. Registered BEFORE the generic `/users` proxy

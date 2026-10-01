@@ -10,6 +10,7 @@ import { getActiveSessionFromCache, isUserBanned } from "@aimess/redis";
 import { logger } from "@aimess/logger";
 import { resolveLocale, type SupportedLocale } from "@aimess/constants";
 import { resolveAccountLocale } from "./account-locale.js";
+import { appVersionService } from "../app-version/index.js";
 import { env, accessTokenVerifyConfig } from "../config/env.js";
 import type { SocketUserDetails } from "./user-details.js";
 
@@ -218,6 +219,16 @@ export function createGatewaySocketAuthMiddleware(
         }
 
         socket.data.locale = resolveHandshakeLocale(socket.handshake);
+
+        // Same admin FORCE refusal as the REST gate (426); fails open the same way.
+        const updateRefusal = await appVersionService.refusal(
+          headers["x-platform"] as string | undefined,
+          headers["x-app-version"] as string | undefined
+        );
+        if (updateRefusal) {
+          next(new Error("APP_UPDATE_REQUIRED"));
+          return;
+        }
 
         const verified = verifyAccessToken(token, accessTokenVerifyConfig);
 

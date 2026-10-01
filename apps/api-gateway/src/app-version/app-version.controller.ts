@@ -25,7 +25,10 @@ export const checkAppVersion = asyncHandler(
       checkAppVersionSchema,
       req.body
     );
-    const result = await appVersionService.check(body);
+    const result = await appVersionService.check({
+      ...body,
+      locale: req.locale,
+    });
 
     return res
       .status(HTTP_STATUS.OK)

@@ -1,3 +1,5 @@
+import { getRedis, readAppUpdatePolicy } from "@aimess/redis";
+
 import { env, getDefaultAppVersionConfig } from "../config/env.js";
 import { createAppVersionService } from "./app-version.service.js";
 import {
@@ -10,4 +12,8 @@ const store = createAppVersionStore({
   defaults: getDefaultAppVersionConfig(),
 });
 
-export const appVersionService = createAppVersionService(store);
+// getRedis() throws until connectRedis() has run; `async` turns that into a
+// rejection the service treats as "nothing published" and serves the static policy.
+export const appVersionService = createAppVersionService(store, async () =>
+  readAppUpdatePolicy(getRedis())
+);
