@@ -42,6 +42,7 @@ export {
   getBanReasons,
   listUserReports,
   listUserDevices,
+  listUserHistory,
   listUserCommunities,
   listOtherCommunityMembers,
   banUser,

@@ -290,6 +290,15 @@ export const userDevicesQuerySchema = z.object({
 export type UserDevicesQueryInput = z.infer<typeof userDevicesQuerySchema>;
 
 // ---------------------------------------------------------------------------
+// Moderation history query (GET /users/:userId/history).
+// ---------------------------------------------------------------------------
+export const userHistoryQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(1000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type UserHistoryQueryInput = z.infer<typeof userHistoryQuerySchema>;
+
+// ---------------------------------------------------------------------------
 // Ban.
 // ---------------------------------------------------------------------------
 /** Max length for a free-text custom ban reason (predefined codes are far shorter). */

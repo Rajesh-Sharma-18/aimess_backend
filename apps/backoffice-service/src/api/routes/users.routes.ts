@@ -13,6 +13,7 @@ import {
   listUserCommunities,
   listUserGroups,
   listUserDevices,
+  listUserHistory,
   listUserReports,
   listUsers,
   reactivateUser,
@@ -42,6 +43,7 @@ import {
   updateUserAccountSchema,
   userCommunityMembersParamSchema,
   userDevicesQuerySchema,
+  userHistoryQuerySchema,
   userIdParamSchema,
   userReportsQuerySchema,
   userSocialProviderParamSchema,
@@ -122,6 +124,13 @@ usersRoutes.get(
   validateParams(userIdParamSchema),
   validateQuery(userDevicesQuerySchema),
   listUserDevices
+);
+usersRoutes.get(
+  "/users/:userId/history",
+  requirePermission(PERMISSIONS.USERS_VIEW),
+  validateParams(userIdParamSchema),
+  validateQuery(userHistoryQuerySchema),
+  listUserHistory
 );
 // User → Communities grid + the co-member grid for a specific community. The
 // more-specific `/communities/:communityId/members` is declared before the

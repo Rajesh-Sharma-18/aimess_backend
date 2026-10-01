@@ -3,7 +3,7 @@ import type { RequestHandler } from "express";
 import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
-import { userManagementService } from "../../services/index.js";
+import { auditService, userManagementService } from "../../services/index.js";
 import { paginated } from "../lib/respond.js";
 import type { ListUsersQuery } from "../../types/user-management.types.js";
 import type { ListUserCommunitiesQuery } from "../../types/community.types.js";
@@ -26,6 +26,7 @@ import type {
   UnbanUserInput,
   UserReportsQueryInput,
   UserDevicesQueryInput,
+  UserHistoryQueryInput,
 } from "../validators/index.js";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
@@ -144,6 +145,32 @@ export const listUserDevices: RequestHandler = (req, res, next) => {
             result.data,
             result.pagination,
             t("ADMIN_USER_DEVICES_FETCHED", req.locale)
+          )
+        );
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * GET /v1/users/:userId/history — the user's moderation timeline (admin/system
+ * actions on the account and decisions on reports against it), newest first.
+ * Gated on USERS_VIEW like the rest of the detail bundle and scoped to `:userId`.
+ */
+export const listUserHistory: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const userId = req.params.userId as string;
+      const { page, limit } = req.query as unknown as UserHistoryQueryInput;
+      const result = await auditService.listUserHistory(userId, page, limit);
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_USER_HISTORY_FETCHED", req.locale)
           )
         );
     } catch (error) {

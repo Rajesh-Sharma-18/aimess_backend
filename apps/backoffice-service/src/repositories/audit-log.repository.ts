@@ -23,7 +23,11 @@ import {
   auditActionsForCategory,
   auditCategoryOf,
 } from "@aimess/messaging";
-import type { AuditCategoryKind } from "../types/audit-log.types.js";
+import type {
+  AuditCategoryKind,
+  UserHistoryItem,
+} from "../types/audit-log.types.js";
+import { reportsAgainstUser } from "../lib/report-target.js";
 
 // The unfiltered default page shows the mandatory classification only — the five
 // categories in @aimess/messaging mandatory-audit-actions.ts. Everything else
@@ -383,6 +387,77 @@ export const auditLogRepository = {
       hasPrev: query.page > 1,
     };
     return { data, pagination };
+  },
+
+  /**
+   * A user's moderation timeline, newest first: every admin/system action whose
+   * target is the user (ban, unban, reactivate, account edits, sanctions), plus
+   * the decisions on reports filed against them (resolved / dismissed rows target
+   * the report, so they are matched through the report ids). End-user activity and
+   * page-view rows are excluded — this is what was done TO the account.
+   */
+  async listForUser(
+    userId: string,
+    page: number,
+    limit: number
+  ): Promise<Paginated<UserHistoryItem>> {
+    const reports = await prisma.report.findMany({
+      where: reportsAgainstUser(userId),
+      select: { id: true },
+    });
+    const reportIds = reports.map((r) => r.id);
+
+    const where: Prisma.AuditLogWhereInput = {
+      actorType: { in: ["ADMIN", "SYSTEM"] },
+      NOT: { action: { endsWith: "viewed" } },
+      OR: [
+        { targetType: "user", targetId: userId },
+        ...(reportIds.length > 0
+          ? [{ targetType: "report", targetId: { in: reportIds } }]
+          : []),
+      ],
+    };
+
+    const skip = (page - 1) * limit;
+    const [rows, total] = await Promise.all([
+      prisma.auditLog.findMany({
+        where,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip,
+        take: limit,
+      }),
+      prisma.auditLog.count({ where }),
+    ]);
+
+    const { toPerformer } = await buildRowResolver(rows);
+    const data: UserHistoryItem[] = await Promise.all(
+      rows.map(async (row) => ({
+        id: row.id,
+        performer: await toPerformer(row),
+        source: row.source,
+        category: auditCategoryOf(row.action) as AuditCategoryKind | null,
+        action: row.action,
+        targetType: row.targetType,
+        targetId: row.targetId,
+        reason: extractReason(row),
+        before: row.before ?? null,
+        after: row.after ?? null,
+        createdAt: row.createdAt.getTime(),
+      }))
+    );
+
+    const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+        hasNext: skip + limit < total,
+        hasPrev: page > 1,
+      },
+    };
   },
 
   /** Single audit-log detail; null → 404 at the controller. */
