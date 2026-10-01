@@ -12,6 +12,7 @@ import { startLoginFailureSweeper } from "./lib/login-failure-sweeper.js";
 import { startSystemHealthTicker } from "./lib/system-health-ticker.js";
 import { reconcileDisposableAdmins } from "./lib/disposable-admin-reconciler.js";
 import { startBackofficeGrpcServer } from "./grpc/server.js";
+import { appUpdatePolicyService } from "./services/index.js";
 import { startAdminActivityIngestConsumer } from "./messaging/consume-admin-activity-ingest.js";
 import { startAdminReportIngestConsumer } from "./messaging/consume-admin-report-ingest.js";
 import { startAnnouncementDeliveryConsumer } from "./messaging/consume-announcement-delivery.js";
@@ -40,6 +41,12 @@ const startServer = async (): Promise<void> => {
         ),
       ]);
       logger.info("Redis connected");
+      // Redis may have been flushed since the last save; the DB row is authoritative.
+      await appUpdatePolicyService
+        .publishStored()
+        .catch((error: unknown) =>
+          logger.warn(`App update policy publish failed: ${String(error)}`)
+        );
     } catch (error) {
       logger.warn(
         "Redis unavailable/timed out — backoffice-service is starting anyway; active-session + perms cache will fail until Redis is reachable"

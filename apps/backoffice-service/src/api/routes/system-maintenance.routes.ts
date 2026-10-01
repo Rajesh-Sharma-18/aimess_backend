@@ -5,6 +5,8 @@ import {
   disconnectAllFriendships,
   getCallingEnabled,
   setCallingEnabled,
+  getAppUpdatePolicy,
+  setAppUpdatePolicy,
 } from "../controllers/index.js";
 import {
   adminAuth,
@@ -14,6 +16,7 @@ import {
 import {
   disconnectAllFriendshipsSchema,
   setCallingEnabledSchema,
+  appUpdatePolicySchema,
 } from "../validators/index.js";
 
 /**
@@ -47,4 +50,19 @@ systemMaintenanceRoutes.patch(
   requirePermission(PERMISSIONS.SETTINGS_MANAGE),
   validateBody(setCallingEnabledSchema),
   setCallingEnabled
+);
+
+// App update policy (force rules + store-decision config, per platform). READ for
+// anyone who can see system health; WRITE is SUPER_ADMIN-only — a force rule can
+// block every user on a platform.
+systemMaintenanceRoutes.get(
+  "/system/app-update-policy",
+  requirePermission(PERMISSIONS.SYSTEMHEALTH_READ),
+  getAppUpdatePolicy
+);
+systemMaintenanceRoutes.put(
+  "/system/app-update-policy",
+  requirePermission(PERMISSIONS.SETTINGS_MANAGE),
+  validateBody(appUpdatePolicySchema),
+  setAppUpdatePolicy
 );

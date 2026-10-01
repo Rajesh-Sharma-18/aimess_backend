@@ -5408,6 +5408,12 @@ export const openApiSchemas = {
         example: "1.0.5",
         description: "App build version: major.minor.patch",
       },
+      osLevel: {
+        type: "integer",
+        example: 34,
+        description:
+          "Android API level or iOS major version. Optional; enables the minimum-OS rule.",
+      },
     },
     required: ["platform", "version"],
   },
@@ -5442,6 +5448,36 @@ export const openApiSchemas = {
         description: "If true, continue without update UI.",
       },
       storeUrl: { type: "string", format: "uri", nullable: true },
+      mode: {
+        type: "string",
+        enum: ["ADMIN_MANAGED", "STORE_MANAGED"],
+        description: "Who decides this platform's updates.",
+      },
+      action: {
+        type: "string",
+        enum: ["FORCE", "UNSUPPORTED_DEVICE", "STORE"],
+        description:
+          "FORCE: admin rule, show the blocking screen. UNSUPPORTED_DEVICE: OS below the minimum. STORE: ask the store (Play priority / App Store version bump) using `store`.",
+      },
+      reason: {
+        type: "string",
+        enum: ["OS_TOO_OLD", "BLOCKED_VERSION", "BELOW_FORCE_VERSION", "NONE"],
+      },
+      latestVersion: { type: "string", example: "2.1.0" },
+      fullyRolledOut: { type: "boolean" },
+      enforceOnServer: {
+        type: "boolean",
+        description: "When true, a FORCE client is refused with 426 APP_UPDATE_REQUIRED.",
+      },
+      store: {
+        type: "object",
+        description:
+          "Android: { forceFromPriority, softFromPriority, escalateSoftAfterDays }. iOS: { appStoreId, forceOnBump, softOnBump }.",
+      },
+      title: { type: "string", nullable: true },
+      message: { type: "string", nullable: true },
+      policyVersion: { type: "integer", example: 7 },
+      issuedAt: { type: "integer", description: "Server time, UTC epoch ms." },
     },
     required: [
       "platform",

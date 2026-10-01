@@ -756,6 +756,16 @@ export const ADMIN_MESSAGES = {
     en: "Calling state updated",
     th: "อัปเดตสถานะการโทรแล้ว",
   },
+  ADMIN_APP_UPDATE_POLICY_FETCHED: {
+    vi: "Đã tải chính sách cập nhật ứng dụng",
+    en: "App update policy fetched",
+    th: "ดึงนโยบายการอัปเดตแอปแล้ว",
+  },
+  ADMIN_APP_UPDATE_POLICY_UPDATED: {
+    vi: "Đã cập nhật chính sách cập nhật ứng dụng",
+    en: "App update policy updated",
+    th: "อัปเดตนโยบายการอัปเดตแอปแล้ว",
+  },
 
   // ── Errors that reached the panel as raw tokens ──────────────────────────
   // Every key below was already being thrown by backoffice-service but had no

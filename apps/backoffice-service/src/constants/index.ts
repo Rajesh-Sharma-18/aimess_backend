@@ -129,6 +129,7 @@ export const AUDIT_ACTIONS = {
   ADMIN_PASSWORD_CHANGED: "admin.password_changed",
   SYSTEM_ALL_FRIENDSHIPS_DISCONNECTED: "system.all_friendships_disconnected",
   SYSTEM_CALLING_TOGGLED: "system.calling_toggled",
+  SYSTEM_APP_UPDATE_POLICY_UPDATED: "system.app_update_policy_updated",
   // A Super Admin restarted an allowlisted service from System Health. Two rows:
   // the restart runs after the request returns, and its result is only known
   // once health has been verified.

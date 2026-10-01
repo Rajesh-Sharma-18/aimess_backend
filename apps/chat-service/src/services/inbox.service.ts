@@ -143,6 +143,12 @@ export interface InboxItem {
    */
   isDisbanded: boolean | null;
   /**
+   * Epoch ms of the caller's latest Clear Chat / Delete Conversation cutoff, null if never.
+   * Lets a device that missed the `conv:cleared` event (offline, app killed)
+   * drop its local copy of everything at or before the cutoff.
+   */
+  clearedAtMs: number | null;
+  /**
    * GROUP-only: the group was CLOSED because its owner was permanently banned
    * by a super admin. Unlike a disband the row stays in the list and history
    * stays readable, but every write is refused with
@@ -369,6 +375,10 @@ export class InboxService {
       memberMutedUntil: null,
       memberMutedUntilMs: null,
       isDisbanded: null,
+      clearedAtMs: latestCutoffMs(
+        (room.clearFor as Record<string, string> | null | undefined)?.[userId],
+        (room.deletedFor as Record<string, string> | null | undefined)?.[userId]
+      ),
       isClosed: null,
       closedReasonCode: null,
       autoDelete: buildAutoDeleteWire(readRoomAutoDelete(room), {
@@ -440,6 +450,7 @@ export class InboxService {
       memberMutedUntil: room.memberMutedUntil ?? null,
       memberMutedUntilMs: room.memberMutedUntilMs ?? null,
       isDisbanded: room.status === "DISBANDED",
+      clearedAtMs: room.clearChatAtMs ?? null,
       isClosed: room.status === "CLOSED",
       closedReasonCode: room.closedReasonCode ?? null,
       autoDelete: buildAutoDeleteWire(readRoomAutoDelete(room), {
@@ -452,4 +463,10 @@ export class InboxService {
       }),
     };
   }
+}
+
+/** Later of the Clear Chat / Delete Conversation cutoffs (ISO strings), null if neither. */
+function latestCutoffMs(...isos: (string | null | undefined)[]): number | null {
+  const ms = isos.map((iso) => (iso ? Date.parse(iso) : NaN)).filter(Number.isFinite);
+  return ms.length ? Math.max(...ms) : null;
 }
