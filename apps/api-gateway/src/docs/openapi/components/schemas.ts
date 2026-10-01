@@ -1186,6 +1186,38 @@ export const openApiSchemas = {
         enum: ["MALE", "FEMALE", "NON_BINARY", "PREFER_NOT_TO_SAY", "OTHER"],
       },
       email: { type: "string", format: "email", maxLength: 254 },
+      avatarObjectKey: {
+        type: "string",
+        nullable: true,
+        maxLength: 512,
+        description:
+          "objectKey from POST /admin/v1/users/{userId}/avatar/upload-url after the file is PUT. The backend runs the media security pipeline (waiting briefly for the AV scan) before saving. `null` removes the avatar.",
+      },
+    },
+  },
+  AdminUserAvatarUploadUrlRequest: {
+    type: "object",
+    additionalProperties: false,
+    required: ["contentType", "contentLength"],
+    properties: {
+      contentType: {
+        type: "string",
+        enum: ["image/jpeg", "image/png", "image/webp"],
+      },
+      contentLength: { type: "integer", minimum: 1, maximum: 5242880 },
+    },
+  },
+  AdminUserAvatarUploadUrl: {
+    type: "object",
+    properties: {
+      uploadUrl: { type: "string" },
+      objectKey: { type: "string", example: "avatars/{userId}/{uuid}.png" },
+      expiresIn: { type: "integer" },
+      headers: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Send exactly these headers on the PUT.",
+      },
     },
   },
   AdminUserAccount: {

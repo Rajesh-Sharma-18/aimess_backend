@@ -122,6 +122,7 @@ export {
   updateAdminPermissions,
 } from "./admin-account.controller.js";
 export {
+  createUserAvatarUploadUrl,
   getUserAccount,
   updateUserAccount,
   unlinkUserSocialAccount,

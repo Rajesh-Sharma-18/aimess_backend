@@ -16,6 +16,9 @@
  * rejection — delete the object.
  *
  * FAIL CLOSED: an unreachable media-service refuses the commit.
+ *
+ * Also mints + verifies a user's avatar when an admin replaces it from the User
+ * Details page (see userAccountService).
  */
 
 import path from "node:path";
@@ -37,6 +40,7 @@ const PROTO_PATH = path.resolve(
  * read-only status check other services use.
  */
 const CONFIRM_DEADLINE_MS = 20_000;
+const STATUS_DEADLINE_MS = 3_000;
 
 export interface MediaConfirmResult {
   scanStatus: string;
@@ -44,11 +48,32 @@ export interface MediaConfirmResult {
   fileSize: number;
 }
 
+export interface MediaUploadUrlResult {
+  uploadUrl: string;
+  objectKey: string;
+  expiresIn: number;
+  maxBytes: number;
+}
+
+export type MediaConfirmCategory = "LIVESTREAM_THUMBNAIL" | "USER_AVATAR";
+
 export interface MediaConfirmClient {
   confirmUpload(
     objectKey: string,
-    ownerId: string
+    ownerId: string,
+    category?: MediaConfirmCategory
   ): Promise<MediaConfirmResult>;
+  /**
+   * Presigned PUT for a USER_AVATAR filed under `ownerId` — the target user, not
+   * the admin, so user-service's `avatars/{userId}/…` ownership check passes.
+   */
+  generateUserAvatarUploadUrl(
+    ownerId: string,
+    contentType: string,
+    contentLength: number
+  ): Promise<MediaUploadUrlResult>;
+  /** Read-only verdict lookup; `downloadable` is the only safe gate. */
+  isDownloadable(objectKey: string): Promise<boolean>;
 }
 
 export function createMediaConfirmClient(): MediaConfirmClient {
@@ -69,14 +94,14 @@ export function createMediaConfirmClient(): MediaConfirmClient {
   );
 
   return {
-    async confirmUpload(objectKey, ownerId) {
+    async confirmUpload(objectKey, ownerId, category = "LIVESTREAM_THUMBNAIL") {
       const res = await makeGrpcCallWithDeadline<
         { objectKey: string; category: string; ownerId: string },
         Record<string, unknown>
       >(
         client,
         "confirmUpload",
-        { objectKey, category: "LIVESTREAM_THUMBNAIL", ownerId },
+        { objectKey, category, ownerId },
         Date.now() + CONFIRM_DEADLINE_MS
       );
       return {
@@ -84,6 +109,40 @@ export function createMediaConfirmClient(): MediaConfirmClient {
         downloadable: Boolean(res.downloadable),
         fileSize: Number(res.fileSize ?? 0),
       };
+    },
+    async generateUserAvatarUploadUrl(ownerId, contentType, contentLength) {
+      const res = await makeGrpcCallWithDeadline<
+        {
+          category: string;
+          contentType: string;
+          contentLength: number;
+          ownerId: string;
+        },
+        Record<string, unknown>
+      >(
+        client,
+        "generateUploadUrl",
+        { category: "USER_AVATAR", contentType, contentLength, ownerId },
+        Date.now() + STATUS_DEADLINE_MS
+      );
+      return {
+        uploadUrl: String(res.uploadUrl ?? ""),
+        objectKey: String(res.objectKey ?? ""),
+        expiresIn: Number(res.expiresIn ?? 0),
+        maxBytes: Number(res.maxBytes ?? 0),
+      };
+    },
+    async isDownloadable(objectKey) {
+      const res = await makeGrpcCallWithDeadline<
+        { objectKeys: string[] },
+        { entries?: Array<Record<string, unknown>> }
+      >(
+        client,
+        "checkMediaStatus",
+        { objectKeys: [objectKey] },
+        Date.now() + STATUS_DEADLINE_MS
+      );
+      return Boolean(res.entries?.[0]?.downloadable);
     },
   };
 }

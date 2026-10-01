@@ -1099,6 +1099,33 @@ export const adminPaths = {
         "403": errRes("Missing users.edit"),
         "404": errRes("User not found"),
         "409": errRes("AUTH_EMAIL_EXISTS | USER_USERNAME_TAKEN"),
+        "503": errRes("MEDIA_REGISTRY_UNAVAILABLE (avatar could not be verified)"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/{userId}/avatar/upload-url": {
+    post: {
+      tags: [adminTags.users],
+      operationId: "adminCreateUserAvatarUploadUrl",
+      summary: "Presigned PUT for replacing a user's avatar",
+      description:
+        "The object is filed under the target user (avatars/{userId}/…), so user-service accepts it. PUT the file to `uploadUrl` with `headers`, then send `objectKey` as `avatarObjectKey` on PATCH /admin/v1/users/{userId}. Requires users.edit.",
+      security: adminSecurity,
+      parameters: [{ ...idPathParam, name: "userId" }],
+      requestBody: jsonBody(
+        "#/components/schemas/AdminUserAvatarUploadUrlRequest"
+      ),
+      responses: {
+        "200": okRes(
+          "Upload URL",
+          "#/components/schemas/AdminUserAvatarUploadUrl"
+        ),
+        "400": errRes("Unsupported type or file over 5 MB"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.edit"),
+        "404": errRes("User not found"),
+        "503": errRes("MEDIA_REGISTRY_UNAVAILABLE"),
       },
       "x-implementation-status": "implemented",
     },

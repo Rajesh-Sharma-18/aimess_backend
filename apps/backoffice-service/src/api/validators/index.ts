@@ -260,7 +260,9 @@ export {
 } from "./message-reactions.validator.js";
 export {
   updateUserAccountSchema,
+  userAvatarUploadUrlSchema,
   userSocialProviderParamSchema,
   type UpdateUserAccountInput,
+  type UserAvatarUploadUrlInput,
   type UserSocialProviderParam,
 } from "./user-account.validator.js";
