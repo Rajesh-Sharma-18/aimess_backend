@@ -1877,11 +1877,15 @@ export function registerChatNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
+        const intentRooms = presenceRoomsFor(socket);
         for (const peerId of r.data.peerIds) {
           void socket.leave(`presence:${peerId}`);
           // Drop the intent too, or a later widening would silently re-grant a
-          // subscription the client explicitly gave up.
+          // subscription the client explicitly gave up. The cap counter goes
+          // with it: clients subscribe and release as lists open and close, so
+          // a counter that only grew would hit the cap mid-session.
           void socket.leave(`presence-intent:${peerId}`);
+          intentRooms.delete(peerId);
         }
         ackOk(callback, "SOCKET_PRESENCE_UNSUBSCRIBED", locale);
       }
@@ -1904,6 +1908,7 @@ export function registerChatNamespace(
             void socket.leave(room);
           }
         }
+        presenceRoomsFor(socket).clear();
         ackOk(callback, "SOCKET_PRESENCE_UNSUBSCRIBED_ALL", locale, {
           unsubscribedCount,
         });
