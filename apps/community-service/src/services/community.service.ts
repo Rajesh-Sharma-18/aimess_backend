@@ -3114,9 +3114,13 @@ export const communityService = {
       });
     }
 
-    // Admin who just patched the community isn't asking about mute — skip read.
+    // Same caller view as GET /communities/:id. Building it from `updated` alone
+    // defaulted every field this method doesn't own — liveStreams to [] (so
+    // isLive:false mid-stream), the caller's mute + notification switches to
+    // their defaults — and a client that cached the response dropped Live /
+    // Watch Now and flipped the toggles on every edit.
     return {
-      community: await toCommunityData(updated, membership.role, null),
+      community: await this.getById(communityId, callerId),
       changedFields,
     };
   },

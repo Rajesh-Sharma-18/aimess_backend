@@ -40,6 +40,10 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findActiveMemberIds: jest.fn(),
     findActiveCategoryById: jest.fn(),
     createAuditLog: jest.fn(),
+    // update() answers with getById()'s caller view — these back it.
+    findMuteByUserAndCommunity: jest.fn(),
+    findActiveMemberMute: jest.fn(),
+    findJoinRequestByCommunityAndUser: jest.fn(),
   },
 }));
 
@@ -61,6 +65,7 @@ import { publishCommunityRoomEvent, publishChatUserEvent } from "@aimess/redis";
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/publish-community-chat.js";
+import { getStreamClient } from "../../src/grpc/stream.client.js";
 
 // ---------------------------------------------------------------------------
 // Typed aliases
@@ -202,6 +207,72 @@ describe("update() — community:meta:updated fan-out", () => {
     expect(
       pubUser.mock.calls.filter(([, , evt]) => evt === "community:meta:updated")
     ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite 1b — update() response keeps state the edit doesn't own
+// ---------------------------------------------------------------------------
+
+describe("update() — response carries live + caller state, not defaults", () => {
+  const LIVE = {
+    id: "stream-1",
+    title: "Rangoli live",
+    thumbnail: null,
+    creatorId: M1,
+    hlsUrl: null,
+    flvUrl: null,
+    dashUrl: null,
+    viewerCount: 3,
+    livedAt: 1_780_000_000_000,
+  };
+  const stream = getStreamClient() as unknown as Record<string, jest.Mock>;
+
+  beforeEach(() => {
+    repo.findById.mockResolvedValue(baseCommunity);
+    repo.findActiveMemberIds.mockResolvedValue([M1, M2]);
+    repo.findActiveCategoryById.mockResolvedValue({ id: "cat-2", name: "Sports" });
+    repo.findMuteByUserAndCommunity.mockResolvedValue({
+      mutedUntil: null,
+      streamEnabled: true,
+      chatEnabled: false,
+      announcementEnabled: true,
+    });
+    repo.findActiveMemberMute.mockResolvedValue(null);
+    repo.findJoinRequestByCommunityAndUser.mockResolvedValue(null);
+    repo.updateCommunity.mockResolvedValue({ ...baseCommunity, description: "new desc" });
+    stream.getLiveStreamsByCommunity.mockResolvedValue([LIVE]);
+  });
+  afterEach(() => stream.getLiveStreamsByCommunity.mockResolvedValue([]));
+
+  it.each([
+    ["ADMIN", { description: "new desc" }],
+    ["ADMIN", { categoryId: "cat-2" }],
+    ["ADMIN", { avatarObjectKey: null }],
+    ["ADMIN", { type: "PRIVATE" }],
+  ])("%s edit %j while a stream is LIVE answers isLive + the same stream", async (role, input) => {
+    repo.findMembership.mockResolvedValue({ role, status: "ACTIVE" });
+
+    const { community } = await communityService.updateWithChanges(CID, ADMIN, input as never);
+
+    expect(community.isLive).toBe(true);
+    expect(community.hasActiveLivestream).toBe(true);
+    expect(community.liveStreamCount).toBe(1);
+    expect(community.liveStreams.map((s) => s.id)).toEqual(["stream-1"]);
+    // The caller's own notification switch survives the edit too.
+    expect(community.chatEnabled).toBe(false);
+  });
+
+  it("answers isLive:false when nothing is live (no stale true)", async () => {
+    stream.getLiveStreamsByCommunity.mockResolvedValue([]);
+    repo.findMembership.mockResolvedValue({ role: "ADMIN", status: "ACTIVE" });
+
+    const { community } = await communityService.updateWithChanges(CID, ADMIN, {
+      description: "new desc",
+    });
+
+    expect(community.isLive).toBe(false);
+    expect(community.liveStreams).toEqual([]);
   });
 });
 
