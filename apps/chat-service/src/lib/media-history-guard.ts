@@ -50,7 +50,26 @@ export async function assertGroupMediaWithinHistory(params: {
   objectCreatedAtMs: number;
   probe: VisibleObjectKeyProbe;
 }): Promise<void> {
-  const cutoff = getGroupVisibilityCutoff(params.member);
+  return assertMediaWithinHistory({
+    ...params,
+    cutoff: getGroupVisibilityCutoff(params.member),
+  });
+}
+
+/**
+ * The same rule for any room kind, given the caller's history cutoff — a
+ * private Clear Chat is a boundary too: the cleared side must not be able to
+ * re-mint a URL for an attachment it can no longer see, while the peer (no
+ * cutoff) keeps full access.
+ */
+export async function assertMediaWithinHistory(params: {
+  cutoff: Date | undefined;
+  roomId: string;
+  objectKey: string;
+  objectCreatedAtMs: number;
+  probe: VisibleObjectKeyProbe;
+}): Promise<void> {
+  const { cutoff } = params;
   if (!cutoff) return;
   // Nothing to reason about — keep the pre-existing membership-only answer
   // rather than refusing a download an older media-service cannot describe.

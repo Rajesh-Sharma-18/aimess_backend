@@ -17,6 +17,7 @@ import { createChatNotificationClient } from "../grpc/chat-notification.client.j
 import { isSessionActiveForRequest } from "../lib/session-active-cache.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
 import { sendVoipPush } from "../providers/apns/sendVoipPush.js";
+import { markTrayCard } from "../lib/tray-cards.js";
 import { deviceTokenService } from "./device-token.service.js";
 import type { DeviceTokenRow } from "../repositories/device-token.repository.js";
 import {
@@ -172,6 +173,11 @@ const WEB_ACTIONABLE_DATA_ONLY_TYPES = new Set<string>([
   "CALL_HANDLED",
   "MESSAGE_DELETED",
   CommunityEvents.JOIN_REQUEST_RETRACTED,
+  // Tray dismissals (push-dismiss.ts). The worker closes cards by `tags`. They
+  // only reach WEB when a card was actually shown (see tray-cards.ts), so they
+  // do not burn the browser's silent-push budget on every read.
+  "MESSAGE_READ",
+  "NOTIFICATION_DISMISS",
 ]);
 
 export interface PushInput {
@@ -474,7 +480,6 @@ export async function pushToUser(input: PushInput): Promise<void> {
     category,
     type,
     actorId,
-    data: rawData,
     deepLink,
     webLink,
     collapseKey,
@@ -493,6 +498,12 @@ export async function pushToUser(input: PushInput): Promise<void> {
     excludeSessionIds,
     apnsCategory,
   } = input;
+
+  // A visible card's collapse key IS its tray tag (lib/push-tags.ts). Carried in
+  // `data.tag` too, because the Android app draws the card itself and only sees
+  // the data map, and a web page drawing a foreground card does the same.
+  const tag = !dataOnly && collapseKey ? collapseKey : undefined;
+  const rawData = tag ? { ...(input.data ?? {}), tag } : input.data;
 
   // The recipient's ACCOUNT language. Cached in Redis alongside their
   // notification settings, so this is the same round-trip the settings gate
@@ -809,6 +820,10 @@ export async function pushToUser(input: PushInput): Promise<void> {
     `[push:deliver] user=${userId} type=${type} tokens=${tokens.length} ` +
       `locales=${localeSources.join(",")}`
   );
+
+  // Remember the card so a later read/delete/leave elsewhere knows it has one
+  // to take back (push-dismiss.ts).
+  if (tag) await markTrayCard(userId, tag);
 
   // If there is at least one VoIP token, CallKit will handle the call ring on
   // iOS. When there is none, we fall back to a notification-bearing FCM push

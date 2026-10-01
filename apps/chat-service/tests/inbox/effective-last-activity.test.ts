@@ -101,7 +101,7 @@ describe("PRIVATE conversation list — effective lastActivity", () => {
     expect(row.lastActivity.dateTime).toBe(T_10_05.getTime());
   });
 
-  it("cleared conversation: preview empties AND lastActivityAt drops to 0 instead of inheriting the shared lastMessageAt", async () => {
+  it("cleared conversation: previews the viewer's own clear line but KEEPS the row's sort time", async () => {
     mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
       // Cleared at 10:11 — after the room's only message.
       privateRoom({
@@ -115,11 +115,15 @@ describe("PRIVATE conversation list — effective lastActivity", () => {
 
     expect(res.status).toBe(200);
     const row = res.body.data.data[0];
-    expect(row.lastActivity.preview).toBe("");
-    expect(row.lastActivityAt).toBe(0);
+    expect(row.lastActivity.preview).toBe("You cleared the conversation");
+    expect(row.lastActivity.contentType).toBe("SYSTEM");
+    // A clear is not activity: the row sorts exactly where it did before it.
+    expect(row.lastActivityAt).toBe(T_10_10.getTime());
+    // ...and never carries a delivery tick for the hidden message.
+    expect(row.lastMessageReadStatus ?? null).toBeNull();
   });
 
-  it("REGRESSION: a reaction overlay from BEFORE the clear does not resurrect the emptied row", async () => {
+  it("REGRESSION: a reaction overlay from BEFORE the clear does not resurrect the cleared row", async () => {
     mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
       privateRoom({
         clearFor: { [TEST_USER_ID]: "2026-08-10T10:11:00.000Z" },
@@ -140,9 +144,9 @@ describe("PRIVATE conversation list — effective lastActivity", () => {
 
     expect(res.status).toBe(200);
     const row = res.body.data.data[0];
-    expect(row.lastActivity.preview).toBe("");
-    expect(row.lastActivity.dateTime).toBe(0);
-    expect(row.lastActivityAt).toBe(0);
+    expect(row.lastActivity.preview).toBe("You cleared the conversation");
+    expect(row.lastActivity.dateTime).toBe(T_10_10.getTime());
+    expect(row.lastActivityAt).toBe(T_10_10.getTime());
   });
 
   it("a reaction made AFTER the clear still previews, but never advances the row's timestamp", async () => {
@@ -169,9 +173,9 @@ describe("PRIVATE conversation list — effective lastActivity", () => {
     // The overlay replaces the PREVIEW TEXT and nothing else. `dateTime` is what
     // the inbox exposes as `lastActivityAt` and what both the server and the
     // client order the list by, so a reaction — which is not conversation
-    // activity — must leave it exactly where it was. Here the viewer cleared the
-    // chat, so "where it was" is 0.
-    expect(row.lastActivity.dateTime).toBe(0);
+    // activity — must leave it exactly where it was. A clear keeps the row's
+    // pre-clear time, so "where it was" is still 10:10.
+    expect(row.lastActivity.dateTime).toBe(T_10_10.getTime());
     expect(reactedAt.getTime()).toBeGreaterThan(0);
   });
 
@@ -292,7 +296,7 @@ describe("GROUP inbox rows — effective lastActivity", () => {
     expect(row.lastActivity.dateTime).toBe(T_10_05.getTime());
   });
 
-  it("clear-chat: preview empties AND the effective timestamp drops to 0", async () => {
+  it("clear-chat: previews the clear line AND keeps the effective timestamp", async () => {
     mockGroupSide([groupRoom()], {
       unreadCount: 0,
       notificationSettings: {},
@@ -303,9 +307,25 @@ describe("GROUP inbox rows — effective lastActivity", () => {
     const res = await inbox();
 
     const row = res.body.data.data[0];
+    expect(row.lastMessage).toMatchObject({
+      contentType: "SYSTEM",
+      text: "You cleared the conversation",
+    });
+    expect(row.lastActivity.dateTime).toBe(T_10_10.getTime());
+    expect(row.lastActivity.preview).toBe("You cleared the conversation");
+  });
+
+  it("joined after the last message (no clear): nothing to preview, dateTime 0", async () => {
+    mockGroupSide([groupRoom()], {
+      unreadCount: 0,
+      notificationSettings: {},
+      joinedAt: new Date("2026-08-10T10:11:00.000Z"),
+    });
+    mocks.groupMessageRepo.filterHiddenFromUser.mockResolvedValue(new Set());
+
+    const row = (await inbox()).body.data.data[0];
     expect(row.lastMessage).toBeNull();
     expect(row.lastActivity.dateTime).toBe(0);
-    expect(row.lastActivity.preview).toBe("");
   });
 
   it("REGRESSION: a legacy row with no stored lastMessagePreview still reports the shared lastMessageAt", async () => {
@@ -356,7 +376,7 @@ describe("Inbox rows carry lastActivityAt (the per-viewer render/sort key)", () 
     expect(row.lastMessageAt).toBe(T_10_10.getTime());
   });
 
-  it("GROUP: 0 when the viewer cleared the chat (never falls back to lastMessageAt)", async () => {
+  it("GROUP: the pre-clear time when the viewer cleared the chat", async () => {
     mockGroupSide([groupRoom()], {
       unreadCount: 0,
       notificationSettings: {},
@@ -366,7 +386,29 @@ describe("Inbox rows carry lastActivityAt (the per-viewer render/sort key)", () 
 
     const res = await inbox();
 
-    expect(res.body.data.data[0].lastActivityAt).toBe(0);
+    expect(res.body.data.data[0].lastActivityAt).toBe(T_10_10.getTime());
+  });
+
+  it("PRIVATE: a cleared row keeps its pre-clear time and previews the clear line", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      privateRoom({ clearFor: { [TEST_USER_ID]: "2026-08-10T10:11:00.000Z" } }),
+    ]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(1);
+    mocks.privateMessageRepo.filterHiddenFromUser.mockResolvedValue(new Set());
+    mocks.privateMessageRepo.findManyByIds.mockResolvedValue([]);
+    mockGroupMemberships(mocks, []);
+    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue([]);
+    mocks.groupRoomRepo.getInboxGroups.mockResolvedValue([]);
+    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(0);
+
+    const row = (await inbox()).body.data.data[0];
+    expect(row.lastActivityAt).toBe(T_10_10.getTime());
+    expect(row.lastMessage).toMatchObject({
+      contentType: "SYSTEM",
+      systemEvent: "CONVERSATION_CLEARED",
+    });
+    expect(row.lastActivity.preview).toBe("You cleared the conversation");
+    expect(row.lastMessageReadStatus).toBeNull();
   });
 
   it("PRIVATE: mirrors lastActivity.dateTime", async () => {

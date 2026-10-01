@@ -8,6 +8,7 @@ import { logger } from "@aimess/logger";
 import { LINK_TEXT_REGEX } from "../lib/media-list-filter.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
+import { HISTORY_LINE_EVENTS } from "../lib/deletion-cutoff.js";
 import {
   refreshQuoteDataForParent,
   type QuoteRefreshPatch,
@@ -1347,6 +1348,61 @@ export class PrivateMessageRepository {
    * Excludes messages deleted-for-everyone; per-user "delete for me" is filtered
    * in memory (deletedFor shape: { [userId]: ISO-timestamp }).
    */
+  /**
+   * Does `userId` still see anything Clear Chat would remove — a message after
+   * their cutoff that is neither deleted-for-them nor a clear/delete history
+   * line? False means a clear would only stack another "You cleared…" line.
+   */
+  async hasClearableAfter(params: {
+    roomId: string;
+    userId: string;
+    cutoff?: Date;
+  }): Promise<boolean> {
+    // ponytail: checks the newest 50 rows; a tail of 50+ deleted-for-me rows
+    // reads as "nothing to clear". Page further if that ever matters.
+    const rows = await this.prisma.privateMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        ...(params.cutoff ? { createdAt: { gt: params.cutoff } } : {}),
+        NOT: {
+          messageType: "SYSTEM",
+          systemEvent: { in: [...HISTORY_LINE_EVENTS] },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      select: { deletedFor: true },
+    });
+    return rows.some((m) => !isHiddenForUser(m, params.userId));
+  }
+
+  /** Private twin of GroupMessageRepository.hasVisibleMessageWithObjectKey. */
+  async hasVisibleMessageWithObjectKey(params: {
+    roomId: string;
+    objectKey: string;
+    cutoff: Date;
+  }): Promise<boolean> {
+    const raw = (await this.prisma.privateMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: params.roomId,
+            isDeleted: false,
+            createdAt: { $gt: { $date: params.cutoff.toISOString() } },
+            $or: [
+              { "content.files.objectKey": params.objectKey },
+              { "content.files.thumbnailObjectKey": params.objectKey },
+              { "content.sticker.objectKey": params.objectKey },
+            ],
+          },
+        },
+        { $limit: 1 },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<unknown>;
+    return raw.length > 0;
+  }
+
   async listMedia(params: {
     roomId: string;
     userId: string;

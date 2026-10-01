@@ -93,7 +93,12 @@ import {
   mentionedUserIdsOf,
 } from "../lib/group-mentions.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
-import { assertGroupMediaWithinHistory } from "../lib/media-history-guard.js";
+import {
+  assertGroupMediaWithinHistory,
+  assertMediaWithinHistory,
+} from "../lib/media-history-guard.js";
+import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
+import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { adminMentions, adminReactionCounts } from "../lib/admin-wire.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
@@ -193,6 +198,11 @@ export interface GrpcDeps {
   /** Read directly by the media-access guard to bind an objectKey to a message
    *  the caller may actually read. */
   groupMessageRepo: GroupMessageRepository;
+  /** Same, for a private room's Clear Chat boundary. */
+  privateMessageRepo: Pick<
+    PrivateMessageRepository,
+    "hasVisibleMessageWithObjectKey"
+  >;
   privateRoomRepo: PrivateRoomRepository;
   roomMemberRepo: RoomMemberRepository;
   generalRoomRepo: GeneralRoomRepository;
@@ -3177,16 +3187,27 @@ export function createMessagingImpl(
 
         try {
           switch (scope) {
-            case "PRIVATE_CHAT":
+            case "PRIVATE_CHAT": {
               // A private room's `participants` array is fixed at creation and
               // is never pruned on unfriend/block, so this is already a
               // historical check — reused as-is.
-              await assertPrivateParticipant(
+              const room = await assertPrivateParticipant(
                 deps.privateRoomRepo,
                 resourceId,
                 userId
               );
+              // ...but the caller's own Clear Chat is a boundary, exactly as
+              // for a group member (see below).
+              await assertMediaWithinHistory({
+                cutoff: getPrivateDeletionCutoff(room, userId),
+                roomId: resourceId,
+                objectKey,
+                objectCreatedAtMs,
+                probe: (p) =>
+                  deps.privateMessageRepo.hasVisibleMessageWithObjectKey(p),
+              });
               break;
+            }
             case "GROUP_CHAT": {
               const member = await deps.groupMemberRepo.findByRoomAndUser(
                 resourceId,

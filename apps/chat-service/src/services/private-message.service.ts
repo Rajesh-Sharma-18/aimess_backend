@@ -62,7 +62,10 @@ import {
   type AutoDeleteStamp,
 } from "../lib/auto-delete.js";
 import { RECALC_CAS_ATTEMPTS } from "../lib/last-activity-guard.js";
-import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
+import {
+  getPrivateDeletionCutoff,
+  isHiddenByCutoff,
+} from "../lib/deletion-cutoff.js";
 import {
   getAccountChatSettings,
   mayBroadcastReadReceipts,
@@ -299,11 +302,25 @@ export class PrivateMessageService {
     // Validate BEFORE the lookup query (not just before persistence) — an
     // invalid/foreign-shaped id (albumId/mediaId/attachmentId/clientMessageId,
     // anything not a 24-hex ObjectId) must never reach `findById`.
-    const resolvedParentId = resolveParentMessageId(params.parentMessageId);
+    let resolvedParentId = resolveParentMessageId(params.parentMessageId);
     let quoteData: CanonicalQuote | undefined;
     if (resolvedParentId) {
       const originalMsg = await this.messageRepo.findById(resolvedParentId);
-      if (originalMsg) {
+      // Same rule as GroupMessageService.sendMessage: the quote is a snapshot
+      // broadcast with the reply, so the parent must be one this sender can
+      // read — in THIS room and after their own Clear Chat cutoff. A bare id
+      // quoted any message in the product, and re-surfaced cleared history.
+      const parentReadable =
+        originalMsg?.roomId === params.roomId &&
+        !isHiddenByCutoff(
+          originalMsg.createdAt,
+          getPrivateDeletionCutoff(
+            await this.roomRepo.findByRoomId(params.roomId),
+            params.senderId
+          )
+        );
+      if (!parentReadable) resolvedParentId = null;
+      if (originalMsg && parentReadable) {
         const originSenderId = originalMsg.senderId || "";
         const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
           [originSenderId],

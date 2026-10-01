@@ -40,7 +40,7 @@ export async function fetchUsersBatch(
     }));
   } catch (err) {
     logger.warn(
-      `userGrpcClient|bulkGetUserSnapshots error: ${err instanceof Error ? err.message : String(err)}`
+      `userGrpcClient|bulkGetUserSnapshots error: ${err instanceof Error ? err.message : String(err)}|ids=${userIds.length}`
     );
     return null;
   }
@@ -56,7 +56,7 @@ export async function fetchAccountsBatch(
     return await authGrpcClient.bulkGetAccounts(userIds);
   } catch (err) {
     logger.warn(
-      `authGrpcClient|bulkGetAccounts error: ${err instanceof Error ? err.message : String(err)}`
+      `authGrpcClient|bulkGetAccounts error: ${err instanceof Error ? err.message : String(err)}|ids=${userIds.length}`
     );
     return null;
   }

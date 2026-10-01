@@ -38,6 +38,7 @@ import {
 } from "./last-visible-resolver.js";
 import { groupVisibilitySource } from "./last-visible-adapters.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
+import { publishRoomCardsGoneSafe } from "../events/publish-conversation-read.js";
 import {
   assertGroupReadAccess,
   assertGroupRoomWritable,
@@ -46,6 +47,8 @@ import {
 } from "../lib/access-guard.js";
 import {
   getGroupVisibilityCutoff,
+  groupHistoryLineEvent,
+  historyLineSnapshot,
   isHiddenByCutoff,
 } from "../lib/deletion-cutoff.js";
 import type {
@@ -424,6 +427,13 @@ export class GroupRoomService {
    * text and sender — content the room itself would refuse to show them. The
    * row still belongs in the list (they ARE a member); it just has nothing to
    * preview yet.
+   *
+   * When the boundary is the member's own Clear Chat / Delete Conversation the
+   * row previews that "You cleared…" line instead — sorted where the hidden
+   * message sorted, so clearing repaints the row without moving it.
+   *
+   * Tested against the PREVIEWED message (after the delete-for-me pass), not the
+   * shared `lastMessageAt`: those differ once the viewer hid the shared last.
    */
   private applyHistoryBoundaryPreviewCap<T extends GroupRoom>(
     rooms: T[],
@@ -434,15 +444,42 @@ export class GroupRoomService {
         clearedAt?: Date | null;
         joinedAt?: Date | null;
       }
-    >
+    >,
+    userId: string
   ): T[] {
     return rooms.map((room) => {
-      const cutoff = getGroupVisibilityCutoff(
-        membershipByRoom.get(room.roomId)
-      );
-      if (!isHiddenByCutoff(room.lastMessageAt, cutoff)) return room;
-      return { ...room, lastMessagePreview: null } as T;
+      const member = membershipByRoom.get(room.roomId);
+      const cutoff = getGroupVisibilityCutoff(member);
+      const preview = room.lastMessagePreview as {
+        createdAt?: Date | string;
+      } | null;
+      const previewAt = preview?.createdAt ?? room.lastMessageAt;
+      if (!isHiddenByCutoff(previewAt, cutoff)) return room;
+      const event = groupHistoryLineEvent(member);
+      return {
+        ...room,
+        lastMessagePreview:
+          event && previewAt
+            ? historyLineSnapshot(event, userId, previewAt)
+            : null,
+      } as T;
     });
+  }
+
+  /**
+   * Where this member's list row sorts right now — the per-user preview pass
+   * the inbox runs, ignoring any clear cutoff — so the live clear bump puts the
+   * row exactly where a refetch will.
+   */
+  private async rowSortAt(roomId: string, userId: string): Promise<number> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room) return 0;
+    const [viewed] = await this.applyPerUserPreview([room], userId);
+    const preview = viewed?.lastMessagePreview as {
+      createdAt?: Date | string;
+    } | null;
+    if (preview?.createdAt) return new Date(preview.createdAt).getTime();
+    return room.lastMessagePreview ? 0 : (room.lastMessageAt?.getTime() ?? 0);
   }
 
   /**
@@ -1104,6 +1141,7 @@ export class GroupRoomService {
     if (!member || !["ACTIVE", "LEFT", "KICKED"].includes(member.status)) {
       throw new NotFoundError("CHAT_NOT_A_MEMBER");
     }
+    const sortAt = await this.rowSortAt(roomId, userId);
     const cutoff = await this.memberRepo.setClearedAt(roomId, userId);
 
     // Same reason as PrivateRoomService.deleteForMe: `setClearedAt` zeroed the
@@ -1116,23 +1154,37 @@ export class GroupRoomService {
       roomId,
       userId,
       cutoff,
-      SystemEvent.CONVERSATION_DELETED
+      SystemEvent.CONVERSATION_DELETED,
+      sortAt
     );
   }
 
-  async clearChat(roomId: string, userId: string): Promise<void> {
+  /**
+   * Returns false — and changes nothing — when the member has nothing left to
+   * clear (see PrivateRoomService.clearChat).
+   */
+  async clearChat(roomId: string, userId: string): Promise<boolean> {
     const member = await this.memberRepo.findActiveByRoomAndUser(
       roomId,
       userId
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    const clearable = await this.messageRepo.hasClearableAfter({
+      roomId,
+      userId,
+      cutoff: getGroupVisibilityCutoff(member),
+    });
+    if (!clearable) return false;
+    const sortAt = await this.rowSortAt(roomId, userId);
     const cutoff = await this.memberRepo.setClearChatAt(roomId, userId);
     await this.announceHistoryEmptied(
       roomId,
       userId,
       cutoff,
-      SystemEvent.CONVERSATION_CLEARED
+      SystemEvent.CONVERSATION_CLEARED,
+      sortAt
     );
+    return true;
   }
 
   /**
@@ -1146,8 +1198,17 @@ export class GroupRoomService {
     cutoff: Date | undefined,
     systemEvent:
       | typeof SystemEvent.CONVERSATION_CLEARED
-      | typeof SystemEvent.CONVERSATION_DELETED
+      | typeof SystemEvent.CONVERSATION_DELETED,
+    sortAt: number
   ): Promise<void> {
+    // Nothing left to be notified about: close the room's tray cards on every
+    // device of this user.
+    publishRoomCardsGoneSafe(
+      userId,
+      roomId,
+      "GROUP",
+      systemEvent === SystemEvent.CONVERSATION_DELETED ? "DELETED" : "CLEARED"
+    );
     this.redis
       .publish(
         `user:${userId}`,
@@ -1169,30 +1230,35 @@ export class GroupRoomService {
       )
       .catch(() => {});
 
-    // Same reasoning as PrivateRoomService.clearChat: the row stays but is now
-    // empty for THIS member only, so its effective lastActivity is 0 and the
-    // list must re-sort without a reload. Self-only — every other member keeps
-    // the shared preview.
+    // Same reasoning as PrivateRoomService.publishClearedRow: the row stays in
+    // its place and previews THIS member's own history line. Self-only — every
+    // other member keeps the shared preview.
+    const line = historyLineSnapshot(systemEvent, userId, new Date(sortAt));
+    const room = await this.roomRepo.findByRoomId(roomId);
     publishConvUpdatedSafe({
       redis: this.redis,
       type: "GROUP",
       roomId,
       recipientIds: [userId],
-      // Emptied row: no message, so no sender and no name.
-      senderId: "",
+      senderId: userId,
       senderName: "",
-      lastMessageId: "",
-      lastMessageAt: 0,
-      preview: { contentType: "", text: "", createdAt: 0 },
+      lastMessageId: room?.lastMessageId ?? "",
+      lastMessageAt: sortAt,
+      preview: {
+        contentType: "SYSTEM",
+        text: line.text,
+        systemEvent: line.systemEvent,
+        systemData: line.systemData,
+        createdAt: sortAt,
+      },
       // An emptied row is not a new message — must never raise an unread badge.
       countInUnread: false,
       // The cutoff write already zeroed this member's stored counter;
       // state it explicitly so the client SETs 0 rather than keeping its cached
       // badge for messages it can no longer show.
       resolveUnreadCounts: async () => ({ [userId]: 0 }),
-      // 0 is BELOW whatever the client currently shows, so without this marker
-      // the monotonic list guard drops the clear entirely and the row stays
-      // pinned at the top with its old preview.
+      // A same-or-older timestamp: without this marker the monotonic list guard
+      // drops the bump and the row keeps its old preview.
       deleteRecalc: true,
     });
 
@@ -1221,7 +1287,8 @@ export class GroupRoomService {
     const rooms = await this.enrichLastMessageSenderNames(
       this.applyHistoryBoundaryPreviewCap(
         await this.applyPerUserPreview(rawRooms, userId),
-        membershipByRoom
+        membershipByRoom,
+        userId
       )
     );
     // Resolve every room logo on this page ONCE (deduped) → download URLs.
@@ -1366,7 +1433,8 @@ export class GroupRoomService {
     const rooms = await this.enrichLastMessageSenderNames(
       this.applyHistoryBoundaryPreviewCap(
         await this.applyPerUserPreview(rawRooms, params.userId),
-        membershipByRoom
+        membershipByRoom,
+        params.userId
       )
     );
 

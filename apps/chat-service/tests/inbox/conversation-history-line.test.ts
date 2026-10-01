@@ -61,6 +61,7 @@ function stubPrivateRoom() {
     id: "sys-1",
     ...d,
   }));
+  mocks.privateMessageRepo.hasClearableAfter.mockResolvedValue(true);
 }
 
 describe.each([
@@ -97,13 +98,16 @@ describe.each([
     // The open transcript keeps only rows after this — the line survives any echo order.
     expect(cleared[0][1].data.clearedAt).toBe(CUTOFF.getTime());
 
-    // The only list bump is the caller's emptied row.
+    // The only list bump is the caller's own row, repainted with the line.
     expect(bump).toHaveBeenCalledTimes(1);
     expect(bump).toHaveBeenCalledWith(
       expect.objectContaining({
         recipientIds: [TEST_USER_ID],
-        lastMessageAt: 0,
         countInUnread: false,
+        preview: expect.objectContaining({
+          contentType: "SYSTEM",
+          systemEvent,
+        }),
       })
     );
   });
@@ -167,6 +171,7 @@ describe.each([
       "m2",
       "m3",
     ]);
+    mocks.groupMessageRepo.hasClearableAfter.mockResolvedValue(true);
     mocks.groupMessageRepo.create.mockImplementation(async (d: any) => ({
       id: "sys-g",
       createdAt: d.createdAt,

@@ -22,6 +22,29 @@ export interface ConversationReadPayload {
   conversationType: "PRIVATE" | "GROUP" | "COMMUNITY";
   /** epoch ms */
   readAt: number;
+  /**
+   * Why the room's tray cards go away. Absent = READ. Clearing, deleting,
+   * leaving or being removed from a room reuse this queue: for the tray they
+   * all mean "nothing about this room is worth showing any more".
+   */
+  reason?: "READ" | "CLEARED" | "DELETED" | "LEFT" | "REMOVED";
+}
+
+/** Close this room's tray cards on every device of `userId` (not a read). */
+export function publishRoomCardsGoneSafe(
+  userId: string,
+  roomId: string,
+  conversationType: ConversationReadPayload["conversationType"],
+  reason: NonNullable<ConversationReadPayload["reason"]>
+): void {
+  if (!userId || !roomId) return;
+  publishConversationReadSafe({
+    readerId: userId,
+    conversationId: roomId,
+    conversationType,
+    readAt: Date.now(),
+    reason,
+  });
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;

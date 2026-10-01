@@ -266,7 +266,8 @@ describe("pushToUser — data-only pushes to WEB tokens", () => {
       row({ token: "tok-android", platform: "ANDROID" }),
     ]);
 
-    await pushToUser(readDismiss);
+    // A cancelled friend request: silent sync the worker has no handler for.
+    await pushToUser({ ...readDismiss, type: "friend.cancelled" });
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][0].token).toBe("tok-android");
@@ -278,6 +279,10 @@ describe("pushToUser — data-only pushes to WEB tokens", () => {
     "CALL_HANDLED",
     "MESSAGE_DELETED",
     "community.join_request_retracted",
+    // Tray dismissals close cards by tag in the worker; push-dismiss.ts limits
+    // them to WEB only when a card was shown.
+    "MESSAGE_READ",
+    "NOTIFICATION_DISMISS",
   ])("still sends %s to a WEB token", async (type) => {
     repo.findTokensByUserId.mockResolvedValue([
       row({ token: "tok-web", platform: "WEB" }),
@@ -296,6 +301,28 @@ describe("pushToUser — data-only pushes to WEB tokens", () => {
     await pushToUser({ ...readDismiss, type: "MESSAGE", dataOnly: false });
 
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries a visible card's collapse key as data.tag and remembers the card", async () => {
+    repo.findTokensByUserId.mockResolvedValue([
+      row({ token: "tok-android", platform: "ANDROID" }),
+    ]);
+    redisMock.set.mockClear();
+
+    await pushToUser({
+      ...readDismiss,
+      type: "MESSAGE",
+      dataOnly: false,
+      collapseKey: "conv:room-1",
+    });
+
+    expect(send.mock.calls[0][0].data).toMatchObject({ tag: "conv:room-1" });
+    expect(redisMock.set).toHaveBeenCalledWith(
+      `push:tray:{${USER_ID}}:conv:room-1`,
+      "1",
+      "EX",
+      86_400
+    );
   });
 });
 

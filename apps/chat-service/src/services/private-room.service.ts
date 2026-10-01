@@ -36,7 +36,9 @@ import {
 import { privateVisibilitySource } from "./last-visible-adapters.js";
 import {
   getPrivateDeletionCutoff,
+  historyLineSnapshot,
   isHiddenByCutoff,
+  privateHistoryLineEvent,
 } from "../lib/deletion-cutoff.js";
 import { publishUserReport } from "../lib/report-user.js";
 import { filterBannedUserIds } from "@aimess/redis";
@@ -50,6 +52,7 @@ import {
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import { foldTickStatus } from "../lib/tick-status.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
+import { publishRoomCardsGoneSafe } from "../events/publish-conversation-read.js";
 import {
   resolvePairState,
   type PrivatePairStateInfo,
@@ -918,9 +921,18 @@ export class PrivateRoomService {
     // `lastActivity.username` on their own messages, which the client relabels
     // "You:" from `userId === myUserId` regardless — refusing the whole list
     // over it would turn a harmless gap into an outage.
-    if (peerIds.some((id) => isUnresolvedSnapshot(snapshots.get(id)))) {
+    const unresolvedPeers = peerIds.filter((id) =>
+      isUnresolvedSnapshot(snapshots.get(id))
+    );
+    if (unresolvedPeers.length > 0) {
+      // Which rows, so an operator can tell one stale room from an outage. The
+      // upstream cause (gRPC status, timeout, open breaker) is logged by the
+      // breaker and `user-service-client` lines just before this one.
+      const unresolvedRooms = rooms
+        .filter((r) => r.participants?.some((p) => unresolvedPeers.includes(p)))
+        .map((r) => r.roomId);
       logger.warn(
-        `PrivateRoomService|enrichConversations|identity lookup unavailable|userId=${userId}`
+        `PrivateRoomService|enrichConversations|identity lookup unavailable|userId=${userId}|unresolved=${unresolvedPeers.length}/${peerIds.length}|peerIds=${unresolvedPeers.slice(0, 10).join(",")}|roomIds=${unresolvedRooms.slice(0, 10).join(",")}`
       );
       throw new ServiceUnavailableError("CHAT_IDENTITY_UNAVAILABLE");
     }
@@ -1151,6 +1163,15 @@ export class PrivateRoomService {
         | Date
         | undefined;
       const hiddenByCutoff = isHiddenByCutoff(rawLmDate, cutoff);
+      // Cleared with nothing newer: the row previews the viewer's own "You
+      // cleared…" line but keeps sorting where its last real message put it.
+      const historyLineEvent = hiddenByCutoff
+        ? privateHistoryLineEvent(room, userId)
+        : null;
+      const historyLine =
+        historyLineEvent && rawLmDate
+          ? historyLineSnapshot(historyLineEvent, userId, rawLmDate)
+          : null;
       // Recover the actor NAME on a SYSTEM/invite row that was written without
       // one (see `resolveSystemActorName`). A private room has exactly one
       // peer, so the sender id already on the row resolves against the snapshot
@@ -1159,7 +1180,7 @@ export class PrivateRoomService {
       // writer-side fix, on both this preview and the `lastMessage` snapshot
       // the unified inbox re-renders from.
       const visibleRawLm = withResolvedSystemActor(
-        hiddenByCutoff ? null : rawLm,
+        hiddenByCutoff ? historyLine : rawLm,
         (id) => (id === peerId ? resolveRealDisplayName(snapshot) : "")
       );
       // "This viewer has NOTHING visible left in this room" — either their
@@ -1168,7 +1189,7 @@ export class PrivateRoomService {
       // Distinct from "the shared lastMessage JSON is missing on a legacy row",
       // which must keep falling back to the stored lastMessageAt below.
       const nothingVisible =
-        hiddenByCutoff ||
+        (hiddenByCutoff && !historyLine) ||
         (perUserFallback.has(room.roomId) && !perUserFallback.get(room.roomId));
       const lastMessage = (visibleRawLm && typeof visibleRawLm === "object"
         ? toWireMessage(visibleRawLm as { messageType?: string | null })
@@ -1369,6 +1390,9 @@ export class PrivateRoomService {
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
     const cutoff = await this.privateRoomRepo.setDeletedFor(roomId, userId);
+    // The conversation is gone from this user's list: its tray card goes too,
+    // on every device of theirs.
+    publishRoomCardsGoneSafe(userId, roomId, "PRIVATE", "DELETED");
 
     // `setDeletedFor` zeroed this user's stored unread counter, but the Chats
     // nav badge is a TOTAL the server owns — without this push it keeps
@@ -1436,7 +1460,8 @@ export class PrivateRoomService {
     cutoff: Date | null,
     systemEvent:
       | typeof SystemEvent.CONVERSATION_CLEARED
-      | typeof SystemEvent.CONVERSATION_DELETED
+      | typeof SystemEvent.CONVERSATION_DELETED,
+    row: { lastMessageId: string; sortAt: number }
   ): Promise<void> {
     const { roomId } = room;
     this.redis
@@ -1459,7 +1484,7 @@ export class PrivateRoomService {
         })
       )
       .catch(() => {});
-    await this.publishEmptiedRow(roomId, userId);
+    await this.publishClearedRow(roomId, userId, systemEvent, row);
 
     const peerId = room.participants?.find((id) => id !== userId);
     if (cutoff && peerId) {
@@ -1521,48 +1546,104 @@ export class PrivateRoomService {
     return { ok: true };
   }
 
-  async clearChat(roomId: string, userId: string): Promise<void> {
+  /**
+   * Returns false — and changes nothing — when the caller has nothing left to
+   * clear: only their own "You cleared…" line, or no messages at all. A repeat
+   * clear used to stamp a new cutoff, stack a second line and reset every open
+   * transcript for nothing.
+   */
+  async clearChat(roomId: string, userId: string): Promise<boolean> {
     const room = await this.privateRoomRepo.findByRoomId(roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
     const isParticipant = room.participants?.includes(userId);
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
+    const clearable = await this.privateMessageRepo.hasClearableAfter({
+      roomId,
+      userId,
+      cutoff: getPrivateDeletionCutoff(room, userId),
+    });
+    if (!clearable) return false;
+
+    const sortAt = await this.rowSortAt(room, userId);
     const cutoff = await this.privateRoomRepo.setClearFor(roomId, userId);
+    publishRoomCardsGoneSafe(userId, roomId, "PRIVATE", "CLEARED");
     await this.announceHistoryEmptied(
       room,
       userId,
       cutoff,
-      SystemEvent.CONVERSATION_CLEARED
+      SystemEvent.CONVERSATION_CLEARED,
+      { lastMessageId: room.lastMessageId ?? "", sortAt }
     );
+    return true;
   }
 
-  private async publishEmptiedRow(roomId: string, userId: string) {
-    // The row STAYS in the list (after clear AND delete) but now has no
-    // visible message, so its effective lastActivity is empty and it must drop
-    // to the bottom. `conv:cleared` alone left every other device — and any
-    // client that only listens for list bumps — rendering the cleared chat at
-    // the top with its old preview until a hard reload. Self-only: the peer's
-    // view is untouched by a one-sided clear.
+  /**
+   * Where this viewer's list row sorts right now: the last message they can see
+   * (delete-for-me respected), ignoring any clear cutoff — the same `rawLm` the
+   * inbox orders a cleared row by, so the live bump and a refetch agree.
+   */
+  private async rowSortAt(
+    room: Pick<
+      PrivateRoom,
+      "roomId" | "lastMessageId" | "lastMessage" | "lastMessageAt"
+    >,
+    userId: string
+  ): Promise<number> {
+    const overrides = await resolveVisibleLastBulk(
+      this.visibilitySource(),
+      [{ roomId: room.roomId, sharedLastMessageId: room.lastMessageId }],
+      userId
+    );
+    if (overrides.has(room.roomId)) {
+      return overrides.get(room.roomId)?.createdAt.getTime() ?? 0;
+    }
+    const at = (room.lastMessage as { createdAt?: string | Date } | null)
+      ?.createdAt;
+    return at ? new Date(at).getTime() : (room.lastMessageAt?.getTime() ?? 0);
+  }
+
+  private async publishClearedRow(
+    roomId: string,
+    userId: string,
+    systemEvent:
+      | typeof SystemEvent.CONVERSATION_CLEARED
+      | typeof SystemEvent.CONVERSATION_DELETED,
+    row: { lastMessageId: string; sortAt: number }
+  ) {
+    // The row STAYS in the list and in its PLACE: it now previews the caller's
+    // own "You cleared…" line (what the inbox returns on a refetch) but keeps
+    // the timestamp it sorted by, because a clear is not activity. `conv:cleared`
+    // alone left every other device — and any client that only listens for list
+    // bumps — rendering the old preview until a hard reload. Self-only: the
+    // peer's view is untouched by a one-sided clear.
+    const line = historyLineSnapshot(systemEvent, userId, new Date(row.sortAt));
     publishConvUpdatedSafe({
       redis: this.redis,
       type: "PRIVATE",
       roomId,
       recipientIds: [userId],
-      // Emptied row: no message, so no sender and no name.
-      senderId: "",
+      // A SYSTEM line: no sender label, no tick, never unread.
+      senderId: userId,
       senderName: "",
-      lastMessageId: "",
-      lastMessageAt: 0,
-      preview: { contentType: "", text: "", createdAt: 0 },
+      lastMessageId: row.lastMessageId,
+      lastMessageAt: row.sortAt,
+      preview: {
+        contentType: "SYSTEM",
+        text: line.text,
+        systemEvent: line.systemEvent,
+        systemData: line.systemData,
+        createdAt: row.sortAt,
+      },
       // An emptied row is not a new message — must never raise an unread badge.
       countInUnread: false,
       // The cutoff write already zeroed this user's stored counter; state it
       // explicitly so the client SETs 0 instead of keeping a badge for messages
       // it can no longer show.
       resolveUnreadCounts: async () => ({ [userId]: 0 }),
-      // 0 is BELOW whatever the client currently shows, so without this marker
-      // the monotonic list guard drops the clear and the row stays at the top.
+      // The same-or-older timestamp would be dropped by the monotonic list
+      // guard; this marks it as a re-resolution that must apply in place.
       deleteRecalc: true,
     });
   }

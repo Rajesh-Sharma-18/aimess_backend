@@ -247,6 +247,11 @@ export const CHAT_MESSAGES = {
     en: "Chat cleared",
     th: "ล้างแชทแล้ว",
   },
+  CHAT_NOTHING_TO_CLEAR: {
+    vi: "Không có tin nhắn",
+    en: "No messages",
+    th: "ไม่มีข้อความ",
+  },
   CHAT_MESSAGE_DELETED_FOR_YOU: {
     vi: "Đã xóa tin nhắn cho bạn",
     en: "Message deleted for you",
