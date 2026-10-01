@@ -108,6 +108,9 @@ function toAdminUserDeviceRecord(
 // import.meta — a bare __dirname resolves to the Prisma client's globalThis
 // shim, which points at src/generated/prisma and breaks this path. Depth is
 // identical from src/grpc (tsx) and dist/grpc (built) to the repo root.
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
   currentDir,
@@ -441,7 +444,10 @@ const authImpl: grpc.UntypedServiceImplementation = {
     void (async () => {
       try {
         const req = call.request as { userIds?: string[] };
-        const userIds = req.userIds ?? [];
+        // `id` is a uuid column: one non-uuid entry ("undefined", a `grp_`
+        // room id) fails the whole `IN (…)` with INTERNAL. Not a uuid ⇒ not
+        // an account, so it is dropped rather than failing the batch.
+        const userIds = (req.userIds ?? []).filter((id) => UUID_RE.test(id));
         if (userIds.length === 0) {
           callback(null, { accounts: [] });
           return;

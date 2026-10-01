@@ -295,6 +295,22 @@ function isBusinessGrpcError(error: unknown): boolean {
   return typeof code === "number" && BUSINESS_GRPC_STATUS_CODES.has(code);
 }
 
+/**
+ * The REAL cause of a breaker-counted failure. The fallback below replaces it
+ * with a generic "<name> unavailable", so without this line a caller's log
+ * cannot tell a timeout from an upstream INTERNAL (e.g. a Postgres error) from
+ * an unreachable host. Business rejections never reach here (`errorFilter`).
+ */
+function logBreakerFailure(name: string, err: unknown): void {
+  const e = err as { code?: number | string; details?: string; message?: string };
+  const status =
+    typeof e?.code === "number" ? (grpc.status[e.code] ?? e.code) : e?.code;
+  const detail = (e?.details || e?.message || String(err))
+    .replace(/\s+/g, " ")
+    .slice(0, 300);
+  logger.warn(`Breaker call failed: ${name}|status=${status ?? "n/a"}|${detail}`);
+}
+
 export function makeBreaker<T, R>(
   name: string,
   fn: (p: T) => Promise<R>,
@@ -309,6 +325,7 @@ export function makeBreaker<T, R>(
   breaker.fallback(() => {
     throw new Error(`${name} unavailable`);
   });
+  breaker.on("failure", (err: unknown) => logBreakerFailure(name, err));
   breaker.on("open", () => logger.warn(`Circuit opened: ${name}`));
   breaker.on("halfOpen", () => logger.info(`Circuit half-open: ${name}`));
   return breaker;
@@ -328,6 +345,7 @@ export function makeBreakerNoArgs<R>(
   breaker.fallback(() => {
     throw new Error(`${name} unavailable`);
   });
+  breaker.on("failure", (err: unknown) => logBreakerFailure(name, err));
   breaker.on("open", () => logger.warn(`Circuit opened: ${name}`));
   breaker.on("halfOpen", () => logger.info(`Circuit half-open: ${name}`));
   return breaker;

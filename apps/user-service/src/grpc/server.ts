@@ -347,7 +347,11 @@ export function startUserGrpcServer(): grpc.Server {
       void (async () => {
         try {
           const req = call.request as { userIds?: string[] };
-          const userIds = req.userIds ?? [];
+          // Same guard as adminGetProfilesByIds: one non-uuid id ("undefined",
+          // a `grp_` room id off a malformed private room) fails the whole
+          // `IN (…)` with INTERNAL, and the caller then cannot name ANY user in
+          // the batch. An id that is not a uuid is simply not found.
+          const userIds = (req.userIds ?? []).filter((id) => UUID_RE.test(id));
           if (userIds.length === 0) {
             callback(null, { users: [] });
             return;

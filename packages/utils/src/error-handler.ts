@@ -160,6 +160,19 @@ export function createErrorHandler({
         messageKey?: string;
         retryAfterSec?: number;
       };
+      // A deliberate 5xx (dependency unavailable) is still an operational
+      // event: tie the request id the client was handed to the service log, so
+      // the cause logged just before it can be found from a screenshot.
+      if (appError.statusCode >= 500) {
+        logger.warn("Request failed with a server-side condition", {
+          service,
+          requestId: req.headers["x-request-id"],
+          method: req.method,
+          path: req.path,
+          statusCode: appError.statusCode,
+          code: appError.messageKey,
+        });
+      }
       sendApiError(req, res, {
         statusCode: appError.statusCode,
         messageKey: appError.messageKey,

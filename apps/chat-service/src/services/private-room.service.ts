@@ -919,9 +919,18 @@ export class PrivateRoomService {
     // `lastActivity.username` on their own messages, which the client relabels
     // "You:" from `userId === myUserId` regardless — refusing the whole list
     // over it would turn a harmless gap into an outage.
-    if (peerIds.some((id) => isUnresolvedSnapshot(snapshots.get(id)))) {
+    const unresolvedPeers = peerIds.filter((id) =>
+      isUnresolvedSnapshot(snapshots.get(id))
+    );
+    if (unresolvedPeers.length > 0) {
+      // Which rows, so an operator can tell one stale room from an outage. The
+      // upstream cause (gRPC status, timeout, open breaker) is logged by the
+      // breaker and `user-service-client` lines just before this one.
+      const unresolvedRooms = rooms
+        .filter((r) => r.participants?.some((p) => unresolvedPeers.includes(p)))
+        .map((r) => r.roomId);
       logger.warn(
-        `PrivateRoomService|enrichConversations|identity lookup unavailable|userId=${userId}`
+        `PrivateRoomService|enrichConversations|identity lookup unavailable|userId=${userId}|unresolved=${unresolvedPeers.length}/${peerIds.length}|peerIds=${unresolvedPeers.slice(0, 10).join(",")}|roomIds=${unresolvedRooms.slice(0, 10).join(",")}`
       );
       throw new ServiceUnavailableError("CHAT_IDENTITY_UNAVAILABLE");
     }

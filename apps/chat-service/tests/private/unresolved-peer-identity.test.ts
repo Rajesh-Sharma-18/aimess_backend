@@ -14,6 +14,12 @@
  */
 import request from "supertest";
 
+// The real `user-service-client` is exercised below (timeout classification);
+// its auth client loads a proto via import.meta, which CJS Jest cannot parse.
+jest.mock("../../src/grpc/auth.client.js", () => ({
+  authGrpcClient: { bulkGetAccounts: jest.fn(async () => []) },
+}));
+
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 import {
@@ -32,10 +38,14 @@ const accountsBatch = fetchAccountsBatch as jest.Mock;
 let app: import("express").Express;
 let mocks: BuiltMocks;
 
+const PEER_1 = "22222222-2222-4222-8222-222222222222";
+const PEER_2 = "33333333-3333-4333-8333-333333333333";
+const GHOST = "44444444-4444-4444-8444-444444444444";
+
 const ONE_ROOM = [
   {
     roomId: "prv_1",
-    participants: [TEST_USER_ID, "peer-1"],
+    participants: [TEST_USER_ID, PEER_1],
     lastMessageAt: new Date(1000),
     lastMessage: null,
     unreadCountByUser: { [TEST_USER_ID]: 0 },
@@ -82,58 +92,58 @@ describe("UserSnapshotService — failed lookup vs missing user", () => {
     accountsBatch.mockResolvedValue([]);
 
     const map = await new UserSnapshotService().getUserSnapshotsMap(
-      ["peer-1"],
+      [PEER_1],
       cacheRepo as never
     );
 
-    expect(isUnresolvedSnapshot(map.get("peer-1"))).toBe(true);
+    expect(isUnresolvedSnapshot(map.get(PEER_1))).toBe(true);
   });
 
   it("flags nothing when both lookups ANSWERED and the user simply is not there", async () => {
     bothAnswerEmpty();
 
     const map = await new UserSnapshotService().getUserSnapshotsMap(
-      ["ghost"],
+      [GHOST],
       cacheRepo as never
     );
 
-    expect(isUnresolvedSnapshot(map.get("ghost"))).toBe(false);
+    expect(isUnresolvedSnapshot(map.get(GHOST))).toBe(false);
     // The intended deleted/missing-user rendering is untouched.
-    expect(resolveDisplayName(map.get("ghost"))).toBe("Unknown User");
+    expect(resolveDisplayName(map.get(GHOST))).toBe("Unknown User");
   });
 
   it("does not flag a user the auth-service fallback resolved", async () => {
     usersBatch.mockResolvedValue([]);
     accountsBatch.mockResolvedValue([
-      { userId: "peer-1", account: "neelsheth" },
+      { userId: PEER_1, account: "neelsheth" },
     ]);
 
     const map = await new UserSnapshotService().getUserSnapshotsMap(
-      ["peer-1"],
+      [PEER_1],
       cacheRepo as never
     );
 
-    expect(isUnresolvedSnapshot(map.get("peer-1"))).toBe(false);
-    expect(resolveDisplayName(map.get("peer-1"))).toBe("neelsheth");
+    expect(isUnresolvedSnapshot(map.get(PEER_1))).toBe(false);
+    expect(resolveDisplayName(map.get(PEER_1))).toBe("neelsheth");
   });
 
   it("flags every id when the snapshot cache read itself fails", async () => {
     cacheRepo.getUserSnapshots.mockRejectedValue(new Error("redis down"));
 
     const map = await new UserSnapshotService().getUserSnapshotsMap(
-      ["peer-1", "peer-2"],
+      [PEER_1, PEER_2],
       cacheRepo as never
     );
 
-    expect(isUnresolvedSnapshot(map.get("peer-1"))).toBe(true);
-    expect(isUnresolvedSnapshot(map.get("peer-2"))).toBe(true);
+    expect(isUnresolvedSnapshot(map.get(PEER_1))).toBe(true);
+    expect(isUnresolvedSnapshot(map.get(PEER_2))).toBe(true);
   });
 
   it("NEVER caches an unresolved placeholder — an outage must not outlive itself", async () => {
     bothFail();
 
     await new UserSnapshotService().getUserSnapshotsMap(
-      ["peer-1"],
+      [PEER_1],
       cacheRepo as never
     );
 
@@ -178,7 +188,7 @@ describe("conversation list — a failed identity lookup refuses instead of nami
   it("REGRESSION: a resolvable peer lists under its real name", async () => {
     usersBatch.mockResolvedValue([
       {
-        userId: "peer-1",
+        userId: PEER_1,
         displayName: "Neel Sheth",
         username: "neel",
         avatar: "",
@@ -202,5 +212,179 @@ describe("conversation list — a failed identity lookup refuses instead of nami
 
     expect(res.status).toBe(200);
     expect(res.body.data.data[0].displayName).toBe("Neel Sheth");
+  });
+});
+
+/**
+ * The reported ai5dev outage: an inbox page holding ONE private room whose
+ * stored peer is not a user id at all — "undefined" or a `grp_` room id, both
+ * written by `POST /rooms/:peerId` before participants were validated.
+ *
+ * Both identity columns upstream are Postgres `uuid`, so sending that id in the
+ * batch failed the WHOLE lookup with INTERNAL. Every peer on the page then came
+ * back unresolved and the inbox answered 503 CHAT_IDENTITY_UNAVAILABLE on every
+ * request, forever — a permanent data condition reported as a retryable outage.
+ */
+describe("malformed stored peer id — a permanent gap, not an outage", () => {
+  const cacheRepo = {
+    getUserSnapshots: jest.fn(),
+    setUserSnapshot: jest.fn(async () => undefined),
+  };
+  const realPeer = {
+    userId: PEER_1,
+    displayName: "Neel Sheth",
+    username: "neel",
+    avatar: "",
+    isOnline: false,
+    isDeleted: false,
+  };
+
+  /**
+   * What both real upstreams do: `IN (…)` over a uuid column fails the whole
+   * batch (gRPC INTERNAL → client `null`) if ANY id is not a uuid.
+   */
+  const asPostgres = () => {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    usersBatch.mockImplementation(async (ids: string[]) =>
+      ids.every((id) => uuid.test(id)) ? [realPeer] : null
+    );
+  };
+
+  beforeEach(() => {
+    cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
+  });
+
+  it("never sends a non-UUID id upstream, and never flags it unresolved", async () => {
+    usersBatch.mockResolvedValue([realPeer]);
+    accountsBatch.mockResolvedValue([]);
+
+    const map = await new UserSnapshotService().getUserSnapshotsMap(
+      [PEER_1, "undefined", "grp_PWSESsGxqhS3kUDh"],
+      cacheRepo as never
+    );
+
+    expect(usersBatch).toHaveBeenLastCalledWith([PEER_1]);
+    expect(resolveDisplayName(map.get(PEER_1))).toBe("Neel Sheth");
+    for (const bad of ["undefined", "grp_PWSESsGxqhS3kUDh"]) {
+      expect(isUnresolvedSnapshot(map.get(bad))).toBe(false);
+      expect(resolveDisplayName(map.get(bad))).toBe("Unknown User");
+    }
+  });
+
+  it("a REAL outage still flags the real peers — and only them", async () => {
+    bothFail();
+
+    const map = await new UserSnapshotService().getUserSnapshotsMap(
+      [PEER_1, "undefined"],
+      cacheRepo as never
+    );
+
+    expect(isUnresolvedSnapshot(map.get(PEER_1))).toBe(true);
+    expect(isUnresolvedSnapshot(map.get("undefined"))).toBe(false);
+  });
+
+  it("a snapshot-cache failure flags only ids that could be users", async () => {
+    cacheRepo.getUserSnapshots.mockRejectedValue(new Error("redis down"));
+
+    const map = await new UserSnapshotService().getUserSnapshotsMap(
+      [PEER_1, "undefined"],
+      cacheRepo as never
+    );
+
+    expect(isUnresolvedSnapshot(map.get(PEER_1))).toBe(true);
+    expect(isUnresolvedSnapshot(map.get("undefined"))).toBe(false);
+  });
+
+  const MALFORMED_ROOM = {
+    roomId: "prv_OrqmmJAT8sHO8Ds5",
+    participants: [TEST_USER_ID, "undefined"],
+    lastMessageAt: new Date(900),
+    lastMessage: null,
+    unreadCountByUser: { [TEST_USER_ID]: 0 },
+    mutedBy: {},
+    pinnedCount: 0,
+  };
+
+  it("REGRESSION: the inbox loads (200) with the real peer named and the malformed row as a missing user", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      ...ONE_ROOM,
+      MALFORMED_ROOM,
+    ]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(2);
+    asPostgres();
+    accountsBatch.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get("/api/chat/private/conversations")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const byRoom = Object.fromEntries(
+      res.body.data.data.map((r: { roomId: string; displayName: string }) => [
+        r.roomId,
+        r.displayName,
+      ])
+    );
+    expect(byRoom.prv_1).toBe("Neel Sheth");
+    expect(byRoom.prv_OrqmmJAT8sHO8Ds5).toBe("Unknown User");
+    for (const [ids] of usersBatch.mock.calls) {
+      expect(ids).not.toContain("undefined");
+    }
+  });
+
+  it("the unified inbox answers 200 for the same page", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      ...ONE_ROOM,
+      MALFORMED_ROOM,
+    ]);
+    asPostgres();
+    accountsBatch.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get("/api/chat/inbox")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+  });
+
+  it("a genuine user-service outage on that page is still a retryable 503", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      ...ONE_ROOM,
+      MALFORMED_ROOM,
+    ]);
+    bothFail();
+
+    const res = await request(app)
+      .get("/api/chat/inbox")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatchObject({
+      code: "CHAT_IDENTITY_UNAVAILABLE",
+      retryable: true,
+    });
+  });
+});
+
+describe("user-service-client — a timeout is a FAILED lookup, never 'not found'", () => {
+  const actual = jest.requireActual(
+    "../../src/lib/user-service-client.js"
+  ) as typeof import("../../src/lib/user-service-client.js");
+  const { userGrpcClient } = jest.requireMock(
+    "../../src/grpc/user-snapshot.client.js"
+  ) as { userGrpcClient: { bulkGetUserSnapshots: jest.Mock } };
+
+  it("returns null (lookup failed) when the call times out", async () => {
+    userGrpcClient.bulkGetUserSnapshots.mockRejectedValueOnce(
+      Object.assign(new Error("Timed out after 2000ms"), { code: "ETIMEDOUT" })
+    );
+
+    await expect(actual.fetchUsersBatch([PEER_1])).resolves.toBeNull();
+  });
+
+  it("returns [] (answered, nobody there) when the service holds none of the ids", async () => {
+    userGrpcClient.bulkGetUserSnapshots.mockResolvedValueOnce([]);
+
+    await expect(actual.fetchUsersBatch([PEER_1])).resolves.toEqual([]);
   });
 });

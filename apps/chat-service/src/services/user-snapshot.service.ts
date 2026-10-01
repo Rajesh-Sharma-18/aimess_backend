@@ -1,6 +1,7 @@
 import { DELETED_ACCOUNT_DISPLAY_NAME } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
+import { isUserId } from "../lib/room-id.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import {
   fetchUsersBatch,
@@ -126,7 +127,17 @@ export class UserSnapshotService {
     try {
       const cached = await cacheRepo.getUserSnapshots(uniqueIds);
 
-      const missingIds = uniqueIds.filter((id) => !cached.has(id));
+      // A non-UUID id ("undefined", a `grp_` room id, junk written by a
+      // pre-validation `POST /rooms/:peerId`) can never be a user, so it is a
+      // permanently MISSING identity, never a failed lookup. It must also never
+      // reach the upstream batch: both identity columns are Postgres `uuid`, so
+      // ONE such id makes user-service AND auth-service answer INTERNAL for the
+      // whole batch — every real peer on the page came back unresolved (a
+      // CHAT_IDENTITY_UNAVAILABLE no retry could clear), and the failures fed
+      // the shared circuit breakers, taking the lookup down for other users too.
+      const missingIds = uniqueIds.filter(
+        (id) => !cached.has(id) && isUserId(id)
+      );
 
       // Set by either lookup returning `null` — "I could not ask", as opposed to
       // "I asked and this id is not mine". Only the first of those may be
@@ -164,7 +175,9 @@ export class UserSnapshotService {
       // in `cached` above. And if the profile row genuinely never existed,
       // auth-service's bulkGetAccounts filters deleted rows out — so this path
       // can never resurrect a deleted account's login handle either way.
-      const stillMissingIds = uniqueIds.filter((id) => !cached.has(id));
+      const stillMissingIds = uniqueIds.filter(
+        (id) => !cached.has(id) && isUserId(id)
+      );
       if (stillMissingIds.length > 0) {
         const accounts = await fetchAccountsBatch(stillMissingIds);
         if (accounts === null) lookupFailed = true;
@@ -199,7 +212,7 @@ export class UserSnapshotService {
             isDeletedUser: false,
             isOnline: false,
             // NEVER cached: an outage must not outlive itself in Redis.
-            ...(lookupFailed ? { isUnresolved: true } : {}),
+            ...(lookupFailed && isUserId(id) ? { isUnresolved: true } : {}),
           });
         }
       }
@@ -218,7 +231,7 @@ export class UserSnapshotService {
           memberId: "",
           isDeletedUser: false,
           isOnline: false,
-          isUnresolved: true,
+          ...(isUserId(id) ? { isUnresolved: true } : {}),
         });
       }
       return fallback;
