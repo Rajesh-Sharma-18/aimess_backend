@@ -164,6 +164,7 @@ export class GroupMemberRepository {
     Array<{
       roomId: string;
       role: string;
+      joinedAt: Date;
       unreadCount: number;
       notificationSettings: GroupMember["notificationSettings"];
       clearedAt: Date | null;
@@ -175,6 +176,7 @@ export class GroupMemberRepository {
       select: {
         roomId: true,
         role: true,
+        joinedAt: true,
         unreadCount: true,
         notificationSettings: true,
         clearedAt: true,
@@ -662,6 +664,7 @@ export class GroupMemberRepository {
     status?: string;
     userIdsFromSearch?: string[] | null;
     qExactUserId?: string | null;
+    excludeUserId?: string | null;
     skip: number;
     take: number;
   }): Promise<{ rows: GroupMember[]; total: number }> {
@@ -671,11 +674,13 @@ export class GroupMemberRepository {
       status,
       userIdsFromSearch,
       qExactUserId,
+      excludeUserId,
       skip,
       take,
     } = params;
 
     const and: Array<Record<string, unknown>> = [{ roomId }];
+    if (excludeUserId) and.push({ userId: { not: excludeUserId } });
     // Default (no explicit status) shows the meaningful roster — ACTIVE members
     // PLUS BANNED ones (so a group-banned member, incl. a banned owner of a
     // CLOSED group, stays visible and can be unbanned). LEFT/KICKED are still
@@ -728,16 +733,26 @@ export class GroupMemberRepository {
     q?: string;
     userIdsFromSearch?: string[] | null;
     qExactUserId?: string | null;
+    excludeUserId?: string | null;
     skip: number;
     take: number;
   }): Promise<{ rows: GroupClosureMember[]; total: number }> {
-    const { roomId, role, q, userIdsFromSearch, qExactUserId, skip, take } =
-      params;
+    const {
+      roomId,
+      role,
+      q,
+      userIdsFromSearch,
+      qExactUserId,
+      excludeUserId,
+      skip,
+      take,
+    } = params;
     const status = (params.status || "").toUpperCase();
     const where: Prisma.GroupClosureMemberWhereInput = {
       roomId,
       ...(status && status !== "ALL" ? { status } : {}),
       ...(role ? { role } : {}),
+      ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
     };
     if (q) {
       const ids = [

@@ -59,6 +59,24 @@ export interface GroupMemberItem {
   bannedAt: number | null;
 }
 
+export interface UserGroupItem {
+  groupId: string;
+  name: string;
+  avatar: MediaObject | null;
+  description: string;
+  memberCount: number;
+  memberLimit: number;
+  role: string;
+  status: string;
+  joinedAt: number;
+  createdAt: number;
+}
+
+export interface ListUserGroupsQuery {
+  page: number;
+  limit: number;
+}
+
 /** Offset-pagination meta for group list responses. */
 export interface GroupPagination {
   page: number;
@@ -86,6 +104,7 @@ export interface ListGroupMembersQuery {
   q?: string;
   role?: GroupRole;
   status?: "ACTIVE" | "BANNED" | "ALL";
+  excludeUserId?: string;
   page: number;
   limit: number;
 }

@@ -37,6 +37,7 @@ const NOTIFY_COPY_BUILDER: Record<string, (() => LocalizedCopy) | undefined> = {
   [AdminUserEvents.USER_BANNED]: accountCopy.banned,
   [AdminUserEvents.USER_SUSPENDED]: accountCopy.suspended,
   [AdminUserEvents.USER_UNBANNED]: accountCopy.reinstated,
+  [AdminUserEvents.USER_ACCOUNT_UPDATED]: accountCopy.updatedByAdmin,
 };
 
 async function handleAdminUserNotify(

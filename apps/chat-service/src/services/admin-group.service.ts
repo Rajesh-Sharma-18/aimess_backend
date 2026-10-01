@@ -74,8 +74,26 @@ export interface AdminListGroupMembersRequest {
   role?: string;
   /** "" / "ACTIVE" = active only (default), "ALL" = no filter, else exact. */
   status?: string;
+  excludeUserId?: string;
   skip: number;
   take: number;
+}
+export interface AdminListUserGroupsRequest {
+  userId: string;
+  skip: number;
+  take: number;
+}
+export interface AdminUserGroupRowResult {
+  id: string;
+  name: string;
+  avatarUrl: string;
+  description: string;
+  memberCount: number;
+  memberLimit: number;
+  createdAt: number;
+  status: string;
+  role: string;
+  joinedAt: number;
 }
 
 /**
@@ -228,6 +246,7 @@ export class AdminGroupService {
         q,
         userIdsFromSearch,
         qExactUserId,
+        excludeUserId: req.excludeUserId,
         skip: req.skip,
         take: req.take,
       });
@@ -244,6 +263,7 @@ export class AdminGroupService {
       status: req.status,
       userIdsFromSearch,
       qExactUserId,
+      excludeUserId: req.excludeUserId,
       skip: req.skip,
       take: req.take,
     });
@@ -257,6 +277,48 @@ export class AdminGroupService {
       this.toMemberRow(m, snapshots, authMap, urlMap)
     );
     return { found: true, members, total };
+  }
+
+  async listUserGroups(
+    req: AdminListUserGroupsRequest
+  ): Promise<{ groups: AdminUserGroupRowResult[]; total: number }> {
+    const memberships = await this.groupMemberRepo.getActiveMemberships(
+      req.userId
+    );
+    if (!memberships.length) return { groups: [], total: 0 };
+
+    const membershipByRoom = new Map(memberships.map((m) => [m.roomId, m]));
+    const roomIds = [...membershipByRoom.keys()];
+    const [rows, total] = await Promise.all([
+      this.groupRoomRepo.searchInRoomIds(roomIds, undefined, req.take, req.skip),
+      this.groupRoomRepo.countUserGroups(roomIds),
+    ]);
+
+    const [memberCountMap, urlMap] = await Promise.all([
+      this.groupMemberRepo.countRosterMembersForRooms(
+        rows.map((r) => r.roomId)
+      ),
+      this.resolveAvatarUrls(rows, new Map()),
+    ]);
+
+    const groups = rows.map((row) => {
+      const membership = membershipByRoom.get(row.roomId);
+      return {
+        id: row.roomId,
+        name: row.name,
+        avatarUrl: urlFromMap(urlMap, row.avatar ?? ""),
+        description: row.description ?? "",
+        memberCount:
+          closureCount(row) ?? memberCountMap.get(row.roomId) ?? 0,
+        memberLimit: row.memberLimit,
+        createdAt: row.createdAt.getTime(),
+        status: row.status,
+        role: membership?.role ?? "MEMBER",
+        joinedAt: membership?.joinedAt.getTime() ?? 0,
+      };
+    });
+
+    return { groups, total };
   }
 
   /**

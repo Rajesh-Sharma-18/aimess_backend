@@ -131,7 +131,58 @@ export const adminSetProfileStatusBreaker: Breaker<
     )
 );
 
+export interface AdminEditableProfile {
+  userId: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+  bio: string;
+  dateOfBirth: string;
+  gender: string;
+}
+
+export interface AdminEditableProfileResponse {
+  ok: boolean;
+  errorCode: string;
+  profile: AdminEditableProfile | null;
+  changedFields: string[];
+}
+
+export const adminGetEditableProfileBreaker: Breaker<
+  { userId: string },
+  AdminEditableProfileResponse
+> = makeBreaker("user.adminGetEditableProfile", (args: { userId: string }) =>
+  call<typeof args, AdminEditableProfileResponse>(
+    "adminGetEditableProfile",
+    args
+  )
+);
+
+export const adminUpdateProfileBreaker: Breaker<
+  { userId: string; patchJson: string },
+  AdminEditableProfileResponse
+> = makeBreaker(
+  "user.adminUpdateProfile",
+  (args: { userId: string; patchJson: string }) =>
+    call<typeof args, AdminEditableProfileResponse>("adminUpdateProfile", args),
+  { timeout: 8000 }
+);
+
 export const userClient = {
+  adminGetEditableProfile(
+    userId: string
+  ): Promise<AdminEditableProfileResponse> {
+    return adminGetEditableProfileBreaker.fire({ userId });
+  },
+  adminUpdateProfile(
+    userId: string,
+    patch: Record<string, unknown>
+  ): Promise<AdminEditableProfileResponse> {
+    return adminUpdateProfileBreaker.fire({
+      userId,
+      patchJson: JSON.stringify(patch),
+    });
+  },
   // Empty input → no gRPC call (avoids a needless round-trip).
   async adminGetProfilesByIds(
     userIds: string[]

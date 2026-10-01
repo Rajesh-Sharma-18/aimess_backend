@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
+import { isAppError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import { withServiceAuth } from "@aimess/grpc-utils";
 
@@ -17,7 +18,15 @@ import {
 import { accountService } from "../services/account.service.js";
 import { accountBanService } from "../services/account-ban.service.js";
 import { accountRestoreService } from "../services/account-restore.service.js";
+import { adminIdentityService } from "../services/admin-identity.service.js";
+import { socialLinkService } from "../services/social-link.service.js";
 import { prisma } from "../config/prisma.js";
+
+function appErrorKey(err: unknown): string | null {
+  return isAppError(err) && err.statusCode < 500
+    ? (err.messageKey ?? err.message)
+    : null;
+}
 
 // Map an AuthUser row to the wire AdminUserRecord. Status is normalized for the
 // admin view: PENDING_DELETION → "DELETED", and any row with deletedAt set is
@@ -431,6 +440,96 @@ const authImpl: grpc.UntypedServiceImplementation = {
         callback(null, { active: row !== null });
       } catch (err) {
         logger.error(`gRPC isSessionActive error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
+  adminGetUserIdentity: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const { userId = "" } = call.request as { userId?: string };
+      try {
+        const identity = await adminIdentityService.getIdentity(userId);
+        callback(null, {
+          ok: true,
+          errorCode: "",
+          email: identity.email ?? "",
+          emailVerified: identity.emailVerified,
+          hasPassword: identity.hasPassword,
+          providers: identity.providers.map((p) => ({
+            provider: p.provider,
+            providerEmail: p.providerEmail ?? "",
+            linkedAt: p.linkedAt,
+          })),
+        });
+      } catch (err) {
+        const errorCode = appErrorKey(err);
+        if (errorCode) {
+          callback(null, { ok: false, errorCode });
+          return;
+        }
+        logger.error(`gRPC adminGetUserIdentity error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
+  adminSetUserEmail: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const { userId = "", email = "" } = call.request as {
+        userId?: string;
+        email?: string;
+      };
+      try {
+        const result = await adminIdentityService.setEmail(userId, email);
+        callback(null, {
+          ok: true,
+          errorCode: "",
+          changed: result.changed,
+          previousEmail: result.previousEmail ?? "",
+          email: result.email,
+        });
+      } catch (err) {
+        const errorCode = appErrorKey(err);
+        if (errorCode) {
+          callback(null, { ok: false, errorCode });
+          return;
+        }
+        logger.error(`gRPC adminSetUserEmail error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
+  adminUnlinkSocial: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const { userId = "", provider = "" } = call.request as {
+        userId?: string;
+        provider?: string;
+      };
+      if (provider !== "GOOGLE" && provider !== "APPLE") {
+        callback(null, { ok: false, errorCode: "VALIDATION_FAILED" });
+        return;
+      }
+      try {
+        const result = await socialLinkService.adminUnlink(userId, provider);
+        callback(null, { ok: true, errorCode: "", provider: result.provider });
+      } catch (err) {
+        const errorCode = appErrorKey(err);
+        if (errorCode) {
+          callback(null, { ok: false, errorCode });
+          return;
+        }
+        logger.error(`gRPC adminUnlinkSocial error: ${String(err)}`);
         callback({ code: grpc.status.INTERNAL, message: String(err) });
       }
     })();

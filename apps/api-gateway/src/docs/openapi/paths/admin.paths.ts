@@ -1062,6 +1062,79 @@ export const adminPaths = {
       "x-implementation-status": "implemented",
     },
   },
+  "/admin/v1/users/{userId}/account": {
+    get: {
+      tags: [adminTags.users],
+      operationId: "adminGetUserAccount",
+      summary: "Editable profile fields and sign-in identities of a user",
+      description:
+        "Backs the Edit User form and the Linked Accounts card. Never returns a password hash, provider subject id or token. Requires users.view.",
+      security: adminSecurity,
+      parameters: [{ ...idPathParam, name: "userId" }],
+      responses: {
+        "200": okRes("User account", "#/components/schemas/AdminUserAccount"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.view"),
+        "404": errRes("User not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/{userId}": {
+    patch: {
+      tags: [adminTags.users],
+      operationId: "adminUpdateUserAccount",
+      summary: "Edit a user's profile fields and recovery email",
+      description:
+        "One admin operation: writes AuditLog `user.updated_by_admin` with before/after values and sends the user exactly one `admin.user_account_updated` push (deep link ACCOUNT_STATUS) when at least one value actually changed. Nothing is sent for a no-op or a failed request. Email and linked accounts can only be changed on an ACTIVE account. Requires users.edit.",
+      security: adminSecurity,
+      parameters: [{ ...idPathParam, name: "userId" }],
+      requestBody: jsonBody(
+        "#/components/schemas/AdminUpdateUserAccountRequest"
+      ),
+      responses: {
+        "200": okRes("User updated", "#/components/schemas/AdminUserAccount"),
+        "400": errRes("Validation failed or account not active"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.edit"),
+        "404": errRes("User not found"),
+        "409": errRes("AUTH_EMAIL_EXISTS | USER_USERNAME_TAKEN"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/{userId}/linked-accounts/{provider}": {
+    delete: {
+      tags: [adminTags.users],
+      operationId: "adminUnlinkUserSocialAccount",
+      summary: "Unlink a user's Google or Apple sign-in",
+      description:
+        "Uses the same rule as the user's own unlink: refused with ADMIN_USER_LAST_SIGN_IN_METHOD when it is the account's only sign-in method. Writes AuditLog `user.social_account_unlinked_by_admin` and sends one `admin.user_account_updated` push. Requires users.edit.",
+      security: adminSecurity,
+      parameters: [
+        { ...idPathParam, name: "userId" },
+        {
+          name: "provider",
+          in: "path",
+          required: true,
+          schema: { type: "string", enum: ["google", "apple"] },
+        },
+      ],
+      responses: {
+        "200": okRes(
+          "Account unlinked",
+          "#/components/schemas/AdminUserAccount"
+        ),
+        "400": errRes(
+          "ADMIN_USER_LAST_SIGN_IN_METHOD | AUTH_SOCIAL_NOT_LINKED | account not active"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.edit"),
+        "404": errRes("User not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
   "/admin/v1/users/{userId}/details": {
     get: {
       tags: [adminTags.users],

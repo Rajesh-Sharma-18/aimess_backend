@@ -168,14 +168,6 @@ async function unlinkProvider(
 
   emitProfileUpdatedSafe(userId);
 
-  publishAdminActivitySafe({
-    actorId: userId,
-    action: USER_AUDIT_ACTIONS.USER_SOCIAL_ACCOUNT_UNLINKED,
-    targetType: "user",
-    targetId: userId,
-    after: { provider: socialProvider },
-  });
-
   return { provider: socialProvider };
 }
 
@@ -226,6 +218,26 @@ export const socialLinkService = {
     const provider =
       input.provider === "GOOGLE" ? AuthProvider.GOOGLE : AuthProvider.APPLE;
 
-    return unlinkProvider(userId, provider);
+    const result = await unlinkProvider(userId, provider);
+
+    publishAdminActivitySafe({
+      actorId: userId,
+      action: USER_AUDIT_ACTIONS.USER_SOCIAL_ACCOUNT_UNLINKED,
+      targetType: "user",
+      targetId: userId,
+      after: { provider: result.provider },
+    });
+
+    return result;
+  },
+
+  adminUnlink(
+    userId: string,
+    provider: "GOOGLE" | "APPLE"
+  ): Promise<SocialUnlinkResult> {
+    return unlinkProvider(
+      userId,
+      provider === "GOOGLE" ? AuthProvider.GOOGLE : AuthProvider.APPLE
+    );
   },
 };

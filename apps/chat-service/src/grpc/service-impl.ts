@@ -2588,6 +2588,7 @@ export function createMessagingImpl(
             q?: string;
             role?: string;
             status?: string;
+            excludeUserId?: string;
             page?: number;
             limit?: number;
           };
@@ -2600,6 +2601,7 @@ export function createMessagingImpl(
             q: req.q || undefined,
             role: req.role || undefined,
             status: req.status || undefined,
+            excludeUserId: req.excludeUserId || undefined,
             skip,
             take: limit,
           });
@@ -2611,6 +2613,35 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC adminListGroupMembers error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    adminListUserGroups: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            page?: number;
+            limit?: number;
+          };
+
+          const limit = Math.min(Math.max(req.limit || 20, 1), 100);
+          const skip = (Math.max(req.page || 1, 1) - 1) * limit;
+
+          const result = await deps.adminGroupService.listUserGroups({
+            userId: req.userId ?? "",
+            skip,
+            take: limit,
+          });
+
+          callback(null, { groups: result.groups, total: result.total });
+        } catch (err) {
+          logger.error(`gRPC adminListUserGroups error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

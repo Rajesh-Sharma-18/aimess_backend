@@ -596,6 +596,16 @@ export const NOTIFICATION_MESSAGES = {
     en: "Your account has been reinstated",
     th: "บัญชีของคุณได้รับการคืนสถานะแล้ว",
   },
+  NOTIF_ACCOUNT_UPDATED_BY_ADMIN_TITLE: {
+    vi: "Tài khoản đã được cập nhật",
+    en: "Account updated",
+    th: "อัปเดตบัญชีแล้ว",
+  },
+  NOTIF_ACCOUNT_UPDATED_BY_ADMIN_BODY: {
+    vi: "Quản trị viên đã cập nhật thông tin tài khoản của bạn",
+    en: "An administrator updated your account details",
+    th: "ผู้ดูแลระบบได้อัปเดตข้อมูลบัญชีของคุณ",
+  },
 
   NOTIF_AUTH_PASSWORD_CHANGED_TITLE: {
     vi: "Đã đổi mật khẩu",

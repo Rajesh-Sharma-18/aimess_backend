@@ -86,6 +86,24 @@ export type AuditLogDetail = {
   };
 };
 
+/**
+ * One entry on a user's moderation timeline (GET /users/{userId}/history): an
+ * admin or system action whose target is the user, or a report filed against them.
+ */
+export type UserHistoryItem = {
+  id: string;
+  performer: AuditPerformer;
+  source: AuditSourceKind;
+  category: AuditCategoryKind | null;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  reason: string | null;
+  before: unknown;
+  after: unknown;
+  createdAt: number;
+};
+
 /** Normalized list query (post-validation/coercion). */
 export type ListAuditLogsQuery = {
   search?: string;

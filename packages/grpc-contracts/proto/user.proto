@@ -49,6 +49,8 @@ service UserService {
   // account is suspended — so invites, group adds and DMs kept targeting a
   // banned user. backoffice-service calls this alongside AdminSetAccountStatus.
   rpc AdminSetProfileStatus (AdminSetProfileStatusRequest) returns (AdminSetProfileStatusResponse);
+  rpc AdminGetEditableProfile (AdminGetProfileRequest) returns (AdminEditableProfileResponse);
+  rpc AdminUpdateProfile (AdminUpdateProfileRequest) returns (AdminEditableProfileResponse);
 }
 
 message CheckFriendshipRequest {
@@ -314,6 +316,28 @@ message AdminSetProfileStatusResponse {
   bool   ok         = 1;
   string status     = 2; // status after the write; "" when ok=false
   string error_code = 3; // "USER_NOT_FOUND" | "INVALID_STATUS" | ""
+}
+
+message AdminEditableProfile {
+  string user_id       = 1;
+  string username      = 2;
+  string first_name    = 3;
+  string last_name     = 4;
+  string bio           = 5;
+  string date_of_birth = 6;
+  string gender        = 7;
+}
+
+message AdminUpdateProfileRequest {
+  string user_id    = 1;
+  string patch_json = 2;
+}
+
+message AdminEditableProfileResponse {
+  bool   ok            = 1;
+  string error_code    = 2;
+  AdminEditableProfile profile = 3;
+  repeated string changed_fields = 4;
 }
 
 message AdminDisconnectAllFriendshipsRequest {

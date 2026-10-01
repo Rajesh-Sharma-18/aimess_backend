@@ -6,15 +6,21 @@ import {
   bulkActivateUsers,
   bulkBanUsers,
   getBanReasons,
+  getUserAccount,
   getUserDetails,
   listOtherCommunityMembers,
+  listOtherGroupMembers,
   listUserCommunities,
+  listUserGroups,
   listUserDevices,
+  listUserHistory,
   listUserReports,
   listUsers,
   reactivateUser,
   suspendUser,
   unbanUser,
+  unlinkUserSocialAccount,
+  updateUserAccount,
 } from "../controllers/index.js";
 import {
   adminAuth,
@@ -27,14 +33,20 @@ import {
   banUserSchema,
   bulkActivateSchema,
   bulkBanSchema,
+  listOtherGroupMembersQuerySchema,
   listOtherMembersQuerySchema,
   listUserCommunitiesQuerySchema,
+  listUserGroupsQuerySchema,
+  userGroupMembersParamSchema,
   listUsersQuerySchema,
   suspendUserSchema,
+  updateUserAccountSchema,
   userCommunityMembersParamSchema,
   userDevicesQuerySchema,
+  userHistoryQuerySchema,
   userIdParamSchema,
   userReportsQuerySchema,
+  userSocialProviderParamSchema,
 } from "../validators/index.js";
 
 /** Admin User Management API — self-prefixed with `/users` (→ /v1/users/*). */
@@ -113,6 +125,13 @@ usersRoutes.get(
   validateQuery(userDevicesQuerySchema),
   listUserDevices
 );
+usersRoutes.get(
+  "/users/:userId/history",
+  requirePermission(PERMISSIONS.USERS_VIEW),
+  validateParams(userIdParamSchema),
+  validateQuery(userHistoryQuerySchema),
+  listUserHistory
+);
 // User → Communities grid + the co-member grid for a specific community. The
 // more-specific `/communities/:communityId/members` is declared before the
 // shallower `/communities` so Express matches it first.
@@ -129,6 +148,20 @@ usersRoutes.get(
   validateParams(userIdParamSchema),
   validateQuery(listUserCommunitiesQuerySchema),
   listUserCommunities
+);
+usersRoutes.get(
+  "/users/:userId/groups/:groupId/members",
+  requirePermission(PERMISSIONS.USERS_VIEW),
+  validateParams(userGroupMembersParamSchema),
+  validateQuery(listOtherGroupMembersQuerySchema),
+  listOtherGroupMembers
+);
+usersRoutes.get(
+  "/users/:userId/groups",
+  requirePermission(PERMISSIONS.USERS_VIEW),
+  validateParams(userIdParamSchema),
+  validateQuery(listUserGroupsQuerySchema),
+  listUserGroups
 );
 usersRoutes.post(
   "/users/:userId/ban",
@@ -167,4 +200,23 @@ usersRoutes.post(
   requirePermission(PERMISSIONS.USERS_MODERATE),
   validateParams(userIdParamSchema),
   reactivateUser
+);
+usersRoutes.get(
+  "/users/:userId/account",
+  requirePermission(PERMISSIONS.USERS_VIEW),
+  validateParams(userIdParamSchema),
+  getUserAccount
+);
+usersRoutes.patch(
+  "/users/:userId",
+  requirePermission(PERMISSIONS.USERS_EDIT),
+  validateParams(userIdParamSchema),
+  validateBody(updateUserAccountSchema),
+  updateUserAccount
+);
+usersRoutes.delete(
+  "/users/:userId/linked-accounts/:provider",
+  requirePermission(PERMISSIONS.USERS_EDIT),
+  validateParams(userSocialProviderParamSchema),
+  unlinkUserSocialAccount
 );

@@ -528,7 +528,8 @@ export interface AdminStreamFilter {
 function buildAdminWhere(f: AdminStreamFilter): Prisma.LivestreamWhereInput {
   const and: Prisma.LivestreamWhereInput[] = [];
 
-  if (f.status) and.push({ status: f.status });
+  if (f.status === "LIVE") and.push({ status: { in: [...LIVE_STATUSES] } });
+  else if (f.status) and.push({ status: f.status });
   if (f.communityId) and.push({ communityId: f.communityId });
   if (f.creatorId) and.push({ creatorId: f.creatorId });
   if (f.restrictCommunityIds?.length) {
