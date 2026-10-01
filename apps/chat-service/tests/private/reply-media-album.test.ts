@@ -63,6 +63,7 @@ describe("reply + media album", () => {
   it("stamps parentMessageId AND quoteData on EVERY row of a multi-image reply", async () => {
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: PARENT_ID,
+      roomId: ROOM,
       senderId: PEER,
       messageType: "TEXT",
       content: { text: "which one?" },
@@ -93,6 +94,7 @@ describe("reply + media album", () => {
   it("carries the reply through a single-file media send", async () => {
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: PARENT_ID,
+      roomId: ROOM,
       senderId: PEER,
       messageType: "TEXT",
       content: { text: "look at this" },
@@ -116,6 +118,7 @@ describe("reply + media album", () => {
   const mockAlbumParent = () => {
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: PARENT_ID,
+      roomId: ROOM,
       senderId: PEER,
       messageType: "IMAGE",
       clientMessageId: "their-album",

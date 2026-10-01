@@ -5,6 +5,7 @@
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
+import { HISTORY_LINE_EVENTS } from "../lib/deletion-cutoff.js";
 import type { GroupRoomRepository } from "./group-room.repository.js";
 import {
   MessageReactionRepository,
@@ -1489,6 +1490,29 @@ export class GroupMessageRepository {
    * boundary, sent just after, which membership-time comparison alone would
    * wrongly refuse.
    */
+  /** Group twin of PrivateMessageRepository.hasClearableAfter. */
+  async hasClearableAfter(params: {
+    roomId: string;
+    userId: string;
+    cutoff?: Date;
+  }): Promise<boolean> {
+    // ponytail: newest 50 rows only — same ceiling as the private twin.
+    const rows = await this.prisma.groupMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        ...(params.cutoff ? { createdAt: { gt: params.cutoff } } : {}),
+        NOT: {
+          messageType: "SYSTEM",
+          systemEvent: { in: [...HISTORY_LINE_EVENTS] },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      select: { deletedForUserIds: true },
+    });
+    return rows.some((m) => !isHiddenForUser(m, params.userId));
+  }
+
   async hasVisibleMessageWithObjectKey(params: {
     roomId: string;
     objectKey: string;

@@ -94,10 +94,16 @@ export class PrivateRoomController {
   clearChat = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    await this.service.clearChat(roomId, userId);
+    // `cleared: false` = nothing to clear; the server changed nothing.
+    const cleared = await this.service.clearChat(roomId, userId);
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(null, t("CHAT_CLEARED", req.locale)));
+      .json(
+        new ApiResponse(
+          { cleared },
+          t(cleared ? "CHAT_CLEARED" : "CHAT_NOTHING_TO_CLEAR", req.locale)
+        )
+      );
   });
 
   // Report the peer of this conversation. Body carries the target explicitly so
