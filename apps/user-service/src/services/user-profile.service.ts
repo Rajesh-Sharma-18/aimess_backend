@@ -131,6 +131,8 @@ type ProfileRecord = {
   deletedAt: Date | null;
 };
 
+type EditableProfileRecord = Omit<ProfileRecord, "deletedAt">;
+
 type ProfileAuthSummary = {
   account: string | null;
   email: string | null;
@@ -752,125 +754,162 @@ export const userProfileService = {
     input: UpdateProfileInput,
     editorSessionId?: string
   ): Promise<UserProfileData> {
-    const profile = await userProfileRepository.findByUserId(userId);
+    const { profile } = await writeProfileUpdate(userId, input, {
+      editorSessionId,
+      byAdmin: false,
+    });
+    const authSummary = await resolveProfileAuthSummary(userId);
+    return toProfileData(profile, authSummary);
+  },
 
+  adminUpdateProfile(
+    userId: string,
+    input: UpdateProfileInput
+  ): Promise<{ profile: EditableProfileRecord; changedFields: string[] }> {
+    return writeProfileUpdate(userId, input, { byAdmin: true });
+  },
+
+  async adminGetEditableProfile(userId: string): Promise<ProfileRecord> {
+    const profile = await userProfileRepository.findByUserId(userId);
     if (!profile || profile.deletedAt) {
       throw new NotFoundError("USER_PROFILE_NOT_FOUND");
     }
+    return profile;
+  },
+};
 
-    const previousUsername = profile.username;
+async function writeProfileUpdate(
+  userId: string,
+  input: UpdateProfileInput,
+  options: { editorSessionId?: string; byAdmin: boolean }
+): Promise<{ profile: EditableProfileRecord; changedFields: string[] }> {
+  const profile = await userProfileRepository.findByUserId(userId);
 
-    const updateData: {
-      firstName?: string;
-      lastName?: string;
-      username?: string;
-      bio?: string | null;
-      dateOfBirth?: Date;
-      gender?: ProfileGender | null;
-      avatarUrl?: string | null;
-      lastUsernameChangeAt?: Date;
-    } = {};
+  if (!profile || profile.deletedAt) {
+    throw new NotFoundError("USER_PROFILE_NOT_FOUND");
+  }
 
-    if (input.firstName !== undefined) {
-      updateData.firstName = input.firstName;
-    }
+  const previousUsername = profile.username;
 
-    if (input.lastName !== undefined) {
-      updateData.lastName = input.lastName;
-    }
+  const updateData: {
+    firstName?: string;
+    lastName?: string;
+    username?: string;
+    bio?: string | null;
+    dateOfBirth?: Date;
+    gender?: ProfileGender | null;
+    avatarUrl?: string | null;
+    lastUsernameChangeAt?: Date;
+  } = {};
 
-    if (input.bio !== undefined) {
-      updateData.bio = input.bio;
-    }
+  if (input.firstName !== undefined) {
+    updateData.firstName = input.firstName;
+  }
 
-    if (input.dateOfBirth !== undefined) {
-      updateData.dateOfBirth = dateOfBirthToUtcDate(input.dateOfBirth);
-    }
+  if (input.lastName !== undefined) {
+    updateData.lastName = input.lastName;
+  }
 
-    if (input.gender !== undefined) {
-      updateData.gender = input.gender;
-    }
+  if (input.bio !== undefined) {
+    updateData.bio = input.bio;
+  }
 
-    if (input.avatarObjectKey !== undefined) {
-      if (input.avatarObjectKey === null) {
-        updateData.avatarUrl = null;
-      } else {
-        updateData.avatarUrl =
-          await avatarService.resolveAvatarObjectKeyForProfile(
-            userId,
-            input.avatarObjectKey
-          );
-      }
-    }
+  if (input.dateOfBirth !== undefined) {
+    updateData.dateOfBirth = dateOfBirthToUtcDate(input.dateOfBirth);
+  }
 
-    if (input.username !== undefined) {
-      const nextUsername = input.username;
-      const currentNormalized = normalizeUsername(profile.username);
+  if (input.gender !== undefined) {
+    updateData.gender = input.gender;
+  }
 
-      if (nextUsername !== currentNormalized) {
-        const lastChange = profile.lastUsernameChangeAt;
-        if (
-          lastChange &&
-          Date.now() - lastChange.getTime() < USERNAME_CHANGE_COOLDOWN_MS
-        ) {
-          throw new BadRequestError("USER_USERNAME_CHANGE_TOO_SOON");
-        }
-
-        const { available } = await usernameService.validateAvailability(
-          nextUsername,
-          userId
+  if (input.avatarObjectKey !== undefined) {
+    if (input.avatarObjectKey === null) {
+      updateData.avatarUrl = null;
+    } else {
+      updateData.avatarUrl =
+        await avatarService.resolveAvatarObjectKeyForProfile(
+          userId,
+          input.avatarObjectKey
         );
+    }
+  }
 
-        if (!available) {
-          throw new ConflictError("USER_USERNAME_TAKEN");
-        }
+  if (input.username !== undefined) {
+    const nextUsername = input.username;
+    const currentNormalized = normalizeUsername(profile.username);
 
-        updateData.username = nextUsername;
-        updateData.lastUsernameChangeAt = new Date();
-      } else if (profile.username !== nextUsername) {
-        // Same handle, different casing — store canonical lowercase without cooldown.
-        updateData.username = nextUsername;
+    if (nextUsername !== currentNormalized) {
+      const lastChange = profile.lastUsernameChangeAt;
+      if (
+        !options.byAdmin &&
+        lastChange &&
+        Date.now() - lastChange.getTime() < USERNAME_CHANGE_COOLDOWN_MS
+      ) {
+        throw new BadRequestError("USER_USERNAME_CHANGE_TOO_SOON");
       }
+
+      const { available } = await usernameService.validateAvailability(
+        nextUsername,
+        userId
+      );
+
+      if (!available) {
+        throw new ConflictError("USER_USERNAME_TAKEN");
+      }
+
+      updateData.username = nextUsername;
+      updateData.lastUsernameChangeAt = new Date();
+    } else if (profile.username !== nextUsername) {
+      // Same handle, different casing — store canonical lowercase without cooldown.
+      updateData.username = nextUsername;
     }
+  }
 
-    // No-op PATCH: resolve account/email only here so an empty update still
-    // returns the current profile without an unnecessary auth-service hop on
-    // the mutate path.
-    if (Object.keys(updateData).length === 0) {
-      const authSummary = await resolveProfileAuthSummary(userId);
-      return toProfileData(profile, authSummary);
-    }
+  if (Object.keys(updateData).length === 0) {
+    return { profile, changedFields: [] };
+  }
 
-    const updated = await userProfileRepository.updateProfile(
-      userId,
-      updateData
-    );
+  const updated = await userProfileRepository.updateProfile(
+    userId,
+    updateData
+  );
 
-    await userCache.invalidateProfile(userId);
+  await userCache.invalidateProfile(userId);
 
-    publishProfileUpdatedSafe({
-      userId,
-      username: updated.username,
-      displayName: buildDisplayName(updated.firstName, updated.lastName),
-      avatarObjectKey: updated.avatarUrl ?? null,
-      isProfileCompleted: isProfileComplete(updated),
-      updatedAt: updated.updatedAt.toISOString(),
-    });
+  publishProfileUpdatedSafe({
+    userId,
+    username: updated.username,
+    displayName: buildDisplayName(updated.firstName, updated.lastName),
+    avatarObjectKey: updated.avatarUrl ?? null,
+    isProfileCompleted: isProfileComplete(updated),
+    updatedAt: updated.updatedAt.toISOString(),
+  });
 
-    // Separate delivery mechanism, not a replacement for the RabbitMQ fanout
-    // above: that one keeps other SERVICES' denormalized snapshots fresh, this
-    // one tells the user's own other DEVICES to re-fetch. Both must fire.
-    emitProfileUpdatedSafe(
-      userId,
-      updated.updatedAt.toISOString(),
-      editorSessionId
-    );
+  // Separate delivery mechanism, not a replacement for the RabbitMQ fanout
+  // above: that one keeps other SERVICES' denormalized snapshots fresh, this
+  // one tells the user's own other DEVICES to re-fetch. Both must fire.
+  emitProfileUpdatedSafe(
+    userId,
+    updated.updatedAt.toISOString(),
+    options.editorSessionId
+  );
 
-    if (updateData.username && updateData.username !== previousUsername) {
-      await userCache.onUsernameReleased(previousUsername);
-      await userCache.onUsernameClaimed(updateData.username);
-    }
+  if (updateData.username && updateData.username !== previousUsername) {
+    await userCache.onUsernameReleased(previousUsername);
+    await userCache.onUsernameClaimed(updateData.username);
+  }
 
+  const comparable = (value: unknown) =>
+    value instanceof Date ? value.getTime() : value;
+  const changedFields = (
+    Object.keys(updateData).filter(
+      (field) => field !== "lastUsernameChangeAt"
+    ) as (keyof EditableProfileRecord)[]
+  ).filter(
+    (field) => comparable(profile[field]) !== comparable(updated[field])
+  );
+
+  if (!options.byAdmin) {
     publishAdminActivitySafe({
       actorId: userId,
       action: USER_AUDIT_ACTIONS.USER_PROFILE_UPDATED,
@@ -878,8 +917,7 @@ export const userProfileService = {
       targetId: userId,
       after: { changedFields: Object.keys(updateData) },
     });
+  }
 
-    const authSummary = await resolveProfileAuthSummary(userId);
-    return toProfileData(updated, authSummary);
-  },
-};
+  return { profile: updated, changedFields };
+}

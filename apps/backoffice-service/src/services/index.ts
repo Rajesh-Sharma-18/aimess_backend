@@ -16,3 +16,4 @@ export { serviceRestartService } from "./service-restart.service.js";
 export { adminAccountService } from "./admin-account.service.js";
 export { systemMaintenanceService } from "./system-maintenance.service.js";
 export { notificationCategoryService } from "./notification-category.service.js";
+export { userAccountService } from "./user-account.service.js";

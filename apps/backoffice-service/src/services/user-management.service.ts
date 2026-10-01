@@ -234,7 +234,7 @@ function mirrorProfileStatus(
  * Both halves are best-effort and deliberately un-awaited: the moderation write
  * has already committed and must not be rolled back because Redis blipped.
  */
-function announceUserDirectoryChange(): void {
+export function announceUserDirectoryChange(): void {
   publishAdminBroadcastSafe(ADMIN_USERS_CHANGED);
   // The website leg: a banned account is filtered out of people search by the
   // query itself, but a reader whose search panel was already open holds a

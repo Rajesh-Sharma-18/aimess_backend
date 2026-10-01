@@ -970,6 +970,10 @@ export const accountCopy = register("account", {
     title: t("NOTIF_ACCOUNT_REINSTATED_TITLE", locale),
     body: t("NOTIF_ACCOUNT_REINSTATED_BODY", locale),
   }),
+  updatedByAdmin: (): LocalizedCopy => (locale) => ({
+    title: t("NOTIF_ACCOUNT_UPDATED_BY_ADMIN_TITLE", locale),
+    body: t("NOTIF_ACCOUNT_UPDATED_BY_ADMIN_BODY", locale),
+  }),
 });
 
 export const authCopy = register("auth", {

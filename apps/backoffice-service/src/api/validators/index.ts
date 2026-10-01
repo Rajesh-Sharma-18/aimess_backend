@@ -251,3 +251,9 @@ export {
   messageNavigationQueryFields,
   type MessageReactionsQueryInput,
 } from "./message-reactions.validator.js";
+export {
+  updateUserAccountSchema,
+  userSocialProviderParamSchema,
+  type UpdateUserAccountInput,
+  type UserSocialProviderParam,
+} from "./user-account.validator.js";

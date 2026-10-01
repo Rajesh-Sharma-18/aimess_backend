@@ -18,7 +18,12 @@ export function withImpliedReads(keys: Iterable<string>): string[] {
   for (const key of [...effective]) {
     const [group, action] = key.split(".");
     if (!group) continue;
-    if (action === "manage" || action === "moderate" || action === "action") {
+    if (
+      action === "manage" ||
+      action === "moderate" ||
+      action === "action" ||
+      action === "edit"
+    ) {
       // Edit implies view + read (where the catalogue defines them; settings
       // has neither, so nothing gets invented that a catalogue-validated
       // PATCH would then reject).

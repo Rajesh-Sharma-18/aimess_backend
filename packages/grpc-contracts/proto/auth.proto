@@ -46,6 +46,9 @@ service AuthService {
   // Session row is the only thing that still knows. Without this the send path
   // failed open on a cache miss and kept ringing signed-out devices.
   rpc IsSessionActive (IsSessionActiveRequest) returns (IsSessionActiveResponse);
+  rpc AdminGetUserIdentity (AdminGetUserIdentityRequest) returns (AdminGetUserIdentityResponse);
+  rpc AdminSetUserEmail (AdminSetUserEmailRequest) returns (AdminSetUserEmailResponse);
+  rpc AdminUnlinkSocial (AdminUnlinkSocialRequest) returns (AdminUnlinkSocialResponse);
 }
 
 message GetUserCountsRequest {}
@@ -251,3 +254,40 @@ message IsUserEmailTakenResponse { bool taken = 1; }
 // Internal: is this session still usable (exists and not revoked)?
 message IsSessionActiveRequest { string session_id = 1; }
 message IsSessionActiveResponse { bool active = 1; }
+
+message AdminGetUserIdentityRequest { string user_id = 1; }
+message AdminLinkedProvider {
+  string provider       = 1;
+  string provider_email = 2;
+  string linked_at      = 3;
+}
+message AdminGetUserIdentityResponse {
+  bool   ok             = 1;
+  string error_code     = 2;
+  string email          = 3;
+  bool   email_verified = 4;
+  bool   has_password   = 5;
+  repeated AdminLinkedProvider providers = 6;
+}
+
+message AdminSetUserEmailRequest {
+  string user_id = 1;
+  string email   = 2;
+}
+message AdminSetUserEmailResponse {
+  bool   ok             = 1;
+  string error_code     = 2;
+  bool   changed        = 3;
+  string previous_email = 4;
+  string email          = 5;
+}
+
+message AdminUnlinkSocialRequest {
+  string user_id  = 1;
+  string provider = 2;
+}
+message AdminUnlinkSocialResponse {
+  bool   ok         = 1;
+  string error_code = 2;
+  string provider   = 3;
+}

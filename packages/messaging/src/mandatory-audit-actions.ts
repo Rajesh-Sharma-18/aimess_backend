@@ -78,6 +78,8 @@ export const AUDIT_ACTION_CATEGORY: Readonly<Record<string, AuditCategory>> = {
   "user.suspended": AUDIT_CATEGORIES.USER_MANAGEMENT,
   "user.bulk_banned": AUDIT_CATEGORIES.USER_MANAGEMENT,
   "user.bulk_activated": AUDIT_CATEGORIES.USER_MANAGEMENT,
+  "user.updated_by_admin": AUDIT_CATEGORIES.USER_MANAGEMENT,
+  "user.social_account_unlinked_by_admin": AUDIT_CATEGORIES.USER_MANAGEMENT,
   [USER_AUDIT_ACTIONS.USER_ACCOUNT_DELETED]: AUDIT_CATEGORIES.USER_MANAGEMENT,
   // User-on-user moderation.
   [USER_AUDIT_ACTIONS.USER_BLOCKED_USER]: AUDIT_CATEGORIES.USER_MANAGEMENT,

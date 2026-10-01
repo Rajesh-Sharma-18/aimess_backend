@@ -6,6 +6,7 @@ import {
   bulkActivateUsers,
   bulkBanUsers,
   getBanReasons,
+  getUserAccount,
   getUserDetails,
   listOtherCommunityMembers,
   listUserCommunities,
@@ -15,6 +16,8 @@ import {
   reactivateUser,
   suspendUser,
   unbanUser,
+  unlinkUserSocialAccount,
+  updateUserAccount,
 } from "../controllers/index.js";
 import {
   adminAuth,
@@ -31,10 +34,12 @@ import {
   listUserCommunitiesQuerySchema,
   listUsersQuerySchema,
   suspendUserSchema,
+  updateUserAccountSchema,
   userCommunityMembersParamSchema,
   userDevicesQuerySchema,
   userIdParamSchema,
   userReportsQuerySchema,
+  userSocialProviderParamSchema,
 } from "../validators/index.js";
 
 /** Admin User Management API — self-prefixed with `/users` (→ /v1/users/*). */
@@ -167,4 +172,23 @@ usersRoutes.post(
   requirePermission(PERMISSIONS.USERS_MODERATE),
   validateParams(userIdParamSchema),
   reactivateUser
+);
+usersRoutes.get(
+  "/users/:userId/account",
+  requirePermission(PERMISSIONS.USERS_VIEW),
+  validateParams(userIdParamSchema),
+  getUserAccount
+);
+usersRoutes.patch(
+  "/users/:userId",
+  requirePermission(PERMISSIONS.USERS_EDIT),
+  validateParams(userIdParamSchema),
+  validateBody(updateUserAccountSchema),
+  updateUserAccount
+);
+usersRoutes.delete(
+  "/users/:userId/linked-accounts/:provider",
+  requirePermission(PERMISSIONS.USERS_EDIT),
+  validateParams(userSocialProviderParamSchema),
+  unlinkUserSocialAccount
 );
