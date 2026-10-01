@@ -20,6 +20,7 @@ import {
   type CommunityMemberBannedPayload,
   type CommunityMemberJoinedPayload,
   type CommunityMemberKickedPayload,
+  type CommunityMemberLeftPayload,
   type CommunityMemberMutedPayload,
   type CommunityMemberRoleChangedPayload,
   type CommunityMemberUnbannedNotifyPayload,
@@ -38,7 +39,9 @@ import { userIdentityClient } from "../grpc/user-identity.client.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { communityCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
+import { pushTag, roomTags } from "../lib/push-tags.js";
 import { redis } from "../config/redis.js";
+import { dismissTrayCards } from "../services/push-dismiss.js";
 import {
   pushToUser,
   pushToUsers,
@@ -130,6 +133,28 @@ function withoutActor(
   if (!recipientIds?.length) return [];
   if (!actorId) return recipientIds;
   return recipientIds.filter((id) => id !== actorId);
+}
+
+/**
+ * The room is gone for these users (left, kicked, banned, deleted): close its
+ * chat / mention / live / added cards on every device of theirs. The kick/ban/
+ * delete card itself is untagged by room, so it stays.
+ */
+async function dismissRoomCards(
+  userIds: string[] | undefined,
+  communityId: string,
+  reason: "LEFT" | "REMOVED" | "DELETED"
+): Promise<void> {
+  await Promise.all(
+    [...new Set(userIds ?? [])].filter(Boolean).map((userId) =>
+      dismissTrayCards({
+        userId,
+        tags: roomTags(communityId),
+        reason,
+        data: { communityId, conversationId: communityId },
+      })
+    )
+  );
 }
 
 /** Name + avatar of ONE community, resolved together from ONE record. */
@@ -426,6 +451,9 @@ async function handleCommunityEvent(
       await pushToUsers(recipients, (userId) => ({
         userId,
         copy: communityCopy.livestreamStarted(identity.name, resolvedHostName),
+        // Shared with LIVESTREAM_ENDED, so "ended" REPLACES the "Watch now" card
+        // instead of leaving a tappable card for a stream that is over.
+        collapseKey: pushTag.live(p.communityId),
         ...base(
           type,
           identity,
@@ -473,6 +501,11 @@ async function handleCommunityEvent(
       };
       await pushToUsers(recipients, (userId) => ({
         userId,
+        // ponytail: replaces the "started" card only where "ended" is delivered;
+        // quiet hours or a toggle flipped mid-stream leaves "started" until the
+        // user opens the community (roomTags). Send dismissTrayCards here too if
+        // that matters.
+        collapseKey: pushTag.live(p.communityId),
         // A platform end (Super Admin force-end, moderation) never names the
         // host; the host still rides in data/actorSnapshot as the stream owner.
         copy:
@@ -687,6 +720,8 @@ async function handleCommunityEvent(
             p.via === "join_request_auto_accept"
               ? communityCopy.memberJoined(communityName)
               : communityCopy.memberAdded(communityName),
+          // Closed with the rest of the room's cards once they open it.
+          collapseKey: pushTag.added(p.communityId),
           ...base(
             type,
             identity,
@@ -794,6 +829,7 @@ async function handleCommunityEvent(
           generateEventThreadId(type)
         ),
       });
+      await dismissRoomCards([p.targetUserId], p.communityId, "REMOVED");
       break;
     }
 
@@ -821,6 +857,7 @@ async function handleCommunityEvent(
           generateEventThreadId(type)
         ),
       });
+      await dismissRoomCards([p.targetUserId], p.communityId, "REMOVED");
       break;
     }
 
@@ -911,10 +948,14 @@ async function handleCommunityEvent(
       break;
     }
 
-    case CommunityEvents.MEMBER_LEFT:
-      // Self-action — the user voluntarily left; they already know. Explicit
-      // no-op (not `default`) so it does not log "Unknown community event type".
+    case CommunityEvents.MEMBER_LEFT: {
+      // Self-action — the user voluntarily left (or deleted the conversation);
+      // they already know, so no push. Their other devices still hold this
+      // room's cards, and those have to go.
+      const p = data as CommunityMemberLeftPayload;
+      await dismissRoomCards([p.actorId], p.communityId, "LEFT");
       break;
+    }
 
     case CommunityEvents.INVITE_SENT: {
       const p = data as CommunityInviteSentPayload;
@@ -1080,6 +1121,7 @@ async function handleCommunityEvent(
           generateEventThreadId(type)
         ),
       }));
+      await dismissRoomCards(p.memberIds, p.communityId, "DELETED");
       break;
     }
 

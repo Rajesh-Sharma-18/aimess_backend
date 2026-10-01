@@ -38,6 +38,7 @@ import {
 } from "./last-visible-resolver.js";
 import { groupVisibilitySource } from "./last-visible-adapters.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
+import { publishRoomCardsGoneSafe } from "../events/publish-conversation-read.js";
 import {
   assertGroupReadAccess,
   assertGroupRoomWritable,
@@ -1148,6 +1149,14 @@ export class GroupRoomService {
       | typeof SystemEvent.CONVERSATION_CLEARED
       | typeof SystemEvent.CONVERSATION_DELETED
   ): Promise<void> {
+    // Nothing left to be notified about: close the room's tray cards on every
+    // device of this user.
+    publishRoomCardsGoneSafe(
+      userId,
+      roomId,
+      "GROUP",
+      systemEvent === SystemEvent.CONVERSATION_DELETED ? "DELETED" : "CLEARED"
+    );
     this.redis
       .publish(
         `user:${userId}`,

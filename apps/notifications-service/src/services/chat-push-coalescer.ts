@@ -9,6 +9,7 @@ import {
   chatMentionPreviewHiddenBody,
   chatPreviewHiddenBody,
 } from "../lib/notification-copy.js";
+import { pushTag } from "../lib/push-tags.js";
 import { recordPushedMessages } from "./push-retraction.js";
 import { pushToUser } from "./push.service.js";
 
@@ -366,8 +367,8 @@ async function flush(key: string): Promise<void> {
       // A mention collapses on its OWN key, so a later ordinary summary for the
       // same room cannot replace "X mentioned you" in the tray.
       collapseKey: lead
-        ? `mention:${context.conversationId}`
-        : `conv:${context.conversationId}`,
+        ? pushTag.mention(context.conversationId)
+        : pushTag.conversation(context.conversationId),
       apnsThreadId: context.threadId,
       chatType: isCommunity
         ? "COMMUNITY"

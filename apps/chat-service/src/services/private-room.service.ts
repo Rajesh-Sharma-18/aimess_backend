@@ -50,6 +50,7 @@ import {
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import { foldTickStatus } from "../lib/tick-status.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
+import { publishRoomCardsGoneSafe } from "../events/publish-conversation-read.js";
 import {
   resolvePairState,
   type PrivatePairStateInfo,
@@ -1369,6 +1370,9 @@ export class PrivateRoomService {
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
     const cutoff = await this.privateRoomRepo.setDeletedFor(roomId, userId);
+    // The conversation is gone from this user's list: its tray card goes too,
+    // on every device of theirs.
+    publishRoomCardsGoneSafe(userId, roomId, "PRIVATE", "DELETED");
 
     // `setDeletedFor` zeroed this user's stored unread counter, but the Chats
     // nav badge is a TOTAL the server owns — without this push it keeps
@@ -1529,6 +1533,7 @@ export class PrivateRoomService {
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
     const cutoff = await this.privateRoomRepo.setClearFor(roomId, userId);
+    publishRoomCardsGoneSafe(userId, roomId, "PRIVATE", "CLEARED");
     await this.announceHistoryEmptied(
       room,
       userId,

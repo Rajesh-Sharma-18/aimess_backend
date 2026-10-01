@@ -10,6 +10,7 @@ import {
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { groupCopy } from "../lib/notification-copy.js";
+import { pushTag } from "../lib/push-tags.js";
 import { generateThreadId } from "../lib/thread-id.js";
 import { pushToUser } from "../services/push.service.js";
 
@@ -34,6 +35,8 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
         copy: groupCopy.memberAdded(p.groupName),
         deepLink,
         apnsThreadId: generateThreadId("GROUP", p.roomId),
+        // Closed with the rest of the room's cards once they open it.
+        collapseKey: pushTag.added(p.roomId),
         data: {
           roomId: p.roomId,
           groupName: p.groupName,

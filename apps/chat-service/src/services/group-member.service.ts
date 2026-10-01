@@ -21,6 +21,7 @@ import {
   publishGroupMemberMuteSafe,
 } from "../events/publish-group-member-added.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
+import { publishRoomCardsGoneSafe } from "../events/publish-conversation-read.js";
 import { ChatEvents } from "@aimess/shared-types";
 import { effectiveGroupMemberLimit } from "@aimess/constants";
 import { publishUserReport } from "../lib/report-user.js";
@@ -446,6 +447,13 @@ export class GroupMemberService {
     reason: "LEAVE" | "KICK" | "BAN"
   ): void {
     notifyUnreadChanged(userId);
+    // No longer a member: this group's tray cards go from all their devices.
+    publishRoomCardsGoneSafe(
+      userId,
+      roomId,
+      "GROUP",
+      reason === "LEAVE" ? "LEFT" : "REMOVED"
+    );
     publishChatUserEvent(this.redis, userId, "group:removed", {
       roomId,
       reason,

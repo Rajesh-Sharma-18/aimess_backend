@@ -13,6 +13,7 @@ import {
 import { allocateRoomSlot } from "../lib/room-lock.js";
 import { redis } from "../config/redis.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
+import { publishConversationReadSafe } from "../events/publish-conversation-read.js";
 import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
 import {
   assertMaySeeReadReceipts,
@@ -1339,6 +1340,12 @@ export class CommunityMessageService {
             `CommunityMessageService|bulkMarkRead|redis publish user failed: ${String(err)}`
           );
         });
+      publishConversationReadSafe({
+        readerId: userId,
+        conversationId: communityId,
+        conversationType: "COMMUNITY",
+        readAt: readAt.getTime(),
+      });
     }
 
     notifyUnreadChanged(userId);
@@ -2559,6 +2566,14 @@ export class CommunityMessageService {
               },
             })
           );
+          // Opening the room is the read most users do — same tray dismiss as
+          // markMessageRead.
+          publishConversationReadSafe({
+            readerId: params.userId,
+            conversationId: params.roomId,
+            conversationType: "COMMUNITY",
+            readAt: Date.now(),
+          });
         })
         .catch((err: unknown) => {
           logger.warn(
@@ -3554,6 +3569,17 @@ export class CommunityMessageService {
 
     // Nav-badge total changed for the reader — see unread-summary-bridge.ts.
     notifyUnreadChanged(params.readerId);
+
+    // Close this community's tray cards (messages, @mention, live, "added you")
+    // on the reader's other devices. `community:read_sync` above only reaches
+    // live sockets; a phone in a pocket needs the push. Private/group do the same
+    // in ChatMessageOrchestrator.markReadDirect.
+    publishConversationReadSafe({
+      readerId: params.readerId,
+      conversationId: params.communityId,
+      conversationType: "COMMUNITY",
+      readAt,
+    });
 
     return { ok: true, communityId: params.communityId, readAt };
   }

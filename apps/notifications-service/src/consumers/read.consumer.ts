@@ -2,7 +2,8 @@ import { logger } from "@aimess/logger";
 import * as amqp from "amqplib";
 
 import { env } from "../config/env.js";
-import { pushToUser } from "../services/push.service.js";
+import { roomTags } from "../lib/push-tags.js";
+import { dismissTrayCards } from "../services/push-dismiss.js";
 
 const CHAT_READ_QUEUE = "chat.read.queue";
 
@@ -13,12 +14,22 @@ interface ConversationReadPayload {
   readAt: number;
   /** Device that performed the read, when known — it needs no dismiss. */
   deviceId?: string;
+  /**
+   * Why the room's cards go away; READ when absent (older publishers). CLEARED,
+   * DELETED, LEFT and REMOVED reuse this queue because for the tray they mean
+   * the same thing: nothing about this room is worth showing any more.
+   */
+  reason?: "READ" | "CLEARED" | "DELETED" | "LEFT" | "REMOVED";
 }
 
 /**
- * The user read this conversation somewhere, so every OTHER device of theirs must drop its
- * tray notification for it. Data-only and settings-bypassing: this is a dismissal, not a
- * notification, and suppressing it would leave a stale unread card on the other device.
+ * The user read (or cleared, deleted, left) this conversation somewhere, so every
+ * device of theirs must drop its tray cards for it: the chat summary, the mention
+ * card and, for a room, the live / "added you" cards. Data-only and
+ * settings-bypassing: this is a dismissal, not a notification.
+ *
+ * Still typed `MESSAGE_READ` because shipped mobile builds already act on it;
+ * `op` / `tags` are what newer clients close by.
  */
 async function handleConversationRead(
   data: ConversationReadPayload
@@ -28,21 +39,15 @@ async function handleConversationRead(
     return;
   }
 
-  await pushToUser({
+  await dismissTrayCards({
     userId: data.readerId,
-    category: "chatEnabled",
     type: "MESSAGE_READ",
-    title: "",
-    body: "",
-    bypassSettings: true,
-    skipInbox: true,
-    dataOnly: true,
-    priority: "high",
-    ttl: 300,
+    tags: roomTags(data.conversationId),
+    reason: data.reason ?? "READ",
+    alwaysPushMobile: true,
     collapseKey: `read:${data.conversationId}`,
     ...(data.deviceId ? { excludeDeviceId: data.deviceId } : {}),
     data: {
-      type: "MESSAGE_READ",
       conversationId: data.conversationId,
       conversationType: data.conversationType ?? "",
       readAt: String(data.readAt ?? ""),

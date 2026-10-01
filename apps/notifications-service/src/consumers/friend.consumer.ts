@@ -12,11 +12,31 @@ import {
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { friendCopy, resolutionCopy } from "../lib/notification-copy.js";
+import { pushTag } from "../lib/push-tags.js";
+import { dismissTrayCards } from "../services/push-dismiss.js";
 import { pushToUser } from "../services/push.service.js";
 
 // user-service publishes friendship events to a plain durable queue (NOT a
 // topic exchange) — match that. (See user-service publish-friendship.ts.)
 const FRIENDSHIP_QUEUE = "friendship.queue";
+
+/**
+ * The request is settled (accepted, declined, withdrawn): the addressee's
+ * "X sent you a friend request" card must go from every device, including the
+ * ones that did not act. Always last in its branch — it is best-effort and must
+ * never hold up the inbox writes above it.
+ */
+async function dismissFriendRequestCard(
+  addresseeId: string,
+  friendshipId: string
+): Promise<void> {
+  await dismissTrayCards({
+    userId: addresseeId,
+    tags: [pushTag.friendRequest(friendshipId)],
+    reason: "FRIEND_RESOLVED",
+    data: { friendshipId },
+  });
+}
 
 async function handleFriendEvent(type: string, data: unknown): Promise<void> {
   switch (type) {
@@ -39,6 +59,8 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         copy: friendCopy.requested(p.requesterName),
         deepLink,
         apnsThreadId: `friend_${p.friendshipId}`,
+        // Taken back (dismissFriendRequestCard) once the request is settled.
+        collapseKey: pushTag.friendRequest(p.friendshipId),
         data: {
           friendshipId: p.friendshipId,
           // Alias of friendshipId — matches the FE's pending-conversation
@@ -123,6 +145,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           } satisfies NotificationNavigation),
         },
       });
+      await dismissFriendRequestCard(p.addresseeId, p.friendshipId);
       break;
     }
 
@@ -181,6 +204,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           }),
         },
       });
+      await dismissFriendRequestCard(p.addresseeId, p.friendshipId);
       break;
     }
 
@@ -240,6 +264,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           requesterId: p.requesterId,
         },
       });
+      await dismissFriendRequestCard(p.addresseeId, p.friendshipId);
       break;
     }
 
