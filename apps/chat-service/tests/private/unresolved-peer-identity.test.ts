@@ -127,8 +127,28 @@ describe("UserSnapshotService — failed lookup vs missing user", () => {
     expect(resolveDisplayName(map.get(PEER_1))).toBe("neelsheth");
   });
 
-  it("flags every id when the snapshot cache read itself fails", async () => {
+  it("a snapshot-cache failure is a MISS: user-service still resolves every peer", async () => {
     cacheRepo.getUserSnapshots.mockRejectedValue(new Error("redis down"));
+    usersBatch.mockResolvedValue([
+      { userId: PEER_1, displayName: "Neel Sheth", username: "neel", avatar: "", isOnline: false, isDeleted: false },
+      { userId: PEER_2, displayName: "Asha Rao", username: "asha", avatar: "", isOnline: false, isDeleted: false },
+    ]);
+    accountsBatch.mockResolvedValue([]);
+
+    const map = await new UserSnapshotService().getUserSnapshotsMap(
+      [PEER_1, PEER_2],
+      cacheRepo as never
+    );
+
+    expect(usersBatch).toHaveBeenLastCalledWith([PEER_1, PEER_2]);
+    expect(isUnresolvedSnapshot(map.get(PEER_1))).toBe(false);
+    expect(resolveDisplayName(map.get(PEER_1))).toBe("Neel Sheth");
+    expect(resolveDisplayName(map.get(PEER_2))).toBe("Asha Rao");
+  });
+
+  it("flags every id when the cache AND both identity sources fail", async () => {
+    cacheRepo.getUserSnapshots.mockRejectedValue(new Error("redis down"));
+    bothFail();
 
     const map = await new UserSnapshotService().getUserSnapshotsMap(
       [PEER_1, PEER_2],
@@ -137,6 +157,40 @@ describe("UserSnapshotService — failed lookup vs missing user", () => {
 
     expect(isUnresolvedSnapshot(map.get(PEER_1))).toBe(true);
     expect(isUnresolvedSnapshot(map.get(PEER_2))).toBe(true);
+  });
+
+  it("partial cache hit: only the misses go upstream, and both halves resolve", async () => {
+    cacheRepo.getUserSnapshots.mockResolvedValue(
+      new Map([[PEER_1, { userId: PEER_1, displayName: "Neel Sheth", avatar: "", memberId: "neel", isDeletedUser: false, isOnline: false }]])
+    );
+    usersBatch.mockResolvedValue([
+      { userId: PEER_2, displayName: "Asha Rao", username: "asha", avatar: "", isOnline: false, isDeleted: false },
+    ]);
+    accountsBatch.mockResolvedValue([]);
+
+    const map = await new UserSnapshotService().getUserSnapshotsMap(
+      [PEER_1, PEER_2],
+      cacheRepo as never
+    );
+
+    expect(usersBatch).toHaveBeenLastCalledWith([PEER_2]);
+    expect(resolveDisplayName(map.get(PEER_1))).toBe("Neel Sheth");
+    expect(resolveDisplayName(map.get(PEER_2))).toBe("Asha Rao");
+  });
+
+  it("partial batch: one id neither source holds is MISSING, not an outage — the rest resolve", async () => {
+    usersBatch.mockResolvedValue([
+      { userId: PEER_1, displayName: "Neel Sheth", username: "neel", avatar: "", isOnline: false, isDeleted: false },
+    ]);
+    accountsBatch.mockResolvedValue([]);
+
+    const map = await new UserSnapshotService().getUserSnapshotsMap(
+      [PEER_1, GHOST],
+      cacheRepo as never
+    );
+
+    expect(resolveDisplayName(map.get(PEER_1))).toBe("Neel Sheth");
+    expect(isUnresolvedSnapshot(map.get(GHOST))).toBe(false);
   });
 
   it("NEVER caches an unresolved placeholder — an outage must not outlive itself", async () => {
@@ -283,8 +337,9 @@ describe("malformed stored peer id — a permanent gap, not an outage", () => {
     expect(isUnresolvedSnapshot(map.get("undefined"))).toBe(false);
   });
 
-  it("a snapshot-cache failure flags only ids that could be users", async () => {
+  it("cache + upstream failure flags only ids that could be users", async () => {
     cacheRepo.getUserSnapshots.mockRejectedValue(new Error("redis down"));
+    bothFail();
 
     const map = await new UserSnapshotService().getUserSnapshotsMap(
       [PEER_1, "undefined"],
@@ -386,5 +441,104 @@ describe("user-service-client — a timeout is a FAILED lookup, never 'not found
     userGrpcClient.bulkGetUserSnapshots.mockResolvedValueOnce([]);
 
     await expect(actual.fetchUsersBatch([PEER_1])).resolves.toEqual([]);
+  });
+
+  // gRPC status → classification. NOT_FOUND is an answer (permanent, never
+  // retryable); every transport/infra status is a failed lookup (retryable 503).
+  it.each([
+    [5, "NOT_FOUND", []],
+    [14, "UNAVAILABLE", null],
+    [4, "DEADLINE_EXCEEDED", null],
+    [16, "UNAUTHENTICATED", null],
+    [7, "PERMISSION_DENIED", null],
+    [13, "INTERNAL", null],
+  ])("gRPC %i %s → %p", async (code, name, expected) => {
+    userGrpcClient.bulkGetUserSnapshots.mockRejectedValueOnce(
+      Object.assign(new Error(`${code} ${name}: x`), { code })
+    );
+
+    await expect(actual.fetchUsersBatch([PEER_1])).resolves.toEqual(expected);
+  });
+
+  it("auth-service NOT_FOUND is an answer too, not an outage", async () => {
+    const { authGrpcClient } = jest.requireMock(
+      "../../src/grpc/auth.client.js"
+    ) as { authGrpcClient: { bulkGetAccounts: jest.Mock } };
+    authGrpcClient.bulkGetAccounts.mockRejectedValueOnce(
+      Object.assign(new Error("5 NOT_FOUND"), { code: 5 })
+    );
+
+    await expect(actual.fetchAccountsBatch([PEER_1])).resolves.toEqual([]);
+  });
+});
+
+/**
+ * Valid historical identities on one inbox page: a live peer, a system-banned
+ * peer (user-service returns the row, name intact) and a deleted peer
+ * (user-service returns the anonymized row). None of them is an outage, and
+ * none of them may degrade the live peer to "Unknown User".
+ */
+describe("inbox — mixed live / banned / deleted / missing peers load together", () => {
+  const BANNED = "55555555-5555-4555-8555-555555555555";
+  const DELETED = "66666666-6666-4666-8666-666666666666";
+  const room = (roomId: string, peer: string, at: number) => ({
+    roomId,
+    participants: [TEST_USER_ID, peer],
+    lastMessageAt: new Date(at),
+    lastMessage: null,
+    unreadCountByUser: { [TEST_USER_ID]: 0 },
+    mutedBy: {},
+    pinnedCount: 0,
+  });
+
+  it("200, every row present, each peer rendered by product rule", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      room("prv_live", PEER_1, 4000),
+      room("prv_banned", BANNED, 3000),
+      room("prv_deleted", DELETED, 2000),
+      room("prv_ghost", GHOST, 1000),
+    ]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(4);
+    usersBatch.mockResolvedValue([
+      { userId: PEER_1, displayName: "Neel Sheth", username: "neel", avatar: "", isOnline: false, isDeleted: false },
+      // A ban does not anonymize — history keeps the real name.
+      { userId: BANNED, displayName: "Banned Person", username: "banned", avatar: "", isOnline: false, isDeleted: false },
+      { userId: DELETED, displayName: "Deleted Account", username: "", avatar: "", isOnline: false, isDeleted: true },
+    ]);
+    accountsBatch.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get("/api/chat/private/conversations")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const byRoom = Object.fromEntries(
+      res.body.data.data.map((r: { roomId: string; displayName: string }) => [
+        r.roomId,
+        r.displayName,
+      ])
+    );
+    expect(byRoom).toEqual({
+      prv_live: "Neel Sheth",
+      prv_banned: "Banned Person",
+      prv_deleted: "Deleted Account",
+      prv_ghost: "Unknown User",
+    });
+
+    const inbox = await request(app)
+      .get("/api/chat/inbox")
+      .set(bearer(makeAccessToken()));
+    expect(inbox.status).toBe(200);
+  });
+
+  it("a gRPC NOT_FOUND from the identity source does not 503 the inbox", async () => {
+    usersBatch.mockResolvedValue([]); // what fetchUsersBatch now returns on NOT_FOUND
+    accountsBatch.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get("/api/chat/inbox")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
   });
 });

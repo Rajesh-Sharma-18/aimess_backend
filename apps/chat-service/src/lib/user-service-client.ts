@@ -1,3 +1,4 @@
+import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 
 import { userGrpcClient } from "../grpc/user-snapshot.client.js";
@@ -11,6 +12,24 @@ export interface UserBatchEntry {
   isOnline: boolean;
   /** Account deleted — identity already anonymized by user-service. */
   isDeleted: boolean;
+}
+
+/**
+ * gRPC NOT_FOUND is an ANSWER ("none of these ids exist"), not a failed lookup.
+ * Reporting it as `null` would turn a permanently missing historical identity
+ * into a retryable CHAT_IDENTITY_UNAVAILABLE that no retry can ever clear.
+ * Every other status (UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, UNAUTHENTICATED,
+ * an open breaker, …) means we could not ask, and stays `null`.
+ */
+function isNotFound(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === grpc.status.NOT_FOUND;
+}
+
+/** `status=<gRPC status name>|<message>` — so the log says WHY, not just "error". */
+function describeLookupError(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  const status = typeof code === "number" ? grpc.status[code] : code;
+  return `status=${String(status ?? "n/a")}|${err instanceof Error ? err.message : String(err)}`;
 }
 
 /**
@@ -40,9 +59,9 @@ export async function fetchUsersBatch(
     }));
   } catch (err) {
     logger.warn(
-      `userGrpcClient|bulkGetUserSnapshots error: ${err instanceof Error ? err.message : String(err)}|ids=${userIds.length}`
+      `userGrpcClient|bulkGetUserSnapshots error|${describeLookupError(err)}|ids=${userIds.length}`
     );
-    return null;
+    return isNotFound(err) ? [] : null;
   }
 }
 
@@ -56,8 +75,8 @@ export async function fetchAccountsBatch(
     return await authGrpcClient.bulkGetAccounts(userIds);
   } catch (err) {
     logger.warn(
-      `authGrpcClient|bulkGetAccounts error: ${err instanceof Error ? err.message : String(err)}|ids=${userIds.length}`
+      `authGrpcClient|bulkGetAccounts error|${describeLookupError(err)}|ids=${userIds.length}`
     );
-    return null;
+    return isNotFound(err) ? [] : null;
   }
 }

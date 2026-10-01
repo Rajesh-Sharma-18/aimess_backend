@@ -25,8 +25,8 @@ const INCOMPLETE_SNAPSHOT_TTL_SECONDS = 30;
 
 /**
  * The identity lookup for this id did not COMPLETE — user-service/auth-service
- * was unreachable, its circuit breaker was open, or the snapshot cache read
- * failed. It is NOT the same as "this user does not exist", which produces a
+ * was unreachable, timed out, or its circuit breaker was open (a snapshot
+ * cache failure alone is just a miss). It is NOT the same as "this user does not exist", which produces a
  * placeholder snapshot without the flag and legitimately renders as
  * "Unknown User".
  *
@@ -125,7 +125,19 @@ export class UserSnapshotService {
     if (!uniqueIds.length) return new Map();
 
     try {
-      const cached = await cacheRepo.getUserSnapshots(uniqueIds);
+      // A cache outage is a MISS, not a failed identity lookup. Refusing here
+      // answered 503 for every inbox during a Redis blip even though
+      // user-service — the actual identity source — was perfectly healthy.
+      // Everything below then fetches upstream, and only a failure THERE
+      // flags ids as unresolved.
+      const cached = await cacheRepo
+        .getUserSnapshots(uniqueIds)
+        .catch((error: unknown) => {
+          logger.warn(
+            `UserSnapshotService|getUserSnapshotsMap|cache read failed, falling back to user-service|ids=${uniqueIds.length}|error=${error}`
+          );
+          return new Map<string, Record<string, unknown>>();
+        });
 
       // A non-UUID id ("undefined", a `grp_` room id, junk written by a
       // pre-validation `POST /rooms/:peerId`) can never be a user, so it is a
@@ -220,8 +232,8 @@ export class UserSnapshotService {
       return cached;
     } catch (error) {
       logger.warn(`UserSnapshotService|getUserSnapshotsMap|error=${error}`);
-      // Only the cache read can reach here (both fetches report failure by
-      // returning null), so nothing in this batch was looked up at all.
+      // Unexpected: the cache read and both fetches report failure without
+      // throwing. Nothing in this batch is known to have resolved.
       const fallback = new Map<string, Record<string, unknown>>();
       for (const id of uniqueIds) {
         fallback.set(id, {
