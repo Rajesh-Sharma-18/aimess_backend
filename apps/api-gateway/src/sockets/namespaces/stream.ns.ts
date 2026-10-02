@@ -19,6 +19,10 @@ import type { MediaClient } from "../../grpc/clients/media.client.js";
 const MAX_MESSAGE_LEN = 500; // a single livestream comment
 const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 
+// stream:comment sends queued per socket (they run one at a time) before new
+// ones are rejected as a flood.
+const COMMENT_QUEUE_MAX = 10;
+
 // Recent-comment backfill returned on join.
 const RECENT_COMMENTS_LIMIT = 20;
 
@@ -670,6 +674,15 @@ export function registerStreamNamespace(
     // arrive mid-stream — otherwise the cache would stay stuck at the join-time
     // value and a muted user could keep reacting until they rejoin.
     const streamCommentPermissions = new Map<string, boolean>();
+
+    // stream:comment runs back to back per socket. Fired concurrently, a fast
+    // typist's (or an exempt host's) burst put N PostComment chains on
+    // stream-service at once; each slowed until it crossed the shared
+    // postComment breaker's 2 s timeout, which opened the circuit and failed
+    // every viewer's comments with SERVICE_ERROR for 10 s.
+    let commentChain: Promise<void> = Promise.resolve();
+    let commentsPending = 0;
+
     (
       socket.data as { streamCommentPermissions?: Map<string, boolean> }
     ).streamCommentPermissions = streamCommentPermissions;
@@ -898,7 +911,20 @@ export function registerStreamNamespace(
           ackError(callback, "FORBIDDEN", locale);
           return;
         }
-        void (async () => {
+        if (commentsPending >= COMMENT_QUEUE_MAX) {
+          // A backlog this deep is a spam burst, not typing: reject it the way
+          // the flood guard does so the client keeps the draft.
+          ackError(
+            (res) =>
+              ack(callback, { ...(res as object), retryAfterSec: 1, keepDraft: true }),
+            "RATE_LIMITED",
+            locale,
+            "LIVE_CHAT_FLOOD",
+            1
+          );
+          return;
+        }
+        const send = async (): Promise<void> => {
           // Slow mode + flood live in stream-service's PostComment (the one
           // gate for every caller); a reject comes back as RESOURCE_EXHAUSTED.
           try {
@@ -951,7 +977,13 @@ export function registerStreamNamespace(
               ackError(callback, "SERVICE_ERROR", locale);
             }
           }
-        })();
+        };
+        // One PostComment in flight per socket. `send` never rejects, so the
+        // chain cannot stall.
+        commentsPending += 1;
+        commentChain = commentChain.then(send).finally(() => {
+          commentsPending -= 1;
+        });
       }
     );
 
