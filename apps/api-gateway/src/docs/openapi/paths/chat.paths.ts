@@ -34,6 +34,23 @@ const conflict = {
   },
 };
 
+/**
+ * Retryable 503 for a private-row lookup that could not be completed — never
+ * served as a placeholder name or a fake `relationshipStatus: "NONE"`.
+ */
+const lookupUnavailable = {
+  description:
+    "A lookup behind a private row failed (user-service unreachable or its circuit breaker open). " +
+    "`error.code` is `CHAT_IDENTITY_UNAVAILABLE` (peer name/avatar) or " +
+    "`CHAT_RELATIONSHIP_UNAVAILABLE` (friendship status), `error.retryable` is true. Retry; do not " +
+    "render or cache the rows as unknown users or as `relationshipStatus: \"NONE\"`.",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+    },
+  },
+};
+
 const notFound = {
   description: "Resource not found",
   content: {
@@ -475,6 +492,7 @@ const privateConversations = {
         "ChatPrivateConversationListData"
       ),
       "401": unauthorized,
+      "503": lookupUnavailable,
     },
   },
 };
@@ -545,6 +563,7 @@ const chatInbox = {
       ...successResponse("Inbox list", "ChatInboxPage"),
       "400": badRequest,
       "401": unauthorized,
+      "503": lookupUnavailable,
     },
   },
 };
@@ -573,6 +592,7 @@ const privateRoomByPeer = {
       ...successResponse("Private room details", "ChatPrivateRoomDetails"),
       "401": unauthorized,
       "403": forbidden,
+      "503": lookupUnavailable,
     },
   },
   post: {

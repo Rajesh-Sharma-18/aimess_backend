@@ -105,16 +105,39 @@ describe("checkFriendship", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("an inconclusive upstream (transport down ⇒ empty map) fails OPEN, not closed", async () => {
+  it("an inconclusive upstream (transport down ⇒ null) fails OPEN, not closed", async () => {
     const [a, b] = freshPair();
     status.mockResolvedValue(null);
-    checkFriendships.mockResolvedValue(new Map());
+    checkFriendships.mockResolvedValue(null);
 
     await expect(createUserServiceClient().checkFriendship(a, b)).resolves.toBe(
       true
     );
     expect(create).not.toHaveBeenCalled();
   });
+});
+
+describe("checkFriendship — a peer id that is not a user", () => {
+  /**
+   * REGRESSION. A `grp_` room id or a community ObjectId used to make
+   * user-service fail the batch (uuid column), which this gate read as
+   * "inconclusive" and ALLOWED — so a corrupt private room was minted for it
+   * and every later send into that room passed. The lookup now answers with
+   * no entry for a non-user (the client never sends it), which is a
+   * definitive "not friends".
+   */
+  it.each(["grp_pdIiPX3BpLo5WUA5", "6a7bf9214d6c5b8b86a11aa8"])(
+    "denies %s instead of failing open",
+    async (bogus) => {
+      status.mockResolvedValue(null);
+      checkFriendships.mockResolvedValue(new Map());
+
+      await expect(
+        createUserServiceClient().checkFriendship(A, bogus)
+      ).resolves.toBe(false);
+      expect(create).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe("checkFriendship — deny cache (load protection)", () => {
@@ -135,7 +158,7 @@ describe("checkFriendship — deny cache (load protection)", () => {
   it("an INCONCLUSIVE upstream is never cached — the next attempt retries", async () => {
     const [a, b] = freshPair();
     status.mockResolvedValue(null);
-    checkFriendships.mockResolvedValue(new Map()); // transport down
+    checkFriendships.mockResolvedValue(null); // transport down
     const client = createUserServiceClient();
 
     await client.checkFriendship(a, b);

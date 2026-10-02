@@ -37,6 +37,25 @@ export function isUserId(value: unknown): value is string {
 }
 
 /**
+ * What a non-user id stored where a user id belongs actually is — for logs and
+ * the malformed-room audit only, never for a decision (that is `isUserId`).
+ * The two shapes seen in corrupt private rooms are a group room id and a
+ * 24-hex Mongo ObjectId (a community id), both written by invite shares that
+ * took the target conversation for a recipient user.
+ */
+export function nonUserIdKind(
+  value: unknown
+): "GROUP_ROOM_ID" | "PRIVATE_ROOM_ID" | "OBJECT_ID" | "EMPTY" | "OTHER" {
+  if (typeof value !== "string" || value === "" || value === "undefined") {
+    return "EMPTY";
+  }
+  if (value.startsWith("grp_")) return "GROUP_ROOM_ID";
+  if (value.startsWith("prv_")) return "PRIVATE_ROOM_ID";
+  if (/^[0-9a-f]{24}$/i.test(value)) return "OBJECT_ID";
+  return "OTHER";
+}
+
+/**
  * The invariant a private room's `participants` must satisfy: exactly two
  * DISTINCT user ids, each a UUID.
  *

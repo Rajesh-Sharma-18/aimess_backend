@@ -50,18 +50,19 @@ export function createUserServiceClient(): UserServiceClient {
    * Authoritative second opinion for a local read-model MISS.
    *
    * Returns `true`/`false` when user-service answered, and `null` when the call
-   * was inconclusive (transport failure / breaker open). A SUCCESSFUL call always
-   * returns one relationship entry per requested candidate, so a missing entry can
-   * only mean the transport failed — never "no relationship".
+   * was inconclusive (transport failure / breaker open). A successful call
+   * returns one entry per candidate that IS a user id, so a missing entry means
+   * `userB` is not a user at all (a `grp_` room id, a community ObjectId) — a
+   * definitive "not friends", never the fail-open "allow" that let such ids
+   * mint corrupt private rooms.
    */
   async function confirmFriendshipUpstream(
     userA: string,
     userB: string
   ): Promise<boolean | null> {
     const relationships = await userGrpcClient.checkFriendships(userA, [userB]);
-    const info = relationships.get(userB);
-    if (!info) return null;
-    return info.status === "FRIEND";
+    if (relationships === null) return null;
+    return relationships.get(userB)?.status === "FRIEND";
   }
 
   return {
