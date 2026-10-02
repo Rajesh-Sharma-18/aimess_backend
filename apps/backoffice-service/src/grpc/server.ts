@@ -7,6 +7,7 @@ import { withServiceAuth } from "@aimess/grpc-utils";
 
 import { env } from "../config/env.js";
 import { adminUserRepository } from "../repositories/admin-user.repository.js";
+import { customCredentialService } from "../services/custom-credential.service.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +37,50 @@ const backofficeImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "isAdminEmailTaken failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  getCustomCredential: (
+    call: grpc.ServerUnaryCall<{ name?: string; platform?: string }, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        callback(
+          null,
+          await customCredentialService.resolve(
+            call.request.name ?? "",
+            call.request.platform ?? ""
+          )
+        );
+      } catch (error) {
+        logger.error(error);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "getCustomCredential failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  listCustomCredentials: (
+    call: grpc.ServerUnaryCall<{ platform?: string }, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        callback(null, {
+          credentials: await customCredentialService.listForPlatform(
+            call.request.platform ?? ""
+          ),
+        });
+      } catch (error) {
+        logger.error(error);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "listCustomCredentials failed",
         } as grpc.ServiceError);
       }
     })();

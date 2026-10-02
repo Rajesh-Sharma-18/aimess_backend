@@ -82,4 +82,6 @@ process.env.MINIO_AVATAR_VIEW_EXPIRES_IN = "3600";
 // LiveKit — read only by the infra health probe, which is mocked in tests.
 process.env.LIVEKIT_URL = "wss://test.livekit.cloud";
 
+process.env.CUSTOM_CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
+
 export {};

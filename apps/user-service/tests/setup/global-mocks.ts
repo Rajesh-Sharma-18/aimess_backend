@@ -85,6 +85,11 @@ jest.mock("../../src/grpc/messaging.client.js", () => ({
 //     user discovery, which subtracts a community's roster from the "Add
 //     Members" picker. Empty roster = exclude nobody, the module's own
 //     fail-open value. ---------------------------------------------------------
+jest.mock("../../src/grpc/backoffice.client.js", () => ({
+  credentialPlatformFor: jest.fn(() => "WEB"),
+  listCustomCredentials: jest.fn(async () => ({})),
+}));
+
 jest.mock("../../src/grpc/community.client.js", () => ({
   communityGrpcClient: {
     getActiveMemberIds: jest.fn(async () => []),

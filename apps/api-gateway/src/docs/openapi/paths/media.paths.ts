@@ -729,11 +729,86 @@ const mediaDataUsage = {
   },
 };
 
+const mediaGifs = {
+  get: {
+    tags: ["Media"],
+    operationId: "getGifs",
+    summary: "Search or browse GIPHY GIFs and stickers",
+    description:
+      "Server-side GIPHY proxy using the key a Super Admin configured in the admin panel, so clients never hold the key. It uses the credential named `GIPHY_API_KEY` for the platform in the `X-Platform` header: `android` -> ANDROID, `ios` -> IOS, anything else -> WEB. A platform without its own row falls back to the row whose platform is ALL. Without `q` returns trending; with `q` searches. `data`, `pagination` and `meta` are GIPHY's own response fields, passed through unchanged. Answers 503 `GIPHY_NOT_CONFIGURED` when no key is configured or it is disabled, and 503 `GIPHY_UNAVAILABLE` when GIPHY or the credential store cannot be reached.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "q",
+        in: "query",
+        required: false,
+        schema: { type: "string" as const, maxLength: 50 },
+      },
+      {
+        name: "type",
+        in: "query",
+        required: false,
+        schema: {
+          type: "string" as const,
+          enum: ["gifs", "stickers"],
+          default: "gifs",
+        },
+      },
+      {
+        name: "offset",
+        in: "query",
+        required: false,
+        schema: { type: "integer" as const, minimum: 0, maximum: 4999, default: 0 },
+      },
+      {
+        name: "limit",
+        in: "query",
+        required: false,
+        schema: { type: "integer" as const, minimum: 1, maximum: 50, default: 25 },
+      },
+    ],
+    responses: {
+      "200": {
+        description: "GIPHY results.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: {
+                  type: "object" as const,
+                  properties: {
+                    data: { type: "array" as const, items: { type: "object" as const } },
+                    pagination: { type: "object" as const },
+                    meta: { type: "object" as const },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "400": badRequest,
+      "401": unauthorized,
+      "503": {
+        description: "GIPHY_NOT_CONFIGURED or GIPHY_UNAVAILABLE",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+    },
+  },
+};
+
 export const mediaPaths = {
   "/media/upload-url": mediaUploadUrl,
   "/media/confirm": mediaConfirm,
   "/media/download-url": mediaDownloadUrl,
   "/media/scan-status": mediaScanStatus,
   "/media/usage/me": mediaDataUsage,
+  "/media/gifs": mediaGifs,
   "/media/uploads/{objectKey}": mediaCancelUpload,
 };

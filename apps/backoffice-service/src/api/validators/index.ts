@@ -254,6 +254,16 @@ export {
   type UpdateNotificationCategoriesInput,
   type UpdateNotificationCategoryInput,
 } from "./notification-category.validator.js";
+export {
+  createCustomCredentialSchema,
+  customCredentialIdParamSchema,
+  deleteCustomCredentialSchema,
+  updateCustomCredentialSchema,
+  type CreateCustomCredentialBody,
+  type CustomCredentialIdParam,
+  type DeleteCustomCredentialBody,
+  type UpdateCustomCredentialBody,
+} from "./custom-credential.validator.js";
 
 export {
   messageReactionsQuerySchema,
@@ -262,7 +272,9 @@ export {
 } from "./message-reactions.validator.js";
 export {
   updateUserAccountSchema,
+  userAvatarUploadUrlSchema,
   userSocialProviderParamSchema,
   type UpdateUserAccountInput,
+  type UserAvatarUploadUrlInput,
   type UserSocialProviderParam,
 } from "./user-account.validator.js";

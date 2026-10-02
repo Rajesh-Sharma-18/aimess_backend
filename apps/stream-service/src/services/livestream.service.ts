@@ -1349,6 +1349,9 @@ export class LivestreamService {
     if (stream.status === "ENDED") {
       return { success: false, status: stream.status };
     }
+    if (!(await this.streamRepo.claimEnded(stream.id))) {
+      return { success: false, status: "ENDED" };
+    }
 
     // The reason was accepted and then dropped, so a force-end was indistinguishable
     // from the host ending their own broadcast in every downstream event.

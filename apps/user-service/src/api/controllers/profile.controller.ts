@@ -8,14 +8,23 @@ import type {
   UpdateProfileInput,
 } from "../validators/profile.validator.js";
 import { userProfileService } from "../../services/user-profile.service.js";
+import {
+  credentialPlatformFor,
+  listCustomCredentials,
+} from "../../grpc/backoffice.client.js";
 
 export const getMyProfile = asyncHandler(
   async (req: Request, res: Response) => {
-    const profile = await userProfileService.getMyProfile(req.auth.userId);
+    const [profile, credentials] = await Promise.all([
+      userProfileService.getMyProfile(req.auth.userId),
+      listCustomCredentials(credentialPlatformFor(req.get("x-platform"))),
+    ]);
 
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(profile, t("USER_PROFILE_FETCHED", req.locale)));
+      .json(
+        new ApiResponse({ ...profile, credentials }, t("USER_PROFILE_FETCHED", req.locale))
+      );
   }
 );
 

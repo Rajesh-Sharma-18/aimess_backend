@@ -6,6 +6,7 @@ import { auditLogRoutes } from "./audit-log.routes.js";
 import { authRoutes } from "./auth.routes.js";
 import { categoryRoutes } from "./category.routes.js";
 import { notificationCategoryRoutes } from "./notification-category.routes.js";
+import { customCredentialRoutes } from "./custom-credential.routes.js";
 import { dashboardRoutes } from "./dashboard.routes.js";
 import { livestreamRoutes } from "./livestream.routes.js";
 import { meRoutes } from "./me.routes.js";
@@ -64,6 +65,7 @@ serviceRoutes.use(categoryRoutes);
 // — matching the gateway path `/admin/v1/notification-categories`. Read-and-
 // configure only: no create route, no delete route.
 serviceRoutes.use(notificationCategoryRoutes);
+serviceRoutes.use(customCredentialRoutes);
 // Audit Logs routes are self-prefixed with `/audit-logs` so they resolve at
 // `/v1/audit-logs/*` — matching the documented gateway path `/admin/v1/audit-logs`
 // (the gateway strips `/admin` and forwards `/v1/*` verbatim). Self-prefixed, NOT

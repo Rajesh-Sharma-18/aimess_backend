@@ -206,6 +206,7 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
     "/media/download-url",
     "/media/scan-status",
     "/media/usage",
+    "/media/gifs",
   ]) {
     v1Router.use(mediaReadPath, mediaReadRateLimiter);
   }

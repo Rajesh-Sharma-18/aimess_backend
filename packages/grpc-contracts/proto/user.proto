@@ -326,6 +326,7 @@ message AdminEditableProfile {
   string bio           = 5;
   string date_of_birth = 6;
   string gender        = 7;
+  string avatar_url    = 8; // stored avatar object key; "" when none
 }
 
 message AdminUpdateProfileRequest {

@@ -99,10 +99,14 @@ export type UserHistoryItem = {
   targetType: string;
   targetId: string | null;
   reason: string | null;
+  /** The community/group the action happened in; null for account-wide actions. */
+  context: (UserHistoryContextRef & { name: string | null }) | null;
   before: unknown;
   after: unknown;
   createdAt: number;
 };
+
+export type UserHistoryContextRef = { type: "community" | "group"; id: string };
 
 /** Normalized list query (post-validation/coercion). */
 export type ListAuditLogsQuery = {

@@ -28,6 +28,7 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     // returned: the drift-repair leg was silently untested.
     findBySrsNames: jest.fn().mockResolvedValue([]),
     updateById: jest.fn(),
+    claimEnded: jest.fn().mockResolvedValue(true),
     findStaleReconnectingStreams: jest.fn().mockResolvedValue([]),
     countActiveByCommunityAndCreator: jest.fn().mockResolvedValue(0),
     // The community-wide go-live cap. A repo method absent from this fake
@@ -265,6 +266,25 @@ describe("LivestreamService â€” viewer sessions close out on every ENDED tr
     await flushMicrotasks();
 
     expect(result).toEqual({ success: false, status: "ENDED" });
+    expect(viewerSessionRepo.closeAllOpenForStream).not.toHaveBeenCalled();
+  });
+
+  it("adminForceEnd that loses the end race to another admin does not finalize twice", async () => {
+    const stream = makeStream();
+    const { service, srsService, viewerSessionRepo, streamRepo } = makeDeps({
+      streamRepo: {
+        findById: jest.fn().mockResolvedValue(stream),
+        claimEnded: jest.fn().mockResolvedValue(false),
+      },
+    });
+
+    const result = await service.adminForceEnd("stream-1", "policy violation");
+    await flushMicrotasks();
+
+    expect(result).toEqual({ success: false, status: "ENDED" });
+    expect(streamRepo.claimEnded).toHaveBeenCalledWith("stream-1");
+    expect(streamRepo.updateById).not.toHaveBeenCalled();
+    expect(srsService.kickStream).not.toHaveBeenCalled();
     expect(viewerSessionRepo.closeAllOpenForStream).not.toHaveBeenCalled();
   });
 });

@@ -1186,6 +1186,38 @@ export const openApiSchemas = {
         enum: ["MALE", "FEMALE", "NON_BINARY", "PREFER_NOT_TO_SAY", "OTHER"],
       },
       email: { type: "string", format: "email", maxLength: 254 },
+      avatarObjectKey: {
+        type: "string",
+        nullable: true,
+        maxLength: 512,
+        description:
+          "objectKey from POST /admin/v1/users/{userId}/avatar/upload-url after the file is PUT. The backend runs the media security pipeline (waiting briefly for the AV scan) before saving. `null` removes the avatar.",
+      },
+    },
+  },
+  AdminUserAvatarUploadUrlRequest: {
+    type: "object",
+    additionalProperties: false,
+    required: ["contentType", "contentLength"],
+    properties: {
+      contentType: {
+        type: "string",
+        enum: ["image/jpeg", "image/png", "image/webp"],
+      },
+      contentLength: { type: "integer", minimum: 1, maximum: 5242880 },
+    },
+  },
+  AdminUserAvatarUploadUrl: {
+    type: "object",
+    properties: {
+      uploadUrl: { type: "string" },
+      objectKey: { type: "string", example: "avatars/{userId}/{uuid}.png" },
+      expiresIn: { type: "integer" },
+      headers: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Send exactly these headers on the PUT.",
+      },
     },
   },
   AdminUserAccount: {
@@ -3527,6 +3559,64 @@ export const openApiSchemas = {
     },
   },
 
+  AdminCustomCredential: {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      name: { type: "string", example: "GIPHY_API_KEY" },
+      platform: { type: "string", enum: ["ALL", "ANDROID", "IOS", "WEB"], example: "WEB" },
+      maskedValue: { type: "string", example: "••••a1b2" },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
+      updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
+    },
+    required: ["id", "name", "platform", "maskedValue", "createdAt", "updatedAt"],
+  },
+  AdminCustomCredentialList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/AdminCustomCredential" },
+  },
+  AdminCustomCredentialCreateRequest: {
+    type: "object",
+    required: ["name", "platform", "value"],
+    additionalProperties: false,
+    properties: {
+      name: {
+        type: "string",
+        minLength: 2,
+        maxLength: 64,
+        pattern: "^[A-Z][A-Z0-9_]*$",
+        example: "GIPHY_API_KEY",
+      },
+      platform: { type: "string", enum: ["ALL", "ANDROID", "IOS", "WEB"] },
+      value: {
+        type: "string",
+        minLength: 8,
+        maxLength: 512,
+        description: "Trimmed; no whitespace.",
+      },
+    },
+  },
+  AdminCustomCredentialUpdateRequest: {
+    type: "object",
+    description: "`password` plus at least one of `name`, `platform`, `value`.",
+    required: ["password"],
+    additionalProperties: false,
+    properties: {
+      password: { type: "string", description: "The acting admin's own password." },
+      name: { type: "string", minLength: 2, maxLength: 64, pattern: "^[A-Z][A-Z0-9_]*$" },
+      platform: { type: "string", enum: ["ALL", "ANDROID", "IOS", "WEB"] },
+      value: { type: "string", minLength: 8, maxLength: 512 },
+    },
+  },
+  AdminCustomCredentialDeleteRequest: {
+    type: "object",
+    required: ["password"],
+    additionalProperties: false,
+    properties: {
+      password: { type: "string", description: "The acting admin's own password." },
+    },
+  },
+
   // ---- Categories ----
   // Owned by community-service's `CommunityCategory` (community_db); the
   // admin panel manages it exclusively through a gRPC bridge — no duplicate
@@ -4816,6 +4906,13 @@ export const openApiSchemas = {
     description: "Profile fields (GET/PATCH /profiles/me response).",
     properties: {
       userId: { type: "string", format: "uuid" },
+      credentials: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description:
+          "GET only. Custom credentials configured by a Super Admin for the `X-Platform` platform (android, ios, otherwise web), keyed by name; platform rows override All Platforms rows.",
+        example: { GIPHY_API_KEY: "xxxxxxxx" },
+      },
       username: { type: "string" },
       firstName: { type: "string" },
       lastName: { type: "string" },
@@ -5478,6 +5575,13 @@ export const openApiSchemas = {
       message: { type: "string", nullable: true },
       policyVersion: { type: "integer", example: 7 },
       issuedAt: { type: "integer", description: "Server time, UTC epoch ms." },
+      credentials: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description:
+          "Custom credentials configured by a Super Admin for this platform, keyed by name (platform rows override All Platforms rows). Empty unless the request carries a valid access token of a non-banned user.",
+        example: { GIPHY_API_KEY: "xxxxxxxx" },
+      },
     },
     required: [
       "platform",

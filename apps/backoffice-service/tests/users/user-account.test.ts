@@ -28,6 +28,14 @@ jest.mock("../../src/grpc/user.client.js", () => ({
     adminUpdateProfile: jest.fn(),
   },
 }));
+const mediaMock = {
+  isDownloadable: jest.fn(),
+  confirmUpload: jest.fn(),
+  generateUserAvatarUploadUrl: jest.fn(),
+};
+jest.mock("../../src/grpc/media.client.js", () => ({
+  getMediaConfirmClient: () => mediaMock,
+}));
 
 import request from "supertest";
 
@@ -57,6 +65,7 @@ const PROFILE = {
   bio: "",
   dateOfBirth: "1990-01-01",
   gender: "",
+  avatarUrl: "",
 };
 const IDENTITY = {
   ok: true,
@@ -233,6 +242,90 @@ describe("PATCH /v1/users/:userId", () => {
       email: "john@example.com",
     });
     expect(notify).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("admin avatar change", () => {
+  const KEY = `avatars/${USER_ID}/new.png`;
+
+  it("mints the upload URL under the target user, not the admin", async () => {
+    mediaMock.generateUserAvatarUploadUrl.mockResolvedValue({
+      uploadUrl: "https://minio/put",
+      objectKey: KEY,
+      expiresIn: 300,
+      maxBytes: 5242880,
+    });
+    const res = await request(app)
+      .post(`/v1/users/${USER_ID}/avatar/upload-url`)
+      .set(headers())
+      .send({ contentType: "image/png", contentLength: 1024 });
+    expect(res.status).toBe(200);
+    expect(mediaMock.generateUserAvatarUploadUrl).toHaveBeenCalledWith(
+      USER_ID,
+      "image/png",
+      1024
+    );
+    expect(res.body.data).toMatchObject({
+      objectKey: KEY,
+      headers: { "Content-Type": "image/png" },
+    });
+  });
+
+  it("refuses a key that belongs to another user before any write", async () => {
+    const res = await request(app)
+      .patch(`/v1/users/${USER_ID}`)
+      .set(headers())
+      .send({ avatarObjectKey: "avatars/someone-else/x.png" });
+    expect(res.status).toBe(400);
+    expect(mediaMock.confirmUpload).not.toHaveBeenCalled();
+    expect(user.adminUpdateProfile).not.toHaveBeenCalled();
+  });
+
+  it("refuses an image the scanner rejected", async () => {
+    mediaMock.isDownloadable.mockResolvedValue(false);
+    mediaMock.confirmUpload.mockResolvedValue({
+      scanStatus: "REJECTED",
+      downloadable: false,
+      fileSize: 10,
+    });
+    const res = await request(app)
+      .patch(`/v1/users/${USER_ID}`)
+      .set(headers())
+      .send({ avatarObjectKey: KEY });
+    expect(res.status).toBe(400);
+    expect(user.adminUpdateProfile).not.toHaveBeenCalled();
+  });
+
+  it("confirms, saves and audits a clean avatar", async () => {
+    mediaMock.isDownloadable.mockResolvedValue(false);
+    mediaMock.confirmUpload.mockResolvedValue({
+      scanStatus: "SKIPPED",
+      downloadable: true,
+      fileSize: 10,
+    });
+    user.adminUpdateProfile.mockResolvedValue({
+      ok: true,
+      errorCode: "",
+      profile: { ...PROFILE, avatarUrl: KEY },
+      changedFields: ["avatarUrl"],
+    });
+    const res = await request(app)
+      .patch(`/v1/users/${USER_ID}`)
+      .set(headers())
+      .send({ avatarObjectKey: KEY });
+    expect(res.status).toBe(200);
+    expect(mediaMock.confirmUpload).toHaveBeenCalledWith(
+      KEY,
+      USER_ID,
+      "USER_AVATAR"
+    );
+    expect(user.adminUpdateProfile).toHaveBeenCalledWith(USER_ID, {
+      avatarObjectKey: KEY,
+    });
+    expect(record.mock.calls[0][0]).toMatchObject({
+      before: { avatar: null },
+      after: { avatar: KEY },
+    });
   });
 });
 

@@ -1,5 +1,12 @@
 import { z } from "zod/v4";
 
+export const gifSearchQuerySchema = z.object({
+  q: z.string().trim().max(50).optional().transform((v) => v || undefined),
+  type: z.enum(["gifs", "stickers"]).default("gifs"),
+  offset: z.coerce.number().int().min(0).max(4999).default(0),
+  limit: z.coerce.number().int().min(1).max(50).default(25),
+});
+
 export const VALID_CATEGORIES = [
   "USER_AVATAR",
   "COMMUNITY_AVATAR",

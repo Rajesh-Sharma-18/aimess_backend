@@ -272,6 +272,27 @@ model SystemSetting {
   updatedAt   DateTime @updatedAt @db.Timestamptz(3)
 }
 
+enum CustomCredentialPlatform {
+  ALL
+  ANDROID
+  IOS
+  WEB
+}
+
+model CustomCredential {
+  id             String                   @id @default(uuid()) @db.Uuid
+  name           String
+  platform       CustomCredentialPlatform
+  encryptedValue String
+  lastFour       String
+  createdById    String                   @db.Uuid
+  updatedById    String                   @db.Uuid
+  createdAt      DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime                 @updatedAt @db.Timestamptz(3)
+
+  @@unique([name, platform])
+}
+
 // -----------------------------------------------------------------------------
 // Announcements
 // -----------------------------------------------------------------------------

@@ -119,6 +119,15 @@ export class LivestreamRepository {
     return this.prisma.livestream.update({ where: { id }, data: data as any });
   }
 
+  async claimEnded(id: string): Promise<boolean> {
+    if (!/^[0-9a-f]{24}$/i.test(id)) throw new Error(`Invalid ObjectId: ${id}`);
+    const { count } = await this.prisma.livestream.updateMany({
+      where: { id, status: { in: [...ACTIVE_STATUSES] } },
+      data: { status: "ENDED", endedAt: new Date() },
+    });
+    return count === 1;
+  }
+
   async deleteById(id: string): Promise<void> {
     if (!/^[0-9a-f]{24}$/i.test(id)) throw new Error(`Invalid ObjectId: ${id}`);
     await this.prisma.livestream.delete({ where: { id } });

@@ -66,6 +66,9 @@ const ADMIN_EDITABLE_PROFILE_FIELDS = [
   "bio",
   "dateOfBirth",
   "gender",
+  // Key minted under THIS user by backoffice; ownership, size and scan verdict
+  // are re-checked by avatarService.resolveAvatarObjectKeyForProfile.
+  "avatarObjectKey",
 ] as const;
 
 function toAdminEditableProfile(profile: {
@@ -76,6 +79,7 @@ function toAdminEditableProfile(profile: {
   bio: string | null;
   dateOfBirth: Date;
   gender: string | null;
+  avatarUrl: string | null;
 }) {
   return {
     userId: profile.userId,
@@ -85,6 +89,7 @@ function toAdminEditableProfile(profile: {
     bio: profile.bio ?? "",
     dateOfBirth: formatDateOfBirth(profile.dateOfBirth) ?? "",
     gender: profile.gender ?? "",
+    avatarUrl: profile.avatarUrl ?? "",
   };
 }
 

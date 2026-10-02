@@ -17,4 +17,5 @@ export { adminAccountService } from "./admin-account.service.js";
 export { systemMaintenanceService } from "./system-maintenance.service.js";
 export { appUpdatePolicyService } from "./app-update-policy.service.js";
 export { notificationCategoryService } from "./notification-category.service.js";
+export { customCredentialService } from "./custom-credential.service.js";
 export { userAccountService } from "./user-account.service.js";
