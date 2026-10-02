@@ -237,6 +237,8 @@ export {
   type DisconnectAllFriendshipsInput,
   setCallingEnabledSchema,
   type SetCallingEnabledInput,
+  appUpdatePolicySchema,
+  type AppUpdatePolicyInput,
 } from "./system-maintenance.validator.js";
 
 export {
@@ -252,6 +254,14 @@ export {
   type UpdateNotificationCategoriesInput,
   type UpdateNotificationCategoryInput,
 } from "./notification-category.validator.js";
+export {
+  createCustomCredentialSchema,
+  customCredentialIdParamSchema,
+  updateCustomCredentialSchema,
+  type CreateCustomCredentialBody,
+  type CustomCredentialIdParam,
+  type UpdateCustomCredentialBody,
+} from "./custom-credential.validator.js";
 
 export {
   messageReactionsQuerySchema,
@@ -260,7 +270,9 @@ export {
 } from "./message-reactions.validator.js";
 export {
   updateUserAccountSchema,
+  userAvatarUploadUrlSchema,
   userSocialProviderParamSchema,
   type UpdateUserAccountInput,
+  type UserAvatarUploadUrlInput,
   type UserSocialProviderParam,
 } from "./user-account.validator.js";

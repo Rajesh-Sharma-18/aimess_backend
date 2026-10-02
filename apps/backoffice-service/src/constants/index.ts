@@ -129,6 +129,7 @@ export const AUDIT_ACTIONS = {
   ADMIN_PASSWORD_CHANGED: "admin.password_changed",
   SYSTEM_ALL_FRIENDSHIPS_DISCONNECTED: "system.all_friendships_disconnected",
   SYSTEM_CALLING_TOGGLED: "system.calling_toggled",
+  SYSTEM_APP_UPDATE_POLICY_UPDATED: "system.app_update_policy_updated",
   // A Super Admin restarted an allowlisted service from System Health. Two rows:
   // the restart runs after the request returns, and its result is only known
   // once health has been verified.
@@ -137,6 +138,10 @@ export const AUDIT_ACTIONS = {
   // Notification-category catalogue configuration. Only ever an UPDATE: the
   // catalogue is fixed, so there is no created/deleted counterpart to add.
   NOTIFICATION_CATEGORY_UPDATED: "notification_category.updated",
+  CUSTOM_CREDENTIAL_CREATED: "custom_credential.created",
+  CUSTOM_CREDENTIAL_UPDATED: "custom_credential.updated",
+  CUSTOM_CREDENTIAL_DELETED: "custom_credential.deleted",
+  CUSTOM_CREDENTIAL_VIEWED: "custom_credential.viewed",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

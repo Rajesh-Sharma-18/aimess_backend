@@ -106,6 +106,16 @@ export const MEDIA_MESSAGES = {
     en: "This attachment has not finished security verification.",
     th: "ไฟล์แนบนี้ยังตรวจสอบความปลอดภัยไม่เสร็จ",
   },
+  GIPHY_NOT_CONFIGURED: {
+    vi: "Tính năng GIF chưa được cấu hình",
+    en: "GIF search is not configured",
+    th: "ยังไม่ได้กำหนดค่าการค้นหา GIF",
+  },
+  GIPHY_UNAVAILABLE: {
+    vi: "Không thể tải GIF lúc này. Vui lòng thử lại.",
+    en: "GIFs could not be loaded right now. Please try again.",
+    th: "ไม่สามารถโหลด GIF ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+  },
 } as const satisfies MessageCatalog;
 
 export type MediaMessageKey = keyof typeof MEDIA_MESSAGES;

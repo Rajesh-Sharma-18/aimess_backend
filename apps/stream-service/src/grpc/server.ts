@@ -3,7 +3,11 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
-import { ForbiddenError, NotFoundError } from "@aimess/errors";
+import {
+  ForbiddenError,
+  NotFoundError,
+  TooManyRequestsError,
+} from "@aimess/errors";
 import { withServiceAuth } from "@aimess/grpc-utils";
 
 import type { LivestreamCommentService } from "../services/livestream-comment.service.js";
@@ -97,6 +101,16 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             // the gateway surfaces as the retryable SERVICE_ERROR — telling a
             // client to retry a request that can never succeed.
             callback({ code: grpc.status.NOT_FOUND, message: String(err) });
+          } else if (err instanceof TooManyRequestsError) {
+            // Live chat slow mode / flood. The bare messageKey is what the
+            // gateway's resolveGrpcAckError reads as the ack `detail`.
+            const metadata = new grpc.Metadata();
+            metadata.set("retry-after", String(err.retryAfterSec ?? 1));
+            callback({
+              code: grpc.status.RESOURCE_EXHAUSTED,
+              details: err.messageKey,
+              metadata,
+            });
           } else {
             callback({ code: grpc.status.INTERNAL, message: String(err) });
           }

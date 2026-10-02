@@ -22,6 +22,7 @@
     "migrate:community-member-number": "tsx scripts/recompute-community-member-number.ts",
     "repair:reaction-index": "tsx scripts/repair-reaction-index.ts",
     "purge:malformed-private-rooms": "tsx scripts/purge-malformed-private-rooms.ts",
+    "audit:malformed-private-rooms": "tsx scripts/audit-malformed-private-rooms.ts",
     "export:attachment-resource-map": "tsx scripts/export-attachment-resource-map.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",

@@ -363,6 +363,17 @@ export const SOCKET_MESSAGES = {
     en: "Comment must be 500 characters or fewer",
     th: "ความคิดเห็นต้องไม่เกิน 500 ตัวอักษร",
   },
+  // Live chat throttles — the send is rejected, the client keeps the draft.
+  LIVE_CHAT_FLOOD: {
+    vi: "Bạn đã gửi quá nhiều tin nhắn. Hãy nghỉ một chút rồi thử lại. Chỉnh sửa và thử lại.",
+    en: "You have been sending too many messages. Take a break and try again. Edit and try again.",
+    th: "คุณส่งข้อความมากเกินไป พักสักครู่แล้วลองอีกครั้ง แก้ไขแล้วลองอีกครั้ง",
+  },
+  LIVE_CHAT_SLOW_MODE: {
+    vi: "Chế độ chậm đang bật. Vui lòng chờ trước khi gửi tin nhắn tiếp theo.",
+    en: "Slow mode is on. Wait before sending another message.",
+    th: "โหมดช้าเปิดอยู่ กรุณารอก่อนส่งข้อความถัดไป",
+  },
 
   // ── Error acks — one default sentence per AckErrorCode ───────────────────
   SOCKET_ERR_INVALID_PAYLOAD: {

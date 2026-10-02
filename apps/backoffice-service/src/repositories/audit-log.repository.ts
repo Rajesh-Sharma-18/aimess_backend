@@ -25,8 +25,10 @@ import {
 } from "@aimess/messaging";
 import type {
   AuditCategoryKind,
+  UserHistoryContextRef,
   UserHistoryItem,
 } from "../types/audit-log.types.js";
+import { chatClient } from "../grpc/chat.client.js";
 import { reportsAgainstUser } from "../lib/report-target.js";
 
 // The unfiltered default page shows the mandatory classification only — the five
@@ -404,9 +406,10 @@ export const auditLogRepository = {
   ): Promise<Paginated<UserHistoryItem>> {
     const reports = await prisma.report.findMany({
       where: reportsAgainstUser(userId),
-      select: { id: true },
+      select: { id: true, communityId: true },
     });
     const reportIds = reports.map((r) => r.id);
+    const reportCommunity = new Map(reports.map((r) => [r.id, r.communityId]));
 
     const where: Prisma.AuditLogWhereInput = {
       actorType: "ADMIN",
@@ -430,21 +433,76 @@ export const auditLogRepository = {
       prisma.auditLog.count({ where }),
     ]);
 
-    const { toPerformer } = await buildRowResolver(rows);
+    // Where the action happened. Community/group sanctions carry the space id in
+    // `after`; report decisions inherit the reported content's community.
+    const contextRefOf = (row: AuditLog): UserHistoryContextRef | null => {
+      if (row.targetType === "report") {
+        const communityId = row.targetId
+          ? reportCommunity.get(row.targetId)
+          : null;
+        return communityId ? { type: "community", id: communityId } : null;
+      }
+      const after =
+        row.after && typeof row.after === "object" && !Array.isArray(row.after)
+          ? (row.after as Record<string, unknown>)
+          : {};
+      if (typeof after.groupId === "string")
+        return { type: "group", id: after.groupId };
+      if (typeof after.communityId === "string")
+        return { type: "community", id: after.communityId };
+      return null;
+    };
+    const refs = rows.map(contextRefOf);
+    const idsOf = (type: UserHistoryContextRef["type"]) => [
+      ...new Set(refs.filter((r) => r?.type === type).map((r) => r!.id)),
+    ];
+    const groupIds = idsOf("group");
+
+    const [{ toPerformer }, communities, groups] = await Promise.all([
+      buildRowResolver(rows),
+      communityClient
+        .adminGetCommunitiesByIds(idsOf("community"))
+        .catch((error: unknown) => {
+          logger.warn(
+            `User history context lookup failed (community-service): ${String(error)}`
+          );
+          return new Map<string, { name: string }>();
+        }),
+      // ponytail: one adminGetGroup per distinct group on the page (≤ limit);
+      // add a by-ids RPC to chat-service if pages grow large.
+      Promise.all(
+        groupIds.map((id) =>
+          chatClient
+            .adminGetGroup(id)
+            .then((r) => [id, r.group?.name ?? null] as const)
+            .catch(() => [id, null] as const)
+        )
+      ).then((entries) => new Map(entries)),
+    ]);
+
     const data: UserHistoryItem[] = await Promise.all(
-      rows.map(async (row) => ({
-        id: row.id,
-        performer: await toPerformer(row),
-        source: row.source,
-        category: auditCategoryOf(row.action) as AuditCategoryKind | null,
-        action: row.action,
-        targetType: row.targetType,
-        targetId: row.targetId,
-        reason: extractReason(row),
-        before: row.before ?? null,
-        after: row.after ?? null,
-        createdAt: row.createdAt.getTime(),
-      }))
+      rows.map(async (row, i) => {
+        const ref = refs[i];
+        const name = !ref
+          ? null
+          : ref.type === "group"
+            ? (groups.get(ref.id) ?? null)
+            : (communities.get(ref.id)?.name ?? null);
+        return {
+          id: row.id,
+          performer: await toPerformer(row),
+          source: row.source,
+          category: auditCategoryOf(row.action) as AuditCategoryKind | null,
+          action: row.action,
+          targetType: row.targetType,
+          targetId: row.targetId,
+          reason: extractReason(row),
+          context: ref ? { ...ref, name } : null,
+          before: row.before ?? null,
+          after: row.after ?? null,
+          createdAt: row.createdAt.getTime(),
+        };
+      })
     );
 
     const totalPages = total === 0 ? 0 : Math.ceil(total / limit);

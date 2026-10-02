@@ -578,10 +578,13 @@ describe("CommunitySystemMessageService — single active join line per user (re
   it("purges any prior join-session line for the user BEFORE inserting the new COMMUNITY_JOINED row", async () => {
     const h = makeService({ withMemberRepo: false });
     const calls: string[] = [];
-    h.deletePersonalJoinMessages.mockImplementation(async () => {
-      calls.push("delete");
-      return ["stale-1"];
-    });
+    h.deletePersonalJoinMessages.mockImplementation(
+      async (args: { keepId?: string }) => {
+        calls.push(args.keepId ? "delete(keep)" : "delete");
+        // Post-create sweep (keepId) finds nothing left once pre-create ran.
+        return args.keepId ? [] : ["stale-1"];
+      }
+    );
     h.createSystemMessage.mockImplementation(
       async (params: { fallbackText: string }) => {
         calls.push("create");
@@ -605,19 +608,28 @@ describe("CommunitySystemMessageService — single active join line per user (re
       eventAt: EVENT_AT,
     });
 
-    expect(h.deletePersonalJoinMessages).toHaveBeenCalledWith({
+    expect(h.deletePersonalJoinMessages).toHaveBeenNthCalledWith(1, {
       roomId: COMMUNITY_ID,
       userId: ACTOR,
+    });
+    // Post-create sweep keeps the just-inserted row and closes the concurrent
+    // rejoin race (community-system-message.service.ts postOne, keepId).
+    expect(h.deletePersonalJoinMessages).toHaveBeenNthCalledWith(2, {
+      roomId: COMMUNITY_ID,
+      userId: ACTOR,
+      keepId: "msg-1",
     });
     expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
     // Cleanup must run before the new row is created so a rejoin never leaves
     // two "You joined the community" lines visible at once.
-    expect(calls).toEqual(["delete", "create"]);
+    expect(calls).toEqual(["delete", "create", "delete(keep)"]);
   });
 
   it("REGRESSION: publishes community:message:deleted on the user's personal channel for each purged stale join line, so an already-open client removes it in real time instead of surviving until reload", async () => {
     const h = makeService({ withMemberRepo: false });
-    h.deletePersonalJoinMessages.mockResolvedValue(["stale-1", "stale-2"]);
+    // Pre-create purge finds the stale lines; the post-create keepId sweep
+    // (default mock → []) finds nothing more, as the real repo would.
+    h.deletePersonalJoinMessages.mockResolvedValueOnce(["stale-1", "stale-2"]);
 
     await h.service.post({
       communityId: COMMUNITY_ID,

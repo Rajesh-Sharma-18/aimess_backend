@@ -6,23 +6,19 @@ export const appVersionPaths = {
       operationId: "checkAppVersion",
       summary: "Check client app version",
       description:
-        "Returns whether the mobile app should show no update prompt, an optional update screen, or a mandatory (force) update screen. Call on every app launch before rendering the home view.",
+        "Resolves the admin update policy for this client. `action` is the verdict: FORCE (admin rule — block), UNSUPPORTED_DEVICE (OS below the minimum), or STORE (no admin rule — the client asks its store using `store`). Legacy fields (`forceUpdate`, `optionalUpdate`, `isUpToDate`) are kept for shipped clients. Call on launch and on resume. Separately, when the admin enables `enforceOnServer`, every other /api/v1 call from a FORCE client (sending `x-platform` + `x-app-version`) returns 426 APP_UPDATE_REQUIRED, and the socket handshake is refused with the same message.",
       requestBody: {
         required: true,
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/AppVersionCheckRequest" },
-            example: {
-              platform: "ANDROID",
-              version: "2.4.1",
-              buildNumber: 241,
-            },
+            example: { platform: "android", version: "2.0.1", osLevel: 34 },
           },
         },
       },
       responses: {
         "200": {
-          description: "Update action for the client UI",
+          description: "Update verdict for the client",
           content: {
             "application/json": {
               schema: {
@@ -39,47 +35,66 @@ export const appVersionPaths = {
                 ],
               },
               examples: {
-                upToDate: {
-                  summary: "App is current — no update prompt needed",
+                force: {
+                  summary: "Admin rule forces this version",
                   value: {
                     success: true,
-                    message: "Version check completed",
+                    message: "App version checked",
                     data: {
-                      action: "NONE",
-                      currentVersion: "2.4.1",
-                      latestVersion: "2.4.1",
-                      storeUrl: null,
-                      releaseNotes: null,
+                      platform: "android",
+                      clientVersion: "1.9.0",
+                      minimumRequiredVersion: "2.0.0",
+                      latestRecommendedVersion: "2.1.0",
+                      forceUpdate: true,
+                      optionalUpdate: false,
+                      isUpToDate: false,
+                      storeUrl: "market://details?id=com.aifivetech.aimess",
+                      mode: "ADMIN_MANAGED",
+                      action: "FORCE",
+                      reason: "BELOW_FORCE_VERSION",
+                      latestVersion: "2.1.0",
+                      fullyRolledOut: true,
+                      enforceOnServer: false,
+                      store: {
+                        forceFromPriority: 4,
+                        softFromPriority: 2,
+                        escalateSoftAfterDays: 14,
+                      },
+                      title: "Update Available",
+                      message: "Please update to keep using AIMESS.",
+                      policyVersion: 7,
+                      issuedAt: 1767139200000,
                     },
                   },
                 },
-                optionalUpdate: {
-                  summary: "New version available — optional update prompt",
+                store: {
+                  summary: "No admin rule — the store decides",
                   value: {
                     success: true,
-                    message: "Version check completed",
+                    message: "App version checked",
                     data: {
-                      action: "OPTIONAL_UPDATE",
-                      currentVersion: "2.4.1",
-                      latestVersion: "2.5.0",
-                      storeUrl:
-                        "https://play.google.com/store/apps/details?id=tech.aimess",
-                      releaseNotes: "New community features and bug fixes.",
-                    },
-                  },
-                },
-                forceUpdate: {
-                  summary: "Version too old — force update screen",
-                  value: {
-                    success: true,
-                    message: "Version check completed",
-                    data: {
-                      action: "FORCE_UPDATE",
-                      currentVersion: "1.9.0",
-                      latestVersion: "2.5.0",
-                      storeUrl:
-                        "https://play.google.com/store/apps/details?id=tech.aimess",
-                      releaseNotes: "Critical security patch required.",
+                      platform: "ios",
+                      clientVersion: "2.0.1",
+                      minimumRequiredVersion: "0.0.0",
+                      latestRecommendedVersion: "2.1.0",
+                      forceUpdate: false,
+                      optionalUpdate: true,
+                      isUpToDate: false,
+                      mode: "STORE_MANAGED",
+                      action: "STORE",
+                      reason: "NONE",
+                      latestVersion: "2.1.0",
+                      fullyRolledOut: true,
+                      enforceOnServer: false,
+                      store: {
+                        appStoreId: "123456789",
+                        forceOnBump: "MAJOR",
+                        softOnBump: "MINOR",
+                      },
+                      title: null,
+                      message: null,
+                      policyVersion: 7,
+                      issuedAt: 1767139200000,
                     },
                   },
                 },

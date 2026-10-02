@@ -97,6 +97,8 @@ export type GroupRoomMembership = GroupRoom & {
    * (BANNED never reaches a client here — the read guard rejects it.)
    */
   membershipStatus?: string | null;
+  /** Epoch ms of the caller's latest Clear Chat / Delete Conversation cutoff, null if never. */
+  clearChatAtMs?: number | null;
 };
 
 /**
@@ -1482,6 +1484,8 @@ export class GroupRoomService {
         lastActivityAt: lastActivity.dateTime,
         avatar: urlFromMap(avatarUrls, room.avatar),
         membershipStatus: membership?.status ?? null,
+        clearChatAtMs:
+          Math.max(membership?.clearChatAt?.getTime() ?? 0, membership?.clearedAt?.getTime() ?? 0) || null,
         isRemoved,
         isMuted,
         isMemberMuted,

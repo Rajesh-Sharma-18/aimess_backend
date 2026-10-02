@@ -90,6 +90,7 @@ const envSchema = z
     COMMUNITY_GRPC_URL: z.string().default("0.0.0.0:4003"),
     /** media-service gRPC — avatar scan-verdict verification before persist. */
     MEDIA_GRPC_URL: z.string().default("0.0.0.0:4009"),
+    BACKOFFICE_GRPC_URL: z.string().default("127.0.0.1:4010"),
     /**
      * Master switch for the avatar verification gate. Default ON. Set false only
      * for a controlled rollout window against clients that do not yet call

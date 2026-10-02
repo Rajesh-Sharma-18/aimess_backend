@@ -102,6 +102,10 @@ beforeEach(() => {
     status: "active",
     role: "member",
   });
+  // reactToMessage persists via the revision-guarded CAS write; a falsy
+  // (auto-vivified undefined) result is a lost race → retries → 409
+  // CHAT_REACTION_CONFLICT. Single-writer tests: the CAS always applies.
+  mocks.generalRoomMessageRepo.updateReactionsCas.mockResolvedValue(true);
 });
 
 describe("REST POST /messages/:messageId/react — add: self-reaction", () => {
@@ -174,7 +178,9 @@ describe("REST POST /messages/:messageId/react — add: cross-user reaction", ()
       reactionActorId: TEST_USER_ID,
       reactionActorPreview: 'You reacted ❤️ to "Let\'s meet at 5 PM"',
       reactionTargetId: TARGET_OWNER,
-      reactionTargetPreview: "Reactor reacted ❤️ to your message",
+      // Target sees WHAT was reacted to, not "your message" — see
+      // @aimess/constants buildReactionActivityText (targetPreview = thirdPersonPreview).
+      reactionTargetPreview: 'Reactor reacted ❤️ to "Let\'s meet at 5 PM"',
     });
 
     const call = pubUpdated.mock.calls[0][0];
@@ -189,7 +195,7 @@ describe("REST POST /messages/:messageId/react — add: cross-user reaction", ()
       preview: { text: string };
     };
     expect(targetOverride.preview.text).toBe(
-      "Reactor reacted ❤️ to your message"
+      'Reactor reacted ❤️ to "Let\'s meet at 5 PM"'
     );
   });
 
@@ -792,7 +798,7 @@ describe("REST POST /messages/:messageId/react — synchronous persistence (relo
       actorId: TEST_USER_ID,
       actorPreview: 'You reacted 👍 to "Hello"',
       targetId: TARGET_OWNER,
-      targetPreview: "Reactor reacted 👍 to your message",
+      targetPreview: 'Reactor reacted 👍 to "Hello"',
       reactedAt: expect.any(Number),
     });
   });

@@ -9,12 +9,28 @@ export const updateUserAccountSchema = z
     dateOfBirth: z.string().max(10).optional(),
     gender: z.string().max(32).nullable().optional(),
     email: z.string().trim().toLowerCase().email().max(254).optional(),
+    // Key from POST /users/:userId/avatar/upload-url; null clears the avatar.
+    avatarObjectKey: z.string().trim().min(1).max(512).nullable().optional(),
   })
   .strict()
   .refine((body) => Object.keys(body).length > 0, {
     message: "ADMIN_USER_NO_CHANGES",
   });
 export type UpdateUserAccountInput = z.infer<typeof updateUserAccountSchema>;
+
+export const userAvatarUploadUrlSchema = z
+  .object({
+    contentType: z.enum(["image/jpeg", "image/png", "image/webp"]),
+    contentLength: z
+      .number()
+      .int()
+      .positive()
+      .max(5 * 1024 * 1024),
+  })
+  .strict();
+export type UserAvatarUploadUrlInput = z.infer<
+  typeof userAvatarUploadUrlSchema
+>;
 
 export const userSocialProviderParamSchema = z.object({
   userId: z.string().trim().min(1).max(64),

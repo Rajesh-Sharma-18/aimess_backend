@@ -97,6 +97,13 @@ export {
   updateNotificationCategories,
   updateNotificationCategory,
 } from "./notification-category.controller.js";
+export {
+  createCustomCredential,
+  deleteCustomCredential,
+  getCustomCredential,
+  listCustomCredentials,
+  updateCustomCredential,
+} from "./custom-credential.controller.js";
 export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";
 export { getSystemHealth } from "./system-health.controller.js";
 export {
@@ -107,6 +114,8 @@ export {
   disconnectAllFriendships,
   getCallingEnabled,
   setCallingEnabled,
+  getAppUpdatePolicy,
+  setAppUpdatePolicy,
 } from "./system-maintenance.controller.js";
 export {
   listAdminAccounts,
@@ -122,6 +131,7 @@ export {
   updateAdminPermissions,
 } from "./admin-account.controller.js";
 export {
+  createUserAvatarUploadUrl,
   getUserAccount,
   updateUserAccount,
   unlinkUserSocialAccount,

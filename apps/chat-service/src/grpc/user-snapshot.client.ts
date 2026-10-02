@@ -5,6 +5,7 @@ import * as protoLoader from "@grpc/proto-loader";
 import { makeBreaker, makeGrpcCall, type Breaker } from "@aimess/grpc-utils";
 
 import { env } from "../config/env.js";
+import { lookupFriendships } from "../lib/friendship-lookup.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
@@ -129,7 +130,7 @@ interface FriendshipInfoRecord {
   canSendRequest?: boolean;
 }
 
-interface CheckFriendshipsResult {
+export interface CheckFriendshipsResult {
   friendIds: string[];
   relationships: FriendshipInfoRecord[];
 }
@@ -315,43 +316,20 @@ export const userGrpcClient = {
    * Batch friendship status/direction for private-chat responses (conversation
    * list / room details). Source of truth is user-service, not chat-service's
    * own eventually-consistent local read-model — see `friendship.repository.ts`
-   * for why that local copy is send-gate-only, never response data. On a
-   * transport failure, callers get an empty map and fall back to `NONE` per
-   * peer (fail-open on display metadata, same policy as presence).
+   * for why that local copy is send-gate-only, never response data.
+   *
+   * `null` = lookup failed (never NONE); non-UUID candidates are never sent —
+   * see lib/friendship-lookup.ts.
    */
-  async checkFriendships(
+  checkFriendships(
     callerId: string,
     candidateIds: string[]
-  ): Promise<Map<string, ChatFriendshipInfo>> {
-    if (candidateIds.length === 0) return new Map();
-    try {
-      const result = await checkFriendshipsBreaker.fire({
-        callerId,
-        candidateIds,
-      });
-      return new Map(
-        (result.relationships ?? []).map((r) => [
-          r.userId,
-          {
-            status: (r.status || "NONE") as ChatFriendshipStatus,
-            direction:
-              r.direction === "OUTGOING" || r.direction === "INCOMING"
-                ? r.direction
-                : null,
-            friendshipId: r.friendshipId ? r.friendshipId : null,
-            requesterId: r.requesterId ? r.requesterId : null,
-            canAccept: r.canAccept ?? false,
-            canReject: r.canReject ?? false,
-            canCancel: r.canCancel ?? false,
-            blockedEitherWay: r.blockedEitherWay ?? false,
-            blockedByPeer: r.blockedByPeer ?? false,
-            canSendRequest: r.canSendRequest ?? false,
-          },
-        ])
-      );
-    } catch {
-      return new Map();
-    }
+  ): Promise<Map<string, ChatFriendshipInfo> | null> {
+    return lookupFriendships(
+      (args) => checkFriendshipsBreaker.fire(args),
+      callerId,
+      candidateIds
+    );
   },
 
   /**

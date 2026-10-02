@@ -1,5 +1,10 @@
 import { logger } from "@aimess/logger";
-import { ForbiddenError, NotFoundError } from "@aimess/errors";
+import {
+  ForbiddenError,
+  NotFoundError,
+  TooManyRequestsError,
+} from "@aimess/errors";
+import { consumeFallbackWindow } from "@aimess/utils";
 import { env } from "../config/env.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import type { communityGrpcClient as CommunityGrpcClient } from "../grpc/community.client.js";
@@ -168,7 +173,7 @@ export class LivestreamCommentService {
   private async checkMembership(
     communityId: string,
     userId: string
-  ): Promise<{ isMember: boolean; isCommunityClosed: boolean }> {
+  ): Promise<{ isMember: boolean; isCommunityClosed: boolean; role: string }> {
     try {
       const membership = await this.communityClient.validateMembership(
         communityId,
@@ -177,12 +182,89 @@ export class LivestreamCommentService {
       return {
         isMember: membership.isMember,
         isCommunityClosed: membership.isCommunityClosed,
+        role: membership.isMember ? membership.role : "",
       };
     } catch (error) {
       logger.warn(
         `membership check failed for community=${communityId} user=${userId}: ${String(error)}`
       );
-      return { isMember: true, isCommunityClosed: false };
+      // Unknown role = not exempt from the live chat throttles.
+      return { isMember: true, isCommunityClosed: false, role: "" };
+    }
+  }
+
+  /**
+   * YouTube-style live chat throttles for one non-exempt sender, keyed
+   * userId+streamId (one bucket across tabs/devices). Rejects THIS send with a
+   * 429 carrying `retryAfterSec`; never a ban.
+   *
+   * - slow: host slow mode. `SET NX EX slowModeSec` claims the slot atomically,
+   *   so a burst cannot race past it. Fails open on Redis errors.
+   * - flood: > MAX sends in WINDOW → blocked for COOLDOWN. On Redis errors it
+   *   degrades to a per-process window instead of disappearing.
+   */
+  private async assertLiveChatBudget(
+    streamId: string,
+    userId: string,
+    slowModeSec: number
+  ): Promise<void> {
+    const id = `${userId}:${streamId}`;
+    const blockKey = `rl:live-chat:flood-block:${id}`;
+    const floodKey = `rl:live-chat:flood:${id}`;
+    const slowKey = `rl:live-chat:slow:${id}`;
+    const cooldown = env.STREAM_COMMENT_FLOOD_COOLDOWN_SEC;
+    const flood = (sec: number) =>
+      new TooManyRequestsError("LIVE_CHAT_FLOOD", Math.max(1, sec));
+
+    let blockedFor: number;
+    try {
+      blockedFor = await this.redis.ttl(blockKey);
+    } catch (error) {
+      logger.warn("rate_limit_fail_open", {
+        rule: "stream.comment.flood",
+        userId,
+        streamId,
+        error: String(error),
+      });
+      const local = consumeFallbackWindow({
+        key: floodKey,
+        windowMs: env.STREAM_COMMENT_FLOOD_WINDOW_SEC * 1000,
+        limit: env.STREAM_COMMENT_FLOOD_MAX,
+      });
+      if (!local.allowed) throw flood(local.retryAfterSec);
+      return;
+    }
+    if (blockedFor > 0) throw flood(blockedFor);
+
+    if (slowModeSec > 0) {
+      try {
+        const claimed = await this.redis.set(slowKey, "1", "EX", slowModeSec, "NX");
+        if (claimed !== "OK") {
+          const wait = await this.redis.ttl(slowKey);
+          throw new TooManyRequestsError(
+            "LIVE_CHAT_SLOW_MODE",
+            Math.max(1, wait > 0 ? wait : slowModeSec)
+          );
+        }
+      } catch (error) {
+        if (error instanceof TooManyRequestsError) throw error;
+        logger.warn(`slow mode check failed open stream=${streamId}: ${String(error)}`);
+      }
+    }
+
+    try {
+      const count = await this.redis.incr(floodKey);
+      if (count === 1) {
+        await this.redis.expire(floodKey, env.STREAM_COMMENT_FLOOD_WINDOW_SEC);
+      }
+      if (count > env.STREAM_COMMENT_FLOOD_MAX) {
+        await this.redis.set(blockKey, "1", "EX", cooldown);
+        await this.redis.del(floodKey);
+        throw flood(cooldown);
+      }
+    } catch (error) {
+      if (error instanceof TooManyRequestsError) throw error;
+      logger.warn(`flood counter failed stream=${streamId}: ${String(error)}`);
     }
   }
 
@@ -283,16 +365,28 @@ export class LivestreamCommentService {
     // could post a comment without ever joining — the socket layer's join-time
     // cache is a pre-check optimization, not a substitute for this server-side
     // enforcement (a never-joined caller isn't gated by it either).
-    if (env.STREAM_REQUIRE_MEMBERSHIP && stream.creatorId !== params.userId) {
-      const { isMember, isCommunityClosed } = await this.checkMembership(
+    //
+    // The same lookup decides the live chat throttle exemption: host and
+    // community ADMIN/MODERATOR skip both slow mode and the flood guard.
+    if (stream.creatorId !== params.userId) {
+      const { isMember, isCommunityClosed, role } = await this.checkMembership(
         stream.communityId,
         params.userId
       );
-      if (!isMember) {
-        throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
+      if (env.STREAM_REQUIRE_MEMBERSHIP) {
+        if (!isMember) {
+          throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
+        }
+        if (isCommunityClosed) {
+          throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+        }
       }
-      if (isCommunityClosed) {
-        throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+      if (role !== "ADMIN" && role !== "MODERATOR") {
+        await this.assertLiveChatBudget(
+          params.livestreamId,
+          params.userId,
+          stream.slowModeSec ?? 0
+        );
       }
     }
 

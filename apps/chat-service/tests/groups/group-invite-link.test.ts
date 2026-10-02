@@ -374,7 +374,7 @@ describe("GET /api/chat/invite-links/room/:roomId", () => {
 });
 
 describe("POST /api/chat/invite-links/room/:roomId/bulk-send", () => {
-  const RECIPIENT = "user-recipient-1";
+  const RECIPIENT = "5b5e8d2f-b77b-4e44-bd8b-bf263595a22b";
 
   function mockGroupAndCaller() {
     // Caller is an active member; every OTHER user checked (the recipients)
@@ -458,6 +458,55 @@ describe("POST /api/chat/invite-links/room/:roomId/bulk-send", () => {
         code,
       });
       expect(mocks.privateMessageRepo.createMessage).not.toHaveBeenCalled();
+    }
+  );
+
+  // A group room id or a community ObjectId picked as a "recipient" used to
+  // get a PRIVATE room minted with it as the peer — the corrupt rows that later
+  // poisoned the inbox friendship batch. Refused locally, so it holds even
+  // while the identity/friendship lookups are down and failing open.
+  it.each([
+    ["a group room id", "grp_pdIiPX3BpLo5WUA5"],
+    ["a community ObjectId", "6a7bf9214d6c5b8b86a11aa8"],
+  ])(
+    "EDGE: %s as recipient is NOT_FOUND and creates no private room, even with user-service down",
+    async (_label, bogus) => {
+      mockGroupAndCaller();
+      (userGrpcClient.bulkGetUserSnapshots as jest.Mock).mockRejectedValueOnce(
+        new Error("user.bulkGetUserSnapshots unavailable")
+      );
+      (userGrpcClient.checkFriendships as jest.Mock).mockResolvedValueOnce(
+        null
+      );
+      mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue(null);
+      mocks.privateRoomRepo.create.mockResolvedValue({ roomId: "prv_1" });
+      mocks.privateRoomRepo.allocateSequence.mockResolvedValue(1);
+      mocks.privateMessageRepo.findByClientMessageId.mockResolvedValue(null);
+      mocks.privateMessageRepo.createMessage.mockResolvedValue({
+        id: "msg-1",
+        createdAt: new Date(),
+        countInUnread: true,
+      });
+
+      const res = await request(app)
+        .post(`/api/chat/invite-links/room/${ROOM}/bulk-send`)
+        .set(bearer(makeAccessToken()))
+        .send({ userIds: [bogus, RECIPIENT] });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.results).toEqual([
+        expect.objectContaining({
+          userId: bogus,
+          status: "FAILED",
+          code: "INVITE_RECIPIENT_NOT_FOUND",
+        }),
+        { userId: RECIPIENT, status: "SENT" },
+      ]);
+      // Exactly one room — the real recipient's; never one keyed on the bogus id.
+      expect(mocks.privateRoomRepo.create).toHaveBeenCalledTimes(1);
+      expect(
+        mocks.privateRoomRepo.create.mock.calls[0][0].participants
+      ).not.toContain(bogus);
     }
   );
 

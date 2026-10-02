@@ -161,7 +161,10 @@ describe("sendCommunityMessage — community:updated carries senderName (T6)", (
     });
   });
 
-  it("senderName falls back to the shared 'Unknown User' chain when the snapshot is missing", async () => {
+  // The shared chain still ends at "Unknown User", but resolveSenderIdentity
+  // (src/lib/resolve-sender-identity.ts) blanks it on the wire so each client
+  // renders its own LOCALIZED fallback instead of a hardcoded English string.
+  it("senderName is empty on the wire (client-localized fallback) when the snapshot is missing", async () => {
     const deps = makeDeps({
       cacheRepo: {},
       userSnapshotService: {
@@ -180,7 +183,7 @@ describe("sendCommunityMessage — community:updated carries senderName (T6)", (
 
     expect(pubUpdated).toHaveBeenCalledTimes(1);
     expect(pubUpdated.mock.calls[0][0]).toMatchObject({
-      senderName: "Unknown User",
+      senderName: "",
     });
   });
 });

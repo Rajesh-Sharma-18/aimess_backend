@@ -16,6 +16,8 @@ import {
   assertPrivateParticipants,
   buildParticipantsKey,
   generateRoomId,
+  isUserId,
+  nonUserIdKind,
 } from "../lib/room-id.js";
 import {
   toWireMessage,
@@ -507,13 +509,14 @@ export class PrivateRoomService {
     // ponytail: optional — omitted in existing unit tests; peer isOnline just
     // falls back to false (matches the pre-existing hardcoded-false behavior).
     private readonly presenceService?: PresenceService,
-    // ponytail: optional — omitted in existing unit tests; friendship just
-    // falls back to NONE (fail-open on display metadata, same as presence).
+    // ponytail: optional — omitted in existing unit tests; friendship then
+    // falls back to NONE. When wired, a `null` (lookup failed) is a 503 —
+    // see `enrichConversations`.
     private readonly friendshipGrpcClient?: {
       checkFriendships(
         callerId: string,
         candidateIds: string[]
-      ): Promise<Map<string, ChatFriendshipInfo>>;
+      ): Promise<Map<string, ChatFriendshipInfo> | null>;
     },
     // ponytail: optional — omitted in existing unit tests; pin clearing on
     // delete just becomes a no-op (matches the pre-existing behavior).
@@ -627,16 +630,47 @@ export class PrivateRoomService {
     );
   }
 
-  /** One peer's live friendship+block state from user-service, NONE on failure. */
+  /**
+   * One peer's live friendship+block state from user-service. A failed lookup
+   * is a 503, never NONE — see `friendshipsOrUnavailable`.
+   */
   private async resolvePeerFriendship(
     userId: string,
     peerId: string
   ): Promise<ChatFriendshipInfo> {
-    if (!this.friendshipGrpcClient) return NONE_RELATIONSHIP;
-    const map = await this.friendshipGrpcClient
-      .checkFriendships(userId, [peerId])
-      .catch(() => new Map<string, ChatFriendshipInfo>());
+    const map = await this.friendshipsOrUnavailable(userId, [peerId]);
     return map.get(peerId) ?? NONE_RELATIONSHIP;
+  }
+
+  /**
+   * Live relationships for `peerIds`, or 503 CHAT_RELATIONSHIP_UNAVAILABLE.
+   *
+   * A failed lookup used to come back as an empty map, which every row then
+   * read as NONE: one user-service error — or one corrupt room whose peer id is
+   * not a UUID, which failed the whole Postgres batch — rendered every real
+   * friend on the page as a stranger with no way to recover short of a reload.
+   * That is the exact terminal-placeholder trap `CHAT_IDENTITY_UNAVAILABLE`
+   * closes for names, so it gets the same retryable answer.
+   *
+   * Non-UUID peers never reach the RPC (the client drops them) and come back
+   * with no entry, i.e. NONE — a group or community id has no relationship.
+   */
+  private async friendshipsOrUnavailable(
+    userId: string,
+    peerIds: string[]
+  ): Promise<Map<string, ChatFriendshipInfo>> {
+    if (!this.friendshipGrpcClient) return new Map();
+    const map = await this.friendshipGrpcClient.checkFriendships(
+      userId,
+      peerIds
+    );
+    if (map === null) {
+      logger.warn(
+        `PrivateRoomService|relationship lookup unavailable|userId=${userId}|peers=${peerIds.length}`
+      );
+      throw new ServiceUnavailableError("CHAT_RELATIONSHIP_UNAVAILABLE");
+    }
+    return map;
   }
 
   /**
@@ -894,6 +928,19 @@ export class PrivateRoomService {
       .map((room) => (room.participants || []).find((p) => p !== userId) || "")
       .filter(Boolean);
 
+    // Corrupt rooms (a group/community id stored as the peer) still exist until
+    // the audit script's findings are acted on. Every lookup below tolerates
+    // them; this line is how an operator sees whether their count still grows
+    // after the write paths were closed. Ids, not names — no PII beyond them.
+    for (const room of rooms) {
+      const bad = (room.participants ?? []).filter((p) => !isUserId(p));
+      if (bad.length > 0) {
+        logger.warn(
+          `PrivateRoomService|malformed private room participant|roomId=${room.roomId}|roomType=PRIVATE|kinds=${bad.map(nonUserIdKind).join(",")}|viewer=${userId}`
+        );
+      }
+    }
+
     // Fetch the caller's own snapshot alongside the peers' — community-style
     // lastActivity always carries the ACTUAL sender's live name (self included),
     // never an empty placeholder; the client alone decides "You:" vs "<name>:".
@@ -938,9 +985,10 @@ export class PrivateRoomService {
     }
     const myDisplayName = resolveDisplayName(snapshots.get(userId));
 
-    const friendshipByPeer = this.friendshipGrpcClient
-      ? await this.friendshipGrpcClient.checkFriendships(userId, peerIds)
-      : new Map<string, ChatFriendshipInfo>();
+    const friendshipByPeer = await this.friendshipsOrUnavailable(
+      userId,
+      peerIds
+    );
 
     // Real-time presence — reuses PresenceService (the same canonical Redis
     // state `presence:status` is published from) rather than the user-snapshot's

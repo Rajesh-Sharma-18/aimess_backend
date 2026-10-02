@@ -46,6 +46,25 @@ function mockLiveRole(role: "ADMIN" | "MODERATOR" | "MEMBER" | ""): void {
   });
 }
 
+/**
+ * Prime community-service's authoritative verdict to "genuinely not a member".
+ * Both community guards (assertCommunityReadAccess / assertCommunityMember)
+ * now fall back to a live `checkCommunityMembership` gRPC lookup when the local
+ * RoomMember mirror misses (stale-mirror heal), and the global mock answers
+ * isMember:true — so a non-member test must say so explicitly, exactly as
+ * tests/community/community-read-access.test.ts does.
+ */
+function mockLiveNotMember(): void {
+  (getCommunityReconcileClient as jest.Mock).mockReturnValueOnce({
+    checkCommunityMembership: jest.fn(async () => ({
+      isMember: false,
+      isBanned: false,
+      status: "LEFT",
+      role: "",
+    })),
+  });
+}
+
 beforeEach(() => {
   ({ app, mocks } = buildApp());
   mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
@@ -391,6 +410,7 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
   // AUDIT H2 — the before_ts/latest history list must be gated on membership.
   it("SECURITY: IDOR — 403 reading history (latest/before_ts) as a non-member", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+    mockLiveNotMember();
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/messages`)
@@ -554,6 +574,7 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
 
   it("SECURITY: 403 incremental-sync for a non-member", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+    mockLiveNotMember();
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/messages?after_ts=500`)
@@ -630,7 +651,9 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
     expect(res.body.data.hasMoreOlder).toBe(true);
     expect(res.body.data.hasMoreNewer).toBe(false);
     expect(res.body.data.olderCursor).toBe("1000_m1"); // → before_ts (compound)
-    expect(res.body.data.newerCursor).toBe("3000"); // → after_ts (epoch-ms)
+    // Compound like olderCursor — a bare ms dropped same-millisecond rows on
+    // forward paging (src/lib/around-cursors.ts computeDateAroundCursors).
+    expect(res.body.data.newerCursor).toBe("3000_m3");
     expect(res.body.data.pinnedMessage).toBeNull();
   });
 });
@@ -718,6 +741,7 @@ describe("GET /rooms/:roomId/messages/search (membership-gated)", () => {
   // AUDIT H2 — community search must be gated on active membership (IDOR).
   it("SECURITY: IDOR — 403 searching a community you're not a member of", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+    mockLiveNotMember();
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/messages/search?q=hello`)
@@ -767,6 +791,7 @@ describe("GET /rooms/:roomId/sync", () => {
 
   it("SECURITY: 403 for a non-member", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+    mockLiveNotMember();
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/sync?since_ts=1`)
@@ -803,6 +828,7 @@ describe("GET /rooms/:roomId/conversation (membership-gated)", () => {
 
   it("SECURITY: 403 for a non-member", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+    mockLiveNotMember();
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/conversation`)
@@ -882,6 +908,7 @@ describe("GET /rooms/:roomId/media (membership-gated)", () => {
 
   it("SECURITY: 403 for a non-member", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+    mockLiveNotMember();
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/media`)
@@ -1084,6 +1111,9 @@ describe("POST /messages/:messageId/react", () => {
       status: "active",
       role: "member",
     });
+    // Reactions persist via the revision-guarded CAS (formerly updateById);
+    // a falsy result is a lost race → retries → 409 CHAT_REACTION_CONFLICT.
+    mocks.generalRoomMessageRepo.updateReactionsCas.mockResolvedValue(true);
 
     const res = await request(app)
       .post(`${BASE}/messages/m1/react`)
@@ -1091,7 +1121,7 @@ describe("POST /messages/:messageId/react", () => {
       .send({ communityId: "comm-1", emoji: "👍" });
 
     expect(res.status).toBe(200);
-    expect(mocks.generalRoomMessageRepo.updateById).toHaveBeenCalled();
+    expect(mocks.generalRoomMessageRepo.updateReactionsCas).toHaveBeenCalled();
   });
 
   it("SECURITY: 403 reacting as a non-member", async () => {
@@ -1101,6 +1131,8 @@ describe("POST /messages/:messageId/react", () => {
       deletedForAll: false,
       reactions: {},
     });
+    // No mockLiveNotMember(): reactToMessage checks the local RoomMember only
+    // (no gRPC heal), so a primed once-value would leak into the next test.
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue(null);
 
     const res = await request(app)
@@ -1317,18 +1349,28 @@ describe("pins: POST pin + DELETE unpin + GET list", () => {
     expect(mocks.communityMessagePinRepo.createPin).not.toHaveBeenCalled();
   });
 
-  it("NEGATIVE: 404 pinning when not a member of the room", async () => {
+  // Membership is asserted FIRST via assertCommunityMember (CHAT_NOT_A_MEMBER →
+  // 403) — see community-pin.service.ts pin() step 1 / access-guard.ts — so a
+  // non-member is rejected before any room/message lookup could 404.
+  it("SECURITY: 403 pinning when not a member of the room", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+    mockLiveNotMember();
 
     const res = await request(app)
       .post(`${BASE}/rooms/${ROOM}/messages/m1/pin`)
       .set(bearer(makeAccessToken()))
       .send({ messageId: "m1", communityId: "comm-1" });
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(403);
+    expect(mocks.communityMessagePinRepo.createPin).not.toHaveBeenCalled();
   });
 
   it("POSITIVE: lists pins for a room", async () => {
+    // list() is gated by assertCommunityReadAccess — be an explicit member
+    // rather than leaning on the global gRPC mock's isMember:true heal.
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
     mocks.communityMessagePinRepo.findPinsByRoom.mockResolvedValue([
       { id: "pin1", pinnedAt: new Date(1) },
     ]);
@@ -1342,7 +1384,10 @@ describe("pins: POST pin + DELETE unpin + GET list", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(res.body.data.items).toHaveLength(1);
+    // Cursor envelope { data, hasMore, nextCursor } — see
+    // community-message.controller.ts getPins.
+    expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.hasMore).toBe(false);
   });
 
   it("NEGATIVE: 400 unpin missing required body messageId", async () => {

@@ -200,6 +200,9 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
           sequenceNumber: 3,
           senderRole: "ADMIN",
         })),
+        // Post-ack roster read (shared `groupRecipients` memo) for the personal
+        // message:new fan-out + conv:updated bump + push.
+        getActiveMemberIds: jest.fn(async () => ["u1", "u2"]),
       },
     });
 
@@ -398,13 +401,19 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
       privateMessageService: {
         // Cross-room IDOR bind (fix 01a131f): sendReaction now calls
         // assertParticipant(conversationId, userId) then
-        // assertMessageInRoom(conversationId, messageId) BEFORE react() — no-ops
-        // here mean the caller is a participant and the message belongs to the
-        // conversation, so the toggle proceeds.
+        // assertMessageInRoom(conversationId, messageId) BEFORE reactToMessage() —
+        // no-ops here mean the caller is a participant and the message belongs
+        // to the conversation, so the toggle proceeds.
         assertParticipant: jest.fn(async () => undefined),
         assertMessageInRoom: jest.fn(async () => undefined),
-        react: jest.fn(async () => ({
-          reactions: { "👍": [{ userId: "u2" }] },
+        // The handler now calls the CAS toggle `reactToMessage` (was `react`),
+        // which returns the add/remove + target info for the activity bump.
+        reactToMessage: jest.fn(async () => ({
+          roomId: "conv1",
+          added: true,
+          mediaIndex: null,
+          targetUserId: "u1",
+          targetMessagePreview: "hi",
         })),
         getMessageReactions: jest.fn(async () => ({
           reactions: {
@@ -426,6 +435,10 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
             },
           },
         })),
+      },
+      // lastActivity bump/revert, awaited before the ack.
+      chatMessageOrchestrator: {
+        bumpReactionActivity: jest.fn(async () => undefined),
       },
     });
 
@@ -504,16 +517,22 @@ describe("createCommunityImpl — broadcast media resolve-on-read", () => {
         ),
       },
       communityMessageService: {
-        sendMessage: jest.fn(async () => ({
-          id: "cm1",
-          roomId: "room1",
-          sentBy: "u1",
-          message: "hello",
-          messageType: "IMAGE",
-          parentMessageId: null,
-          quoteData: null,
-          createdAt: new Date(),
-        })),
+        // The broadcast now reads files off the PERSISTED row's `attachments`
+        // (per album row), not the request — echo what the handler passed in,
+        // as the real service persists it.
+        sendMessage: jest.fn(
+          async (input: { attachments?: Array<Record<string, unknown>> }) => ({
+            id: "cm1",
+            roomId: "room1",
+            sentBy: "u1",
+            message: "hello",
+            messageType: "IMAGE",
+            parentMessageId: null,
+            quoteData: null,
+            attachments: input.attachments,
+            createdAt: new Date(),
+          })
+        ),
       },
     });
 
@@ -570,6 +589,24 @@ describe("createCommunityImpl — broadcast media resolve-on-read", () => {
               ],
             },
           ],
+          // Rest of the reactToMessage contract: u9 toggled OFF (not among the
+          // remaining reactors) → the removed branch, which recalculates the
+          // live bump post-ack.
+          mediaIndex: null,
+          revision: 1,
+          added: false,
+          actorName: "Nine",
+          targetUserId: "u1",
+          targetMessagePreview: "hello",
+        })),
+        getLatestRealActivityForLiveBump: jest.fn(async () => ({
+          prevMessageId: null,
+          preview: "",
+          messageType: "",
+          sentBy: "",
+          senderName: "",
+          createdAt: new Date(),
+          hasLastMessage: false,
         })),
       },
     });
@@ -703,12 +740,18 @@ describe("createMessagingImpl — forwardMessage cross-room read-IDOR (H-1)", ()
     });
     // …but the caller is NOT a participant of prv_secret (the message's ACTUAL
     // room). gRPC passes sourceRoomId:null, so ONLY the unconditional bind guards.
-    roomRepo.findByRoomId.mockResolvedValue({
-      roomId: "prv_secret",
-      participants: ["victim", "peer"],
-    });
+    // The caller IS a participant of the TARGET room: forwardMessage now runs a
+    // target-room participation guard first, and without this the test would
+    // reject THERE and never reach the source bind it is meant to prove.
+    roomRepo.findByRoomId.mockImplementation(async (roomId: string) =>
+      roomId === "prv_target"
+        ? { roomId, participants: ["attacker", "peer-2"] }
+        : { roomId: "prv_secret", participants: ["victim", "peer"] }
+    );
     const userServiceClient: any = {
       checkFriendship: jest.fn(async () => true),
+      // Peer-interaction gate (shared with sendMessage) also asks about blocks.
+      isBlockedEitherWay: jest.fn(async () => false),
     };
 
     const privateMessageService = new PrivateMessageService(
@@ -720,7 +763,16 @@ describe("createMessagingImpl — forwardMessage cross-room read-IDOR (H-1)", ()
       repoMock() // reportRepo
     );
 
-    const deps = makeDeps({ privateMessageService });
+    // The handler now resolves sender identity server-side BEFORE the service
+    // call (senderAvatar:"" forces the snapshot lookup); without these deps it
+    // threw a TypeError and the test rejected before the bind ever ran.
+    const deps = makeDeps({
+      privateMessageService,
+      userSnapshotService: {
+        getUserSnapshotsMap: jest.fn(async () => new Map()),
+      },
+      cacheRepo: repoMock(),
+    });
 
     await expect(
       invoke(createMessagingImpl(deps).forwardMessage as Handler, {
@@ -735,6 +787,13 @@ describe("createMessagingImpl — forwardMessage cross-room read-IDOR (H-1)", ()
       })
     ).rejects.toBeDefined();
 
+    // Rejected AT the source bind: the message's actual room was checked, and
+    // nothing past the bind (target sequence allocation) ran.
+    expect(roomRepo.findByRoomId).toHaveBeenCalledWith(
+      "prv_secret",
+      expect.anything()
+    );
+    expect(roomRepo.allocateSequenceWithRoom).not.toHaveBeenCalled();
     expect(messageRepo.createForwardedMessage).not.toHaveBeenCalled();
     expect(
       publishMock.mock.calls.filter(
@@ -765,6 +824,12 @@ describe("createMessagingImpl — forwardMessage cross-room read-IDOR (H-1)", ()
     memberRepo.findActiveByRoomAndUser
       .mockResolvedValueOnce({ role: "MEMBER" }) // target room
       .mockResolvedValueOnce(null); // source room (grp_secret)
+    // Target room must be writable (assertGroupWritable, added to forward) or
+    // the forward rejects with CHAT_GROUP_NOT_FOUND before the source bind.
+    roomRepo.findByRoomId.mockResolvedValue({
+      roomId: "grp_target",
+      status: "ACTIVE",
+    });
 
     const groupMessageService = new GroupMessageService(
       messageRepo,
@@ -774,7 +839,14 @@ describe("createMessagingImpl — forwardMessage cross-room read-IDOR (H-1)", ()
       {} as any // userSnapshotService (unused on this path)
     );
 
-    const deps = makeDeps({ groupMessageService });
+    // See the PRIVATE case: server-side sender-identity resolution needs these.
+    const deps = makeDeps({
+      groupMessageService,
+      userSnapshotService: {
+        getUserSnapshotsMap: jest.fn(async () => new Map()),
+      },
+      cacheRepo: repoMock(),
+    });
 
     await expect(
       invoke(createMessagingImpl(deps).forwardMessage as Handler, {
@@ -789,6 +861,14 @@ describe("createMessagingImpl — forwardMessage cross-room read-IDOR (H-1)", ()
       })
     ).rejects.toBeDefined();
 
+    // Rejected AT the source bind: membership of the message's actual room was
+    // checked, and nothing past the bind (target sequence allocation) ran.
+    expect(memberRepo.findActiveByRoomAndUser).toHaveBeenNthCalledWith(
+      2,
+      "grp_secret",
+      "attacker"
+    );
+    expect(roomRepo.allocateSequenceWithRoom).not.toHaveBeenCalled();
     expect(messageRepo.createForwardedMessage).not.toHaveBeenCalled();
     expect(
       publishMock.mock.calls.filter(

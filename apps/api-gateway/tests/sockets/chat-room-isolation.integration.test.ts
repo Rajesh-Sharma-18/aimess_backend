@@ -257,4 +257,21 @@ describe("/chat cross-user room isolation", () => {
     // Re-arm for any later test / repeat runs.
     await ack(eve, "presence:subscribe", { peerIds: [BOB] });
   });
+
+  it("presence:unsubscribe frees the per-socket intent cap, so a long session keeps recording intents", async () => {
+    // Clients subscribe and release peers as member lists open and close. A
+    // cap counter that never shrank stopped recording intents mid-session.
+    const peers = Array.from({ length: 1000 }, (_, i) => `peer-${String(i)}`);
+    for (let i = 0; i < peers.length; i += 500) {
+      const peerIds = peers.slice(i, i + 500);
+      await ack(eve, "presence:subscribe", { peerIds });
+      await ack(eve, "presence:unsubscribe", { peerIds });
+    }
+    await ack(eve, "presence:subscribe", { peerIds: ["fresh-peer"] });
+    const eveServerSocket = [...io.of("/chat").sockets.values()].find((s) =>
+      s.rooms.has(`presence:${BOB}`)
+    );
+    expect(eveServerSocket?.rooms.has("presence-intent:fresh-peer")).toBe(true);
+    await ack(eve, "presence:unsubscribe", { peerIds: ["fresh-peer"] });
+  });
 });

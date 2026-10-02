@@ -62,11 +62,17 @@ function buildService(roomStatus: string) {
     findById: jest.fn().mockResolvedValue(message),
     editMessage: jest.fn(),
     updateById: jest.fn(),
+    // reactToMessage persists via the revision-guarded CAS (formerly updateById).
+    updateReactionsCas: jest.fn(),
+    updateMediaReactionsCas: jest.fn(),
+    refreshReplyQuotes: jest.fn().mockResolvedValue(undefined),
   };
   const roomRepo = {
     findRoomById: jest
       .fn()
       .mockResolvedValue({ id: ROOM_ID, status: roomStatus }),
+    // edit/react bump the room CHANGE revision before writing.
+    allocateRevision: jest.fn().mockResolvedValue(1),
   };
   const memberRepo = {
     findByRoomAndUser: jest.fn().mockResolvedValue({
@@ -131,7 +137,8 @@ describe("community write paths blocked on a CLOSED (suspended) room", () => {
         emoji: "👍",
       })
     ).rejects.toBeInstanceOf(ForbiddenError);
-    expect(messageRepo.updateById).not.toHaveBeenCalled();
+    expect(messageRepo.updateReactionsCas).not.toHaveBeenCalled();
+    expect(messageRepo.updateMediaReactionsCas).not.toHaveBeenCalled();
   });
 
   it("an ACTIVE room lets edit past the write gate", async () => {

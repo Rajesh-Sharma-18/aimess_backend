@@ -83,6 +83,8 @@ export interface StreamView {
   provider: string;
   status: string;
   commentStatus: boolean;
+  /** Host slow mode: seconds between a viewer's comments; 0 = off. */
+  slowModeSec: number;
   hlsUrl: string | null;
   /**
    * ABR variant playlists keyed by rendition ("1080p" | "720p" | "480p" | "360p").
@@ -304,6 +306,7 @@ function toView(
     provider: s.provider ?? SRS_PROVIDER,
     status: s.status,
     commentStatus: s.commentStatus,
+    slowModeSec: s.slowModeSec ?? 0,
     hlsUrl: s.hlsUrl,
     hlsQualities: qualities.hlsQualities,
     flvUrl: s.flvUrl,
@@ -1345,6 +1348,9 @@ export class LivestreamService {
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
     if (stream.status === "ENDED") {
       return { success: false, status: stream.status };
+    }
+    if (!(await this.streamRepo.claimEnded(stream.id))) {
+      return { success: false, status: "ENDED" };
     }
 
     // The reason was accepted and then dropped, so a force-end was indistinguishable
@@ -3387,7 +3393,7 @@ export class LivestreamService {
   async setCommentStatus(
     streamId: string,
     requesterId: string,
-    enabled: boolean
+    change: { enabled?: boolean; slowModeSec?: number }
   ): Promise<StreamView> {
     const stream = await this.streamRepo.findById(streamId);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
@@ -3395,7 +3401,10 @@ export class LivestreamService {
       throw new ForbiddenError("STREAM_NOT_OWNER");
 
     const updated = await this.streamRepo.updateById(streamId, {
-      commentStatus: enabled,
+      ...(change.enabled !== undefined ? { commentStatus: change.enabled } : {}),
+      ...(change.slowModeSec !== undefined
+        ? { slowModeSec: change.slowModeSec }
+        : {}),
     });
 
     try {
@@ -3403,7 +3412,11 @@ export class LivestreamService {
         `stream:${streamId}`,
         JSON.stringify({
           event: "stream:comment_status",
-          data: { streamId, commentStatus: enabled },
+          data: {
+            streamId,
+            commentStatus: updated.commentStatus,
+            slowModeSec: updated.slowModeSec ?? 0,
+          },
         })
       );
     } catch (err) {

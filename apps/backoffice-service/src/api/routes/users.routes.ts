@@ -5,6 +5,7 @@ import {
   banUser,
   bulkActivateUsers,
   bulkBanUsers,
+  createUserAvatarUploadUrl,
   getBanReasons,
   getUserAccount,
   getUserDetails,
@@ -41,6 +42,7 @@ import {
   listUsersQuerySchema,
   suspendUserSchema,
   updateUserAccountSchema,
+  userAvatarUploadUrlSchema,
   userCommunityMembersParamSchema,
   userDevicesQuerySchema,
   userHistoryQuerySchema,
@@ -213,6 +215,15 @@ usersRoutes.patch(
   validateParams(userIdParamSchema),
   validateBody(updateUserAccountSchema),
   updateUserAccount
+);
+// Step 1 of an admin avatar change: PUT the file here, then send the returned
+// objectKey as `avatarObjectKey` on PATCH /users/:userId.
+usersRoutes.post(
+  "/users/:userId/avatar/upload-url",
+  requirePermission(PERMISSIONS.USERS_EDIT),
+  validateParams(userIdParamSchema),
+  validateBody(userAvatarUploadUrlSchema),
+  createUserAvatarUploadUrl
 );
 usersRoutes.delete(
   "/users/:userId/linked-accounts/:provider",

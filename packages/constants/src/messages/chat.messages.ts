@@ -293,6 +293,14 @@ export const CHAT_MESSAGES = {
     en: "User details could not be loaded right now. Please try again.",
     th: "ไม่สามารถโหลดข้อมูลผู้ใช้ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
   },
+  // Same retryable 503 for the friendship lookup behind a private row: a
+  // failed lookup must not be served as relationshipStatus NONE, which a
+  // client caches and renders as "Add friend" for a real friend.
+  CHAT_RELATIONSHIP_UNAVAILABLE: {
+    vi: "Không thể tải trạng thái bạn bè ngay bây giờ. Vui lòng thử lại.",
+    en: "Friendship status could not be loaded right now. Please try again.",
+    th: "ไม่สามารถโหลดสถานะเพื่อนได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+  },
   CHAT_GROUP_LEFT: {
     vi: "Đã rời nhóm",
     en: "Left the group",

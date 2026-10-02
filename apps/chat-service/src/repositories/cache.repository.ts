@@ -126,7 +126,9 @@ export class CacheRepository {
       clientType: params.clientType,
       realtimeConnected: params.realtimeConnected ? "1" : "0",
       appState: params.appState,
-      lastActiveAt: String(params.now),
+      // A socket opened in the background (push / call wake) was never "active": it must not
+      // ride the background grace and show the user online.
+      lastActiveAt: params.appState === "BACKGROUND" ? "0" : String(params.now),
       connectedAt: String(params.now),
     });
     await this.redis.expire(key, this.deviceTtlSeconds);
@@ -166,12 +168,17 @@ export class CacheRepository {
     now: number
   ): Promise<void> {
     const key = presenceDeviceKey(userId, deviceId);
+    // Activity is the foreground. A BACKGROUND beat (sent on every keepalive ping) only stamps
+    // the moment the app LEFT the foreground — re-stamping it each ping kept a backgrounded
+    // phone "online" for as long as its socket stayed open.
+    const previous = await this.redis.hget(key, "appState");
+    const stampActive = state !== "BACKGROUND" || previous === "FOREGROUND";
     // Same revival rule as `heartbeat` — this is the path the gateway actually
     // takes (it always sends an appState), so it is the one that must heal.
     await this.redis.hmset(key, {
       realtimeConnected: "1",
       appState: state,
-      lastActiveAt: String(now),
+      ...(stampActive ? { lastActiveAt: String(now) } : {}),
     });
     await this.redis.expire(key, this.deviceTtlSeconds);
   }

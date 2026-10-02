@@ -215,6 +215,25 @@ export const livestreamService = {
       userAgent: ctx.userAgent,
     });
 
+    // One row per ended stream so each livestream's own audit trail shows the end.
+    for (const item of result.results) {
+      if (!item.ok) continue;
+      await auditService.record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.LIVESTREAM_ENDED,
+        targetType: "livestream",
+        targetId: item.id,
+        after: {
+          status: item.status,
+          reasonCode: input.reasonCode,
+          note: input.note ?? null,
+          bulk: true,
+        },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      });
+    }
+
     return result;
   },
 

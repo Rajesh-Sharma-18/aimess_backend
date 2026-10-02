@@ -3,6 +3,7 @@ import { Router, type IRouter } from "express";
 import { mediaController } from "../controllers/media.controller.js";
 import { authenticateAccessToken } from "../../middleware/authenticate.js";
 import {
+  mediaGifRateLimiter,
   mediaRateLimiter,
   mediaScanStatusRateLimiter,
 } from "../../middleware/rate-limiter.js";
@@ -58,6 +59,13 @@ export function createMediaRoutes(): IRouter {
     authenticateAccessToken,
     mediaRateLimiter,
     mediaController.getDataUsage
+  );
+
+  router.get(
+    "/gifs",
+    authenticateAccessToken,
+    mediaGifRateLimiter,
+    mediaController.getGifs
   );
 
   // Cancel an in-progress upload and delete the object from storage.

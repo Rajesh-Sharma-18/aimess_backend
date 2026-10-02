@@ -139,6 +139,8 @@ export interface AdminEditableProfile {
   bio: string;
   dateOfBirth: string;
   gender: string;
+  /** Stored avatar object key; "" when none. */
+  avatarUrl: string;
 }
 
 export interface AdminEditableProfileResponse {

@@ -8,3 +8,4 @@ export * from "./chat-attention";
 export * from "./community-socket";
 export type { Redis } from "ioredis";
 export * from "./session-locale";
+export * from "./app-update-policy";

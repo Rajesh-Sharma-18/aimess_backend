@@ -12,6 +12,7 @@ import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { toNotificationSettingsWire } from "./notification-settings.wire.js";
+import { resolveFriendshipRelationships } from "./check-friendships.js";
 import { friendshipService } from "../services/friendship.service.js";
 import {
   buildDisplayName,
@@ -21,14 +22,10 @@ import { updateProfileSchema } from "../api/validators/profile.validator.js";
 import { userProfileService } from "../services/user-profile.service.js";
 import {
   SCHEMA_DEFAULT_SCOPE,
-  canSendFriendRequest,
   scopeAdmits,
 } from "../lib/privacy-scope.js";
 import { avatarService } from "../services/avatar.service.js";
-import {
-  buildFriendshipView,
-  toChatRelationship,
-} from "../lib/friendship-view.js";
+import { buildFriendshipView } from "../lib/friendship-view.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -69,6 +66,9 @@ const ADMIN_EDITABLE_PROFILE_FIELDS = [
   "bio",
   "dateOfBirth",
   "gender",
+  // Key minted under THIS user by backoffice; ownership, size and scan verdict
+  // are re-checked by avatarService.resolveAvatarObjectKeyForProfile.
+  "avatarObjectKey",
 ] as const;
 
 function toAdminEditableProfile(profile: {
@@ -79,6 +79,7 @@ function toAdminEditableProfile(profile: {
   bio: string | null;
   dateOfBirth: Date;
   gender: string | null;
+  avatarUrl: string | null;
 }) {
   return {
     userId: profile.userId,
@@ -88,6 +89,7 @@ function toAdminEditableProfile(profile: {
     bio: profile.bio ?? "",
     dateOfBirth: formatDateOfBirth(profile.dateOfBirth) ?? "",
     gender: profile.gender ?? "",
+    avatarUrl: profile.avatarUrl ?? "",
   };
 }
 
@@ -606,103 +608,10 @@ export function startUserGrpcServer(): grpc.Server {
             callerId?: string;
             candidateIds?: string[];
           };
-          const callerId = req.callerId ?? "";
-          const candidateIds = [...new Set(req.candidateIds ?? [])].slice(
-            0,
-            500
+          callback(
+            null,
+            await resolveFriendshipRelationships(req.callerId, req.candidateIds)
           );
-          if (!callerId || candidateIds.length === 0) {
-            callback(null, { friendIds: [], relationships: [] });
-            return;
-          }
-          const [friendIds, { rows, blockedIds, blockedByIds }, scopeByUser] =
-            await Promise.all([
-              friendshipRepository.findAcceptedFriendIdsForUser(
-                callerId,
-                candidateIds
-              ),
-              friendshipRepository.findRelationshipsForUser(
-                callerId,
-                candidateIds
-              ),
-              // Add-friend eligibility for the whole candidate list in one
-              // query — see `canSendFriendRequest`.
-              userSettingsRepository.findFriendRequestScopes(candidateIds),
-            ]);
-          // FRIENDS_OF_FRIENDS is the only scope needing the mutual-friend
-          // graph. Resolving it is one extra query for the WHOLE list (never
-          // per candidate, which would be an N+1), so only pay it when some
-          // candidate actually selected that scope.
-          const needsMutualFriends = candidateIds.some(
-            (id) => scopeByUser.get(id) === "FRIENDS_OF_FRIENDS"
-          );
-          const friendOfFriendIds = needsMutualFriends
-            ? new Set(
-                (await friendshipRepository.resolveViewerGraph(callerId))
-                  .friendOfFriendIds
-              )
-            : new Set<string>();
-          const friendIdSet = new Set(friendIds);
-          const rowByPeer = new Map(
-            rows.map((r) => [
-              r.requesterId === callerId ? r.addresseeId : r.requesterId,
-              r,
-            ])
-          );
-          const relationships = candidateIds.map((userId) => {
-            const row = rowByPeer.get(userId) ?? null;
-            const view = buildFriendshipView(
-              callerId,
-              row,
-              blockedIds.has(userId)
-            );
-            const relationship = toChatRelationship(view);
-            const isPending = view.status === "PENDING";
-            return {
-              userId,
-              status: relationship.status,
-              direction: relationship.direction ?? "",
-              friendshipId: row?.id ?? "",
-              requesterId: isPending && row ? row.requesterId : "",
-              canAccept: view.canAccept,
-              canReject: view.canReject,
-              canCancel: view.canCancel,
-              // Either-direction block. `status` stays one-directional on
-              // purpose (an incoming block must not be visible as BLOCKED);
-              // this flag exists only for action gates that must refuse both
-              // ways, e.g. sending a group/community invite DM.
-              blockedEitherWay:
-                blockedIds.has(userId) || blockedByIds.has(userId),
-              // The incoming direction on its own — `status` hides it and
-              // `blockedEitherWay` cannot separate it from the caller's own
-              // block under a mutual block. Consumed only by chat-service's
-              // pair-state resolver, which has to tell "you blocked them" from
-              // "they blocked you" to pick between an Unblock action and a
-              // disabled composer.
-              blockedByPeer: blockedByIds.has(userId),
-              // Same gate `friendshipService.sendRequest` enforces, so a
-              // private-chat / inbox peer never renders an Add Friend action
-              // the write path would reject.
-              canSendRequest: canSendFriendRequest(
-                {
-                  privacySettings: {
-                    whoCanSendFriendRequests: scopeByUser.get(userId) ?? null,
-                  },
-                },
-                {
-                  isSelf: userId === callerId,
-                  isFriend: friendIdSet.has(userId),
-                  isFriendOfFriend: friendOfFriendIds.has(userId),
-                },
-                {
-                  status: relationship.status,
-                  isBlockedEitherWay:
-                    blockedIds.has(userId) || blockedByIds.has(userId),
-                }
-              ),
-            };
-          });
-          callback(null, { friendIds, relationships });
         } catch (err) {
           logger.error(`gRPC checkFriendships error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });

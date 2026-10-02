@@ -253,6 +253,16 @@ const envSchema = z.object({
     .number()
     .positive()
     .default(300),
+
+  CUSTOM_CREDENTIALS_ENCRYPTION_KEY: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z
+      .string()
+      .refine((v) => Buffer.from(v, "base64").length === 32, {
+        message: "must be base64 of exactly 32 bytes",
+      })
+      .optional()
+  ),
 });
 
 // `FOO_FILE=/run/secrets/foo` supplies `FOO`, so a secret can be a mounted

@@ -6,8 +6,23 @@ import { getRequestContext } from "../../lib/request-context.js";
 import { userAccountService } from "../../services/index.js";
 import type {
   UpdateUserAccountInput,
+  UserAvatarUploadUrlInput,
   UserSocialProviderParam,
 } from "../validators/index.js";
+
+export const createUserAvatarUploadUrl: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const result = await userAccountService.createAvatarUploadUrl(
+        req.params.userId as string,
+        req.body as UserAvatarUploadUrlInput
+      );
+      res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
 
 export const getUserAccount: RequestHandler = (req, res, next) => {
   void (async () => {

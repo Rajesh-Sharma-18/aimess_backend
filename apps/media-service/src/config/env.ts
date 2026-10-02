@@ -19,6 +19,7 @@ const envSchema = z.object({
   // chat-service gRPC (MessagingService.CheckMediaAccess) — used to authorize
   // chat-scoped attachment downloads against room/group/community membership.
   CHAT_GRPC_URL: z.string().default("127.0.0.1:4004"),
+  BACKOFFICE_GRPC_URL: z.string().default("127.0.0.1:4010"),
 
   JWT_ACCESS_SECRET: z.preprocess(
     (v) => (v === "" ? undefined : v),

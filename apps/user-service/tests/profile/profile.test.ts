@@ -111,6 +111,26 @@ function profileRecord(overrides: Record<string, unknown> = {}) {
 }
 
 describe("GET /api/v1/users/profiles/me", () => {
+  it("adds the credentials for the caller's platform", async () => {
+    repo.findByUserId.mockResolvedValue(profileRecord());
+    const backoffice = await import("../../src/grpc/backoffice.client.js");
+    const listCredentials = backoffice.listCustomCredentials as unknown as jest.Mock;
+    const platformFor = backoffice.credentialPlatformFor as unknown as jest.Mock;
+    platformFor.mockReturnValueOnce("WEB");
+    listCredentials.mockResolvedValueOnce({ GIPHY_API_KEY: "giphy-web-key" });
+
+    const res = await request(app)
+      .get("/api/v1/users/profiles/me")
+      .set(auth())
+      .set("X-Platform", "web");
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.userId).toBe(TEST_USER_ID);
+    expect(res.body.data.credentials).toEqual({ GIPHY_API_KEY: "giphy-web-key" });
+    expect(platformFor).toHaveBeenCalledWith("web");
+    expect(listCredentials).toHaveBeenCalledWith("WEB");
+  });
+
   it("returns the caller's profile → 200", async () => {
     repo.findByUserId.mockResolvedValue(profileRecord());
 

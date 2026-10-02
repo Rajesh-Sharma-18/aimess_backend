@@ -75,7 +75,10 @@ model Livestream {
   flvUrl        String?
   dashUrl       String?
   commentStatus Boolean   @default(true)
-  viewerCount   Int       @default(0)
+  // Host slow mode: seconds a non-mod viewer waits between live comments.
+  // Null/0 = off. Nullable so existing documents need no backfill.
+  slowModeSec   Int?
+  viewerCount  Int       @default(0)
   peakViewers   Int       @default(0)
   totalViews    Int       @default(0)
   totalComments Int       @default(0)
