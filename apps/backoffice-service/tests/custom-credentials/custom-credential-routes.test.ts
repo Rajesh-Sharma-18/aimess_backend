@@ -12,6 +12,7 @@ jest.mock("../../src/services/index.js", () => {
     ...actual,
     customCredentialService: {
       list: jest.fn(),
+      reveal: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
       remove: jest.fn(),
@@ -19,7 +20,7 @@ jest.mock("../../src/services/index.js", () => {
   };
 });
 
-import { BadRequestError, ConflictError, NotFoundError } from "@aimess/errors";
+import { ConflictError, NotFoundError } from "@aimess/errors";
 import request from "supertest";
 
 import { app } from "../../src/app.js";
@@ -59,13 +60,10 @@ beforeEach(() => {
 
 const ROUTES = [
   ["get", "/v1/custom-credentials", undefined],
+  ["get", `/v1/custom-credentials/${ID}`, undefined],
   ["post", "/v1/custom-credentials", BODY],
-  [
-    "patch",
-    `/v1/custom-credentials/${ID}`,
-    { value: "abcdefgh1234", password: "secret-pass" },
-  ],
-  ["delete", `/v1/custom-credentials/${ID}`, { password: "secret-pass" }],
+  ["patch", `/v1/custom-credentials/${ID}`, { value: "abcdefgh1234" }],
+  ["delete", `/v1/custom-credentials/${ID}`, undefined],
 ] as const;
 
 describe("access control", () => {
@@ -90,6 +88,30 @@ describe("GET /v1/custom-credentials", () => {
     const res = await request(app).get("/v1/custom-credentials").set(auth());
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([VIEW]);
+  });
+});
+
+describe("GET /v1/custom-credentials/:credentialId", () => {
+  it("returns the credential with its value", async () => {
+    svc.reveal.mockResolvedValue({ ...VIEW, value: "abcdefgh1234" });
+    const res = await request(app)
+      .get(`/v1/custom-credentials/${ID}`)
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.data.value).toBe("abcdefgh1234");
+    expect(svc.reveal).toHaveBeenCalledWith(
+      ID,
+      expect.any(String),
+      expect.any(Object)
+    );
+  });
+
+  it("rejects a non-uuid id", async () => {
+    const res = await request(app)
+      .get("/v1/custom-credentials/not-a-uuid")
+      .set(auth());
+    expect(res.status).toBe(400);
+    expect(svc.reveal).not.toHaveBeenCalled();
   });
 });
 
@@ -142,25 +164,20 @@ describe("PATCH /v1/custom-credentials/:credentialId", () => {
     const res = await request(app)
       .patch(`/v1/custom-credentials/${ID}`)
       .set(auth())
-      .send({ platform: "IOS", password: "secret-pass" });
+      .send({ platform: "IOS" });
     expect(res.status).toBe(200);
     expect(svc.update).toHaveBeenCalledWith(
       ID,
       { platform: "IOS" },
-      "secret-pass",
       expect.any(String),
       expect.any(Object)
     );
   });
 
   it.each([
-    ["no changes", ID, { password: "secret-pass" }],
-    ["a missing password", ID, { platform: "IOS" }],
-    [
-      "a non-uuid id",
-      "not-a-uuid",
-      { platform: "IOS", password: "secret-pass" },
-    ],
+    ["no changes", ID, {}],
+    ["an unexpected password field", ID, { platform: "IOS", password: "x" }],
+    ["a non-uuid id", "not-a-uuid", { platform: "IOS" }],
   ])("rejects %s", async (_label, id, body) => {
     const res = await request(app)
       .patch(`/v1/custom-credentials/${id}`)
@@ -177,44 +194,31 @@ describe("PATCH /v1/custom-credentials/:credentialId", () => {
     const res = await request(app)
       .patch(`/v1/custom-credentials/${ID}`)
       .set(auth())
-      .send({ platform: "IOS", password: "secret-pass" });
+      .send({ platform: "IOS" });
     expect(res.status).toBe(404);
   });
 });
 
 describe("DELETE /v1/custom-credentials/:credentialId", () => {
-  it("deletes with the admin's password", async () => {
+  it("deletes the credential", async () => {
     const res = await request(app)
       .delete(`/v1/custom-credentials/${ID}`)
-      .set(auth())
-      .send({ password: "secret-pass" });
+      .set(auth());
     expect(res.status).toBe(200);
     expect(svc.remove).toHaveBeenCalledWith(
       ID,
-      "secret-pass",
       expect.any(String),
       expect.any(Object)
     );
   });
 
-  it("requires a password", async () => {
-    const res = await request(app)
-      .delete(`/v1/custom-credentials/${ID}`)
-      .set(auth())
-      .send({});
-    expect(res.status).toBe(400);
-    expect(svc.remove).not.toHaveBeenCalled();
-  });
-
-  it("surfaces a wrong password as 400", async () => {
+  it("404s on an unknown credential", async () => {
     svc.remove.mockRejectedValue(
-      new BadRequestError("AUTH_CURRENT_PASSWORD_INVALID")
+      new NotFoundError("CUSTOM_CREDENTIAL_NOT_FOUND")
     );
     const res = await request(app)
       .delete(`/v1/custom-credentials/${ID}`)
-      .set(auth())
-      .send({ password: "wrong" });
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe("AUTH_CURRENT_PASSWORD_INVALID");
+      .set(auth());
+    expect(res.status).toBe(404);
   });
 });

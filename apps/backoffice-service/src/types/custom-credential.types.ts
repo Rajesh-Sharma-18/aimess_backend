@@ -11,6 +11,8 @@ export type CustomCredentialView = {
   updatedAt: number;
 };
 
+export type CustomCredentialDetail = CustomCredentialView & { value: string };
+
 export type CreateCustomCredentialInput = {
   name: string;
   platform: CustomCredentialPlatform;

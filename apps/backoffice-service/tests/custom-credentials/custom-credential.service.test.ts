@@ -63,20 +63,11 @@ jest.mock("../../src/repositories/custom-credential.repository.js", () => ({
     }),
   },
 }));
-jest.mock("../../src/repositories/admin-user.repository.js", () => ({
-  adminUserRepository: { findById: jest.fn() },
-}));
-jest.mock("../../src/lib/password.js", () => ({
-  verifyPassword: jest.fn(
-    async (plain: string) => plain === "correct-password"
-  ),
-}));
 jest.mock("../../src/services/audit.service.js", () => ({
   auditService: { record: jest.fn(async () => undefined) },
 }));
 
 import {
-  BadRequestError,
   ConflictError,
   NotFoundError,
   ServiceUnavailableError,
@@ -84,12 +75,10 @@ import {
 
 import { env } from "../../src/config/env.js";
 import { AUDIT_ACTIONS } from "../../src/constants/index.js";
-import { adminUserRepository } from "../../src/repositories/admin-user.repository.js";
 import { customCredentialService } from "../../src/services/custom-credential.service.js";
 import { auditService } from "../../src/services/audit.service.js";
 
 const audit = auditService as unknown as { record: jest.Mock };
-const findAdmin = adminUserRepository.findById as jest.Mock;
 const mutableEnv = env as { CUSTOM_CREDENTIALS_ENCRYPTION_KEY?: string };
 const KEY = mutableEnv.CUSTOM_CREDENTIALS_ENCRYPTION_KEY;
 const ACTOR = "11111111-1111-4111-8111-111111111111";
@@ -108,7 +97,6 @@ beforeEach(() => {
   nextId = 0;
   jest.clearAllMocks();
   mutableEnv.CUSTOM_CREDENTIALS_ENCRYPTION_KEY = KEY;
-  findAdmin.mockResolvedValue({ id: ACTOR, passwordHash: "hash" });
 });
 
 describe("customCredentialService", () => {
@@ -170,15 +158,21 @@ describe("customCredentialService", () => {
     await createGiphy("ALL", "shared-key-0000");
     await createGiphy("IOS", "ios-key-0002");
 
-    await expect(customCredentialService.resolve("GIPHY_API_KEY", "ANDROID")).resolves.toEqual({
+    await expect(
+      customCredentialService.resolve("GIPHY_API_KEY", "ANDROID")
+    ).resolves.toEqual({
       configured: true,
       value: "shared-key-0000",
     });
-    await expect(customCredentialService.resolve("GIPHY_API_KEY", "WEB")).resolves.toEqual({
+    await expect(
+      customCredentialService.resolve("GIPHY_API_KEY", "WEB")
+    ).resolves.toEqual({
       configured: true,
       value: "shared-key-0000",
     });
-    await expect(customCredentialService.resolve("GIPHY_API_KEY", "IOS")).resolves.toEqual({
+    await expect(
+      customCredentialService.resolve("GIPHY_API_KEY", "IOS")
+    ).resolves.toEqual({
       configured: true,
       value: "ios-key-0002",
     });
@@ -204,8 +198,12 @@ describe("customCredentialService", () => {
       GIPHY_API_KEY: "shared-key-0000",
       MAPS_KEY: "shared-maps-key",
     });
-    await expect(customCredentialService.listForPlatform("ALL")).resolves.toEqual([]);
-    await expect(customCredentialService.listForPlatform("DESKTOP")).resolves.toEqual([]);
+    await expect(
+      customCredentialService.listForPlatform("ALL")
+    ).resolves.toEqual([]);
+    await expect(
+      customCredentialService.listForPlatform("DESKTOP")
+    ).resolves.toEqual([]);
   });
 
   it("edits name and platform without touching the stored value", async () => {
@@ -215,7 +213,6 @@ describe("customCredentialService", () => {
     const view = await customCredentialService.update(
       created.id,
       { name: "GIPHY_WEB_KEY", platform: "IOS" },
-      "correct-password",
       ACTOR,
       CTX
     );
@@ -229,7 +226,6 @@ describe("customCredentialService", () => {
     const view = await customCredentialService.update(
       created.id,
       { value: "replacement-key-9876" },
-      "correct-password",
       ACTOR,
       CTX
     );
@@ -242,20 +238,6 @@ describe("customCredentialService", () => {
     });
   });
 
-  it("edits only with the acting admin's correct password", async () => {
-    const created = await createGiphy();
-    await expect(
-      customCredentialService.update(
-        created.id,
-        { platform: "IOS" },
-        "wrong-password",
-        ACTOR,
-        CTX
-      )
-    ).rejects.toBeInstanceOf(BadRequestError);
-    expect(rows.get(created.id)!.platform).toBe("WEB");
-  });
-
   it("refuses an edit that collides with another row", async () => {
     await createGiphy("ANDROID");
     const ios = await createGiphy("IOS");
@@ -263,7 +245,6 @@ describe("customCredentialService", () => {
       customCredentialService.update(
         ios.id,
         { platform: "ANDROID" },
-        "correct-password",
         ACTOR,
         CTX
       )
@@ -272,16 +253,10 @@ describe("customCredentialService", () => {
 
   it("404s on editing or deleting an unknown row", async () => {
     await expect(
-      customCredentialService.update(
-        "missing",
-        { name: "X_KEY" },
-        "correct-password",
-        ACTOR,
-        CTX
-      )
+      customCredentialService.update("missing", { name: "X_KEY" }, ACTOR, CTX)
     ).rejects.toBeInstanceOf(NotFoundError);
     await expect(
-      customCredentialService.remove("missing", "correct-password", ACTOR, CTX)
+      customCredentialService.remove("missing", ACTOR, CTX)
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
@@ -291,22 +266,34 @@ describe("customCredentialService", () => {
     expect(rows.size).toBe(0);
   });
 
-  it("deletes only with the acting admin's correct password", async () => {
+  it("reveals the decrypted value and audits the view", async () => {
     const created = await createGiphy();
 
-    await expect(
-      customCredentialService.remove(created.id, "wrong-password", ACTOR, CTX)
-    ).rejects.toBeInstanceOf(BadRequestError);
-    expect(rows.size).toBe(1);
+    const detail = await customCredentialService.reveal(created.id, ACTOR, CTX);
 
-    await customCredentialService.remove(
-      created.id,
-      "correct-password",
-      ACTOR,
-      CTX
+    expect(detail).toMatchObject({
+      id: created.id,
+      name: "GIPHY_API_KEY",
+      value: SECRET,
+    });
+    expect(audit.record).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        action: AUDIT_ACTIONS.CUSTOM_CREDENTIAL_VIEWED,
+        after: { name: "GIPHY_API_KEY", platform: "WEB" },
+      })
     );
+    expect(JSON.stringify(audit.record.mock.calls)).not.toContain(SECRET);
+    await expect(
+      customCredentialService.reveal("missing", ACTOR, CTX)
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("deletes a credential and audits it", async () => {
+    const created = await createGiphy();
+
+    await customCredentialService.remove(created.id, ACTOR, CTX);
+
     expect(rows.size).toBe(0);
-    expect(findAdmin).toHaveBeenCalledWith(ACTOR);
     expect(audit.record).toHaveBeenLastCalledWith(
       expect.objectContaining({
         action: AUDIT_ACTIONS.CUSTOM_CREDENTIAL_DELETED,
@@ -315,26 +302,19 @@ describe("customCredentialService", () => {
     );
   });
 
-  it("never writes the secret or the password into the audit trail", async () => {
+  it("never writes the secret into the audit trail", async () => {
     const created = await createGiphy();
     await customCredentialService.update(
       created.id,
       { value: "replacement-key-9876" },
-      "correct-password",
       ACTOR,
       CTX
     );
-    await customCredentialService.remove(
-      created.id,
-      "correct-password",
-      ACTOR,
-      CTX
-    );
+    await customCredentialService.remove(created.id, ACTOR, CTX);
 
     const trail = JSON.stringify(audit.record.mock.calls);
     expect(trail).not.toContain(SECRET);
     expect(trail).not.toContain("replacement-key-9876");
-    expect(trail).not.toContain("correct-password");
     expect(audit.record).toHaveBeenCalledWith(
       expect.objectContaining({
         action: AUDIT_ACTIONS.CUSTOM_CREDENTIAL_UPDATED,

@@ -3598,23 +3598,23 @@ export const openApiSchemas = {
   },
   AdminCustomCredentialUpdateRequest: {
     type: "object",
-    description: "`password` plus at least one of `name`, `platform`, `value`.",
-    required: ["password"],
+    description: "At least one of `name`, `platform`, `value`.",
     additionalProperties: false,
     properties: {
-      password: { type: "string", description: "The acting admin's own password." },
       name: { type: "string", minLength: 2, maxLength: 64, pattern: "^[A-Z][A-Z0-9_]*$" },
       platform: { type: "string", enum: ["ALL", "ANDROID", "IOS", "WEB"] },
       value: { type: "string", minLength: 8, maxLength: 512 },
     },
   },
-  AdminCustomCredentialDeleteRequest: {
-    type: "object",
-    required: ["password"],
-    additionalProperties: false,
-    properties: {
-      password: { type: "string", description: "The acting admin's own password." },
-    },
+  AdminCustomCredentialDetail: {
+    allOf: [
+      { $ref: "#/components/schemas/AdminCustomCredential" },
+      {
+        type: "object",
+        properties: { value: { type: "string", description: "The decrypted value." } },
+        required: ["value"],
+      },
+    ],
   },
 
   // ---- Categories ----

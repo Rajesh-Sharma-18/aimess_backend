@@ -7,7 +7,6 @@ import { customCredentialService } from "../../services/index.js";
 import type {
   CreateCustomCredentialBody,
   CustomCredentialIdParam,
-  DeleteCustomCredentialBody,
   UpdateCustomCredentialBody,
 } from "../validators/custom-credential.validator.js";
 
@@ -19,6 +18,26 @@ export const listCustomCredentials: RequestHandler = (req, res, next) => {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(result, t("ADMIN_CUSTOM_CREDENTIALS_FETCHED", req.locale))
+        );
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+export const getCustomCredential: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const { credentialId } = req.params as CustomCredentialIdParam;
+      const result = await customCredentialService.reveal(
+        credentialId,
+        req.admin!.id,
+        getRequestContext(req)
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("ADMIN_CUSTOM_CREDENTIAL_FETCHED", req.locale))
         );
     } catch (error) {
       next(error);
@@ -49,11 +68,9 @@ export const updateCustomCredential: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const { credentialId } = req.params as CustomCredentialIdParam;
-      const { password, ...changes } = req.body as UpdateCustomCredentialBody;
       const result = await customCredentialService.update(
         credentialId,
-        changes,
-        password,
+        req.body as UpdateCustomCredentialBody,
         req.admin!.id,
         getRequestContext(req)
       );
@@ -72,10 +89,8 @@ export const deleteCustomCredential: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const { credentialId } = req.params as CustomCredentialIdParam;
-      const { password } = req.body as DeleteCustomCredentialBody;
       await customCredentialService.remove(
         credentialId,
-        password,
         req.admin!.id,
         getRequestContext(req)
       );
