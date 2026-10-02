@@ -757,6 +757,43 @@ export const ADMIN_MESSAGES = {
     th: "อัปเดตสถานะการโทรแล้ว",
   },
 
+  // ── Custom credentials ───────────────────────────────────────────────────
+  ADMIN_CUSTOM_CREDENTIALS_FETCHED: {
+    vi: "Đã tải danh sách thông tin xác thực",
+    en: "Custom credentials fetched",
+    th: "ดึงข้อมูลข้อมูลรับรองแล้ว",
+  },
+  ADMIN_CUSTOM_CREDENTIAL_CREATED: {
+    vi: "Đã thêm thông tin xác thực",
+    en: "Credential added",
+    th: "เพิ่มข้อมูลรับรองแล้ว",
+  },
+  ADMIN_CUSTOM_CREDENTIAL_UPDATED: {
+    vi: "Đã cập nhật thông tin xác thực",
+    en: "Credential updated",
+    th: "อัปเดตข้อมูลรับรองแล้ว",
+  },
+  ADMIN_CUSTOM_CREDENTIAL_DELETED: {
+    vi: "Đã xóa thông tin xác thực",
+    en: "Credential removed",
+    th: "ลบข้อมูลรับรองแล้ว",
+  },
+  CUSTOM_CREDENTIAL_NOT_FOUND: {
+    vi: "Không tìm thấy thông tin xác thực",
+    en: "Credential not found",
+    th: "ไม่พบข้อมูลรับรอง",
+  },
+  CUSTOM_CREDENTIAL_EXISTS: {
+    vi: "Đã có thông tin xác thực với tên này cho nền tảng này",
+    en: "A credential with this name already exists for this platform",
+    th: "มีข้อมูลรับรองชื่อนี้สำหรับแพลตฟอร์มนี้อยู่แล้ว",
+  },
+  CUSTOM_CREDENTIAL_ENCRYPTION_UNAVAILABLE: {
+    vi: "Máy chủ chưa được cấu hình khóa mã hóa thông tin xác thực",
+    en: "Credential storage is not configured on the server",
+    th: "เซิร์ฟเวอร์ยังไม่ได้กำหนดค่าการเข้ารหัสข้อมูลรับรอง",
+  },
+
   // ── Errors that reached the panel as raw tokens ──────────────────────────
   // Every key below was already being thrown by backoffice-service but had no
   // entry here, so `buildApiError`'s `localize()` fell through to

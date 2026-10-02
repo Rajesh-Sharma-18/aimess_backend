@@ -9,8 +9,10 @@ import {
   cancelUploadSchema,
   confirmUploadSchema,
   scanStatusQuerySchema,
+  gifSearchQuerySchema,
 } from "../validators/media.validator.js";
 import { mediaService } from "../../services/media.service.js";
+import { giphyPlatformFor, giphyService } from "../../services/giphy.service.js";
 
 export class MediaController {
   getUploadUrl = asyncHandler(async (req: Request, res: Response) => {
@@ -98,6 +100,17 @@ export class MediaController {
    * while the Bull worker scans (or when no status is recorded yet), "CLEAN"
    * once downloadable, "QUARANTINED"/"INFECTED" if rejected.
    */
+  getGifs = asyncHandler(async (req: Request, res: Response) => {
+    const parsed = gifSearchQuerySchema.safeParse(req.query);
+    if (!parsed.success) throw new BadRequestError("MEDIA_REQUEST_INVALID");
+
+    const result = await giphyService.search(
+      parsed.data,
+      giphyPlatformFor(req.get("x-platform"))
+    );
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
   getScanStatus = asyncHandler(async (req: Request, res: Response) => {
     const parsed = scanStatusQuerySchema.safeParse(req.query);
     if (!parsed.success) throw new BadRequestError("MEDIA_REQUEST_INVALID");

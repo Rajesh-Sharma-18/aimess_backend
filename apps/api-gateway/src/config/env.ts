@@ -45,6 +45,7 @@ const envSchema = z.object({
   NOTIFICATION_GRPC_URL: z.string().min(1),
   /** stream-service gRPC URL (livestream comments) — used by the /stream socket namespace. */
   STREAM_GRPC_URL: z.string().min(1).default("0.0.0.0:4007"),
+  BACKOFFICE_GRPC_URL: z.string().min(1).default("127.0.0.1:4010"),
   /**
    * Same JWT secret as auth-service — used by socket auth middleware.
    *

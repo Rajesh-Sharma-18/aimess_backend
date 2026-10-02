@@ -3559,6 +3559,64 @@ export const openApiSchemas = {
     },
   },
 
+  AdminCustomCredential: {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      name: { type: "string", example: "GIPHY_API_KEY" },
+      platform: { type: "string", enum: ["ALL", "ANDROID", "IOS", "WEB"], example: "WEB" },
+      maskedValue: { type: "string", example: "••••a1b2" },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
+      updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
+    },
+    required: ["id", "name", "platform", "maskedValue", "createdAt", "updatedAt"],
+  },
+  AdminCustomCredentialList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/AdminCustomCredential" },
+  },
+  AdminCustomCredentialCreateRequest: {
+    type: "object",
+    required: ["name", "platform", "value"],
+    additionalProperties: false,
+    properties: {
+      name: {
+        type: "string",
+        minLength: 2,
+        maxLength: 64,
+        pattern: "^[A-Z][A-Z0-9_]*$",
+        example: "GIPHY_API_KEY",
+      },
+      platform: { type: "string", enum: ["ALL", "ANDROID", "IOS", "WEB"] },
+      value: {
+        type: "string",
+        minLength: 8,
+        maxLength: 512,
+        description: "Trimmed; no whitespace.",
+      },
+    },
+  },
+  AdminCustomCredentialUpdateRequest: {
+    type: "object",
+    description: "`password` plus at least one of `name`, `platform`, `value`.",
+    required: ["password"],
+    additionalProperties: false,
+    properties: {
+      password: { type: "string", description: "The acting admin's own password." },
+      name: { type: "string", minLength: 2, maxLength: 64, pattern: "^[A-Z][A-Z0-9_]*$" },
+      platform: { type: "string", enum: ["ALL", "ANDROID", "IOS", "WEB"] },
+      value: { type: "string", minLength: 8, maxLength: 512 },
+    },
+  },
+  AdminCustomCredentialDeleteRequest: {
+    type: "object",
+    required: ["password"],
+    additionalProperties: false,
+    properties: {
+      password: { type: "string", description: "The acting admin's own password." },
+    },
+  },
+
   // ---- Categories ----
   // Owned by community-service's `CommunityCategory` (community_db); the
   // admin panel manages it exclusively through a gRPC bridge — no duplicate
@@ -4848,6 +4906,13 @@ export const openApiSchemas = {
     description: "Profile fields (GET/PATCH /profiles/me response).",
     properties: {
       userId: { type: "string", format: "uuid" },
+      credentials: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description:
+          "GET only. Custom credentials configured by a Super Admin for the `X-Platform` platform (android, ios, otherwise web), keyed by name; platform rows override All Platforms rows.",
+        example: { GIPHY_API_KEY: "xxxxxxxx" },
+      },
       username: { type: "string" },
       firstName: { type: "string" },
       lastName: { type: "string" },
@@ -5474,6 +5539,13 @@ export const openApiSchemas = {
         description: "If true, continue without update UI.",
       },
       storeUrl: { type: "string", format: "uri", nullable: true },
+      credentials: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description:
+          "Custom credentials configured by a Super Admin for this platform, keyed by name (platform rows override All Platforms rows). Empty unless the request carries a valid access token of a non-banned user.",
+        example: { GIPHY_API_KEY: "xxxxxxxx" },
+      },
     },
     required: [
       "platform",

@@ -34,6 +34,15 @@ export const mediaRateLimiter = rateLimit({
  * HEAD plus a DB read each), so this bounds a runaway client loop. It does not
  * try to shape the normal polling rate.
  */
+export const mediaGifRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 600,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  keyGenerator: (req) => req.auth?.userId ?? req.auth?.sessionId ?? req.ip,
+  handler: rateLimitHandler(),
+});
+
 export const mediaScanStatusRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 1500,

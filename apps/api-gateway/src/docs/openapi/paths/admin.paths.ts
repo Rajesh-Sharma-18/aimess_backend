@@ -39,6 +39,7 @@ const adminTags = {
   systemHealth: "Admin — System Health",
   adminAccounts: "Admin — Admin Accounts",
   systemMaintenance: "Admin — System Maintenance",
+  customCredentials: "Admin — Custom Credentials",
 } as const;
 
 const adminSecurity = [{ adminBearerAuth: [] }];
@@ -3870,6 +3871,126 @@ export const adminPaths = {
         "400": errRes("confirm must be true"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing settings.manage"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+
+  "/admin/v1/custom-credentials": {
+    get: {
+      tags: [adminTags.customCredentials],
+      operationId: "adminListCustomCredentials",
+      summary: "List third-party credentials",
+      description:
+        "Every stored credential, sorted by name then platform. Values are never returned, only `maskedValue` (last four characters). Requires settings.manage (SUPER_ADMIN).",
+      security: adminSecurity,
+      responses: {
+        "200": okRes(
+          "Custom credentials",
+          "#/components/schemas/AdminCustomCredentialList"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing settings.manage"),
+      },
+      "x-implementation-status": "implemented",
+    },
+    post: {
+      tags: [adminTags.customCredentials],
+      operationId: "adminCreateCustomCredential",
+      summary: "Add a credential",
+      description:
+        "`name` + `platform` is unique. The value is encrypted at rest (AES-256-GCM) and never echoed back. GIPHY search reads the credential named `GIPHY_API_KEY` for the caller's platform. Audited as custom_credential.created without the value. Requires settings.manage (SUPER_ADMIN).",
+      security: adminSecurity,
+      requestBody: jsonBody(
+        "#/components/schemas/AdminCustomCredentialCreateRequest"
+      ),
+      responses: {
+        "201": okRes(
+          "Credential added",
+          "#/components/schemas/AdminCustomCredential"
+        ),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing settings.manage"),
+        "409": errRes("CUSTOM_CREDENTIAL_EXISTS"),
+        "503": errRes(
+          "CUSTOM_CREDENTIAL_ENCRYPTION_UNAVAILABLE — no encryption key configured on the server"
+        ),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/custom-credentials/{credentialId}": {
+    patch: {
+      tags: [adminTags.customCredentials],
+      operationId: "adminUpdateCustomCredential",
+      summary: "Edit a credential",
+      description:
+        "Requires the acting admin's own password, plus any subset of `name`, `platform`, `value`. Omitting `value` keeps the stored secret. A wrong password is 400 AUTH_CURRENT_PASSWORD_INVALID. Audited as custom_credential.updated without the value. Requires settings.manage (SUPER_ADMIN).",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "credentialId",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      requestBody: jsonBody(
+        "#/components/schemas/AdminCustomCredentialUpdateRequest"
+      ),
+      responses: {
+        "200": okRes(
+          "Credential updated",
+          "#/components/schemas/AdminCustomCredential"
+        ),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing settings.manage"),
+        "404": errRes("CUSTOM_CREDENTIAL_NOT_FOUND"),
+        "409": errRes("CUSTOM_CREDENTIAL_EXISTS"),
+        "503": errRes("CUSTOM_CREDENTIAL_ENCRYPTION_UNAVAILABLE"),
+      },
+      "x-implementation-status": "implemented",
+    },
+    delete: {
+      tags: [adminTags.customCredentials],
+      operationId: "adminDeleteCustomCredential",
+      summary: "Delete a credential",
+      description:
+        "Requires the acting admin's own password in the body. Audited as custom_credential.deleted. Requires settings.manage (SUPER_ADMIN).",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "credentialId",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      requestBody: jsonBody(
+        "#/components/schemas/AdminCustomCredentialDeleteRequest"
+      ),
+      responses: {
+        "200": {
+          description: "Credential deleted",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  data: { type: "null" },
+                },
+                required: ["success", "data"],
+              },
+            },
+          },
+        },
+        "400": errRes("Validation failed or AUTH_CURRENT_PASSWORD_INVALID"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing settings.manage"),
+        "404": errRes("CUSTOM_CREDENTIAL_NOT_FOUND"),
       },
       "x-implementation-status": "implemented",
     },

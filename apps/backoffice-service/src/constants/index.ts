@@ -137,6 +137,9 @@ export const AUDIT_ACTIONS = {
   // Notification-category catalogue configuration. Only ever an UPDATE: the
   // catalogue is fixed, so there is no created/deleted counterpart to add.
   NOTIFICATION_CATEGORY_UPDATED: "notification_category.updated",
+  CUSTOM_CREDENTIAL_CREATED: "custom_credential.created",
+  CUSTOM_CREDENTIAL_UPDATED: "custom_credential.updated",
+  CUSTOM_CREDENTIAL_DELETED: "custom_credential.deleted",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

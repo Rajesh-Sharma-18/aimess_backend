@@ -7,7 +7,25 @@ service BackofficeService {
   // emails live in admin_db, which auth-service cannot see, so without this hop
   // a user could link/change to an email already used by an admin account.
   rpc IsAdminEmailTaken (IsAdminEmailTakenRequest) returns (IsAdminEmailTakenResponse);
+  rpc GetCustomCredential (GetCustomCredentialRequest) returns (GetCustomCredentialResponse);
+  rpc ListCustomCredentials (ListCustomCredentialsRequest) returns (ListCustomCredentialsResponse);
 }
 
 message IsAdminEmailTakenRequest { string email = 1; }
 message IsAdminEmailTakenResponse { bool taken = 1; }
+
+message GetCustomCredentialRequest {
+  string name = 1;
+  string platform = 2;
+}
+message GetCustomCredentialResponse {
+  bool configured = 1;
+  string value = 2;
+}
+
+message ListCustomCredentialsRequest { string platform = 1; }
+message CustomCredentialEntry {
+  string name = 1;
+  string value = 2;
+}
+message ListCustomCredentialsResponse { repeated CustomCredentialEntry credentials = 1; }

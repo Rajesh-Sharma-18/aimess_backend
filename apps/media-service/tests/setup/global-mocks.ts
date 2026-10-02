@@ -41,6 +41,11 @@ jest.mock("../../src/grpc/clients/chat-access.client.js", () => {
   return { getChatAccessClient: jest.fn(() => ({ checkMediaAccess })) };
 });
 
+jest.mock("../../src/grpc/clients/backoffice.client.js", () => {
+  const getCustomCredential = jest.fn(async () => ({ configured: false, value: "" }));
+  return { getBackofficeClient: jest.fn(() => ({ getCustomCredential })) };
+});
+
 // --- Redis client (prevents live Redis connection in tests) ----------------
 jest.mock("../../src/config/redis.js", () => ({
   redis: {

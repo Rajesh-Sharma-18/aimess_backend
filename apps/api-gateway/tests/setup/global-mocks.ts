@@ -30,6 +30,10 @@ jest.mock("../../src/docs/asyncapi.js", () => ({
 // --- App-version store: top-level `import.meta.url` (ESM-only). The factory's
 //     `.get()` resolves the in-memory defaults passed by app-version/index.ts,
 //     so /app-version/check works without ever touching the filesystem. -------
+jest.mock("../../src/grpc/clients/backoffice.client.js", () => ({
+  listCustomCredentials: jest.fn(async () => ({})),
+}));
+
 jest.mock("../../src/app-version/app-version.store.js", () => ({
   createAppVersionStore: (opts: { defaults: unknown }) => ({
     get: jest.fn(async () => opts.defaults),

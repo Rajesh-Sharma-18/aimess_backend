@@ -97,6 +97,12 @@ export {
   updateNotificationCategories,
   updateNotificationCategory,
 } from "./notification-category.controller.js";
+export {
+  createCustomCredential,
+  deleteCustomCredential,
+  listCustomCredentials,
+  updateCustomCredential,
+} from "./custom-credential.controller.js";
 export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";
 export { getSystemHealth } from "./system-health.controller.js";
 export {
