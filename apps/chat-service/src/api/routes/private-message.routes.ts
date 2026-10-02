@@ -152,6 +152,15 @@ export function createPrivateMessageRoutes(
     messageCtrl.markRead
   );
 
+  // Delivered receipt over REST — for a push-woken client with no socket
+  router.post(
+    "/rooms/:roomId/delivered",
+    authenticate,
+    readLimit,
+    validateBody(markReadBodySchema),
+    messageCtrl.markDelivered
+  );
+
   // Get messages in a room
   router.get(
     "/rooms/:roomId/messages",

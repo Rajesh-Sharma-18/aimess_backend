@@ -109,6 +109,32 @@ export class PrivateMessageController {
   });
 
   /**
+   * `POST /private/rooms/:roomId/delivered` — delivered receipt over REST. Same effect and the same
+   * `message:delivered` broadcast as the socket event (room + the sender's own channel).
+   */
+  markDelivered = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { upToMessageId } = req.body as { upToMessageId: string };
+
+    const { count, messageIds, senderId } = await this.messageService.markDeliveredAsParticipant({
+      roomId,
+      recipientId: userId,
+      upToMessageId,
+    });
+    if (count > 0) {
+      const payload = JSON.stringify({
+        event: "message:delivered",
+        data: { conversationId: roomId, recipientId: userId, upToMessageId, messageIds },
+      });
+      await this.redis.publish(`conv:${roomId}`, payload);
+      if (senderId) await this.redis.publish(`user:${senderId}`, payload);
+    }
+
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ updatedCount: count }));
+  });
+
+  /**
    * `GET /private/rooms/:roomId/messages` — the private room timeline. Supports
    * every pagination axis: `before_ts`/`after_ts` (compound `(createdAt, _id)`
    * keyset), the gap-safe `before_seq`/`after_seq` sequence keyset, and

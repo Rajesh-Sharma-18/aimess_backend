@@ -1684,6 +1684,24 @@ export class PrivateMessageService {
     });
   }
 
+  /**
+   * REST twin of the `message:delivered` socket receipt, for a client woken by a push that has
+   * no socket (opening one would show the user online). Only a participant may receipt the room.
+   */
+  async markDeliveredAsParticipant(params: {
+    roomId: string;
+    recipientId: string;
+    upToMessageId: string;
+  }): Promise<{ count: number; messageIds: string[]; senderId: string | null }> {
+    const room = await this.roomRepo.findByRoomId(params.roomId);
+    if (!room || !(room.participants ?? []).includes(params.recipientId)) {
+      throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    }
+    const result = await this.markDelivered(params);
+    const senderId = room.participants.find((id) => id !== params.recipientId) ?? null;
+    return { ...result, senderId };
+  }
+
   async markDelivered(params: {
     roomId: string;
     recipientId: string;
