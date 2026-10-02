@@ -7,7 +7,7 @@ import { env } from "../../config/env.js";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { bindSocketAuditContext } from "../audit-context.js";
 import { createSessionTimers } from "../session-timers.js";
-import { ackOk, ackError } from "../ack.js";
+import { ack, ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
 import { scopeSocketLocale } from "../locale-scope.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
@@ -25,10 +25,6 @@ const RECENT_COMMENTS_LIMIT = 20;
 // Session-set TTL: auto-expires so a crashed gateway (unclean disconnect) cannot
 // leave a livestream pinned at a phantom count.
 const VIEWER_KEY_TTL_SEC = 7200; // 2h
-
-// stream:comment sliding-window rate limit (per user, per stream).
-const COMMENT_RATE_MAX = 10; // comments allowed…
-const COMMENT_RATE_WINDOW_SEC = 5; // …per this window
 
 // Debounce viewer_count broadcasts to ≤ 1 emit/sec per stream so a join/leave
 // storm cannot fan a flood of identical counts out to a whole room.
@@ -678,53 +674,6 @@ export function registerStreamNamespace(
       socket.data as { streamCommentPermissions?: Map<string, boolean> }
     ).streamCommentPermissions = streamCommentPermissions;
 
-    // Sliding-window rate limit on comments (INCR + EXPIRE on first hit).
-    //
-    // Fails OPEN, then degrades to an in-process counter. The fail-open is
-    // deliberate — a Redis outage must not silence livestream chat — but on its
-    // own it was invisible and total: the same outage removes this limiter,
-    // chat-service's message limiters, community invite caps and OTP throttling
-    // at once, with nothing but a swallowed exception to say so. The local
-    // fallback keeps a (per-process, per-socket) ceiling during the outage, and
-    // the error is logged under a greppable key so the gap is alertable rather
-    // than silent.
-    const localCommentWindow = new Map<
-      string,
-      { count: number; resetAt: number }
-    >();
-    const isCommentRateLimitedLocally = (streamId: string): boolean => {
-      const now = Date.now();
-      const entry = localCommentWindow.get(streamId);
-      if (!entry || now >= entry.resetAt) {
-        localCommentWindow.set(streamId, {
-          count: 1,
-          resetAt: now + COMMENT_RATE_WINDOW_SEC * 1000,
-        });
-        return false;
-      }
-      entry.count += 1;
-      return entry.count > COMMENT_RATE_MAX;
-    };
-    const isCommentRateLimited = async (streamId: string): Promise<boolean> => {
-      const key = `rl:stream-comment:${userId}:${streamId}`;
-      try {
-        const count = await redisPub.incr(key);
-        if (count === 1) {
-          await redisPub.expire(key, COMMENT_RATE_WINDOW_SEC);
-        }
-        return count > COMMENT_RATE_MAX;
-      } catch (err) {
-        logger.warn("rate_limit_fail_open", {
-          rule: "stream.comment",
-          userId,
-          streamId,
-          error: String(err),
-          service: "api-gateway",
-        });
-        return isCommentRateLimitedLocally(streamId);
-      }
-    };
-
     socket.on(
       "stream:join",
       (payload: unknown, callback?: (res: unknown) => void) => {
@@ -950,10 +899,8 @@ export function registerStreamNamespace(
           return;
         }
         void (async () => {
-          if (await isCommentRateLimited(streamId)) {
-            ackError(callback, "RATE_LIMITED", locale);
-            return;
-          }
+          // Slow mode + flood live in stream-service's PostComment (the one
+          // gate for every caller); a reject comes back as RESOURCE_EXHAUSTED.
           try {
             // NEVER trust a client userId — always use the authenticated one.
             const result = await streamClient.postComment({
@@ -976,6 +923,24 @@ export function registerStreamNamespace(
             const code = (err as { code?: number }).code;
             if (code === grpcStatus.PERMISSION_DENIED) {
               ackError(callback, "FORBIDDEN", locale);
+            } else if (code === grpcStatus.RESOURCE_EXHAUSTED) {
+              // LIVE_CHAT_FLOOD | LIVE_CHAT_SLOW_MODE (in `detail`). YouTube
+              // style: only this send is rejected; the client keeps its draft,
+              // shows the error inline and re-enables send after retryAfterSec.
+              const { detailKey, retryAfter } = resolveGrpcAckError(err);
+              const retryAfterSec = retryAfter ?? 1;
+              ackError(
+                (res) =>
+                  ack(callback, {
+                    ...(res as object),
+                    retryAfterSec,
+                    keepDraft: true,
+                  }),
+                "RATE_LIMITED",
+                locale,
+                detailKey,
+                retryAfterSec
+              );
             } else if (code === grpcStatus.NOT_FOUND) {
               // The stream no longer exists (deleted or swept between join and
               // send). Permanent, so it must not read as the retryable

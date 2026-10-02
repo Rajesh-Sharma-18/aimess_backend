@@ -267,7 +267,7 @@ export class StreamController {
     const result = await this.livestreamService.setCommentStatus(
       id,
       req.auth.userId,
-      parsed.data.enabled
+      parsed.data
     );
     res
       .status(HTTP_STATUS.OK)

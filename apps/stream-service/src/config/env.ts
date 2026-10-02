@@ -106,6 +106,14 @@ const envSchema = z.object({
   STREAM_CREATE_RATE_WINDOW_SEC: z.coerce.number().positive().default(60),
   /** Max POST /streams per creator per STREAM_CREATE_RATE_WINDOW_SEC. */
   STREAM_CREATE_RATE_MAX: z.coerce.number().positive().default(5),
+  /**
+   * Live chat flood guard, per user per stream (host + community mods exempt):
+   * more than MAX comments inside WINDOW blocks sending for COOLDOWN seconds.
+   * Separate from the host's slow mode (Livestream.slowModeSec).
+   */
+  STREAM_COMMENT_FLOOD_MAX: z.coerce.number().int().positive().default(5),
+  STREAM_COMMENT_FLOOD_WINDOW_SEC: z.coerce.number().int().positive().default(10),
+  STREAM_COMMENT_FLOOD_COOLDOWN_SEC: z.coerce.number().int().positive().default(15),
 
   // ---- SRS (OSSRS) media server endpoints ----
   /** SRS HTTP API base (clients DELETE, GET /api/v1/streams, etc.). */

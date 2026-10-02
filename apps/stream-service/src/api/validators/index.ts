@@ -97,10 +97,17 @@ export const banUserSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 
-/** PATCH /streams/:id/comment-status body — owner enables/disables live chat. */
-export const setCommentStatusSchema = z.object({
-  enabled: z.boolean(),
-});
+/**
+ * PATCH /streams/:id/comment-status body — owner enables/disables live chat
+ * and/or sets slow mode (seconds between a viewer's comments, 0 = off; YouTube
+ * allows 1–300). At least one field.
+ */
+export const setCommentStatusSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    slowModeSec: z.number().int().min(0).max(300).optional(),
+  })
+  .refine((b) => b.enabled !== undefined || b.slowModeSec !== undefined);
 
 /**
  * POST /streams/:id/mute/:userId body — owner or community ADMIN/MODERATOR
