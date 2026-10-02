@@ -30,10 +30,27 @@ export type IosStorePolicy = {
 
 export type AppUpdateCopy = { title?: string; message?: string };
 
+// A rule for ONE app version, overriding the platform default (`mode` +
+// `forceBelowVersion`) for exactly that version. ADMIN_MANAGED + forceUpdate
+// forces it; anything else hands it to the store — which also exempts it from
+// the default's force floor.
+export type VersionRule = {
+  version: string;
+  mode: AppUpdateMode;
+  forceUpdate: boolean;
+  /** UTC epoch ms; set by backoffice when the rule is created or changed. */
+  updatedAt: number;
+};
+
 type PlatformUpdatePolicyBase = {
+  // The platform default: applies to every version without a `versionRules` entry.
   mode: AppUpdateMode;
   forceBelowVersion: string | null;
+  // Derived from `versionRules` (the forced ones) once those exist; kept so a
+  // gateway that predates `versionRules` still forces the same versions.
   blockedVersions: string[];
+  // Absent on policies saved before per-version rules existed.
+  versionRules?: VersionRule[];
   latestVersion: string;
   fullyRolledOut: boolean;
   minOsLevel: number | null;

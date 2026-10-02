@@ -88,6 +88,49 @@ describe("resolveUpdateAction", () => {
     });
   });
 
+  describe("per-version rules", () => {
+    const rule = (version: string, mode: "ADMIN_MANAGED" | "STORE_MANAGED", forceUpdate: boolean) => ({
+      version,
+      mode,
+      forceUpdate,
+      updatedAt: 1,
+    });
+
+    it("forces one version under a store-managed default", () => {
+      const p2 = { ...p, mode: "STORE_MANAGED" as const, versionRules: [rule("2.0.3", "ADMIN_MANAGED", true)] };
+      expect(resolveUpdateAction(p2, "2.0.3")).toEqual({ action: "FORCE", reason: "BLOCKED_VERSION" });
+      expect(resolveUpdateAction(p2, "2.0.2").action).toBe("STORE");
+    });
+
+    it("a store-managed rule exempts its version from the default force floor", () => {
+      const p2 = { ...p, versionRules: [rule("1.5.0", "STORE_MANAGED", false)] };
+      expect(resolveUpdateAction(p2, "1.5.0")).toEqual({ action: "STORE", reason: "NONE" });
+      expect(resolveUpdateAction(p2, "1.4.0").action).toBe("FORCE");
+    });
+
+    it("admin-managed without force leaves the version to the store", () => {
+      const p2 = { ...p, versionRules: [rule("1.5.0", "ADMIN_MANAGED", false)] };
+      expect(resolveUpdateAction(p2, "1.5.0").action).toBe("STORE");
+    });
+
+    it("matches versions numerically and still yields to the OS minimum", () => {
+      const p2 = { ...p, minOsLevel: 26, versionRules: [rule("2.10.0", "ADMIN_MANAGED", true)] };
+      expect(resolveUpdateAction(p2, "2.10.0").action).toBe("FORCE");
+      expect(resolveUpdateAction(p2, "2.1.0").action).toBe("STORE");
+      expect(resolveUpdateAction(p2, "2.10.0", 24).action).toBe("UNSUPPORTED_DEVICE");
+    });
+
+    it("the 426 refusal follows the rule, not the default", async () => {
+      const published = policy({
+        enforceOnServer: true,
+        versionRules: [rule("1.5.0", "STORE_MANAGED", false)],
+      });
+      const { svc } = service(published);
+      expect(await svc.refusal("android", "1.5.0")).toBeNull();
+      expect(await svc.refusal("android", "1.4.0")).toMatchObject({ action: "FORCE" });
+    });
+  });
+
   it("an unreported OS never trips the minimum", () => {
     const minOs = { ...p, minOsLevel: 26 };
     expect(resolveUpdateAction(minOs, "2.0.0").action).toBe("STORE");

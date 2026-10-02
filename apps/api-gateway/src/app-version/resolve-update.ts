@@ -46,6 +46,18 @@ export function resolveUpdateAction(
     return { action: "UNSUPPORTED_DEVICE", reason: "OS_TOO_OLD" };
   }
 
+  // A version's own rule beats the platform default in both directions: it can
+  // force one version under a store-managed default, or exempt one version
+  // from the default's force floor.
+  const rule = policy.versionRules?.find(
+    (r) => compareVersions(r.version, clientVersion) === 0
+  );
+  if (rule) {
+    return rule.mode === "ADMIN_MANAGED" && rule.forceUpdate
+      ? { action: "FORCE", reason: "BLOCKED_VERSION" }
+      : { action: "STORE", reason: "NONE" };
+  }
+
   if (policy.mode === "STORE_MANAGED") {
     return { action: "STORE", reason: "NONE" };
   }
