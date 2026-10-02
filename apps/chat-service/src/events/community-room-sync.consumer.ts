@@ -14,7 +14,12 @@ import { RoomMemberRepository } from "../repositories/room-member.repository.js"
 import { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import { CacheRepository } from "../repositories/cache.repository.js";
-import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
+import {
+  buildParticipantsKey,
+  generateRoomId,
+  isUserId,
+  nonUserIdKind,
+} from "../lib/room-id.js";
 import { CommunitySystemMessageService } from "../services/community-system-message.service.js";
 import { UserSnapshotService } from "../services/user-snapshot.service.js";
 import {
@@ -478,6 +483,15 @@ export class CommunityRoomSyncConsumer {
           if (!inviterId || !recipientId || !linkCode) {
             logger.warn(
               "community.invite_link_shared: missing inviterId/recipientId/linkCode — skipping"
+            );
+            break;
+          }
+          // The DM lands in a PRIVATE room keyed on these two ids — a community
+          // ObjectId or `grp_` id here would be refused by the repository
+          // anyway; skip it with a reason an operator can grep for.
+          if (!isUserId(inviterId) || !isUserId(recipientId)) {
+            logger.warn(
+              `community.invite_link_shared: non-user participant — skipping|communityId=${cId}|inviter=${isUserId(inviterId) ? "ok" : nonUserIdKind(inviterId)}|recipient=${isUserId(recipientId) ? "ok" : nonUserIdKind(recipientId)}`
             );
             break;
           }

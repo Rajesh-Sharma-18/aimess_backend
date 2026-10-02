@@ -1,6 +1,7 @@
 import { logger } from "@aimess/logger";
 
 import { userGrpcClient } from "../grpc/user-snapshot.client.js";
+import { isUserId } from "./room-id.js";
 
 /**
  * Why an invite may not be delivered to a recipient. Absent = eligible.
@@ -49,6 +50,14 @@ export async function fetchInviteIneligibility(
   const out = new Map<string, InviteIneligibility>();
   if (candidateIds.length === 0) return out;
 
+  // Decided locally, so it holds even while the lookups below fail open: a
+  // `grp_` room id or a community ObjectId picked as a "recipient" is no
+  // account. Delivering to one is how PRIVATE rooms got a group/community id
+  // as their peer.
+  for (const id of candidateIds) {
+    if (!isUserId(id)) out.set(id, "NOT_FOUND");
+  }
+
   const [snapshots, relationships] = await Promise.all([
     userGrpcClient
       .bulkGetUserSnapshots(candidateIds)
@@ -58,10 +67,11 @@ export async function fetchInviteIneligibility(
         );
         return null;
       }),
-    // `checkFriendships` already swallows transport errors and returns an
-    // empty map — indistinguishable from "no blocks", which is the fail-open
-    // behaviour we want here.
-    userGrpcClient.checkFriendships(callerId, candidateIds),
+    // `null` = transport down. Read as "no blocks" on purpose — the fail-open
+    // behaviour documented above.
+    userGrpcClient
+      .checkFriendships(callerId, candidateIds)
+      .then((m) => m ?? new Map()),
   ]);
 
   if (snapshots) {

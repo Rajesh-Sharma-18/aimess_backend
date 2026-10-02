@@ -35,6 +35,7 @@ describe("assertPrivateParticipants", () => {
   it.each([
     ["the literal string 'undefined'", [PEER_ID, "undefined"]],
     ["a group room id", [PEER_ID, "grp_sZgOCCniUKBnxqMu"]],
+    ["a community ObjectId", [PEER_ID, "6a7bf9214d6c5b8b86a11aa8"]],
     ["a private room id", [PEER_ID, "prv_OrqmmJAT8sHO8Ds5"]],
     ["an empty string", [PEER_ID, ""]],
     ["the same user twice", [PEER_ID, PEER_ID]],
@@ -54,6 +55,7 @@ describe("assertPrivateParticipants", () => {
   it("isUserId separates a user id from every room id shape", () => {
     expect(isUserId(PEER_ID)).toBe(true);
     expect(isUserId("grp_sZgOCCniUKBnxqMu")).toBe(false);
+    expect(isUserId("6a7bf9214d6c5b8b86a11aa8")).toBe(false);
     expect(isUserId("undefined")).toBe(false);
     expect(isUserId(undefined)).toBe(false);
   });
@@ -69,7 +71,7 @@ describe("POST /api/chat/private/rooms/:peerId — junk peer id", () => {
     mocks.userServiceClient.checkFriendship.mockResolvedValue(true);
   });
 
-  it.each(["undefined", "grp_sZgOCCniUKBnxqMu"])(
+  it.each(["undefined", "grp_sZgOCCniUKBnxqMu", "6a7bf9214d6c5b8b86a11aa8"])(
     "refuses %s and creates NO room",
     async (junkPeerId) => {
       const res = await request(app)
@@ -104,5 +106,27 @@ describe("POST /api/chat/private/rooms/:peerId — junk peer id", () => {
     expect(mocks.privateRoomRepo.create.mock.calls[0][0].participants).toEqual(
       [TEST_USER_ID, PEER_ID].sort()
     );
+  });
+
+  it("REGRESSION: an existing room for the pair is reused, not re-created", async () => {
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue({
+      roomId: "prv_existing",
+      participants: [TEST_USER_ID, PEER_ID].sort(),
+      lastMessageAt: new Date(1000),
+      lastMessage: null,
+      unreadCountByUser: {},
+      mutedBy: {},
+      pinnedCount: 0,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/private/rooms/${PEER_ID}`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.roomId).toBe("prv_existing");
+    expect(mocks.privateRoomRepo.create).not.toHaveBeenCalled();
   });
 });
