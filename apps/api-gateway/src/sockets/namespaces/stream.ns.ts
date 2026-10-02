@@ -146,7 +146,7 @@ async function enrichCommentAvatar(
  * trade-off; change this one value to switch, no env var and no redeploy of
  * stream-service required.
  */
-const VIEWER_COUNT_SOURCE: "SOCKET" | "CDN" = "CDN";
+const VIEWER_COUNT_SOURCE: "SOCKET" | "CDN" = "SOCKET";
 
 /**
  * Last viewer count the CDN reported per stream, cached from the
