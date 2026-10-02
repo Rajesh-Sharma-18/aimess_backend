@@ -98,6 +98,42 @@ describe("appUpdatePolicySchema", () => {
     assert.equal(ok(policy({ copy: { english: { title: "x" } } })), false);
   });
 
+  describe("versionRules", () => {
+    const rule = (version: string, mode = "ADMIN_MANAGED", forceUpdate = true) => ({
+      version,
+      mode,
+      forceUpdate,
+    });
+
+    it("is optional, so an older admin client still validates", () => {
+      assert.equal(ok(policy()), true);
+    });
+
+    it("accepts default + specific rules in every mode combination", () => {
+      const versionRules = [
+        rule("2.0.3"),
+        rule("2.0.2", "ADMIN_MANAGED", false),
+        rule("1.9.0", "STORE_MANAGED", false),
+      ];
+      assert.equal(ok(policy({ mode: "STORE_MANAGED", versionRules })), true);
+      assert.equal(ok(policy({ mode: "ADMIN_MANAGED", versionRules })), true);
+    });
+
+    it("rejects the same version twice, compared numerically", () => {
+      assert.equal(ok(policy({ versionRules: [rule("2.0.3"), rule("02.0.3", "STORE_MANAGED", false)] })), false);
+    });
+
+    it("rejects forcing a version that is not below the latest", () => {
+      assert.equal(ok(policy({ versionRules: [rule("2.1.0")] })), false);
+      // Not forced: no newer version is needed.
+      assert.equal(ok(policy({ versionRules: [rule("2.1.0", "STORE_MANAGED", false)] })), true);
+    });
+
+    it("rejects malformed rule versions", () => {
+      assert.equal(ok(policy({ versionRules: [rule("2.0")] })), false);
+    });
+  });
+
   it("requires both platforms", () => {
     assert.equal(ok({ android: policy().android }), false);
   });

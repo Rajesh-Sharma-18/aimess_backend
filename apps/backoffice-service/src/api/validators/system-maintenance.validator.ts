@@ -42,10 +42,25 @@ function compareAppVersions(left: string, right: string): number {
 const BUMP_RANK = { OFF: 0, PATCH: 1, MINOR: 2, MAJOR: 3 } as const;
 const versionBump = z.enum(["MAJOR", "MINOR", "PATCH", "OFF"]);
 
+const appUpdateMode = z.enum(["ADMIN_MANAGED", "STORE_MANAGED"]);
+
+// `updatedAt` is accepted so a client can send back what it read, but the
+// service owns it and overwrites it.
+const versionRule = z.object({
+  version: appVersion,
+  mode: appUpdateMode,
+  forceUpdate: z.boolean(),
+  updatedAt: z.number().int().nonnegative().optional(),
+});
+
 const platformPolicyFields = {
-  mode: z.enum(["ADMIN_MANAGED", "STORE_MANAGED"]),
+  mode: appUpdateMode,
   forceBelowVersion: appVersion.nullable(),
-  blockedVersions: z.array(appVersion).max(50),
+  // Ignored when `versionRules` is sent (derived from it); still honoured from
+  // a client that predates per-version rules.
+  blockedVersions: z.array(appVersion).max(50).default([]),
+  // Optional so an older admin client that omits it keeps its blockedVersions.
+  versionRules: z.array(versionRule).max(100).optional(),
   latestVersion: appVersion,
   fullyRolledOut: z.boolean(),
   minOsLevel: z.number().int().min(0).max(1000).nullable(),
@@ -87,6 +102,37 @@ const FORCE_NOT_INSTALLABLE = {
   path: ["forceBelowVersion"],
 };
 
+type RulesPolicy = {
+  latestVersion: string;
+  versionRules?: { version: string; mode: string; forceUpdate: boolean }[];
+};
+
+const uniqueRuleVersions = (policy: RulesPolicy): boolean => {
+  const rules = policy.versionRules ?? [];
+  return rules.every(
+    (rule, i) =>
+      !rules.slice(0, i).some((other) => compareAppVersions(rule.version, other.version) === 0)
+  );
+};
+
+// Forcing a version only helps if a newer one exists to update to.
+const forcedRulesBelowLatest = (policy: RulesPolicy): boolean =>
+  (policy.versionRules ?? []).every(
+    (rule) =>
+      !(rule.mode === "ADMIN_MANAGED" && rule.forceUpdate) ||
+      compareAppVersions(rule.version, policy.latestVersion) < 0
+  );
+
+const DUPLICATE_RULE = {
+  message: "Each version can have only one rule",
+  path: ["versionRules"],
+};
+
+const FORCED_RULE_NOT_BELOW_LATEST = {
+  message: "A forced version must be below the latest version",
+  path: ["versionRules"],
+};
+
 const androidUpdatePolicySchema = z
   .object({
     ...platformPolicyFields,
@@ -101,7 +147,9 @@ const androidUpdatePolicySchema = z
         path: ["softFromPriority"],
       }),
   })
-  .refine(forceVersionIsInstallable, FORCE_NOT_INSTALLABLE);
+  .refine(forceVersionIsInstallable, FORCE_NOT_INSTALLABLE)
+  .refine(uniqueRuleVersions, DUPLICATE_RULE)
+  .refine(forcedRulesBelowLatest, FORCED_RULE_NOT_BELOW_LATEST);
 
 const iosUpdatePolicySchema = z
   .object({
@@ -123,7 +171,9 @@ const iosUpdatePolicySchema = z
         }
       ),
   })
-  .refine(forceVersionIsInstallable, FORCE_NOT_INSTALLABLE);
+  .refine(forceVersionIsInstallable, FORCE_NOT_INSTALLABLE)
+  .refine(uniqueRuleVersions, DUPLICATE_RULE)
+  .refine(forcedRulesBelowLatest, FORCED_RULE_NOT_BELOW_LATEST);
 
 /** Body for PUT /v1/system/app-update-policy. Android and iOS are independent. */
 export const appUpdatePolicySchema = z.object({

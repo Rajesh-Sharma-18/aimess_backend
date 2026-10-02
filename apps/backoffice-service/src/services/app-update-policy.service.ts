@@ -7,6 +7,7 @@ import { redis } from "../config/redis.js";
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import type { AppUpdatePolicyInput } from "../api/validators/index.js";
 import { auditService } from "./audit.service.js";
+import { rulesOf, withVersionRules } from "../lib/app-update-version-rules.js";
 
 type RequestCtx = { ip: string; userAgent: string | null };
 
@@ -27,6 +28,7 @@ const DEFAULT_POLICY: AppUpdatePolicy = {
     mode: "STORE_MANAGED",
     forceBelowVersion: null,
     blockedVersions: [],
+    versionRules: [],
     latestVersion: "1.0.0",
     fullyRolledOut: true,
     minOsLevel: null,
@@ -39,6 +41,7 @@ const DEFAULT_POLICY: AppUpdatePolicy = {
     mode: "STORE_MANAGED",
     forceBelowVersion: null,
     blockedVersions: [],
+    versionRules: [],
     latestVersion: "1.0.0",
     fullyRolledOut: true,
     minOsLevel: null,
@@ -56,10 +59,20 @@ async function readStored(): Promise<AppUpdatePolicy | null> {
   return row ? (row.value as unknown as AppUpdatePolicy) : null;
 }
 
+function withRulesView(policy: AppUpdatePolicy): AppUpdatePolicy {
+  const at = Date.parse(policy.updatedAt) || 0;
+  return {
+    ...policy,
+    android: { ...policy.android, versionRules: rulesOf(policy.android, at) },
+    ios: { ...policy.ios, versionRules: rulesOf(policy.ios, at) },
+  };
+}
+
 export const appUpdatePolicyService = {
   async get(): Promise<AppUpdatePolicyView> {
     const stored = await readStored();
-    return stored ? { ...stored, isDefault: false } : { ...DEFAULT_POLICY, isDefault: true };
+    return stored
+      ? { ...withRulesView(stored), isDefault: false } : { ...DEFAULT_POLICY, isDefault: true };
   },
 
   /**
@@ -75,10 +88,13 @@ export const appUpdatePolicyService = {
     ctx: RequestCtx
   ): Promise<AppUpdatePolicyView> {
     const before = await readStored();
+    const now = Date.now();
+    const beforeAt = before ? Date.parse(before.updatedAt) || 0 : 0;
     const policy: AppUpdatePolicy = {
-      ...input,
+      android: withVersionRules(input.android, before?.android, beforeAt, now),
+      ios: withVersionRules(input.ios, before?.ios, beforeAt, now),
       policyVersion: (before?.policyVersion ?? 0) + 1,
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date(now).toISOString(),
     };
 
     await prisma.systemSetting.upsert({
