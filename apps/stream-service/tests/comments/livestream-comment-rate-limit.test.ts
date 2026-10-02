@@ -110,7 +110,7 @@ describe("live chat throttles", () => {
     const err = await send(service, "viewer-1", 5).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TooManyRequestsError);
     expect((err as TooManyRequestsError).messageKey).toBe("LIVE_CHAT_FLOOD");
-    expect((err as TooManyRequestsError).retryAfterSec).toBe(15);
+    expect((err as TooManyRequestsError).retryAfterSec).toBe(5);
     expect(commentRepo.createComment).toHaveBeenCalledTimes(5);
 
     // Still blocked during the cooldown — and not a ban: no 403.
@@ -119,6 +119,31 @@ describe("live chat throttles", () => {
     });
     // Another user is a separate bucket.
     await expect(send(service, "viewer-2", 0)).resolves.toBeDefined();
+  });
+
+  it("flood cooldown lifts after exactly 5s, and re-triggers the same way", async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    try {
+      const { service } = makeService();
+      for (let round = 0; round < 2; round++) {
+        for (let i = 0; i < 5; i++) await send(service, "viewer-1", i);
+        await expect(send(service, "viewer-1", 5)).rejects.toMatchObject({
+          messageKey: "LIVE_CHAT_FLOOD",
+          retryAfterSec: 5,
+        });
+        // The client counts 5 → 1; any send before then is still rejected.
+        jest.advanceTimersByTime(4_000);
+        await expect(send(service, "viewer-1", 6)).rejects.toMatchObject({
+          messageKey: "LIVE_CHAT_FLOOD",
+          retryAfterSec: 1,
+        });
+        jest.advanceTimersByTime(1_000);
+        await expect(send(service, "viewer-1", 7)).resolves.toBeDefined();
+        jest.advanceTimersByTime(10_000); // let the flood window drain before the next round
+      }
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("host and community moderators are exempt from flood", async () => {

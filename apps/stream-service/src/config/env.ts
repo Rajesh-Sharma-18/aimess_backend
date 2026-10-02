@@ -113,7 +113,7 @@ const envSchema = z.object({
    */
   STREAM_COMMENT_FLOOD_MAX: z.coerce.number().int().positive().default(5),
   STREAM_COMMENT_FLOOD_WINDOW_SEC: z.coerce.number().int().positive().default(10),
-  STREAM_COMMENT_FLOOD_COOLDOWN_SEC: z.coerce.number().int().positive().default(15),
+  STREAM_COMMENT_FLOOD_COOLDOWN_SEC: z.coerce.number().int().positive().default(5),
 
   // ---- SRS (OSSRS) media server endpoints ----
   /** SRS HTTP API base (clients DELETE, GET /api/v1/streams, etc.). */
