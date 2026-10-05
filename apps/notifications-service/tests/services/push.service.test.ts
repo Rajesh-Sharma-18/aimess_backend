@@ -37,6 +37,7 @@ import {
 import { communityClient } from "../../src/grpc/community.client.js";
 import { pushToUser } from "../../src/services/push.service.js";
 import { sendPush } from "../../src/providers/firebase/sendPush.js";
+import { deviceTokenRepository } from "../../src/repositories/device-token.repository.js";
 
 const chatNotificationClient = mockChatNotificationClient;
 const userSettingsClient = mockUserSettingsClient;
@@ -283,6 +284,55 @@ describe("pushToUser — the settings gate", () => {
 
     expect(chatNotificationClient.createNotification).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  const chatMessage = {
+    userId: USER_ID,
+    category: "chatEnabled" as const,
+    type: "MESSAGE",
+    title: "Jane",
+    body: "hi",
+    deliveryWake: { conversationId: "prv_room", messageId: "m1" },
+  };
+  const androidDevice = () =>
+    (
+      deviceTokenRepository.findTokensByUserId as jest.Mock
+    ).mockResolvedValueOnce([
+      {
+        token: "tok-android",
+        tokenType: "FCM",
+        platform: "ANDROID",
+        deviceId: "dev-android",
+        sessionId: "sess-android",
+        lastSeenAt: new Date("2026-01-01T00:00:00Z"),
+      },
+    ]);
+  const sentTypes = () =>
+    send.mock.calls.map(
+      (c) => JSON.stringify(c[0]).match(/"type":"([^"]+)"/)?.[1]
+    );
+
+  it("Chat OFF drops the message alert but still sends the silent delivery wake", async () => {
+    withSettings({ chatEnabled: false });
+    androidDevice();
+
+    await pushToUser(chatMessage);
+
+    expect(sentTypes()).toEqual(["chat.delivery_wake"]);
+  });
+
+  it("quiet hours drops the message alert but still sends the silent delivery wake", async () => {
+    withSettings({
+      quietHoursEnabled: true,
+      quietHoursStart: "00:00",
+      quietHoursEnd: "23:59",
+      timezone: "UTC",
+    });
+    androidDevice();
+
+    await pushToUser(chatMessage);
+
+    expect(sentTypes()).toEqual(["chat.delivery_wake"]);
   });
 
   it("quiet hours suppresses the push but KEEPS the inbox row", async () => {
