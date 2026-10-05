@@ -155,9 +155,8 @@ export async function ensurePrivateRoom(
   //
   // Nothing is lost by staying quiet: every caller already announces the room at
   // the moment it genuinely becomes listable.
-  //   - friendship.created → `postFriendshipSystemMessage` or `stampRoomActivity`
-  //     sets `lastMessageAt` and publishes `conv:updated`
-  //     (events/friendship.consumer.ts).
+  //   - friendship.created → listable only when the pair already talked
+  //     (`postFriendshipSystemMessage`, events/friendship.consumer.ts).
   //   - first user message → its own `conv:created`, which is the real "this
   //     conversation now exists" moment (services/private-message.service.ts).
   //   - a client opening the chat gets the whole room, peer included, from

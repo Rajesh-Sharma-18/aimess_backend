@@ -14,8 +14,6 @@ import { ensurePrivateRoom } from "../services/private-room.service.js";
 import { UserSnapshotService } from "../services/user-snapshot.service.js";
 import { SystemEvent } from "../types/enums.js";
 import { buildDeletePayload } from "../lib/chat-message.serializer.js";
-import { buildMessagePreview } from "../services/message-preview.service.js";
-import { publishConvUpdatedSafe } from "./publish-conv-updated.js";
 import { terminateCallsBetweenSafe } from "./call-terminator.js";
 import { notifyRelationshipEnded } from "./call-teardown-bridge.js";
 
@@ -36,8 +34,7 @@ export interface FriendshipEvent {
   timestamp: number;
   /**
    * `friendship.created` only — this pair had been friends before. Still
-   * published by user-service (`Friendship.firstAcceptedAt`), but no longer
-   * gates the "now friends" row: prior conversation activity does.
+   * published by user-service (`Friendship.firstAcceptedAt`); unused here.
    */
   isRefriend?: boolean;
 }
@@ -117,41 +114,15 @@ export class FriendshipEventConsumer {
             event.userA,
             event.status || "ACTIVE"
           );
-          // The room usually does NOT exist yet at this point: user-service
-          // publishes this event and only then (fire-and-forget) asks us over
-          // gRPC to create the room, so we lose that race and the "now friends"
-          // system message below silently found no room to post into. Create it
-          // here instead — the ACTIVE rows we just wrote are exactly what the
-          // friendship gate would check, and user-service's later
-          // getOrCreatePrivateRooms call now just finds this room.
+          // Pre-create the (silent, unlisted) room; user-service's later getOrCreatePrivateRooms finds it.
           await this.ensureRoom(event.userA, event.userB);
-          // The "now friends" row separates a NEW chapter from an existing
-          // conversation — with nothing above it, it is just noise. So the
-          // gate is whether this pair ever exchanged anything, NOT whether
-          // they were friends before (`event.isRefriend`, now unused here):
-          // a pair that unfriends and re-friends without ever having talked
-          // still opens on the clean "no conversation yet" screen.
-          //
-          // Always drop earlier FRIENDSHIP_CREATED rows, whether or not a new
-          // one follows: an unfriend->re-friend cycle would otherwise stack a
-          // bubble on top of every earlier one, and rooms that got the row
-          // under the old "any re-friend posts it" rule would keep showing it
-          // forever. A pruned row is never a loss — if this pair has activity
-          // it is immediately reposted below with the current timestamp.
+          // Becoming friends is not chat activity: no "now friends" row, no list bump, for any pair.
+          // Earlier FRIENDSHIP_CREATED rows are pruned so older builds' bubbles stop resurrecting the chat.
           await this.deleteStaleFriendshipCreatedMessages(
             event.userA,
             event.userB
           );
-          // Order is irrelevant to the gate: the prune only touches SYSTEM
-          // rows, which the activity check already ignores.
-          if (await this.hasConversationActivity(event.userA, event.userB)) {
-            await this.postFriendshipSystemMessage(
-              event,
-              SystemEvent.FRIENDSHIP_CREATED
-            );
-          } else {
-            await this.stampRoomActivity(event);
-          }
+          await this.repairRoomSnapshot(event);
           logger.debug(`Friendship created: ${event.userA} <-> ${event.userB}`);
           break;
 
@@ -225,48 +196,6 @@ export class FriendshipEventConsumer {
   }
 
   /**
-   * Has this pair ever had conversation activity — any message, media, sticker
-   * or call row — in their private room?
-   *
-   * Only what a PERSON put in the room counts. SYSTEM rows do not: an
-   * auto-delete setting change, a ban notice, or an earlier "now friends" row
-   * are all things the app wrote into an otherwise silent chat. Counting them
-   * made the bug self-perpetuating — one such row meant every later re-friend
-   * qualified, so the bubble came back for pairs that had never talked.
-   *
-   * `PrivateRoom.lastSequence` (the per-room insert counter) is therefore only
-   * the cheap pre-filter: 0 means nothing was EVER written, no query needed.
-   * Above 0, the answer is whether a non-SYSTEM row exists — matched on the
-   * `[roomId, messageType, createdAt]` index and deliberately NOT filtered by
-   * `isDeleted`/`deletedFor`/`clearFor`, because delete-for-me, clear
-   * conversation and delete-for-everyone all keep the row: "did they talk"
-   * must not become "is anything visible now".
-   *
-   * ponytail: the auto-delete sweeper HARD-deletes, so a conversation that
-   * fully expired reads as never-happened. Stamp a write-once
-   * `PrivateRoom.firstActivityAt` on send if that gap ever matters.
-   */
-  private async hasConversationActivity(
-    userA: string,
-    userB: string
-  ): Promise<boolean> {
-    try {
-      const room = await this.privateRoomRepo.findByParticipantsKey(
-        buildParticipantsKey(userA, userB)
-      );
-      if (!room || room.lastSequence <= 0) return false;
-      return await this.privateMessageRepo.hasHumanMessage(room.roomId);
-    } catch (err) {
-      // Unknown => treat as a fresh pair: a missing row is cheaper than a
-      // stray "now friends" bubble at the top of an empty chat.
-      logger.warn(
-        `FriendshipEventConsumer|hasConversationActivity failed ${userA}<->${userB}: ${String(err)}`
-      );
-      return false;
-    }
-  }
-
-  /**
    * Best-effort get-or-create of the pair's private room. A failure here must
    * not nack the friendship event — the read-model rows are already written and
    * the room still lazily creates on first open, exactly as before.
@@ -318,89 +247,37 @@ export class FriendshipEventConsumer {
   }
 
   /**
-   * Record the friendship as the room's latest LIST activity, with no visible
-   * message behind it.
-   *
-   * Chat-room visibility and list activity are separate concerns: the bubble
-   * is hidden for a pair that never talked, but becoming friends is still the
-   * most recent thing that happened to that conversation, so the row has to
-   * carry its timestamp and sort by it. `GET /chat/inbox` keysets on
-   * `lastMessageAt` and skips NULL rows, so without this the new friend's chat
-   * sat at the bottom of the list with no time (and vanished entirely on
-   * reload) until someone said something.
-   *
-   * The bump is forward-only — an older event can never drag a live
-   * conversation backwards — and `countInUnread: false`, so no badge, no
-   * receipt, no message. The preview is whatever message is still visible in
-   * the room (usually none: empty preview, correct timestamp).
+   * Re-points the room's preview at its newest surviving message when the prune deleted the one it
+   * pointed at; none left clears `lastMessageAt`, which takes the room off the inbox.
    */
-  private async stampRoomActivity(event: FriendshipEvent): Promise<void> {
+  private async repairRoomSnapshot(event: FriendshipEvent): Promise<void> {
     try {
       const room = await this.privateRoomRepo.findByParticipantsKey(
         buildParticipantsKey(event.userA, event.userB)
       );
       if (!room) return;
-      const at = new Date(event.timestamp || Date.now());
-      if (room.lastMessageAt && room.lastMessageAt >= at) return;
-
-      // The prune above may have deleted the very message this room's snapshot
-      // points at, which would leave the list previewing a tombstone. Rebuild
-      // it from what is actually still visible (null => empty room).
       const visible = await this.privateMessageRepo.findPreviousVisible(
         room.roomId
       );
-      if (visible?.id !== room.lastMessageId) {
-        await this.privateRoomRepo.setLastMessage(
-          room.roomId,
-          visible
-            ? {
-                id: visible.id,
-                senderId: visible.senderId ?? "",
-                content: visible.content,
-                messageType: visible.messageType,
-                createdAt: visible.createdAt,
-                clientMessageId: visible.clientMessageId,
-                sequenceNumber: visible.sequenceNumber,
-                revision: visible.revision,
-              }
-            : null
-        );
-      }
-      // Stamped AFTER the snapshot rebuild, which clears `lastMessageAt` when
-      // no message survives — the friendship's own time is what the row sorts
-      // on either way.
-      await prisma.privateRoom.update({
-        where: { roomId: room.roomId },
-        data: { lastMessageAt: at },
-      });
-
-      publishConvUpdatedSafe({
-        redis,
-        type: "PRIVATE",
-        roomId: room.roomId,
-        recipientIds: [event.userA, event.userB],
-        // Nobody sent this — it is a friendship transition re-previewing the
-        // room's own surviving message. Sender-less by design.
-        senderId: "",
-        senderName: "",
-        lastMessageId: visible?.id ?? "",
-        lastMessageAt: at.getTime(),
-        // Never an unread: nothing was sent, so no badge and no receipt.
-        countInUnread: false,
-        preview: visible
+      if (visible?.id === room.lastMessageId) return;
+      await this.privateRoomRepo.setLastMessage(
+        room.roomId,
+        visible
           ? {
-              contentType: visible.messageType,
-              text: buildMessagePreview(visible.messageType, visible.content),
-              clientMessageId: visible.clientMessageId ?? null,
-              seq: visible.sequenceNumber,
+              id: visible.id,
+              senderId: visible.senderId ?? "",
+              content: visible.content,
+              messageType: visible.messageType,
+              createdAt: visible.createdAt,
+              clientMessageId: visible.clientMessageId,
+              sequenceNumber: visible.sequenceNumber,
               revision: visible.revision,
-              createdAt: at.getTime(),
             }
-          : { contentType: "", text: "", createdAt: at.getTime() },
-      });
+          : null
+      );
     } catch (err) {
       logger.warn(
-        `FriendshipEventConsumer|stampRoomActivity failed ${event.userA}<->${event.userB}: ${String(err)}`
+        `FriendshipEventConsumer|repairRoomSnapshot failed ${event.userA}<->${event.userB}: ${String(err)}`
       );
     }
   }
