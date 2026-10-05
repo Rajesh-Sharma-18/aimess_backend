@@ -107,6 +107,44 @@ export class GroupMessageController {
   });
 
   /**
+   * `POST /groups/rooms/:roomId/delivered` — delivered receipt over REST, for a
+   * push-woken client with no socket. Same effect and broadcast as the socket
+   * `message:delivered` (room + every other active member's own channel).
+   * A non-member gets updatedCount 0.
+   */
+  markDelivered = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { upToMessageId } = req.body as { upToMessageId: string };
+
+    const { count, messageIds } = await this.messageService.markDelivered({
+      roomId,
+      recipientId: userId,
+      upToMessageId,
+    });
+    if (count > 0) {
+      const payload = JSON.stringify({
+        event: "message:delivered",
+        data: {
+          conversationId: roomId,
+          recipientId: userId,
+          upToMessageId,
+          messageIds,
+        },
+      });
+      await this.redis.publish(`conv:${roomId}`, payload);
+      const others = (
+        await this.messageService.getActiveMemberIds(roomId)
+      ).filter((id) => id !== userId);
+      await Promise.all(
+        others.map((id) => this.redis.publish(`user:${id}`, payload))
+      );
+    }
+
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ updatedCount: count }));
+  });
+
+  /**
    * `GET /api/chat/groups/rooms/:roomId/messages` — the group room timeline. Supports
    * every pagination axis: `before_ts`/`after_ts` (compound `(createdAt, _id)`
    * keyset), the gap-safe `before_seq`/`after_seq` sequence keyset, and
