@@ -4346,6 +4346,12 @@ export const openApiSchemas = {
         pattern: "^[a-z0-9_]+$",
         example: "johndoe",
       },
+      purpose: {
+        type: "string",
+        enum: ["login"],
+        description:
+          "Login step 1: on 409, name AUTH_GOOGLE_LOGIN_REQUIRED / AUTH_APPLE_LOGIN_REQUIRED / AUTH_SOCIAL_LOGIN_REQUIRED / AUTH_PASSWORD_NOT_SET instead of AUTH_ACCOUNT_TAKEN when the account has no password.",
+      },
     },
     required: ["account"],
   },

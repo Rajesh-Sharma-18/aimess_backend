@@ -34,12 +34,14 @@ export const getSignupChallenge = asyncHandler(
 
 export const validateAccount = asyncHandler(
   async (req: Request, res: Response) => {
-    const { account } = req.body as ValidateAccountInput;
-    const result =
-      await accountAvailabilityService.validateAvailability(account);
+    const { account, purpose } = req.body as ValidateAccountInput;
+    const result = await accountAvailabilityService.validateAvailability(
+      account,
+      purpose
+    );
 
     if (!result.available) {
-      throw new ConflictError("AUTH_ACCOUNT_TAKEN");
+      throw new ConflictError(result.passwordUnavailableCode ?? "AUTH_ACCOUNT_TAKEN");
     }
 
     return res

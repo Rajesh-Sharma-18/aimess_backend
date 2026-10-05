@@ -19,36 +19,31 @@ export function toSocialAuthProvider(
 }
 
 /**
- * The provider a PASSWORD-LESS account has to sign in with, or null when it
- * has no social link to point at.
+ * The error code that tells a PASSWORD-LESS account how it signs in instead.
  *
  * Callers must have established that password authentication is unavailable
  * (`passwordHash === null`) BEFORE asking. Being linked to Google or Apple is
- * not on its own a reason to refuse a password: an account that set one and
- * later linked a provider legitimately supports both, and redirecting it to the
- * provider would lock the user out of a credential that works.
+ * not on its own a reason to refuse a password: an account that set one (at
+ * signup, through Forgot Password, or later) and linked a provider legitimately
+ * supports both, and redirecting it would lock the user out of a credential
+ * that works.
  *
- * `primaryAccount` decides when it names a provider that is actually linked —
- * it records the first sign-in method and is never overwritten, so it is the
- * closest thing to a "this is how you get in" field. It can be EMAIL (an
- * OTP-linked address) or stale/null on older rows, hence the fallback to the
- * oldest link, which is the identity that founded the account.
+ * The answer is the set of providers linked NOW, not how the account was
+ * founded: with both Google and Apple linked either one works, so the neutral
+ * code names both rather than picking one.
  */
-export function resolveRequiredSocialProvider(user: {
-  primaryAccount: AuthProvider | null;
+export function passwordUnavailableCode(user: {
   linkedAccounts: readonly { provider: AuthProvider }[];
-}): SocialLinkProvider | null {
-  const social = user.linkedAccounts.filter(
-    (link): link is { provider: SocialLinkProvider } =>
-      link.provider === AuthProvider.GOOGLE ||
-      link.provider === AuthProvider.APPLE
-  );
-  if (social.length === 0) return null;
-
-  const primaryIsLinked = social.some(
-    (link) => link.provider === user.primaryAccount
-  );
-  if (primaryIsLinked) return user.primaryAccount as SocialLinkProvider;
-
-  return social[0].provider;
+}):
+  | "AUTH_GOOGLE_LOGIN_REQUIRED"
+  | "AUTH_APPLE_LOGIN_REQUIRED"
+  | "AUTH_SOCIAL_LOGIN_REQUIRED"
+  | "AUTH_PASSWORD_NOT_SET" {
+  const linked = new Set(user.linkedAccounts.map((link) => link.provider));
+  const google = linked.has(AuthProvider.GOOGLE);
+  const apple = linked.has(AuthProvider.APPLE);
+  if (google && apple) return "AUTH_SOCIAL_LOGIN_REQUIRED";
+  if (google) return "AUTH_GOOGLE_LOGIN_REQUIRED";
+  if (apple) return "AUTH_APPLE_LOGIN_REQUIRED";
+  return "AUTH_PASSWORD_NOT_SET";
 }

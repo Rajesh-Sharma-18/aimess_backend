@@ -73,17 +73,11 @@ const loginUserSelect = {
   deletedAt: true,
   isProfileCompleted: true,
   role: true,
-  // Read ONLY when `passwordHash` is null, to name the provider a
+  // Read ONLY when `passwordHash` is null, to name the provider(s) a
   // password-less account must sign in with. Selected here rather than fetched
   // in a second query because the login path is hot and this costs one join on
-  // a row that is already being read. Ordered oldest-first so an account that
-  // linked both providers falls back to the one that founded it when
-  // `primaryAccount` cannot decide. See lib/sign-in-methods.ts.
-  primaryAccount: true,
-  linkedAccounts: {
-    select: { provider: true },
-    orderBy: { linkedAt: "asc" },
-  },
+  // a row that is already being read. See lib/sign-in-methods.ts.
+  linkedAccounts: { select: { provider: true } },
 } as const;
 
 export const authRepository = {

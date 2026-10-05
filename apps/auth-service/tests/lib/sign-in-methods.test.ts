@@ -1,65 +1,24 @@
 /**
- * `resolveRequiredSocialProvider` — which provider a password-less account has
- * to be sent to.
- *
- * Only the ambiguous rows are interesting: an account with both providers
- * linked, and one whose `primaryAccount` names something that is not a usable
- * social link (EMAIL, or null on a row written before the column existed).
+ * `passwordUnavailableCode` — what a password-less account is told to use
+ * instead. Decided by the providers linked NOW, not by how it was founded.
  */
 import { AuthProvider } from "../../src/generated/prisma/client.js";
-import { resolveRequiredSocialProvider } from "../../src/lib/sign-in-methods.js";
+import { passwordUnavailableCode } from "../../src/lib/sign-in-methods.js";
 
-const link = (provider: AuthProvider) => ({ provider });
+const links = (...providers: AuthProvider[]) => ({
+  linkedAccounts: providers.map((provider) => ({ provider })),
+});
 
-describe("resolveRequiredSocialProvider", () => {
-  it("returns null when nothing social is linked", () => {
-    expect(
-      resolveRequiredSocialProvider({
-        primaryAccount: AuthProvider.EMAIL,
-        linkedAccounts: [link(AuthProvider.EMAIL)],
-      })
-    ).toBeNull();
-  });
-
-  it.each([AuthProvider.GOOGLE, AuthProvider.APPLE])(
-    "returns the only linked provider (%s)",
-    (provider) => {
-      expect(
-        resolveRequiredSocialProvider({
-          primaryAccount: provider,
-          linkedAccounts: [link(provider)],
-        })
-      ).toBe(provider);
-    }
-  );
-
-  it("prefers primaryAccount when both providers are linked", () => {
-    expect(
-      resolveRequiredSocialProvider({
-        primaryAccount: AuthProvider.APPLE,
-        // Google first, so a plain "take the oldest" rule would answer GOOGLE.
-        linkedAccounts: [link(AuthProvider.GOOGLE), link(AuthProvider.APPLE)],
-      })
-    ).toBe(AuthProvider.APPLE);
-  });
-
-  it("falls back to the oldest link when primaryAccount cannot decide", () => {
-    // The repository orders links by linkedAt ascending, so element 0 is the
-    // identity that founded the account.
-    expect(
-      resolveRequiredSocialProvider({
-        primaryAccount: AuthProvider.EMAIL,
-        linkedAccounts: [link(AuthProvider.GOOGLE), link(AuthProvider.APPLE)],
-      })
-    ).toBe(AuthProvider.GOOGLE);
-  });
-
-  it("falls back to the oldest link when primaryAccount is null", () => {
-    expect(
-      resolveRequiredSocialProvider({
-        primaryAccount: null,
-        linkedAccounts: [link(AuthProvider.APPLE)],
-      })
-    ).toBe(AuthProvider.APPLE);
+describe("passwordUnavailableCode", () => {
+  it.each([
+    [[], "AUTH_PASSWORD_NOT_SET"],
+    [[AuthProvider.EMAIL], "AUTH_PASSWORD_NOT_SET"],
+    [[AuthProvider.GOOGLE], "AUTH_GOOGLE_LOGIN_REQUIRED"],
+    [[AuthProvider.APPLE], "AUTH_APPLE_LOGIN_REQUIRED"],
+    [[AuthProvider.EMAIL, AuthProvider.APPLE], "AUTH_APPLE_LOGIN_REQUIRED"],
+    [[AuthProvider.GOOGLE, AuthProvider.APPLE], "AUTH_SOCIAL_LOGIN_REQUIRED"],
+    [[AuthProvider.APPLE, AuthProvider.GOOGLE], "AUTH_SOCIAL_LOGIN_REQUIRED"],
+  ] as const)("%j -> %s", (providers, expected) => {
+    expect(passwordUnavailableCode(links(...providers))).toBe(expected);
   });
 });

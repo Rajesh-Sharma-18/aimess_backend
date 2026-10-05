@@ -206,6 +206,46 @@ describe("POST /api/auth/login — provider-required errors", () => {
     expect(res.body.error.code).toBe("AUTH_APPLE_LOGIN_REQUIRED");
   });
 
+  it("answers the neutral AUTH_SOCIAL_LOGIN_REQUIRED when Google AND Apple are linked", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      user({
+        passwordHash: null,
+        linkedAccounts: [{ provider: "GOOGLE" }, { provider: "APPLE" }],
+      })
+    );
+
+    const res = await login({ account: "johndoe", password: PASSWORD });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe("AUTH_SOCIAL_LOGIN_REQUIRED");
+    expect(res.body.error.message).toBe(
+      "Your account is linked to Google and Apple. Please continue with Google or Apple to log in."
+    );
+    expect(repo.recordFailedLogin).not.toHaveBeenCalled();
+  });
+
+  it("still signs in a Google + Apple + password account", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      user({ linkedAccounts: [{ provider: "GOOGLE" }, { provider: "APPLE" }] })
+    );
+
+    const res = await login({ account: "johndoe", password: PASSWORD });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("answers BANNED, not a provider error, for a banned Google-only account", async () => {
+    repo.findByAccountForLogin.mockResolvedValue({
+      ...socialOnlyUser("GOOGLE"),
+      status: "BANNED",
+    });
+
+    const res = await login({ account: "johndoe", password: PASSWORD });
+
+    expect(res.body.error.code).not.toBe("AUTH_GOOGLE_LOGIN_REQUIRED");
+    expect(res.status).toBe(403);
+  });
+
   it("answers AUTH_INVALID_CREDENTIALS for an unknown account", async () => {
     repo.findByAccountForLogin.mockResolvedValue(null);
 

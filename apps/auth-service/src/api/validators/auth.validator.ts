@@ -103,6 +103,10 @@ export const loginIdentifierSchema = z
  */
 export const validateAccountSchema = z.object({
   account: loginIdentifierSchema,
+  // Opt-in, so the signup form and every existing client keep the plain
+  // 409 AUTH_ACCOUNT_TAKEN. A login form sends "login" to also learn, before
+  // it shows a password field, that the account cannot use one.
+  purpose: z.literal("login").optional(),
 });
 
 export type ValidateAccountInput = z.infer<typeof validateAccountSchema>;
