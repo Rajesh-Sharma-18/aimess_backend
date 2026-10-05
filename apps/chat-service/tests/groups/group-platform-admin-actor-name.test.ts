@@ -83,7 +83,7 @@ describe("GroupSystemMessageService — platform-admin actor name", () => {
     });
 
     const row = storedRow(stubs);
-    expect(row.content.text).toBe("Super Admin removed Name user-2");
+    expect(row.content.text).toBe("Super Admin removed Name user-2 from the group");
     expect(row.systemData.actorName).toBe("Super Admin");
     // Named, but still nobody's action: an AdminUser id is not a chat user, so
     // no viewer may ever read this row as "You removed …".
@@ -102,7 +102,7 @@ describe("GroupSystemMessageService — platform-admin actor name", () => {
 
     const row = storedRow(stubs);
     expect(row.systemData.actorName).toBe("Name user-1");
-    expect(row.content.text).toBe("Name user-1 removed Name user-2");
+    expect(row.content.text).toBe("Name user-1 removed Name user-2 from the group");
   });
 
   it("NEGATIVE: with no name at all the row stays honestly actor-less", async () => {
@@ -116,7 +116,7 @@ describe("GroupSystemMessageService — platform-admin actor name", () => {
       skipAdminActivity: true,
     });
 
-    expect(storedRow(stubs).content.text).toBe("Someone removed Name user-2");
+    expect(storedRow(stubs).content.text).toBe("Someone removed Name user-2 from the group");
   });
 
   it("POSITIVE: the socket payload carries the same named systemData", async () => {
@@ -139,7 +139,7 @@ describe("GroupSystemMessageService — platform-admin actor name", () => {
     // Realtime and a later history read rebuild from THIS object, so carrying
     // the name here is what keeps the two surfaces from disagreeing.
     expect(payload.data.systemData.actorName).toBe("Super Admin");
-    expect(payload.data.content.text).toBe("Super Admin removed Name user-2");
+    expect(payload.data.content.text).toBe("Super Admin removed Name user-2 from the group");
     // The removed member still never receives their own removal line.
     expect(payload.excludeUserId).toBe("user-2");
   });

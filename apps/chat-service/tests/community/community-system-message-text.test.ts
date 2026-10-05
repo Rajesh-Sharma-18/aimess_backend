@@ -126,7 +126,7 @@ describe("system message text — display names and You personalization", () => 
         },
         TARGET
       )
-    ).toBe("Admin User added you to the group");
+    ).toBe("Admin User added You to the group");
   });
 
   it("leaves bystander text third-person", () => {
@@ -722,8 +722,8 @@ describe("community moderation lines — actor reads first person", () => {
     );
 
   it.each([
-    ["MEMBER_ADDED", "You added Peter Parker to the community", "Smiley Creatures added you to the community", "Smiley Creatures added Peter Parker to the community"],
-    ["MEMBER_REMOVED", "You removed Peter Parker from the community", "You were removed", "Peter Parker was removed"],
+    ["MEMBER_ADDED", "You added Peter Parker to the community", "Smiley Creatures added You to the community", "Smiley Creatures added Peter Parker to the community"],
+    ["MEMBER_REMOVED", "You removed Peter Parker from the community", "Smiley Creatures removed You from the community", "Smiley Creatures removed Peter Parker from the community"],
     ["MEMBER_BANNED", "You banned Peter Parker", "You were banned from this community.", "Smiley Creatures banned Peter Parker"],
     ["MEMBER_UNBANNED", "You unbanned Peter Parker", "You were unbanned", "Smiley Creatures unbanned Peter Parker"],
     ["MEMBER_MUTED", "You muted Peter Parker indefinitely", "You are muted indefinitely", "Smiley Creatures muted Peter Parker indefinitely"],

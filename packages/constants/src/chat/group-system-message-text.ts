@@ -1,6 +1,7 @@
 import { resolvePersonDisplayName } from "../community/system-message-text.js";
 import { t } from "../i18n.js";
 import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
+import { entityLabel, memberChangeText } from "../member-change-text.js";
 
 export { resolvePersonDisplayName };
 
@@ -177,7 +178,7 @@ function formatNameList(labels: string[], locale: SupportedLocale): string {
  * Display labels for a BATCH system line's `targetUserIds` / `targetNames`
  * (one add-member operation ⇒ one row), or null when the row is the classic
  * single-target shape. The viewer, if they are one of the targets, is rendered
- * as "you" and hoisted to the front so they still see themselves named even
+ * as "You" and hoisted to the front so they still see themselves named even
  * when the list overflows into "and N others".
  */
 function groupedTargetLabels(
@@ -197,7 +198,7 @@ function groupedTargetLabels(
     : -1;
   if (viewerIndex >= 0) {
     const [self] = entries.splice(viewerIndex, 1);
-    self!.label = t("SYS_NAME_YOU_OBJECT", locale);
+    self!.label = t("SYS_SENDER_YOU", locale);
     entries.unshift(self!);
   }
   return entries.map((entry) => entry.label);
@@ -271,20 +272,31 @@ export function buildGroupSystemFallbackText(
       if (isActor) return t("SYS_GROUP_CREATED_SELF", locale);
       return t("SYS_GROUP_CREATED", locale, { actor });
 
-    case "MEMBER_ADDED": {
-      // Batch add (one operation, many members) → ONE grouped line. The actor is
-      // the same for every viewer; only the wording is personalized.
-      const grouped = groupedTargetLabels(data, viewer, locale);
-      if (grouped) {
-        const targets = formatNameList(grouped, locale);
-        return isActor
-          ? t("SYS_GROUP_MEMBERS_ADDED_SELF", locale, { targets })
-          : t("SYS_GROUP_MEMBERS_ADDED", locale, { actor, targets });
-      }
-      if (isTarget) return t("SYS_GROUP_MEMBER_ADDED_SELF", locale, { actor });
-      if (isActor)
-        return t("SYS_GROUP_MEMBERS_ADDED_SELF", locale, { targets: target });
-      return t("SYS_GROUP_MEMBER_ADDED", locale, { actor, target });
+    // "{actor} added {target} to {group}" / "{actor} removed {target} from
+    // {group}" — the shared member-change sentence (member-change-text.ts), with
+    // the reader's own side as "You". `groupName` is captured when the line is
+    // posted; rows written before that read "… to the group".
+    case "MEMBER_ADDED":
+    case "MEMBER_REMOVED": {
+      // Batch add (one operation, many members) → ONE grouped line listing
+      // every target; the reader, if one of them, is hoisted to the front.
+      const grouped =
+        event === "MEMBER_ADDED"
+          ? groupedTargetLabels(data, viewer, locale)
+          : null;
+      return memberChangeText(
+        event === "MEMBER_ADDED" ? "ADDED" : "REMOVED",
+        {
+          actor: isActor ? t("SYS_SENDER_YOU", locale) : actor,
+          target: grouped
+            ? formatNameList(grouped, locale)
+            : isTarget
+              ? t("SYS_SENDER_YOU", locale)
+              : target,
+          entity: entityLabel(data.groupName as string, "GROUP", locale),
+        },
+        locale
+      );
     }
 
     case "MEMBER_JOINED":
@@ -294,16 +306,6 @@ export function buildGroupSystemFallbackText(
     case "MEMBER_LEFT":
       if (isActor) return t("SYS_GROUP_MEMBER_LEFT_SELF", locale);
       return t("SYS_GROUP_MEMBER_LEFT", locale, { actor });
-
-    // Three perspectives, in priority order: the removed member (who is
-    // excluded from the live fan-out but can still read the row in history),
-    // the admin who did it, and everyone else. The actor branch is what stops
-    // the remover being shown their own name in the third person.
-    case "MEMBER_REMOVED":
-      if (isTarget) return t("SYS_GROUP_MEMBER_REMOVED_SELF", locale);
-      if (isActor)
-        return t("SYS_GROUP_MEMBER_REMOVED_ACTOR", locale, { target });
-      return t("SYS_GROUP_MEMBER_REMOVED", locale, { actor, target });
 
     case "MEMBER_BANNED":
       if (isTarget) return t("SYS_GROUP_MEMBER_BANNED_SELF", locale);

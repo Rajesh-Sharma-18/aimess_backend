@@ -121,6 +121,8 @@ export const NOTIFICATION_MESSAGES = {
     en: "You're now a member of {{community}}",
     th: "คุณเป็นสมาชิกของ{{community}}แล้ว",
   },
+  // LEGACY rows only: a notification written before actor/target were carried.
+  // New ones render SYS_MEMBER_ADDED_TO / SYS_MEMBER_REMOVED_FROM.
   NOTIF_COMMUNITY_MEMBER_ADDED: {
     vi: "Bạn đã được thêm vào {{community}}",
     en: "You were added to {{community}}",
@@ -130,14 +132,6 @@ export const NOTIFICATION_MESSAGES = {
     vi: "Một thành viên mới đã tham gia {{community}}",
     en: "A new member joined {{community}}",
     th: "มีสมาชิกใหม่เข้าร่วม{{community}}",
-  },
-  // Who added whom, to where — shared by the community and group member-added
-  // rows. `actor`/`target` are a display name or the viewer's own SYS_SENDER_YOU,
-  // resolved PER VIEWER at render time (see communityCopy.memberAdded).
-  NOTIF_MEMBER_ADDED_BY: {
-    vi: "{{actor}} đã thêm {{target}} vào {{entity}}",
-    en: "{{actor}} added {{target}} to {{entity}}",
-    th: "{{actor}}เพิ่ม{{target}}เข้า{{entity}}",
   },
   NOTIF_COMMUNITY_ADMIN_TRANSFERRED: {
     vi: "Bạn hiện là quản trị viên của {{community}}",
@@ -149,6 +143,8 @@ export const NOTIFICATION_MESSAGES = {
     en: "You're now {{role}} in {{community}}",
     th: "คุณเป็น{{role}}ใน{{community}}แล้ว",
   },
+  // LEGACY rows only: a notification written before actor/target were carried.
+  // New ones render SYS_MEMBER_ADDED_TO / SYS_MEMBER_REMOVED_FROM.
   NOTIF_COMMUNITY_MEMBER_KICKED: {
     vi: "Bạn đã bị xóa khỏi {{community}}",
     en: "You were removed from {{community}}",
@@ -348,6 +344,8 @@ export const NOTIFICATION_MESSAGES = {
     en: "this group",
     th: "กลุ่มนี้",
   },
+  // LEGACY rows only: a notification written before actor/target were carried.
+  // New ones render SYS_MEMBER_ADDED_TO / SYS_MEMBER_REMOVED_FROM.
   NOTIF_GROUP_MEMBER_ADDED: {
     vi: "Bạn đã được thêm vào nhóm",
     en: "You were added to the group",

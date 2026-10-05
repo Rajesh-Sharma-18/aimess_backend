@@ -1,5 +1,6 @@
 import { t } from "../i18n.js";
 import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
+import { entityLabel, memberChangeText } from "../member-change-text.js";
 import {
   CommunitySystemMessageType,
   type CommunitySystemMessageType as CommunitySystemMessageTypeValue,
@@ -171,6 +172,19 @@ export function buildCommunitySystemFallbackText(
   const namesActor = Boolean(
     actorId && actorId !== "system" && metadata.source !== "auto"
   );
+  // Labels for the shared member-change sentence (member-change-text.ts).
+  // `communityName` is captured when the line is posted; a row written before
+  // that reads "… to the community".
+  const memberChangeLabels = () => ({
+    actor: isActor ? t("SYS_SENDER_YOU", locale) : actor,
+    // Mid-sentence, so the lower-case "a member" fallback, not the line-initial one.
+    target: isTarget
+      ? t("SYS_SENDER_YOU", locale)
+      : (metadata.targetName as string) ||
+        targetName ||
+        t("SYS_NAME_A_MEMBER", locale),
+    entity: entityLabel(metadata.communityName as string, "COMMUNITY", locale),
+  });
 
   switch (type) {
     case "COMMUNITY_CREATED":
@@ -310,11 +324,11 @@ export function buildCommunitySystemFallbackText(
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_LEFT_SELF", locale);
       return t("SYS_COMMUNITY_MEMBER_LEFT", locale, { target });
 
+    // Hidden from every read path (HIDDEN_SYSTEM_MESSAGE_TYPES — removal is
+    // silent in chat); rendered with the shared sentence for any surface that
+    // still resolves a legacy row.
     case "MEMBER_REMOVED":
-      if (isTarget) return t("SYS_COMMUNITY_MEMBER_REMOVED_SELF", locale);
-      if (isActor)
-        return t("SYS_COMMUNITY_MEMBER_REMOVED_ACTOR", locale, { target });
-      return t("SYS_COMMUNITY_MEMBER_REMOVED", locale, { target });
+      return memberChangeText("REMOVED", memberChangeLabels(), locale);
 
     // Ban / unban / mute / unmute: the target's own wording is checked FIRST and is
     // unchanged; the acting moderator reads "You …"; every other moderator reads
@@ -397,20 +411,12 @@ export function buildCommunitySystemFallbackText(
     case "COMMUNITY_JOINED":
     case "JOIN_REQUEST_APPROVED":
       return t("SYS_COMMUNITY_MEMBER_JOINED_SELF", locale);
-    // Two copies, same subtype (see MODERATION_TYPES_WITH_PERSONAL_COPY):
-    //  - the added member's own PERSONAL notice → second-person, names the admin;
-    //  - the MODERATION audit line read by owner/admin/moderators → third-person,
-    //    names both sides, because "who added whom" IS the audit record.
-    // `actor`/`target` fall back to "Someone" when a snapshot is unresolved, same
-    // as every other actor-bearing line here.
+    // Two copies, same subtype (see MODERATION_TYPES_WITH_PERSONAL_COPY): the
+    // added member's own PERSONAL notice and the MODERATION audit line read by
+    // owner/admin/moderators. Both are the shared "{actor} added {target} to
+    // {community}" sentence; only the reader's own side changes to "You".
     case "MEMBER_ADDED":
-      if (isTarget) {
-        return t("SYS_COMMUNITY_MEMBER_ADDED_SELF", locale, { actor });
-      }
-      if (isActor) {
-        return t("SYS_COMMUNITY_MEMBER_ADDED_ACTOR", locale, { target });
-      }
-      return t("SYS_COMMUNITY_MEMBER_ADDED", locale, { actor, target });
+      return memberChangeText("ADDED", memberChangeLabels(), locale);
     case "JOIN_REQUEST_REJECTED":
       return t("SYS_COMMUNITY_JOIN_REQUEST_REJECTED", locale);
 

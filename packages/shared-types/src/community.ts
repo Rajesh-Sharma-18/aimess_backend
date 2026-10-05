@@ -44,6 +44,16 @@ export type CommunityLastActivity =
        * `preview` too, never be shown raw.
        */
       previewKey?: string;
+      /**
+       * For a sentence WITH parameters that depends on who reads it — today the
+       * added member's own "{actor} added You to {community}" row — the system
+       * event it was rendered from, exactly as on the chat line
+       * (`systemMessageType` + `systemMetadata`). The gateway re-renders it per
+       * receiving socket; a client SHOULD render it the same way it renders the
+       * chat line. Optional and additive, like `previewKey`.
+       */
+      systemMessageType?: string;
+      systemMetadata?: Record<string, unknown>;
       /** Epoch milliseconds. */
       dateTime: number;
     };

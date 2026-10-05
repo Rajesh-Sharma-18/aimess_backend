@@ -135,24 +135,24 @@ describe("buildGroupSystemFallbackText — MEMBER_REMOVED", () => {
   it("POSITIVE: the admin who removed the member reads it first-person", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "actor-1")
-    ).toBe("You removed Tom");
+    ).toBe("You removed Tom from the group");
   });
 
   it("POSITIVE: another member still reads the actor's name", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "bystander-1")
-    ).toBe("Smiley Creatures removed Tom");
+    ).toBe("Smiley Creatures removed Tom from the group");
   });
 
   it("POSITIVE: the removed member keeps the existing self copy", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "target-1")
-    ).toBe("You were removed");
+    ).toBe("Smiley Creatures removed You from the group");
   });
 
   it("POSITIVE: the stored (viewer-less) text stays third-person", () => {
     expect(buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL)).toBe(
-      "Smiley Creatures removed Tom"
+      "Smiley Creatures removed Tom from the group"
     );
   });
 
@@ -165,13 +165,13 @@ describe("buildGroupSystemFallbackText — MEMBER_REMOVED", () => {
         { actorId: null, targetUserId: "target-1", targetName: "Tom" },
         "bystander-1"
       )
-    ).toBe("Someone removed Tom");
+    ).toBe("Someone removed Tom from the group");
   });
 
   it("POSITIVE: the actor line is localized, not English-only", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "actor-1", "vi")
-    ).toBe("Bạn đã xóa Tom");
+    ).toBe("Bạn đã xóa Tom khỏi nhóm");
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "actor-1", "th")
     ).toBe("คุณนำTomออกจากกลุ่ม");
@@ -182,7 +182,7 @@ describe("personalizeGroupSystemMessageForViewer — MEMBER_REMOVED", () => {
   // Realtime (socket fan-out) and history (REST serializer) both re-render the
   // stored row through this one function, so asserting it here is asserting
   // that the two surfaces cannot disagree.
-  const STORED = "Smiley Creatures removed Tom";
+  const STORED = "Smiley Creatures removed Tom from the group";
   const REMOVAL = {
     actorId: "actor-1",
     actorName: "Smiley Creatures",
@@ -198,7 +198,7 @@ describe("personalizeGroupSystemMessageForViewer — MEMBER_REMOVED", () => {
         STORED,
         "actor-1"
       )
-    ).toBe("You removed Tom");
+    ).toBe("You removed Tom from the group");
   });
 
   it("POSITIVE: leaves another member's row untouched", () => {
@@ -227,16 +227,16 @@ describe("buildGroupSystemFallbackText — named platform-admin removal", () => 
   it("POSITIVE: every remaining member reads the admin's real name", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", PLATFORM, "bystander-1")
-    ).toBe("Super Admin removed Tom");
+    ).toBe("Super Admin removed Tom from the group");
     expect(buildGroupSystemFallbackText("MEMBER_REMOVED", PLATFORM)).toBe(
-      "Super Admin removed Tom"
+      "Super Admin removed Tom from the group"
     );
   });
 
   it("POSITIVE: the removed member keeps the self copy", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", PLATFORM, "target-1")
-    ).toBe("You were removed");
+    ).toBe("Super Admin removed You from the group");
   });
 
   // The whole point of leaving actorId null: an AdminUser id is not a chat id,
@@ -253,7 +253,7 @@ describe("buildGroupSystemFallbackText — named platform-admin removal", () => 
   it("POSITIVE: the named line is localized like any other", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", PLATFORM, "bystander-1", "vi")
-    ).toBe("Super Admin đã xóa Tom");
+    ).toBe("Super Admin đã xóa Tom khỏi nhóm");
   });
 
   // Ban/unban post through the same actor-less platform path, so the same gap
@@ -270,7 +270,7 @@ describe("buildGroupSystemFallbackText — named platform-admin removal", () => 
   // Realtime and history both re-render the stored row through this one
   // function, so a named platform row cannot regress to "Someone" on reload.
   it("POSITIVE: the stored sentence survives per-viewer personalization", () => {
-    const STORED = "Super Admin removed Tom";
+    const STORED = "Super Admin removed Tom from the group";
     expect(
       personalizeGroupSystemMessageForViewer(
         "MEMBER_REMOVED",
@@ -296,12 +296,12 @@ describe("buildGroupSystemFallbackText — historical actor resolution", () => {
   it("POSITIVE: an actor no longer in the group still resolves", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", HISTORIC, "bystander-1")
-    ).toBe("Viddhi Moneywala removed Spider Man");
+    ).toBe("Viddhi Moneywala removed Spider Man from the group");
   });
 
   it("POSITIVE: a target no longer in the group still resolves", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_ADDED", HISTORIC, "bystander-1")
-    ).toBe("Viddhi Moneywala added Spider Man");
+    ).toBe("Viddhi Moneywala added Spider Man to the group");
   });
 });

@@ -832,10 +832,23 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_KICKED: {
       const p = data as CommunityMemberKickedPayload;
-      const identity = await communityIdentityFor(p.communityId);
+      // "{actor} removed You from {community}" — same sentence and name
+      // sources as the add. A platform admin is not an AIMess user, so their
+      // name does not resolve and the copy falls back to "Someone".
+      const [identity, actorName, targetName] = await Promise.all([
+        communityIdentityFor(p.communityId),
+        actorNameFor(p.actorId),
+        actorNameFor(p.targetUserId),
+      ]);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberKicked(identity.name),
+        copy: communityCopy.memberKicked(
+          identity.name,
+          actorName,
+          targetName,
+          p.actorId,
+          p.targetUserId
+        ),
         bypassSettings: true,
         ...base(
           type,

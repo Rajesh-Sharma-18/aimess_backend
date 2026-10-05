@@ -222,6 +222,15 @@ export class GroupSystemMessageService {
 
       const targetNames = targetUserIds.map((id) => this.nameOf(snapshots, id));
 
+      // Member added / removed read "{actor} added {target} to {group}", so the
+      // group's name is captured with the line — the same event-time snapshot
+      // the names above are. Best-effort: no row → the line reads "… the group".
+      const groupName =
+        systemEvent === "MEMBER_ADDED" || systemEvent === "MEMBER_REMOVED"
+          ? ((await this.roomRepo.findByRoomId(roomId).catch(() => null))
+              ?.name ?? "")
+          : "";
+
       // Resolved names are folded into systemData so clients can render without
       // a second lookup, while keeping the raw ids for navigation.
       const systemData: Record<string, unknown> = {
@@ -230,6 +239,7 @@ export class GroupSystemMessageService {
         actorName,
         ...(targetUserId ? { targetUserId, targetName } : {}),
         ...(targetUserIds.length ? { targetUserIds, targetNames } : {}),
+        ...(groupName ? { groupName } : {}),
       };
 
       const text = buildGroupSystemFallbackText(systemEvent, systemData);

@@ -21,6 +21,11 @@
  * here and replay them through {@link renderNotificationCopy}.
  */
 import { t } from "./i18n.js";
+import {
+  memberChangeText,
+  personLabel,
+  type MemberChange,
+} from "./member-change-text.js";
 import { localizeMessagePreview } from "./message-preview.js";
 import {
   buildCallActivityText,
@@ -266,35 +271,27 @@ const person = (
 ): string => name?.trim() || t("SYS_NAME_SOMEONE", locale);
 
 /**
- * One side of a "who did what to whom" sentence, from the READER's point of
- * view: the reader's own userId renders as "You", anyone else by the display
- * name captured when the event happened. Compared on the canonical AIMess
- * userId — never a device or session — so every device of one account reads
- * "You".
+ * "{actor} added {target} to {entity}" / "{actor} removed {target} from
+ * {entity}" — the same member-change sentence the chat lines render
+ * (member-change-text.ts), with the reader's own side as "You".
  */
-const viewerAware = (
-  userId: string | null | undefined,
-  name: string | null | undefined,
-  viewerId: string | undefined,
-  locale: SupportedLocale
-): string =>
-  userId && viewerId && userId === viewerId
-    ? t("SYS_SENDER_YOU", locale)
-    : person(name, locale);
-
-/** "{actor} added {target} to {entity}", per viewer — see {@link viewerAware}. */
-const addedBy = (
+const memberChange = (
+  change: MemberChange,
   entity: string,
   actor: { id?: string | null; name?: string | null },
   target: { id?: string | null; name?: string | null },
   viewerId: string | undefined,
   locale: SupportedLocale
 ): string =>
-  t("NOTIF_MEMBER_ADDED_BY", locale, {
-    actor: viewerAware(actor.id, actor.name, viewerId, locale),
-    target: viewerAware(target.id, target.name, viewerId, locale),
-    entity,
-  });
+  memberChangeText(
+    change,
+    {
+      actor: personLabel(actor.id, actor.name, viewerId, locale),
+      target: personLabel(target.id, target.name, viewerId, locale),
+      entity,
+    },
+    locale
+  );
 
 function roleLabel(role: string, locale: SupportedLocale): string {
   const r = String(role ?? "").toUpperCase();
@@ -514,7 +511,8 @@ export const communityCopy = register("community", {
     (locale, viewerId) => ({
       title: named(communityName, locale),
       body: actorId
-        ? addedBy(
+        ? memberChange(
+            "ADDED",
             named(communityName, locale),
             { id: actorId, name: actorName },
             { id: targetUserId, name: targetName },
@@ -540,7 +538,8 @@ export const communityCopy = register("community", {
     (locale, viewerId) => ({
       title: named(communityName, locale),
       body: actorId
-        ? addedBy(
+        ? memberChange(
+            "ADDED",
             named(communityName, locale),
             { id: actorId, name: actorName },
             { id: targetUserId, name: targetName },
@@ -571,13 +570,31 @@ export const communityCopy = register("community", {
       }),
       inboxTitle: null,
     }),
+  // "{actor} removed {target} from {community}", reader's side as "You" —
+  // same contract as memberAdded. A ticket written before actor/target were
+  // carried keeps "You were removed from …".
   memberKicked:
-    (communityName?: string | null): LocalizedCopy =>
-    (locale) => ({
+    (
+      communityName?: string | null,
+      actorName?: string | null,
+      targetName?: string | null,
+      actorId?: string | null,
+      targetUserId?: string | null
+    ): LocalizedCopy =>
+    (locale, viewerId) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_MEMBER_KICKED", locale, {
-        community: named(communityName, locale),
-      }),
+      body: actorId
+        ? memberChange(
+            "REMOVED",
+            named(communityName, locale),
+            { id: actorId, name: actorName },
+            { id: targetUserId, name: targetName },
+            viewerId,
+            locale
+          )
+        : t("NOTIF_COMMUNITY_MEMBER_KICKED", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
   memberBanned:
@@ -957,7 +974,8 @@ export const groupCopy = register("group", {
     (locale, viewerId) => ({
       title: groupName || t("NOTIF_GROUP_UNNAMED", locale),
       body: actorId
-        ? addedBy(
+        ? memberChange(
+            "ADDED",
             groupName || t("NOTIF_GROUP_UNNAMED", locale),
             { id: actorId, name: actorName },
             { id: targetUserId, name: targetName },
@@ -1153,7 +1171,13 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   ],
   "community.adminTransferred": ["communityName"],
   "community.roleChanged": ["newRole", "communityName"],
-  "community.memberKicked": ["communityName"],
+  "community.memberKicked": [
+    "communityName",
+    "actorName",
+    "targetName",
+    "actorId",
+    "targetUserId",
+  ],
   "community.memberBanned": ["communityName"],
   "community.memberUnbanned": ["communityName"],
   "community.memberMuted": ["mutedUntil", "communityName"],

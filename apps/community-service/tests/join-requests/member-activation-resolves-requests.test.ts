@@ -551,7 +551,7 @@ describe("C. copy per path", () => {
       ([, , evt]) => evt === "community:added"
     );
     expect(added?.[3].lastActivity.preview).toBe(
-      "You were added to the community"
+      "User 1111 added You to Secret Club"
     );
   });
 });

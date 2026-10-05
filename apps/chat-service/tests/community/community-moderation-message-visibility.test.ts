@@ -779,7 +779,7 @@ describe("socket fan-out for a moderation system line", () => {
     // the structured subtype + metadata, so each session still renders it in its
     // own language; the stored text is only the English fallback.
     expect(persisted[0]!.fallbackText).toBe(
-      "Ann Admin added you to the community"
+      "Ann Admin added You to the community"
     );
     expect(persisted[1]!.fallbackText).toBe(
       "Ann Admin added Bob Member to the community"

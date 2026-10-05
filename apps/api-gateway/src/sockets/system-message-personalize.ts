@@ -248,11 +248,12 @@ export function personalizeGroupSocketMessage(
  *
  * `community:added` is the ONE community event whose text is not a bumped
  * message: it carries the recipient's own "You joined the community" /
- * "You were added to the community" list row, baked English by community-service
+ * "{admin} added You to {community}" list row, baked English by community-service
  * (which runs inside the ADDING ADMIN's request and therefore must not use that
- * request's language for another member's device). The sentence has no
- * parameters, so the row ships the catalog key it was rendered from and this
- * re-renders it for the socket that is about to receive it.
+ * request's language for another member's device). A join ships the catalog
+ * key it was rendered from; an admin add ships its system event (it names
+ * people, and the reader's own side reads "You"). Either way this re-renders it
+ * for the socket that is about to receive it.
  *
  * Without this the same add produced two languages on one device — an English
  * `community:added.lastActivity.preview` next to a `community:message:new`
@@ -262,16 +263,35 @@ export function personalizeGroupSocketMessage(
  */
 export function personalizeCommunityAddedPreview(
   data: unknown,
-  _viewerUserId: string,
+  viewerUserId: string,
   locale: SupportedLocale = STORED_TEXT_LOCALE
 ): unknown {
   const d = data as Record<string, unknown>;
   const activity = d.lastActivity as
-    | { preview?: string; previewKey?: string }
+    | {
+        preview?: string;
+        previewKey?: string;
+        systemMessageType?: string;
+        systemMetadata?: Record<string, unknown>;
+      }
     | null
     | undefined;
   if (!activity || typeof activity !== "object") return data;
-  const rendered = renderMessageKey(activity.previewKey, locale);
+  // An admin add carries its system event ("{actor} added You to
+  // {community}"): render it for THIS socket's user exactly like the chat line.
+  const metadata = activity.systemMetadata;
+  const rendered =
+    activity.systemMessageType && metadata && typeof metadata === "object"
+      ? personalizeCommunitySystemMessageForViewer(
+          activity.systemMessageType as CommunitySystemMessageType,
+          metadata,
+          activity.preview ?? "",
+          String(metadata.actorName ?? ""),
+          String(metadata.targetName ?? ""),
+          viewerUserId,
+          locale
+        )
+      : renderMessageKey(activity.previewKey, locale);
   if (rendered === null || rendered === activity.preview) return data;
   return { ...d, lastActivity: { ...activity, preview: rendered } };
 }

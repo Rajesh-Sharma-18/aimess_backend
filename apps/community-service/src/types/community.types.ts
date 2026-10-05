@@ -308,6 +308,9 @@ export type CommunityLastActivity =
        * `@aimess/shared-types`' CommunityLastActivity.
        */
       previewKey?: string;
+      /** The system event behind a per-viewer preview — see `@aimess/shared-types`' CommunityLastActivity. */
+      systemMessageType?: string;
+      systemMetadata?: Record<string, unknown>;
       dateTime: number;
       /**
        * Offline-first identity of the message behind this activity. ADDITIVE:

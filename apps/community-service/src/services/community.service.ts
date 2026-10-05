@@ -382,7 +382,7 @@ const SELF_JOIN_ACTIVITY_PREVIEW = t(
  * ACTUALLY happened — an admin adding someone is not that someone joining, and
  * it is certainly not their request being accepted:
  *
- *   add_members           → MEMBER_ADDED     "{admin} added you to the community"
+ *   add_members           → MEMBER_ADDED     "{admin} added You to {community}"
  *   join_request_approved → COMMUNITY_JOINED "You joined the community"
  *   self_join / invite /  → COMMUNITY_JOINED "You joined the community"
  *   invite_link_redeem
@@ -402,17 +402,6 @@ const JOIN_LINE_TYPE_BY_VIA: Partial<
   Record<CommunityMemberAddedPayload["via"], CommunitySystemMessageType>
 > = {
   add_members: "MEMBER_ADDED",
-};
-
-/**
- * English preview for the joiner's own community-LIST row, matched to the chat
- * line above. Actor-less on purpose: community-service does not resolve the
- * adding admin's display name (chat-service hydrates snapshots for the timeline
- * line), and a preview reading "Someone added you…" is worse than the neutral
- * passive form. Stored/wire text stays English; readers localize.
- */
-const JOIN_ACTIVITY_PREVIEW_KEY_BY_TYPE: Record<string, MessageKey> = {
-  MEMBER_ADDED: "SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT",
 };
 
 /**
@@ -4553,9 +4542,24 @@ export const communityService = {
 
     // Which "you are now a member" line this path posts — see JOIN_LINE_TYPE_BY_VIA.
     const joinLineType = JOIN_LINE_TYPE_BY_VIA[via] ?? "COMMUNITY_JOINED";
-    const joinPreviewKey =
-      JOIN_ACTIVITY_PREVIEW_KEY_BY_TYPE[joinLineType] ??
-      SELF_JOIN_ACTIVITY_PREVIEW_KEY;
+    const joinPreviewKey = SELF_JOIN_ACTIVITY_PREVIEW_KEY;
+
+    // An admin/moderator ADD reads "{actor} added {target} to {community}" on
+    // every surface. The community's name rides with the event (event-time
+    // snapshot, like the names); chat-service resolves the actor's name for the
+    // chat lines itself, and the list preview below needs it here.
+    const addedMetadata: Record<string, unknown> | null =
+      joinLineType === "MEMBER_ADDED"
+        ? {
+            targetUserId: member.userId,
+            targetName: member.snapshotDisplayName ?? "",
+            actorUserId: actorId,
+            actorName:
+              (await fetchUserSnapshotHits([actorId])).get(actorId)
+                ?.displayName ?? "",
+            communityName: community.name,
+          }
+        : null;
 
     const moderatorRecipientIds =
       args.moderatorRecipientIds ??
@@ -4633,19 +4637,37 @@ export const communityService = {
       // timestamp as its createdAt. Using args.eventAt (not Date.now()) ensures
       // the socket payload's dateTime matches what the Mine API returns once the
       // async write lands, keeping both values bit-for-bit identical.
+      // Must match the chat line this same call posts below, or the new
+      // member's list row reads "You joined…" while their timeline reads
+      // "{admin} added You…". English on the wire, ALWAYS — `previewKey` /
+      // the system event is what makes it readable in the recipient's
+      // language. Rendering here in the ADDING ADMIN's request locale (this
+      // runs inside their POST) would ship one member's language to another
+      // member's device.
+      //
+      // An admin ADD carries the event itself (the same metadata as the chat
+      // line), so the gateway renders "{actor} added You to {community}" per
+      // socket; the parameter-less joins keep their message key.
       const joinLastActivity = {
         type: "system" as const,
         userId: null,
         username: null,
-        // Must match the chat line this same call posts below, or the new
-        // member's list row reads "You joined…" while their timeline reads
-        // "{admin} added you…".
-        // English on the wire, ALWAYS — `previewKey` is what makes it readable
-        // in the recipient's language. Rendering here in the ADDING ADMIN's
-        // request locale (this runs inside their POST) would ship one member's
-        // language to another member's device, which is the bug this pair fixes.
-        preview: t(joinPreviewKey, STORED_TEXT_LOCALE),
-        previewKey: joinPreviewKey,
+        ...(addedMetadata
+          ? {
+              preview: buildCommunitySystemFallbackText(
+                "MEMBER_ADDED",
+                addedMetadata,
+                String(addedMetadata.actorName ?? ""),
+                String(addedMetadata.targetName ?? ""),
+                member.userId
+              ),
+              systemMessageType: "MEMBER_ADDED",
+              systemMetadata: addedMetadata,
+            }
+          : {
+              preview: t(joinPreviewKey, STORED_TEXT_LOCALE),
+              previewKey: joinPreviewKey,
+            }),
         dateTime: new Date(args.eventAt).getTime(),
       };
       const addedAt = Date.now();
@@ -4702,7 +4724,9 @@ export const communityService = {
       communityId: community.id,
       systemMessageType: joinLineType,
       metadata:
-        joinLineType === "MEMBER_ADDED" ? { targetUserId: member.userId } : {},
+        joinLineType === "MEMBER_ADDED"
+          ? { targetUserId: member.userId, communityName: community.name }
+          : {},
       triggeredByUserId:
         joinLineType === "MEMBER_ADDED" ? actorId : member.userId,
       eventAt: args.eventAt,
@@ -4723,7 +4747,7 @@ export const communityService = {
       publishCommunitySystemMessageForChatSafe({
         communityId: community.id,
         systemMessageType: "MEMBER_ADDED",
-        metadata: { targetUserId: member.userId },
+        metadata: { targetUserId: member.userId, communityName: community.name },
         triggeredByUserId: actorId,
         eventAt: args.eventAt,
       });

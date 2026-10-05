@@ -7,7 +7,7 @@ import type { MessageCatalog } from "./types.js";
  * These differ from the rest of the catalog in two ways:
  *
  * 1. They interpolate. Never concatenate around a translation — pass params
- *    (`t("SYS_GROUP_MEMBER_ADDED", locale, { actor, target })`) so each language
+ *    (`t("SYS_MEMBER_ADDED_TO", locale, { actor, target, entity })`) so each language
  *    controls its own word order.
  * 2. They are rendered PER VIEWER. A `_SELF` key is the first-person form shown
  *    to the actor/subject of the event; the base key is what everyone else sees.
@@ -48,6 +48,32 @@ export const SYSTEM_MESSAGES = {
     vi: "Bạn",
     en: "You",
     th: "คุณ",
+  },
+  // ── Member added / removed — ONE sentence for every surface ─────────────
+  // Group and community chat lines, list previews, push and the Notification
+  // Center all render these through `memberChangeText` (member-change-text.ts).
+  // `actor`/`target` are a display name or the reader's own SYS_SENDER_YOU;
+  // `entity` is the group/community name, or SYS_ENTITY_THE_* on legacy rows
+  // that never stored one.
+  SYS_MEMBER_ADDED_TO: {
+    vi: "{{actor}} đã thêm {{target}} vào {{entity}}",
+    en: "{{actor}} added {{target}} to {{entity}}",
+    th: "{{actor}}เพิ่ม{{target}}เข้า{{entity}}",
+  },
+  SYS_MEMBER_REMOVED_FROM: {
+    vi: "{{actor}} đã xóa {{target}} khỏi {{entity}}",
+    en: "{{actor}} removed {{target}} from {{entity}}",
+    th: "{{actor}}นำ{{target}}ออกจาก{{entity}}",
+  },
+  SYS_ENTITY_THE_GROUP: {
+    vi: "nhóm",
+    en: "the group",
+    th: "กลุ่ม",
+  },
+  SYS_ENTITY_THE_COMMUNITY: {
+    vi: "cộng đồng",
+    en: "the community",
+    th: "คอมมูนิตี้",
   },
   /** Object form of "you" — used inside a name LIST ("Krish added you and Jane"). */
   SYS_NAME_YOU_OBJECT: {
@@ -236,30 +262,6 @@ export const SYSTEM_MESSAGES = {
     en: "You created the group",
     th: "คุณสร้างกลุ่มนี้",
   },
-  SYS_GROUP_MEMBER_ADDED: {
-    vi: "{{actor}} đã thêm {{target}}",
-    en: "{{actor}} added {{target}}",
-    th: "{{actor}}เพิ่ม{{target}}",
-  },
-  // The added member's own view names WHO added them — same shape as
-  // SYS_COMMUNITY_MEMBER_ADDED_SELF.
-  SYS_GROUP_MEMBER_ADDED_SELF: {
-    vi: "{{actor}} đã thêm bạn vào nhóm",
-    en: "{{actor}} added you to the group",
-    th: "{{actor}}เพิ่มคุณเข้ากลุ่ม",
-  },
-  // WhatsApp-style grouped add: ONE line per add-member operation, listing every
-  // member that operation actually added ("Krish added Jane, Peter and 3 others").
-  SYS_GROUP_MEMBERS_ADDED: {
-    vi: "{{actor}} đã thêm {{targets}}",
-    en: "{{actor}} added {{targets}}",
-    th: "{{actor}}เพิ่ม{{targets}}",
-  },
-  SYS_GROUP_MEMBERS_ADDED_SELF: {
-    vi: "Bạn đã thêm {{targets}}",
-    en: "You added {{targets}}",
-    th: "คุณเพิ่ม{{targets}}",
-  },
   SYS_GROUP_MEMBER_JOINED: {
     vi: "{{actor}} đã tham gia nhóm",
     en: "{{actor}} joined the group",
@@ -280,33 +282,12 @@ export const SYSTEM_MESSAGES = {
     en: "You left the group",
     th: "คุณออกจากกลุ่ม",
   },
-  SYS_GROUP_MEMBER_REMOVED: {
-    vi: "{{actor}} đã xóa {{target}}",
-    en: "{{actor}} removed {{target}}",
-    th: "{{actor}}นำ{{target}}ออกจากกลุ่ม",
-  },
-  // The ACTOR's own view of the same row everyone else reads as "{{actor}}
-  // removed {{target}}" — without it the remover is shown their own name in the
-  // third person ("Smiley Creatures removed Tom"). `_SELF` below is the
-  // TARGET's perspective, so the actor form takes the `_ACTOR` suffix already
-  // used by the other two-perspective lines (SYS_PRIVATE_FRIENDSHIP_*_ACTOR,
-  // SYS_GROUP_OWNERSHIP_TRANSFERRED_ACTOR).
-  SYS_GROUP_MEMBER_REMOVED_ACTOR: {
-    vi: "Bạn đã xóa {{target}}",
-    en: "You removed {{target}}",
-    th: "คุณนำ{{target}}ออกจากกลุ่ม",
-  },
-  SYS_GROUP_MEMBER_REMOVED_SELF: {
-    vi: "Bạn đã bị xóa khỏi nhóm",
-    en: "You were removed",
-    th: "คุณถูกนำออกจากกลุ่ม",
-  },
   SYS_GROUP_MEMBER_BANNED: {
     vi: "{{actor}} đã cấm {{target}}",
     en: "{{actor}} banned {{target}}",
     th: "{{actor}}แบน{{target}}",
   },
-  // Actor's view (same `_ACTOR` convention as SYS_GROUP_MEMBER_REMOVED_ACTOR).
+  // Actor's view (`_ACTOR` = the member who performed the action).
   SYS_GROUP_MEMBER_BANNED_ACTOR: {
     vi: "Bạn đã cấm {{target}}",
     en: "You banned {{target}}",
@@ -741,16 +722,6 @@ export const SYSTEM_MESSAGES = {
     en: "You left the community",
     th: "คุณออกจากคอมมูนิตี้",
   },
-  SYS_COMMUNITY_MEMBER_REMOVED: {
-    vi: "{{target}} đã bị xóa",
-    en: "{{target}} was removed",
-    th: "{{target}}ถูกนำออก",
-  },
-  SYS_COMMUNITY_MEMBER_REMOVED_SELF: {
-    vi: "Bạn đã bị xóa",
-    en: "You were removed",
-    th: "คุณถูกนำออก",
-  },
   SYS_COMMUNITY_MEMBER_BANNED: {
     vi: "{{target}} đã bị cấm",
     en: "{{target}} was banned",
@@ -849,33 +820,9 @@ export const SYSTEM_MESSAGES = {
   // SYS_COMMUNITY_MEMBER_JOINED_SELF line as every other join, because what the
   // requester experienced is becoming a member — the admin's decision reaches
   // them as the separate join-request-approved notification instead.
-  SYS_COMMUNITY_MEMBER_ADDED_SELF: {
-    vi: "{{actor}} đã thêm bạn vào cộng đồng",
-    en: "{{actor}} added you to the community",
-    th: "{{actor}}เพิ่มคุณเข้าคอมมูนิตี้",
-  },
-  /** Third-person form for the MODERATION audit line, which only the community's
-   *  owner/admin/moderators can read. Names BOTH sides, because "who added whom"
-   *  is the whole content of the audit record. Same sentence shape as
-   *  SYS_COMMUNITY_MEMBER_ADDED_SELF with the second person replaced. */
-  SYS_COMMUNITY_MEMBER_ADDED: {
-    vi: "{{actor}} đã thêm {{target}} vào cộng đồng",
-    en: "{{actor}} added {{target}} to the community",
-    th: "{{actor}}เพิ่ม{{target}}เข้าคอมมูนิตี้",
-  },
-  // The ACTOR's own view of a moderation line (same `_ACTOR` convention as
-  // SYS_GROUP_MEMBER_REMOVED_ACTOR). Without these the admin who performed the
-  // action read their own name in the third person ("Smiley Creatures added …").
-  SYS_COMMUNITY_MEMBER_ADDED_ACTOR: {
-    vi: "Bạn đã thêm {{target}} vào cộng đồng",
-    en: "You added {{target}} to the community",
-    th: "คุณเพิ่ม{{target}}เข้าคอมมูนิตี้",
-  },
-  SYS_COMMUNITY_MEMBER_REMOVED_ACTOR: {
-    vi: "Bạn đã xóa {{target}} khỏi cộng đồng",
-    en: "You removed {{target}} from the community",
-    th: "คุณนำ{{target}}ออกจากคอมมูนิตี้",
-  },
+  //
+  // Member added / removed lines are SYS_MEMBER_ADDED_TO / SYS_MEMBER_REMOVED_FROM
+  // (top of this file), shared with groups and notifications.
   SYS_COMMUNITY_MEMBER_BANNED_ACTOR: {
     vi: "Bạn đã cấm {{target}}",
     en: "You banned {{target}}",
@@ -929,14 +876,6 @@ export const SYSTEM_MESSAGES = {
     vi: "{{actor}} đã bỏ cấm nói {{target}}",
     en: "{{actor}} unmuted {{target}}",
     th: "{{actor}}เปิดสิทธิ์พูดให้{{target}}",
-  },
-  /** Actor-less variant for the community-LIST preview, which is built by
-   *  community-service where the adding admin's display name is not resolved
-   *  (only chat-service hydrates user snapshots for system lines). */
-  SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT: {
-    vi: "Bạn đã được thêm vào cộng đồng",
-    en: "You were added to the community",
-    th: "คุณถูกเพิ่มเข้าคอมมูนิตี้",
   },
   SYS_COMMUNITY_JOIN_REQUEST_REJECTED: {
     vi: "Yêu cầu tham gia của bạn đã bị từ chối",
