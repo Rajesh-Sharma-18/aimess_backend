@@ -2787,6 +2787,27 @@ export const openApiSchemas = {
       totalComments: { type: "integer", example: 203 },
       livedAt: { type: "string", format: "date-time", nullable: true },
       endedAt: { type: "string", format: "date-time", nullable: true },
+      endedReason: {
+        type: "string",
+        nullable: true,
+        example: "COMMUNITY_ADMIN_ENDED",
+        description:
+          "Why the stream ended; null while it runs and on streams ended before this was recorded. `HOST_ENDED` = the creator's End Live; `COMMUNITY_ADMIN_ENDED` = a community ADMIN's End for Everyone on a moderator-hosted stream. Other values are system/moderation ends (e.g. `ADMIN_FORCE_ENDED`, `COMMUNITY_CLOSED`, `ROLE_UPDATED`, `SESSION_ENDED`) — treat any unknown value as a generic end.",
+      },
+      creatorRole: {
+        type: "string",
+        nullable: true,
+        enum: ["ADMIN", "MODERATOR", null],
+        example: "MODERATOR",
+        description:
+          "The creator's CURRENT community role, null when unknown or no longer a host role. UI hint only — show End for Everyone when the viewer is an ADMIN, not the creator, and this is `MODERATOR`. The server re-checks roles on every stop.",
+      },
+      creatorName: {
+        type: "string",
+        example: "Priya Sharma",
+        description:
+          "Creator display name, username fallback, `\"\"` when unresolved.",
+      },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },

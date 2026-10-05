@@ -33,6 +33,37 @@ describe("buildStreamSocketPayload — stream:started", () => {
 
     expect(payload.liveStreamCount).toBe(1);
   });
+
+  // The personal fan-out must carry the same creator fields as stream-service's
+  // room broadcast, or a sidebar client can't gate the admin force-end button.
+  it.each([
+    ["moderator, display name", { role: "MODERATOR", status: "ACTIVE", snapshotDisplayName: "Mod", snapshotUsername: "mod_u" }, "MODERATOR", "Mod"],
+    ["admin, username fallback", { role: "ADMIN", status: "ACTIVE", snapshotDisplayName: "", snapshotUsername: "adm_u" }, "ADMIN", "adm_u"],
+    ["no longer a host (MEMBER)", { role: "MEMBER", status: "ACTIVE", snapshotDisplayName: "", snapshotUsername: "" }, null, ""],
+    ["left the community", { role: "MODERATOR", status: "LEFT", snapshotDisplayName: "Mod", snapshotUsername: "m" }, null, "Mod"],
+  ])("carries creatorId/creatorRole/creatorName — %s", (_l, member, role, name) => {
+    const payload = buildStreamSocketPayload(
+      "stream.started",
+      { streamId: SID, communityId: CID, creatorId: "creator-1" },
+      member
+    );
+
+    expect(payload).toMatchObject({
+      creatorId: "creator-1",
+      creatorRole: role,
+      creatorName: name,
+    });
+  });
+
+  it("an unresolved host degrades to null / '' instead of dropping the event", () => {
+    const payload = buildStreamSocketPayload(
+      "stream.started",
+      { streamId: SID, communityId: CID, creatorId: "creator-1" },
+      null
+    );
+
+    expect(payload).toMatchObject({ creatorRole: null, creatorName: "" });
+  });
 });
 
 describe("buildStreamSocketPayload — stream:ended", () => {

@@ -282,7 +282,7 @@ describe("LivestreamService â€” viewer sessions close out on every ENDED tr
     await flushMicrotasks();
 
     expect(result).toEqual({ success: false, status: "ENDED" });
-    expect(streamRepo.claimEnded).toHaveBeenCalledWith("stream-1");
+    expect(streamRepo.claimEnded).toHaveBeenCalledWith("stream-1", expect.any(Object));
     expect(streamRepo.updateById).not.toHaveBeenCalled();
     expect(srsService.kickStream).not.toHaveBeenCalled();
     expect(viewerSessionRepo.closeAllOpenForStream).not.toHaveBeenCalled();
