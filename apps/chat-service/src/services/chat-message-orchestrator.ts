@@ -16,6 +16,7 @@ import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
+import { bumpSystemParams } from "../lib/bump-system-params.js";
 import { publishConvEffectiveLastLoss } from "../events/publish-effective-last-loss.js";
 import { publishConversationReadSafe } from "../events/publish-conversation-read.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
@@ -1235,6 +1236,7 @@ export class ChatMessageOrchestrator {
                 seq: recalc.sequenceNumber,
                 revision: recalc.revision,
                 createdAt: recalc.createdAt.getTime(),
+                ...bumpSystemParams(recalc),
               },
             });
           } else {
@@ -1272,6 +1274,7 @@ export class ChatMessageOrchestrator {
                 seq: recalc.sequenceNumber,
                 revision: recalc.revision,
                 createdAt: recalc.createdAt.getTime(),
+                ...bumpSystemParams(recalc),
               },
               getIsOnline: this.getIsOnline(),
             });
@@ -1344,6 +1347,7 @@ export class ChatMessageOrchestrator {
               seq: recalc.sequenceNumber,
               revision: recalc.revision,
               createdAt: recalc.createdAt.getTime(),
+              ...bumpSystemParams(recalc),
             },
           });
         })

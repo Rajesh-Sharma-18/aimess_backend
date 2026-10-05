@@ -1,3 +1,4 @@
+import { GroupRoomRepository } from "../../src/repositories/group-room.repository.js";
 import { PrivateRoomRepository } from "../../src/repositories/private-room.repository.js";
 
 /**
@@ -93,4 +94,46 @@ describe("PrivateRoomRepository.updateRoomOnNewMessage", () => {
       $oid: "64b7f0c2e13b4a0012345678",
     });
   });
+});
+
+// A delete rolls the snapshot BACKWARD, which made a superseded (or deleted-message) reaction overlay "newer" again on every REST read.
+describe("setLastMessage rollback write: drops the reaction overlay, keeps SYSTEM params", () => {
+  const prev = {
+    id: "m1",
+    senderId: "spider-man",
+    senderName: "Spider Man",
+    content: { text: "Spider Man pinned a message" },
+    messageType: "SYSTEM",
+    systemEvent: "MESSAGE_PINNED",
+    systemData: { actorId: "spider-man" },
+    createdAt: new Date("2026-08-07T10:00:00.000Z"),
+  };
+
+  it.each([
+    ["private", PrivateRoomRepository, "privateRoom"],
+    ["group", GroupRoomRepository, "groupRoom"],
+  ] as const)(
+    "%s room: on rollback and on emptying",
+    async (_kind, Repo, model) => {
+      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const repo = new Repo({ [model]: { updateMany } } as never);
+
+      await repo.setLastMessage("room-1", prev, { expectLastMessageId: "m2" });
+      await repo.setLastMessage("room-1", null, { expectLastMessageId: "m1" });
+
+      expect(updateMany).toHaveBeenCalledTimes(2);
+      for (const [{ data }] of updateMany.mock.calls) {
+        expect(data.reactionActivityAt).toBeNull();
+        expect(data.reactionActivityMessageId).toBeNull();
+        expect(data.reactionActivityActorPreview).toBeNull();
+        expect(data.reactionActivityTargetPreview).toBeNull();
+      }
+      // The rolled-back SYSTEM line keeps its event, so the list can still say "You pinned a message".
+      const [{ data: written }] = updateMany.mock.calls[0];
+      expect(written.lastMessage ?? written.lastMessagePreview).toMatchObject({
+        systemEvent: "MESSAGE_PINNED",
+        systemData: { actorId: "spider-man" },
+      });
+    }
+  );
 });

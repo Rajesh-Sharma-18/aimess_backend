@@ -2094,9 +2094,11 @@ async function enrichMineCommunities(
         bannedAt != null &&
         row.lastActivityReactionAt != null &&
         row.lastActivityReactionAt.getTime() > bannedAt.getTime();
-      const reactionOverlaid = reactionAfterBan
-        ? reconciledBase
-        : applyReactionOverlay(reconciledBase, row, userId);
+      // A viewer who hid the community-wide last (delete-for-me) previews their fallback, exactly as the live recalc bump did; the overlay would resurrect a reaction their delete superseded.
+      const reactionOverlaid =
+        reactionAfterBan || chat.perUserResolved
+          ? reconciledBase
+          : applyReactionOverlay(reconciledBase, row, userId);
       // The viewer's own "You joined the community" personal line still wins
       // when it is genuinely the newest visible thing (compared against the
       // base's REAL timestamp — no +1ms inflation can wrongly suppress it).

@@ -105,6 +105,47 @@ describe("PrivateMessageService.recalculateLastMessageAfterDelete (forEveryone)"
     expect(roomRepo.setLastMessage).not.toHaveBeenCalled();
   });
 
+  it("deleting a MIDDLE message the reaction line points at: retires the line and re-announces the unchanged last message", async () => {
+    const currentLast = {
+      id: "msg-current-last",
+      senderId: "peer-1",
+      content: { text: "How are you?" },
+      messageType: "TEXT",
+      createdAt: new Date("2026-07-01T10:05:00.000Z"),
+      sequenceNumber: 9,
+    };
+    const { service, roomRepo } = makeService({
+      messageRepo: {
+        findPreviousVisible: jest.fn().mockResolvedValue(currentLast),
+      },
+      roomRepo: {
+        findByRoomId: jest.fn().mockResolvedValue({
+          roomId: ROOM,
+          lastMessageId: "msg-current-last",
+          reactionActivityMessageId: DELETED_ID,
+        }),
+        clearReactionActivityForMessage: jest.fn().mockResolvedValue(true),
+      },
+    });
+
+    const recalc = await service.recalculateLastMessageAfterDelete(
+      ROOM,
+      DELETED_ID
+    );
+
+    expect(roomRepo.clearReactionActivityForMessage).toHaveBeenCalledWith(
+      ROOM,
+      DELETED_ID
+    );
+    expect(recalc).toMatchObject({
+      prevMessageId: "msg-current-last",
+      hasLastMessage: true,
+      sequenceNumber: 9,
+    });
+    // Nothing to roll back: only the reaction line went away.
+    expect(roomRepo.setLastMessage).not.toHaveBeenCalled();
+  });
+
   it("EMPTY CONVERSATION after deletion: clears the room's lastMessage via the project-standard setLastMessage(roomId, null)", async () => {
     const { service, roomRepo } = makeService({
       messageRepo: {
@@ -156,14 +197,20 @@ describe("PrivateMessageService.recalculateLastMessageAfterDelete (forEveryone)"
       DELETED_ID
     );
 
+    // The event rides along to the snapshot and the bump, or the line can no longer be re-rendered as "You …".
     expect(recalc).toMatchObject({
       prevMessageId: "msg-system",
       messageType: "SYSTEM",
       hasLastMessage: true,
+      systemEvent: "CALL_ENDED",
     });
     expect(roomRepo.setLastMessage).toHaveBeenCalledWith(
       ROOM,
-      expect.objectContaining({ id: "msg-system", messageType: "SYSTEM" }),
+      expect.objectContaining({
+        id: "msg-system",
+        messageType: "SYSTEM",
+        systemEvent: "CALL_ENDED",
+      }),
       { expectLastMessageId: DELETED_ID }
     );
   });

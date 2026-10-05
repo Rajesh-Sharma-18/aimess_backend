@@ -1307,7 +1307,22 @@ export class PrivateMessageService {
     clientMessageId: string | null;
     sequenceNumber: number;
     revision: number;
+    systemEvent: string | null;
+    systemData: unknown;
   } | null> {
+    const resultFor = (m: PrivateMessage) => ({
+      prevMessageId: m.id,
+      messageType: m.messageType,
+      content: m.content,
+      senderId: m.senderId ?? "",
+      createdAt: m.createdAt,
+      hasLastMessage: true,
+      clientMessageId: m.clientMessageId ?? null,
+      sequenceNumber: m.sequenceNumber,
+      revision: m.revision,
+      systemEvent: m.systemEvent ?? null,
+      systemData: m.systemData ?? null,
+    });
     for (let attempt = 0; attempt < RECALC_CAS_ATTEMPTS; attempt++) {
       const [room, prev] = await Promise.all([
         this.roomRepo.findByRoomId(roomId),
@@ -1318,6 +1333,17 @@ export class PrivateMessageService {
         room.lastMessageId !== deletedMessageId &&
         room.lastMessageId === (prev?.id ?? null)
       ) {
+        // The row did not move, but a reaction line about the removed message must go: re-announce the unchanged last message.
+        if (
+          prev &&
+          room.reactionActivityMessageId === deletedMessageId &&
+          (await this.roomRepo.clearReactionActivityForMessage(
+            roomId,
+            deletedMessageId
+          ))
+        ) {
+          return resultFor(prev);
+        }
         return null;
       }
       const expectLastMessageId = room.lastMessageId ?? null;
@@ -1333,22 +1359,14 @@ export class PrivateMessageService {
             clientMessageId: prev.clientMessageId,
             sequenceNumber: prev.sequenceNumber,
             revision: prev.revision,
+            systemEvent: prev.systemEvent,
+            systemData: prev.systemData,
           },
           { expectLastMessageId }
         );
         // Strict `=== false`: only an explicit CAS refusal re-runs the pass.
         if (applied === false) continue;
-        return {
-          prevMessageId: prev.id,
-          messageType: prev.messageType,
-          content: prev.content,
-          senderId: prev.senderId ?? "",
-          createdAt: prev.createdAt,
-          hasLastMessage: true,
-          clientMessageId: prev.clientMessageId ?? null,
-          sequenceNumber: prev.sequenceNumber,
-          revision: prev.revision,
-        };
+        return resultFor(prev);
       }
 
       const cleared = await this.roomRepo.setLastMessage(roomId, null, {
@@ -1365,6 +1383,8 @@ export class PrivateMessageService {
         clientMessageId: null,
         sequenceNumber: 0,
         revision: 0,
+        systemEvent: null,
+        systemData: null,
       };
     }
     // Contended past the retry budget. No bump is published on purpose: the
@@ -1442,6 +1462,8 @@ export class PrivateMessageService {
     sequenceNumber: number;
     revision: number;
     wasEffectiveLast: boolean;
+    systemEvent: string | null;
+    systemData: unknown;
   } | null> {
     const room = await this.roomRepo.findByRoomId(roomId);
     if (!room) return null;
@@ -1470,6 +1492,8 @@ export class PrivateMessageService {
         clientMessageId: prev.clientMessageId ?? null,
         sequenceNumber: prev.sequenceNumber,
         revision: prev.revision,
+        systemEvent: prev.systemEvent ?? null,
+        systemData: prev.systemData ?? null,
       };
     }
     return {
@@ -1483,6 +1507,8 @@ export class PrivateMessageService {
       clientMessageId: null,
       sequenceNumber: 0,
       revision: 0,
+      systemEvent: null,
+      systemData: null,
     };
   }
 

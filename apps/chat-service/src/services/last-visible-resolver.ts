@@ -22,8 +22,16 @@
  * unit-testable and free of the DI graph.
  */
 
+/** SYSTEM rows only — what a list re-renders per viewer ("You …") and language; the event/data pair is private/group, the type/metadata pair community. */
+export interface SystemLineParams {
+  systemEvent?: string | null;
+  systemData?: unknown;
+  systemMessageType?: string | null;
+  systemMetadata?: unknown;
+}
+
 /** Normalized "latest visible message" — the common shape across all room types. */
-export interface VisibleLast {
+export interface VisibleLast extends SystemLineParams {
   messageId: string;
   /** sentBy (community) | senderId (private/group). "" when unknown. */
   senderId: string;
@@ -160,7 +168,7 @@ export function deletedWasEffectiveLast(
 }
 
 /** A per-recipient list-preview override for the delete-for-everyone fan-out. */
-export interface RecipientOverride {
+export interface RecipientOverride extends SystemLineParams {
   lastMessageId: string;
   /** epoch ms */
   lastMessageAt: number;
@@ -200,6 +208,10 @@ function toRecipientOverride(v: VisibleLast): RecipientOverride {
     clientMessageId: v.clientMessageId ?? null,
     sequenceNumber: v.sequenceNumber ?? 0,
     revision: v.revision ?? 0,
+    systemEvent: v.systemEvent,
+    systemData: v.systemData,
+    systemMessageType: v.systemMessageType,
+    systemMetadata: v.systemMetadata,
   };
 }
 

@@ -322,12 +322,14 @@ export class GroupRoomService {
                   senderName: prev.senderName,
                   messageType: prev.messageType,
                   createdAt: prev.createdAt,
+                  systemEvent: prev.systemEvent ?? null,
+                  systemData: prev.systemData ?? null,
                   ...listRowIdentity({ ...prev, id: prev.messageId }),
                 }
               : null,
           } as T;
         });
-    return this.applyReactionOverlay(withDeleteOverlay, userId);
+    return this.applyReactionOverlay(withDeleteOverlay, userId, overrides);
   }
 
   /**
@@ -633,13 +635,16 @@ export class GroupRoomService {
    */
   private applyReactionOverlay<T extends GroupRoom>(
     rooms: T[],
-    userId: string
+    userId: string,
+    // Rooms whose shared last this viewer hid (delete-for-me): they preview the fallback, exactly as the live recalc bump did.
+    hiddenSharedLast: ReadonlyMap<string, unknown>
   ): T[] {
     return rooms.map((room) => {
       const lastAt = room.lastMessageAt?.getTime() ?? 0;
       if (
         !room.reactionActivityAt ||
-        room.reactionActivityAt.getTime() <= lastAt
+        room.reactionActivityAt.getTime() <= lastAt ||
+        hiddenSharedLast.has(room.roomId)
       )
         return room;
       const isActor = room.reactionActivityActorId === userId;

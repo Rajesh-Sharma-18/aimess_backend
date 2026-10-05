@@ -320,6 +320,10 @@ message UpdateMessageActivityRequest {
   // `lastActivityAt <= rollbackNotNewerThan` (the removed message's createdAt) —
   // so a message that arrived after the delete is never clobbered.
   int64  rollbackNotNewerThan = 13;
+  // ROLLBACK mode, SYSTEM previous message only: the event + JSON params the
+  // list re-renders per viewer ("You …") and per language. "" = not a SYSTEM line.
+  string systemMessageType    = 14;
+  string systemMetadataJson   = 15;
 }
 message UpdateMessageActivityResponse {
   bool ok = 1;

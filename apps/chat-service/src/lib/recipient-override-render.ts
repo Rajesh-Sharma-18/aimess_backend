@@ -7,6 +7,7 @@
  */
 import type { RecipientOverride } from "../services/last-visible-resolver.js";
 import type { RecipientBump } from "../events/publish-conv-updated.js";
+import { bumpSystemParams } from "./bump-system-params.js";
 import { convertMessageToPreview } from "../services/message-preview.service.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
 import { normalizeMessageType } from "./chat-message.serializer.js";
@@ -35,6 +36,7 @@ export function renderCommunityOverrides(
         seq: o.sequenceNumber ?? 0,
         revision: o.revision ?? 0,
         createdAt: o.lastMessageAt,
+        ...bumpSystemParams(o),
       },
     });
   }
@@ -63,6 +65,7 @@ export function renderConvOverrides(
         seq: o.sequenceNumber ?? 0,
         revision: o.revision ?? 0,
         createdAt: o.lastMessageAt,
+        ...bumpSystemParams(o),
       },
     });
   }

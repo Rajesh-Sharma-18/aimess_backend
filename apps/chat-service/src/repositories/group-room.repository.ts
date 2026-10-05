@@ -25,6 +25,17 @@ import {
 // deliberately excluded: a disband hides the room everywhere.
 const VISIBLE_ROOM_STATUS: { in: string[] } = { in: ["ACTIVE", "CLOSED"] };
 
+/** The reaction overlay columns, emptied. */
+const NO_REACTION_ACTIVITY = {
+  reactionActivityAt: null,
+  reactionActivityMessageId: null,
+  reactionActivityEmoji: null,
+  reactionActivityActorId: null,
+  reactionActivityActorPreview: null,
+  reactionActivityTargetId: null,
+  reactionActivityTargetPreview: null,
+};
+
 /** Identity frozen onto a GroupClosureMember row. */
 export interface ClosureIdentity {
   username: string;
@@ -413,6 +424,8 @@ export class GroupRoomRepository {
       clientMessageId?: string | null;
       sequenceNumber?: number | null;
       revision?: number | null;
+      systemEvent?: string | null;
+      systemData?: unknown;
     } | null,
     /** See PrivateRoomRepository.setLastMessage — same compare-and-swap. */
     opts?: { expectLastMessageId?: string | null }
@@ -439,14 +452,20 @@ export class GroupRoomRepository {
               senderName: message.senderName,
               messageType: message.messageType,
               createdAt: message.createdAt,
+              // Same pair updateLastMessage stores, so the inbox can still re-render a rolled-back SYSTEM line per viewer.
+              systemEvent: message.systemEvent ?? null,
+              systemData: (message.systemData ?? null) as Prisma.InputJsonValue,
               ...listRowIdentity(message),
             },
+            // See PrivateRoomRepository.setLastMessage — a rollback must not resurrect the reaction overlay.
+            ...NO_REACTION_ACTIVITY,
           }
         : {
             lastMessageId: null,
             lastMessageAt: null,
             lastMessageSeq: null,
             lastMessagePreview: null as unknown as Prisma.InputJsonValue,
+            ...NO_REACTION_ACTIVITY,
           },
     });
     return count > 0;
@@ -495,16 +514,20 @@ export class GroupRoomRepository {
         reactionActivityEmoji: identity.emoji,
         reactionActivityActorId: identity.actorId,
       },
-      data: {
-        reactionActivityAt: null,
-        reactionActivityMessageId: null,
-        reactionActivityEmoji: null,
-        reactionActivityActorId: null,
-        reactionActivityActorPreview: null,
-        reactionActivityTargetId: null,
-        reactionActivityTargetPreview: null,
-      },
+      data: NO_REACTION_ACTIVITY,
     });
+  }
+
+  /** See PrivateRoomRepository.clearReactionActivityForMessage — identical semantics. */
+  async clearReactionActivityForMessage(
+    roomId: string,
+    messageId: string
+  ): Promise<boolean> {
+    const { count } = await this.prisma.groupRoom.updateMany({
+      where: { roomId, reactionActivityMessageId: messageId },
+      data: NO_REACTION_ACTIVITY,
+    });
+    return count > 0;
   }
 
   /**

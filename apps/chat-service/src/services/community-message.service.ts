@@ -1228,7 +1228,13 @@ export class CommunityMessageService {
           const isSystem = prev.messageType.toUpperCase() === "SYSTEM";
           lastMessage = {
             username: isSystem ? "" : prev.senderName,
-            message: convertMessageToPreview(prev.messageType, prev.content),
+            // Rendered for this viewer: community-service shows this text as-is.
+            message: this.personalizeSystemText(
+              prev.systemMessageType,
+              prev.systemMetadata,
+              convertMessageToPreview(prev.messageType, prev.content),
+              params.userId
+            ),
             dateTime: prev.createdAt.getTime(),
             isSystem,
             userId: isSystem ? "" : prev.senderId,
@@ -3194,7 +3200,9 @@ export class CommunityMessageService {
    */
   async recalculateLastMessageAfterDelete(
     roomId: string,
-    deletedMessageId: string
+    deletedMessageId: string,
+    /** community-service just retired a reaction line about the removed message: re-announce the row even though its last message stands. */
+    opts: { reactionRetired?: boolean } = {}
   ): Promise<{
     prevMessageId: string | null;
     preview: string;
@@ -3207,6 +3215,10 @@ export class CommunityMessageService {
     clientMessageId: string | null;
     sequenceNumber: number;
     revision: number;
+    systemMessageType: string | null;
+    systemMetadata: unknown;
+    /** The last message did not move — there is no rollback to persist, only a row to repaint. */
+    unchanged?: boolean;
   } | null> {
     // Run both queries in parallel — we need prev regardless of which message
     // was the current last. The classic check (room.lastMessageId === deletedId)
@@ -3218,13 +3230,32 @@ export class CommunityMessageService {
       this.messageRepo.findPreviousVisibleMessage(roomId),
     ]);
     if (!room) return null;
+    const resultFor = (m: GeneralRoomMessage) => ({
+      prevMessageId: m.id,
+      preview: convertMessageToPreview(
+        m.messageType,
+        this.messagePreviewContent(m)
+      ),
+      messageType: m.messageType,
+      sentBy: m.sentBy,
+      senderName: m.senderName ?? "",
+      createdAt: m.createdAt,
+      hasLastMessage: true,
+      clientMessageId: m.clientMessageId ?? null,
+      sequenceNumber: m.sequenceNumber,
+      revision: m.revision,
+      systemMessageType: m.systemMessageType ?? null,
+      systemMetadata: m.systemMetadata ?? null,
+    });
     // Skip if the deleted message wasn't the current last AND the visible-last
     // is still the same as what's stored (i.e. nothing actually changed).
     if (
       room.lastMessageId !== deletedMessageId &&
       room.lastMessageId === (prev?.id ?? null)
     ) {
-      return null;
+      return opts.reactionRetired && prev
+        ? { ...resultFor(prev), unchanged: true }
+        : null;
     }
     if (prev) {
       await this.roomRepo.setLastMessage(roomId, {
@@ -3238,21 +3269,7 @@ export class CommunityMessageService {
         sequenceNumber: prev.sequenceNumber,
         revision: prev.revision,
       });
-      return {
-        prevMessageId: prev.id,
-        preview: convertMessageToPreview(
-          prev.messageType,
-          this.messagePreviewContent(prev)
-        ),
-        messageType: prev.messageType,
-        sentBy: prev.sentBy,
-        senderName: prev.senderName ?? "",
-        createdAt: prev.createdAt,
-        hasLastMessage: true,
-        clientMessageId: prev.clientMessageId ?? null,
-        sequenceNumber: prev.sequenceNumber,
-        revision: prev.revision,
-      };
+      return resultFor(prev);
     }
 
     await this.roomRepo.setLastMessage(roomId, null);
@@ -3267,6 +3284,8 @@ export class CommunityMessageService {
       clientMessageId: null,
       sequenceNumber: 0,
       revision: 0,
+      systemMessageType: null,
+      systemMetadata: null,
     };
   }
 
@@ -3298,6 +3317,8 @@ export class CommunityMessageService {
     sequenceNumber: number;
     revision: number;
     wasEffectiveLast: boolean;
+    systemMessageType: string | null;
+    systemMetadata: unknown;
   } | null> {
     const room = await this.roomRepo.findRoomById(roomId);
     if (!room) return null;
@@ -3316,9 +3337,15 @@ export class CommunityMessageService {
     if (prev) {
       return {
         prevMessageId: prev.id,
-        preview: convertMessageToPreview(
-          prev.messageType,
-          this.messagePreviewContent(prev)
+        // Only this viewer ever sees it, so a SYSTEM line is rendered for them ("You …").
+        preview: this.personalizeSystemText(
+          prev.systemMessageType,
+          prev.systemMetadata,
+          convertMessageToPreview(
+            prev.messageType,
+            this.messagePreviewContent(prev)
+          ),
+          userId
         ),
         messageType: prev.messageType,
         sentBy: prev.sentBy,
@@ -3329,6 +3356,8 @@ export class CommunityMessageService {
         clientMessageId: prev.clientMessageId ?? null,
         sequenceNumber: prev.sequenceNumber,
         revision: prev.revision,
+        systemMessageType: prev.systemMessageType ?? null,
+        systemMetadata: prev.systemMetadata ?? null,
       };
     }
     return {
@@ -3343,6 +3372,8 @@ export class CommunityMessageService {
       clientMessageId: null,
       sequenceNumber: 0,
       revision: 0,
+      systemMessageType: null,
+      systemMetadata: null,
     };
   }
 
