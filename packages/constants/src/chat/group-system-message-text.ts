@@ -1,7 +1,12 @@
 import { resolvePersonDisplayName } from "../community/system-message-text.js";
 import { t } from "../i18n.js";
 import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
-import { entityLabel, memberChangeText } from "../member-change-text.js";
+import {
+  entityLabel,
+  memberChangeText,
+  SYSTEM_ACTOR_ID,
+  systemActorLabel,
+} from "../member-change-text.js";
 
 export { resolvePersonDisplayName };
 
@@ -287,7 +292,14 @@ export function buildGroupSystemFallbackText(
       return memberChangeText(
         event === "MEMBER_ADDED" ? "ADDED" : "REMOVED",
         {
-          actor: isActor ? t("SYS_SENDER_YOU", locale) : actor,
+          // A platform (Super) Admin is not a group member and has no AIMess
+          // userId — those lines are posted with `actorId: null` — so they read
+          // "System …" for everyone, whatever admin name the row also carries.
+          actor: isActor
+            ? t("SYS_SENDER_YOU", locale)
+            : actorId && actorId !== SYSTEM_ACTOR_ID
+              ? actor
+              : systemActorLabel(locale),
           target: grouped
             ? formatNameList(grouped, locale)
             : isTarget

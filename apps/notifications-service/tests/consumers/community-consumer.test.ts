@@ -958,3 +958,41 @@ describe("actor name resolution", () => {
     expect(arg.data.hostName).toBe("Smiley Creatures");
   });
 });
+
+describe("MEMBER_KICKED branch — who removed the member", () => {
+  it("an in-app removal names the actual admin/moderator", async () => {
+    userDirectory({ [MOD]: "Sarah Jones", [REQUESTER]: "Tom Brown" });
+    communityDirectory({ [CID]: "Mission AIMess" });
+    await deliver(CommunityEvents.MEMBER_KICKED, {
+      communityId: CID,
+      eventAt: "2026-10-05T10:00:00.000Z",
+      actorId: MOD,
+      targetUserId: REQUESTER,
+      reason: null,
+    });
+    const arg = push.mock.calls[0][0];
+    expect(arg.userId).toBe(REQUESTER);
+    expect(arg.copy("en", REQUESTER).body).toBe(
+      "Sarah Jones removed You from Mission AIMess"
+    );
+  });
+
+  it("a Super Admin removal reads 'System', never 'Someone' or the admin id", async () => {
+    communityDirectory({ [CID]: "Mission AIMess" });
+    userDirectory({ [REQUESTER]: "Tom Brown" });
+    await deliver(CommunityEvents.MEMBER_KICKED, {
+      communityId: CID,
+      eventAt: "2026-10-05T10:00:00.000Z",
+      actorId: "admin-user-1",
+      targetUserId: REQUESTER,
+      reason: null,
+      byPlatformAdmin: true,
+    });
+    const arg = push.mock.calls[0][0];
+    expect(arg.copy("en", REQUESTER).body).toBe(
+      "System removed You from Mission AIMess"
+    );
+    // The AdminUser id is not an AIMess user — it is never looked up as one.
+    expect(getDisplayName).not.toHaveBeenCalledWith("admin-user-1");
+  });
+});

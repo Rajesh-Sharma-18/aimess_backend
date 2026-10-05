@@ -158,14 +158,14 @@ describe("buildGroupSystemFallbackText — MEMBER_REMOVED", () => {
 
   // Backoffice removals post the row with `actorId: null`, so nobody is the
   // actor and the line must not collapse into a first-person sentence.
-  it("NEGATIVE: a platform-admin removal names no actor for anyone", () => {
+  it("POSITIVE: a platform-admin removal reads 'System' for everyone", () => {
     expect(
       buildGroupSystemFallbackText(
         "MEMBER_REMOVED",
         { actorId: null, targetUserId: "target-1", targetName: "Tom" },
         "bystander-1"
       )
-    ).toBe("Someone removed Tom from the group");
+    ).toBe("System removed Tom from the group");
   });
 
   it("POSITIVE: the actor line is localized, not English-only", () => {
@@ -214,9 +214,10 @@ describe("personalizeGroupSystemMessageForViewer — MEMBER_REMOVED", () => {
 });
 
 describe("buildGroupSystemFallbackText — named platform-admin removal", () => {
-  // What a backoffice removal now persists: a NAME but no actorId, because the
-  // acting admin is an AdminUser, not a chat user. The name has to reach every
-  // reader without turning anyone into "the actor".
+  // What a backoffice removal persists: the admin's NAME but no actorId, because
+  // the acting admin is an AdminUser, not a chat user. Add/remove lines read
+  // "System" for every reader (product rule); the name stays on the row for
+  // audit and still names the admin on ban/unban.
   const PLATFORM = {
     actorId: null,
     actorName: "Super Admin",
@@ -224,19 +225,19 @@ describe("buildGroupSystemFallbackText — named platform-admin removal", () => 
     targetName: "Tom",
   };
 
-  it("POSITIVE: every remaining member reads the admin's real name", () => {
+  it("POSITIVE: every remaining member reads 'System', not the admin's name", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", PLATFORM, "bystander-1")
-    ).toBe("Super Admin removed Tom from the group");
+    ).toBe("System removed Tom from the group");
     expect(buildGroupSystemFallbackText("MEMBER_REMOVED", PLATFORM)).toBe(
-      "Super Admin removed Tom from the group"
+      "System removed Tom from the group"
     );
   });
 
   it("POSITIVE: the removed member keeps the self copy", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", PLATFORM, "target-1")
-    ).toBe("Super Admin removed You from the group");
+    ).toBe("System removed You from the group");
   });
 
   // The whole point of leaving actorId null: an AdminUser id is not a chat id,
@@ -253,7 +254,10 @@ describe("buildGroupSystemFallbackText — named platform-admin removal", () => 
   it("POSITIVE: the named line is localized like any other", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", PLATFORM, "bystander-1", "vi")
-    ).toBe("Super Admin đã xóa Tom khỏi nhóm");
+    ).toBe("Hệ thống đã xóa Tom khỏi nhóm");
+    expect(
+      buildGroupSystemFallbackText("MEMBER_REMOVED", PLATFORM, "bystander-1", "th")
+    ).toBe("ระบบนำTomออกจากกลุ่ม");
   });
 
   // Ban/unban post through the same actor-less platform path, so the same gap
@@ -270,7 +274,7 @@ describe("buildGroupSystemFallbackText — named platform-admin removal", () => 
   // Realtime and history both re-render the stored row through this one
   // function, so a named platform row cannot regress to "Someone" on reload.
   it("POSITIVE: the stored sentence survives per-viewer personalization", () => {
-    const STORED = "Super Admin removed Tom from the group";
+    const STORED = "System removed Tom from the group";
     expect(
       personalizeGroupSystemMessageForViewer(
         "MEMBER_REMOVED",

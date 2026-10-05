@@ -1,6 +1,11 @@
 import { t } from "../i18n.js";
 import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
-import { entityLabel, memberChangeText } from "../member-change-text.js";
+import {
+  entityLabel,
+  memberChangeText,
+  SYSTEM_ACTOR_ID,
+  systemActorLabel,
+} from "../member-change-text.js";
 import {
   CommunitySystemMessageType,
   type CommunitySystemMessageType as CommunitySystemMessageTypeValue,
@@ -176,7 +181,12 @@ export function buildCommunitySystemFallbackText(
   // `communityName` is captured when the line is posted; a row written before
   // that reads "… to the community".
   const memberChangeLabels = () => ({
-    actor: isActor ? t("SYS_SENDER_YOU", locale) : actor,
+    // A platform (Super) Admin acts as SYSTEM_ACTOR_ID → "System".
+    actor: isActor
+      ? t("SYS_SENDER_YOU", locale)
+      : actorId === SYSTEM_ACTOR_ID
+        ? systemActorLabel(locale)
+        : actor,
     // Mid-sentence, so the lower-case "a member" fallback, not the line-initial one.
     target: isTarget
       ? t("SYS_SENDER_YOU", locale)

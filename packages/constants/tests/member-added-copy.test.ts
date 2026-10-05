@@ -1,3 +1,5 @@
+import { SYSTEM_ACTOR_ID } from "../src/member-change-text.js";
+import { buildCommunitySystemFallbackText } from "../src/community/system-message-text.js";
 import {
   communityCopy,
   describeCopyTicket,
@@ -41,9 +43,14 @@ describe("member-added copy", () => {
     expect(community("en", JOHN).body).toBe(
       "You added Tom Brown to Gokuldham Society"
     );
-    expect(community("en", MOD).body).toBe(
-      "John Smith added Tom Brown to Gokuldham Society"
+    const kicked = communityCopy.memberKicked(
+      "C",
+      "John Smith",
+      "Tom Brown",
+      JOHN,
+      TOM
     );
+    expect(kicked("en", MOD).body).toBe("John Smith removed Tom Brown from C");
   });
 
   it("group: same rule", () => {
@@ -128,5 +135,63 @@ describe("member-added copy", () => {
     expect(renderNotificationCopy(legacyMods, "en", undefined, MOD)?.body).toBe(
       "A new member joined Gokuldham Society"
     );
+  });
+});
+
+describe("platform (Super) Admin actor reads 'System'", () => {
+  it("community removal push/inbox: target reads 'System removed You from …'", () => {
+    const copy = communityCopy.memberKicked(
+      "Mission AIMess",
+      "",
+      "Tom Brown",
+      SYSTEM_ACTOR_ID,
+      TOM
+    );
+    expect(copy("en", TOM).body).toBe("System removed You from Mission AIMess");
+    expect(copy("vi", TOM).body).toBe(
+      "Hệ thống đã xóa Bạn khỏi Mission AIMess"
+    );
+    expect(copy("th", TOM).body).toBe("ระบบนำคุณออกจากMission AIMess");
+    // Replayed from the stored ticket (refresh / history / socket): same text.
+    expect(
+      renderNotificationCopy(ticket(copy), "en", undefined, TOM)?.body
+    ).toBe("System removed You from Mission AIMess");
+  });
+
+  it("an add by the platform reads 'System added …' on every surface", () => {
+    const copy = communityCopy.memberAdded(
+      "C",
+      "",
+      "Tom Brown",
+      SYSTEM_ACTOR_ID,
+      TOM
+    );
+    expect(copy("en", TOM).body).toBe("System added You to C");
+    expect(copy("en", MOD).body).toBe("System added Tom Brown to C");
+    expect(
+      buildCommunitySystemFallbackText(
+        "MEMBER_ADDED",
+        {
+          actorUserId: SYSTEM_ACTOR_ID,
+          targetUserId: TOM,
+          targetName: "Tom Brown",
+          communityName: "C",
+        },
+        "",
+        "Tom Brown",
+        MOD
+      )
+    ).toBe("System added Tom Brown to C");
+  });
+
+  it("a real user's name is never replaced by 'System'", () => {
+    const kicked = communityCopy.memberKicked(
+      "C",
+      "John Smith",
+      "Tom Brown",
+      JOHN,
+      TOM
+    );
+    expect(kicked("en", MOD).body).toBe("John Smith removed Tom Brown from C");
   });
 });

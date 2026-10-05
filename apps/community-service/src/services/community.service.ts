@@ -4136,6 +4136,9 @@ export const communityService = {
       actorId: actorAdminId,
       targetUserId,
       reason: reason ?? null,
+      // The removed member reads "System removed You from …" — a Super Admin
+      // is not an AIMess user, so no person is named.
+      byPlatformAdmin: true,
     });
 
     try {

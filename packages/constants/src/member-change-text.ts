@@ -22,11 +22,23 @@ export type MemberChange = "ADDED" | "REMOVED";
 export type EntityKind = "GROUP" | "COMMUNITY";
 
 /**
+ * Actor id for an action no AIMess user performed — a platform (Super) Admin
+ * adding or removing a member. Renders as "System" for every reader. The same
+ * sentinel community lines already use for the auto-unmute sweeper.
+ */
+export const SYSTEM_ACTOR_ID = "system";
+
+/** "System" — see {@link SYSTEM_ACTOR_ID}. */
+export const systemActorLabel = (locale: SupportedLocale): string =>
+  t("SYS_NAME_SYSTEM", locale);
+
+/**
  * One side of the sentence from the reader's point of view: the reader's own
- * userId renders as "You", anyone else by the name captured at event time, and
- * an unresolved name by the caller's existing fallback ("Someone" / "A member").
- * Compared on the canonical AIMess userId — never a device or session — so
- * every device of one account reads "You".
+ * userId renders as "You", {@link SYSTEM_ACTOR_ID} as "System", anyone else by
+ * the name captured at event time, and an unresolved name by the caller's
+ * existing fallback ("Someone" / "A member"). Compared on the canonical AIMess
+ * userId — never a device or session — so every device of one account reads
+ * "You".
  */
 export function personLabel(
   userId: string | null | undefined,
@@ -35,6 +47,7 @@ export function personLabel(
   locale: SupportedLocale,
   fallback: MessageKey = "SYS_NAME_SOMEONE"
 ): string {
+  if (userId === SYSTEM_ACTOR_ID) return systemActorLabel(locale);
   const viewer = viewerId?.trim();
   if (userId && viewer && userId === viewer) return t("SYS_SENDER_YOU", locale);
   return name?.trim() || t(fallback, locale);
