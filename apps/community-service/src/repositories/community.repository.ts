@@ -2253,11 +2253,14 @@ export const communityRepository = {
     sortDir: "asc" | "desc";
     page: number;
     limit: number;
+    /** AND-restrict to these ids (admin "Livestreaming" filter). */
+    communityIds?: string[];
   }) {
     const dir: Prisma.SortOrder = params.sortDir === "asc" ? "asc" : "desc";
 
     const where: Prisma.CommunityWhereInput = {
       deletedAt: { isSet: false },
+      ...(params.communityIds ? { id: { in: params.communityIds } } : {}),
     };
 
     if (params.type) {

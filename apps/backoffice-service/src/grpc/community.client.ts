@@ -39,6 +39,8 @@ export interface AdminListCommunitiesReq {
   sortDir: string;
   page: number;
   limit: number;
+  /** AND-restrict to these ids; empty = no restriction. */
+  communityIds?: string[];
 }
 
 /** AdminCommunityRow — int64 created_at arrives as a string. */

@@ -1206,6 +1206,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           sortDir?: string;
           page?: number;
           limit?: number;
+          communityIds?: string[];
         };
 
         const type =
@@ -1232,6 +1233,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           sortDir: req.sortDir === "asc" ? "asc" : "desc",
           page: coercePage(req.page),
           limit: coerceLimit(req.limit),
+          communityIds: req.communityIds?.length ? req.communityIds : undefined,
         });
 
         // Resolve each admin's snapshot avatar key → presigned download URL

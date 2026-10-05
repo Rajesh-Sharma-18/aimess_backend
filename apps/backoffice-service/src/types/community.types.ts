@@ -439,6 +439,8 @@ export type ListCommunitiesQuery = {
   type?: CommunityType;
   category?: string;
   status?: CommunityModerationStatus;
+  /** Only communities with at least one LIVE stream. */
+  live?: boolean;
   /** Canonical `<field>:<dir>` token the repo consumes (e.g. `categoryName:asc`). */
   sort: string;
   /** Resolved UI sort column (`category` | `members` | `createdDate`) — audit echo. */
