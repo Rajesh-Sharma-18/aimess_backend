@@ -270,6 +270,12 @@ export type CommunityLivestreamEndedPayload = CommunityEventBase & {
    * Absent on events from older producers ⇒ treat as `USER`.
    */
   endedReason?: "USER" | "SYSTEM";
+  /**
+   * Set only when someone other than the host ended it (a community admin's
+   * End for Everyone): the push names this user instead of the host.
+   */
+  endedByUserId?: string;
+  endedByDisplayName?: string;
   recipientIds: string[];
 };
 

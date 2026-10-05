@@ -224,7 +224,51 @@ describe("handleStreamEnded", () => {
     ["ACCOUNT_BANNED", "SYSTEM"],
     ["MEMBER_BANNED", "SYSTEM"],
     ["COMMUNITY_CLOSED", "SYSTEM"],
+    ["COMMUNITY_ADMIN_ENDED", "USER"],
   ])("reason %s ⇒ %s", (reason, expected) => {
     expect(streamEndedReason(reason)).toBe(expected);
+  });
+
+  it("community admin End for Everyone names the ADMIN, not System or the host", async () => {
+    repo.findMemberByUserId.mockImplementation(async (_c: string, id: string) =>
+      id === U1
+        ? { userId: U1, snapshotDisplayName: "Admin Person", snapshotAvatarKey: null }
+        : { userId: HOST, snapshotDisplayName: "Host Name", snapshotAvatarKey: "host/key" }
+    );
+    await handleStreamEnded({
+      communityId: CID,
+      streamId: SID,
+      creatorId: HOST,
+      endedAt: 1,
+      durationSeconds: 60,
+      reason: "COMMUNITY_ADMIN_ENDED",
+      endedBy: U1,
+    });
+
+    const sysArg = sysMsg.mock.calls[0][0];
+    expect(sysArg.triggeredByUserId).toBe(U1);
+    expect(sysArg.metadata).toMatchObject({ endedReason: "USER", hostUserId: HOST });
+
+    const pushArg = pushEnded.mock.calls[0][0];
+    expect(pushArg).toMatchObject({
+      endedReason: "USER",
+      hostUserId: HOST,
+      endedByUserId: U1,
+      endedByDisplayName: "Admin Person",
+    });
+  });
+
+  it("COMMUNITY_ADMIN_ENDED without endedBy (older producer) falls back to the host", async () => {
+    await handleStreamEnded({
+      communityId: CID,
+      streamId: SID,
+      creatorId: HOST,
+      endedAt: 1,
+      durationSeconds: 60,
+      reason: "COMMUNITY_ADMIN_ENDED",
+    });
+
+    expect(sysMsg.mock.calls[0][0].triggeredByUserId).toBe(HOST);
+    expect(pushEnded.mock.calls[0][0].endedByUserId).toBeUndefined();
   });
 });

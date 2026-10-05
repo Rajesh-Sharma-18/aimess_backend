@@ -165,4 +165,22 @@ describe("LIVESTREAM_ENDED branch", () => {
     expect(input.copy.descriptor.ref).toBe("community.livestreamEndedBySystem");
     expect(input.data).toMatchObject({ endedReason: "SYSTEM", hostUserId: HOST });
   });
+
+  it("community admin End for Everyone names the admin and skips the admin's own push", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      duration: "2m",
+      durationSeconds: 120,
+      endedReason: "USER",
+      endedByUserId: U1,
+      endedByDisplayName: "Admin Person",
+    });
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const [recipients, build] = pushMany.mock.calls[0];
+    expect(recipients).toEqual([U2]);
+    const body = build(U2).copy("en").body;
+    expect(body).toBe("Admin Person ended the livestream in Cool Community after 2m");
+    expect(body).not.toContain("Jane Doe");
+  });
 });

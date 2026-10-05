@@ -483,15 +483,23 @@ async function handleCommunityEvent(
 
     case CommunityEvents.LIVESTREAM_ENDED: {
       const p = data as CommunityLivestreamEndedPayload;
-      const recipients = withoutActor(p.recipientIds, p.hostUserId);
+      // A community admin's End for Everyone: the admin is the actor — named in
+      // the copy and, like the host, never pushed about their own action.
+      const recipients = withoutActor(
+        withoutActor(p.recipientIds, p.hostUserId),
+        p.endedByUserId
+      );
       if (recipients.length === 0) break;
-      const [identity, resolvedHostName] = await Promise.all([
+      const [identity, resolvedHostName, endedByName] = await Promise.all([
         communityIdentityFor(
           p.communityId,
           p.communityName,
           p.communityAvatarUrl
         ),
         actorNameFor(p.hostUserId, p.hostDisplayName),
+        p.endedByUserId
+          ? actorNameFor(p.endedByUserId, p.endedByDisplayName)
+          : Promise.resolve(""),
       ]);
       const hostName = resolvedHostName || "Someone";
       const actorSnapshot = {
@@ -513,7 +521,7 @@ async function handleCommunityEvent(
             ? communityCopy.livestreamEndedBySystem(identity.name, p.duration)
             : communityCopy.livestreamEnded(
                 identity.name,
-                resolvedHostName,
+                endedByName || resolvedHostName,
                 p.duration
               ),
         ...base(
