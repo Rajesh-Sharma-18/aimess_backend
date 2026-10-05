@@ -682,11 +682,15 @@ export const communityRepository = {
     });
   },
 
-  /** Case-insensitive handle lookup (uniqueness check). */
+  /**
+   * Case-insensitive handle lookup (uniqueness check). Deliberately includes
+   * soft-deleted communities: their rows keep the handle in the unique index,
+   * so a deleted community's handle is never reusable — and an old share link
+   * can't land on a different community.
+   */
   findByHandle(handle: string) {
     return prisma.community.findFirst({
       where: {
-        deletedAt: { isSet: false },
         handle: { equals: handle, mode: "insensitive" },
       },
       select: { id: true },
