@@ -743,6 +743,8 @@ describe("notifyMemberJoined — emits community:stats:updated alongside communi
     // createAuditLog, findMemberByUserId (post-write fetch), findActiveMemberIdsByRoles
     repo.findById.mockResolvedValue(community);
     repo.findMembership.mockResolvedValue({ role: "ADMIN", status: "ACTIVE" });
+    // Open community: a CLOSED one dismisses instead (closed-community-self-delete.test.ts).
+    repo.findById.mockResolvedValue(community);
     repo.findJoinRequestById.mockResolvedValue(pendingRequest);
     // findMemberByUserId: 1st call (A12 race re-read) → null; subsequent calls → member row
     repo.findMemberByUserId

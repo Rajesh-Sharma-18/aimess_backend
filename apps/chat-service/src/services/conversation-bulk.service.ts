@@ -1,6 +1,7 @@
 import { logger } from "@aimess/logger";
 
 import { resolveConversationType } from "../lib/conversation-type.js";
+import { GroupRoomStatus } from "../types/enums.js";
 import type { PrivateRoomService } from "./private-room.service.js";
 import type { GroupRoomService } from "./group-room.service.js";
 import type { GroupMemberService } from "./group-member.service.js";
@@ -120,7 +121,14 @@ export class ConversationBulkService {
     for (const roomId of roomIds) {
       const type = resolveConversationType(roomId);
       try {
-        if (type === "GROUP") {
+        if (type === "GROUP" && (await this.isClosedGroup(roomId))) {
+          // A CLOSED group (owner banned by Super Admin) cannot be left in any
+          // meaningful sense: removing it from the list is a per-user dismiss
+          // for every groupAction — no owner rule, no Admin transfer, no
+          // MEMBER_LEFT, and the room and every other member stay as they are.
+          await this.groupRoomService.dismissClosedConversation(roomId, userId);
+          results.push({ roomId, type, status: "DELETED" });
+        } else if (type === "GROUP") {
           if (groupAction === "LEAVE_AND_DELETE") {
             await this.leaveAndDelete(roomId, userId);
             results.push({ roomId, type, status: "LEFT" });
@@ -338,6 +346,11 @@ export class ConversationBulkService {
     }
 
     return { updatedCount: updated.length, updated, failed };
+  }
+
+  private async isClosedGroup(roomId: string): Promise<boolean> {
+    const room = await this.groupRoomRepo.findActiveByRoomId(roomId);
+    return room?.status === GroupRoomStatus.CLOSED;
   }
 
   private async resolveLastMessageId(

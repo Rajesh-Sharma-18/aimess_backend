@@ -1332,7 +1332,10 @@ export class GroupMemberService {
         this.roomRepo
       );
     }
-    return this.enrich(await this.memberRepo.findActiveMembers(roomId, params));
+    const members = await this.memberRepo.findActiveMembers(roomId, params);
+    // `dismissedAt` is the member's own list state (a CLOSED group they
+    // deleted) — never something the rest of the roster gets to see.
+    return this.enrich(members.map((m) => ({ ...m, dismissedAt: null })));
   }
 
   /** Muted roster — expired mute windows are dropped, matching isGroupMemberMuted. */

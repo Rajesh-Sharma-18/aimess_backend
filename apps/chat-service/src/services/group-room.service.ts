@@ -1156,6 +1156,16 @@ export class GroupRoomService {
       roomId,
       userId,
       cutoff,
+    // Deleting a CLOSED group's conversation takes the row out of the list
+    // (it can never get a new message to come back with).
+    if (
+      member.status === "ACTIVE" &&
+      (await this.roomRepo.findActiveByRoomId(roomId))?.status ===
+        GroupRoomStatus.CLOSED
+    ) {
+      await this.dismissClosedConversation(roomId, userId);
+      return;
+    }
       SystemEvent.CONVERSATION_DELETED,
       sortAt
     );
@@ -1174,6 +1184,42 @@ export class GroupRoomService {
     const clearable = await this.messageRepo.hasClearableAfter({
       roomId,
       userId,
+  /**
+   * Delete Conversation on a CLOSED group (owner banned by Super Admin): a
+   * per-user dismiss, NOT a leave. Membership, role, memberCount, roster and
+   * the room are untouched, so no owner rule, no system line and nothing any
+   * other member can see; the caller's inbox skips the row from now on
+   * (`getInboxMemberships`), which survives refetch, re-login and reconnect —
+   * a closed group never reopens and never gets a new message.
+   *
+   * Callers must have checked the room is CLOSED. Idempotent: a repeat finds
+   * nothing to write and still succeeds. CHAT_NOT_A_MEMBER for a caller with
+   * no ACTIVE membership, so it cannot touch a room they are not in.
+   */
+  async dismissClosedConversation(
+    roomId: string,
+    userId: string
+  ): Promise<void> {
+    const wrote = await this.memberRepo.setDismissed(roomId, userId);
+    if (!wrote) {
+      const member = await this.memberRepo.findActiveByRoomAndUser(
+        roomId,
+        userId
+      );
+      if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+      return; // already dismissed
+    }
+    // setDismissed zeroed the stored unread: recompute the nav badge, close
+    // the room's tray cards, and drop the row on every device of the caller.
+    notifyUnreadChanged(userId);
+    publishRoomCardsGoneSafe(userId, roomId, "GROUP", "DELETED");
+    void publishChatUserEvent(this.redis, userId, "conv:deleted", {
+      roomId,
+      deletedBy: userId,
+      type: "GROUP",
+    }).catch(() => {});
+  }
+
       cutoff: getGroupVisibilityCutoff(member),
     });
     if (!clearable) return false;
@@ -1279,7 +1325,10 @@ export class GroupRoomService {
     userId: string,
     params: { limit: number; cursor?: string | null; q?: string }
   ): Promise<GroupRoomMembership[]> {
-    const memberships = await this.memberRepo.getActiveMemberships(userId);
+    // Same rule as the inbox: a CLOSED group the caller deleted is not listed.
+    const memberships = (
+      await this.memberRepo.getActiveMemberships(userId)
+    ).filter((m) => !m.dismissedAt);
     if (!memberships.length) return [];
     const roomIds = memberships.map((m) => m.roomId);
     const rawRooms = await this.roomRepo.getUserGroups(userId, roomIds, params);

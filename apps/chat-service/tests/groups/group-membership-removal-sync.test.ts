@@ -55,7 +55,7 @@ beforeEach(() => {
 
 // ── 1. The list query ────────────────────────────────────────────────────────
 describe("GroupMemberRepository.getInboxMemberships", () => {
-  it("LIST: selects ACTIVE memberships only — a LEFT/KICKED row can never reach the inbox", async () => {
+  it("LIST: selects ACTIVE, non-dismissed memberships only — a LEFT/KICKED row, or a CLOSED group the member deleted, can never reach the inbox", async () => {
     let where: Record<string, unknown> | undefined;
     const prisma = {
       groupMember: {
@@ -67,7 +67,11 @@ describe("GroupMemberRepository.getInboxMemberships", () => {
     };
     await new GroupMemberRepository(prisma as never).getInboxMemberships("u1");
 
-    expect(where).toEqual({ userId: "u1", status: "ACTIVE" });
+    expect(where).toEqual({
+      userId: "u1",
+      status: "ACTIVE",
+      dismissedAt: { isSet: false },
+    });
   });
 });
 

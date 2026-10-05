@@ -5503,7 +5503,19 @@ export const communityService = {
       return "ALREADY_REMOVED";
     }
 
-    if (membership.status === CommunityMemberStatus.BANNED) {
+    // A closed community (owner close or Super Admin suspension) keeps every
+    // membership ACTIVE, so its row stays in each member's list. Deleting it
+    // from there is the same per-user dismiss a banned row gets: role,
+    // membership, memberCount and the community itself stay exactly as they
+    // are, so there is no ownership to hand over and nothing to leave — for
+    // the admin as much as anyone. A reopen clears the dismiss
+    // (clearClosureSnapshot), since the caller is a member of a live
+    // community again.
+    const isClosedActiveRow =
+      membership.status === CommunityMemberStatus.ACTIVE &&
+      (await this.isCommunityClosed(community.id));
+
+    if (membership.status === CommunityMemberStatus.BANNED || isClosedActiveRow) {
       // A banned community stays in the caller's list until THEY dismiss it.
       // Dismissing only HIDES the entry (dismissedAt) — status stays BANNED
       // and the ban metadata survives; only an admin unban lifts the ban.
@@ -5511,10 +5523,10 @@ export const communityService = {
         return "ALREADY_REMOVED";
       }
       await communityRepository.setMemberDismissed(community.id, callerId);
-      // The Community nav badge counts BANNED rows (their pre-ban unread, same
-      // as the row shows). A dismissed row leaves the list, so its unread has
-      // to leave the badge too — reading it up to the ban does exactly that
-      // (and pushes the fresh total). Best-effort: the dismiss itself stands.
+      // The Community nav badge counts BANNED (and ACTIVE) rows. A dismissed
+      // row leaves the list, so its unread has to leave the badge too —
+      // reading it up to the ban / close does exactly that (and pushes the
+      // fresh total). Best-effort: the dismiss itself stands.
       await getChatClient()
         .bulkMarkCommunityRead({
           userId: callerId,
@@ -5560,8 +5572,9 @@ export const communityService = {
    * Banned member → the community was still visible in their list, so this
    * HIDES it (dismissedAt) while the ban itself survives — only an admin
    * unban lifts it. Left/kicked member → already gone, idempotent success.
-   * Admin/owner → rejected; they must transfer ownership or use the admin
-   * delete flow.
+   * Closed community (any role, admin included) → HIDES it (dismissedAt);
+   * nothing else changes. Admin/owner of an open community → rejected; they
+   * must transfer ownership or use the admin delete flow.
    */
   async deleteCommunityForSelf(
     communityId: string,
@@ -5644,7 +5657,13 @@ export const communityService = {
       }
 
       const membership = membershipMap.get(communityId);
-      if (!membership || membership.status !== CommunityMemberStatus.ACTIVE) {
+      // A CLOSED community's row is removed by the same self-removal resolver:
+      // a per-user dismiss, never a leave (see resolveSelfRemoval).
+      if (
+        !membership ||
+        membership.status !== CommunityMemberStatus.ACTIVE ||
+        (await this.isCommunityClosed(communityId))
+      ) {
         // Not ACTIVE, but the row may still be SHOWING in the caller's list: a
         // BANNED membership, or a LEFT one an admin unbanned, both stay visible
         // until the caller dismisses them. Rejecting those with NOT_MEMBER left
@@ -5690,6 +5709,14 @@ export const communityService = {
 
       // A CLOSED community (owner banned) can never transfer ownership, so the
       // admin block is void — let them leave like a member (mirrors single
+  /** Owner-closed or Super Admin–suspended right now (false once deleted). */
+  async isCommunityClosed(communityId: string): Promise<boolean> {
+    const community = await communityRepository.findById(communityId);
+    return (
+      !!community && communityAccessPolicy.isEffectivelyClosed(community)
+    );
+  },
+
       // leaveCommunity). Falls through to the non-admin LEFT path below.
       if (isAdmin && !communityAccessPolicy.isOwnerClosed(bulkCommunity)) {
         const activeMembers =

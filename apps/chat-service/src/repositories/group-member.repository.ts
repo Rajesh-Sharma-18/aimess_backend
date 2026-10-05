@@ -169,6 +169,7 @@ export class GroupMemberRepository {
       notificationSettings: GroupMember["notificationSettings"];
       clearedAt: Date | null;
       clearChatAt: Date | null;
+      dismissedAt: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -181,8 +182,29 @@ export class GroupMemberRepository {
         notificationSettings: true,
         clearedAt: true,
         clearChatAt: true,
+        dismissedAt: true,
       },
     });
+  }
+
+  /**
+   * Hide a CLOSED group from the member's own list (per-user Delete
+   * Conversation). Writes ONLY `dismissedAt` + a zeroed unread counter on the
+   * caller's ACTIVE row: no status, role or memberCount change, so the room,
+   * its roster and every other member stay exactly as they were. False when
+   * there was nothing to write (not ACTIVE, or already dismissed).
+   */
+  async setDismissed(roomId: string, userId: string): Promise<boolean> {
+    const { count } = await this.prisma.groupMember.updateMany({
+      where: {
+        roomId,
+        userId,
+        status: "ACTIVE",
+        dismissedAt: { isSet: false },
+      },
+      data: { dismissedAt: new Date(), unreadCount: 0 },
+    });
+    return count > 0;
   }
 
   /**
@@ -202,7 +224,7 @@ export class GroupMemberRepository {
     }>
   > {
     return this.prisma.groupMember.findMany({
-      where: { userId, status: "ACTIVE" },
+      where: { userId, status: "ACTIVE", dismissedAt: { isSet: false } },
       select: {
         roomId: true,
         clearedAt: true,
@@ -247,7 +269,8 @@ export class GroupMemberRepository {
     }>
   > {
     return this.prisma.groupMember.findMany({
-      where: { userId, status: "ACTIVE" },
+      // A dismissed row is a CLOSED group the member deleted from their list.
+      where: { userId, status: "ACTIVE", dismissedAt: { isSet: false } },
       select: {
         roomId: true,
         role: true,

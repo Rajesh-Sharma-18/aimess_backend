@@ -831,6 +831,17 @@ export const communityRepository = {
     }>,
     resolvedBy?: string
   ) {
+    // Members who deleted the CLOSED community from their list are members of
+    // a live one again: put it back. BANNED dismissals belong to the ban and
+    // stay.
+    await prisma.communityMember.updateMany({
+      where: {
+        communityId,
+        status: CommunityMemberStatus.ACTIVE,
+        dismissedAt: { isSet: true },
+      },
+      data: { dismissedAt: { unset: true } },
+    });
     const userIds = members.map((m) => m.userId);
     const [result] = await prisma.$transaction([
       prisma.communityMember.createMany({
@@ -1259,8 +1270,8 @@ export const communityRepository = {
   // Re-add after `prisma generate` includes the field.
 
   /**
-   * Hide a BANNED community from the member's own list (self-dismiss). Writes
-   * ONLY `dismissedAt` — status stays BANNED and the ban metadata survives
+   * Hide a BANNED (or CLOSED) community from the member's own list
+   * (self-dismiss). Writes ONLY `dismissedAt` — status stays BANNED and the ban metadata survives
    * (business rule: dismissing never lifts a ban; only an admin unban does).
    * No chat-sync publish: nothing membership-relevant changed for chat-service.
    */
@@ -1529,7 +1540,9 @@ export const communityRepository = {
     // non-member preview + join flow with no special visibility carry-over.
     const memberVisibilityFilter = {
       OR: [
-        { status: CommunityMemberStatus.ACTIVE },
+        // dismissedAt on an ACTIVE row = a CLOSED community the member
+        // deleted from their list (see resolveSelfRemoval).
+        { status: CommunityMemberStatus.ACTIVE, dismissedAt: { isSet: false } },
         {
           status: CommunityMemberStatus.BANNED,
           dismissedAt: { isSet: false },
@@ -1592,7 +1605,9 @@ export const communityRepository = {
     // comment there for why).
     const memberVisibilityFilter = {
       OR: [
-        { status: CommunityMemberStatus.ACTIVE },
+        // dismissedAt on an ACTIVE row = a CLOSED community the member
+        // deleted from their list (see resolveSelfRemoval).
+        { status: CommunityMemberStatus.ACTIVE, dismissedAt: { isSet: false } },
         {
           status: CommunityMemberStatus.BANNED,
           dismissedAt: { isSet: false },
