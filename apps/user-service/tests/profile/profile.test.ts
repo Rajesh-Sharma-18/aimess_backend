@@ -22,6 +22,9 @@ jest.mock("../../src/repositories/user-profile.repository.js", () => ({
 }));
 jest.mock("../../src/lib/user-cache.js", () => ({
   userCache: {
+    getUsernameHolder: jest.fn(async () => null),
+    claimUsernameHold: jest.fn(async () => true),
+    releaseUsernameHold: jest.fn(async () => undefined),
     getProfileRecord: jest.fn(async () => null),
     setProfileRecord: jest.fn(async () => undefined),
     invalidateProfile: jest.fn(async () => undefined),

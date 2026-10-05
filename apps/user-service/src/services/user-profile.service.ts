@@ -897,6 +897,8 @@ async function writeProfileUpdate(
   if (updateData.username && updateData.username !== previousUsername) {
     await userCache.onUsernameReleased(previousUsername);
     await userCache.onUsernameClaimed(updateData.username);
+    // Owned now — the suggestion hold has done its job.
+    await userCache.releaseUsernameHold(updateData.username, userId);
   }
 
   const comparable = (value: unknown) =>

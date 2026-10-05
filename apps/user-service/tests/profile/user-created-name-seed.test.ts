@@ -20,6 +20,9 @@ jest.mock("../../src/messaging/publish-profile-updated.js", () => ({
 }));
 jest.mock("../../src/lib/user-cache.js", () => ({
   userCache: {
+    getUsernameHolder: jest.fn(async () => null),
+    claimUsernameHold: jest.fn(async () => true),
+    releaseUsernameHold: jest.fn(async () => undefined),
     onUsernameClaimed: jest.fn(async () => undefined),
     get: jest.fn(async () => null),
     set: jest.fn(async () => undefined),

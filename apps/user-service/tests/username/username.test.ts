@@ -13,6 +13,9 @@ jest.mock("../../src/repositories/user-profile.repository.js", () => ({
 }));
 jest.mock("../../src/lib/user-cache.js", () => ({
   userCache: {
+    getUsernameHolder: jest.fn(async () => null),
+    claimUsernameHold: jest.fn(async () => true),
+    releaseUsernameHold: jest.fn(async () => undefined),
     getUsernameAvailability: jest.fn(async () => null),
     setUsernameAvailability: jest.fn(async () => undefined),
     getUsernameTaken: jest.fn(async () => null),
@@ -29,7 +32,9 @@ import {
   makeAccessToken,
   makeExpiredAccessToken,
   makeForgedAccessToken,
+  TEST_USER_ID,
 } from "../helpers/auth.js";
+import { userCache } from "../../src/lib/user-cache.js";
 
 const repo = userProfileRepository as unknown as {
   findByUsername: jest.Mock;
@@ -55,19 +60,60 @@ describe("POST /api/v1/users/usernames/generate", () => {
     expect(res.body.data.username).toBe("john_doe");
   });
 
-  it("appends a numeric suffix when the base is already taken", async () => {
-    // First lookup (base) returns a profile → taken; suffixed lookup is free.
-    repo.findByUsername
-      .mockResolvedValueOnce({ userId: "someone-else" })
-      .mockResolvedValue(null);
+  /**
+   * Suffix walk: bare base first, then `_1`, `_2`, … — never starting at `_2`,
+   * and the caller's own (registration-seeded) row never counts as taken.
+   * `owners` is the fake username index: handle → owning userId. A BANNED
+   * profile is just a row here, so it occupies like any other.
+   */
+  it.each<[string, Record<string, string>, string]>([
+    ["#1 nobody holds the base", {}, "rajesh"],
+    ["#5 base taken", { rajesh: "other" }, "rajesh_1"],
+    ["#6 base and _1 taken", { rajesh: "other", rajesh_1: "b" }, "rajesh_2"],
+    ["#7 _2 taken, base free", { rajesh_2: "other" }, "rajesh"],
+    ["#13/#15 base is the caller's own seeded row", { rajesh: TEST_USER_ID }, "rajesh"],
+    ["#25 base held by a banned user", { rajesh: "banned-user" }, "rajesh_1"],
+  ])("suggests correctly: %s", async (_label, owners, expected) => {
+    repo.findByUsername.mockImplementation(async (u: string) =>
+      owners[u] ? { userId: owners[u], username: u } : null
+    );
 
     const res = await request(app)
       .post("/api/v1/users/usernames/generate")
       .set(auth())
-      .send({ account: "johndoe" });
+      .send({ account: "Rajesh" });
 
     expect(res.status).toBe(200);
-    expect(res.body.data.username).toBe("johndoe_2");
+    expect(res.body.data.username).toBe(expected);
+  });
+
+  it("ignores a cached 'taken' flag that may be the caller's own handle", async () => {
+    (userCache.getUsernameTaken as jest.Mock).mockResolvedValueOnce(true);
+    repo.findByUsername.mockImplementation(async (u: string) =>
+      u === "rajesh" ? { userId: TEST_USER_ID, username: u } : null
+    );
+
+    const res = await request(app)
+      .post("/api/v1/users/usernames/generate")
+      .set(auth())
+      .send({ account: "Rajesh" });
+
+    expect(res.body.data.username).toBe("rajesh");
+  });
+
+  it("#10 skips a free handle another user is holding → next suffix", async () => {
+    (userCache.claimUsernameHold as jest.Mock).mockResolvedValueOnce(false);
+
+    const res = await request(app)
+      .post("/api/v1/users/usernames/generate")
+      .set(auth())
+      .send({ account: "Rajesh" });
+
+    expect(res.body.data.username).toBe("rajesh_1");
+    expect(userCache.claimUsernameHold).toHaveBeenLastCalledWith(
+      "rajesh_1",
+      TEST_USER_ID
+    );
   });
 
   it.each([
@@ -136,6 +182,21 @@ describe("POST /api/v1/users/usernames/validate", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.available).toBe(true);
+  });
+
+  it.each([
+    ["another user", "someone-else", false],
+    ["the caller (other tab)", TEST_USER_ID, true],
+  ])("a free handle held by %s → available:%s", async (_l, holder, expected) => {
+    repo.findByUsername.mockResolvedValue(null);
+    (userCache.getUsernameHolder as jest.Mock).mockResolvedValueOnce(holder);
+
+    const res = await request(app)
+      .post("/api/v1/users/usernames/validate")
+      .set(auth())
+      .send({ username: "heldhandle" });
+
+    expect(res.body.data.available).toBe(expected);
   });
 
   it("normalizes uppercase input to canonical lowercase", async () => {
