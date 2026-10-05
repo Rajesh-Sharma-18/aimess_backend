@@ -292,7 +292,7 @@ export async function sendPush({
                 // which is why community/group pushes showed no picture. Set
                 // only when there IS an image, so alert-only pushes keep their
                 // current (cheaper, NSE-free) delivery path.
-                ...(image ? { mutableContent: true } : {}),
+                ...(image || kind === "MESSAGE" ? { mutableContent: true } : {}),
               },
         },
         // Downloaded and attached by the app's Notification Service Extension
