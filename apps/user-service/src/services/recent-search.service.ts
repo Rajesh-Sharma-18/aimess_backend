@@ -3,6 +3,7 @@ import type { MediaObject } from "@aimess/shared-types";
 
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { visibleIdentity, visibleIsOnline } from "../lib/privacy-scope.js";
+import { allocatedUsername } from "../lib/username.util.js";
 import { recentSearchRepository } from "../repositories/recent-search.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { avatarService } from "./avatar.service.js";
@@ -99,7 +100,7 @@ export const recentSearchService = {
             type: "USER" as const,
             user: {
               userId: profile.userId,
-              username: profile.username,
+              username: allocatedUsername(profile),
               firstName: identity.firstName,
               lastName: identity.lastName,
               bio: null, // this list has never rendered bio

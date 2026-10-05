@@ -1,4 +1,24 @@
 import { TEXT_NAME_MAX_LENGTH } from "@aimess/constants";
+import { isProfileComplete } from "@aimess/utils";
+
+/**
+ * The username OTHER people may see — "" until the profile is complete.
+ *
+ * Registration reserves a username derived from the login account (the column
+ * is NOT NULL and the profile-details screen pre-fills it from GET /me), but
+ * the user has not allocated it until they submit that screen. Showing it
+ * before then renders "@<account>" as if it were their chosen handle. "" is
+ * the same "no username" value deleted accounts already carry on every
+ * surface, so clients that render `@` only for a non-empty username need no
+ * change. The owner's own GET /me keeps the reserved value.
+ */
+export function allocatedUsername(profile: {
+  username: string;
+  firstName: string;
+  lastName: string;
+}): string {
+  return isProfileComplete(profile) ? profile.username : "";
+}
 
 const USERNAME_MIN_LENGTH = 3;
 // 30, shared with every other short identity field and with the website — see

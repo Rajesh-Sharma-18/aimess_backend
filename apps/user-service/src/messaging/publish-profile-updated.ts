@@ -43,5 +43,8 @@ function publishSafe(data: UserProfileUpdatedPayload): void {
 export function publishProfileUpdatedSafe(
   data: UserProfileUpdatedPayload
 ): void {
-  publishSafe(data);
+  // Consumers write `username` into member snapshots other people read. Until
+  // the profile is complete it is only the registration-reserved handle, not
+  // one the user allocated — same rule as `allocatedUsername`.
+  publishSafe({ ...data, username: data.isProfileCompleted ? data.username : "" });
 }

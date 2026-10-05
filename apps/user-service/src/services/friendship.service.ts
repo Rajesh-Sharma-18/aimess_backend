@@ -26,6 +26,7 @@ import {
   emitFriendSelfEventSafe,
   emitFriendEventToPairSafe,
 } from "../lib/friend-socket.js";
+import { allocatedUsername } from "../lib/username.util.js";
 import {
   buildFriendshipView,
   toSearchRelationship,
@@ -105,7 +106,7 @@ type PeerBrief = {
 function toPeerBrief(p: PeerBrief): PeerBrief {
   return {
     userId: p.userId,
-    username: p.username,
+    username: allocatedUsername(p),
     firstName: p.firstName,
     lastName: p.lastName,
   };
@@ -156,7 +157,7 @@ async function loadFriendshipParties(
   );
   const nameFor = (userId: string): string => {
     const p = byId.get(userId);
-    return p ? displayName(toPeerBrief(p)) : "Someone";
+    return p ? displayName(p) : "Someone";
   };
   const [requesterAvatarUrl, addresseeAvatarUrl] = await Promise.all([
     resolveAvatarUrl(byId.get(requesterId)?.avatarUrl),
@@ -266,8 +267,8 @@ async function emitConversationPendingFriendRequest(
     friendRequestId: row.id,
     requester: {
       id: requesterProfile.userId,
-      displayName: displayName(toPeerBrief(requesterProfile)),
-      username: requesterProfile.username,
+      displayName: displayName(requesterProfile),
+      username: allocatedUsername(requesterProfile),
       avatarUrl: avatarView?.url ?? null,
     },
     createdAt: row.createdAt.toISOString(),
@@ -519,7 +520,7 @@ export const friendshipService = {
           canCancel: view.canCancel,
           user: {
             userId: profile.userId,
-            username: profile.username,
+            username: allocatedUsername(profile),
             firstName: profile.firstName,
             lastName: profile.lastName,
             avatarUrl: avatarView?.url ?? null,
@@ -626,8 +627,8 @@ export const friendshipService = {
           friendshipId: friendship.id,
           requesterId: friendship.requesterId,
           addresseeId: friendship.addresseeId,
-          requesterName: displayName(toPeerBrief(requesterProfile)),
-          addresseeName: displayName(toPeerBrief(addresseeProfile)),
+          requesterName: displayName(requesterProfile),
+          addresseeName: displayName(addresseeProfile),
           requesterAvatarUrl: await resolveAvatarUrl(
             requesterProfile.avatarUrl
           ),
@@ -657,7 +658,7 @@ export const friendshipService = {
         friendshipId: updated.id,
         requesterId,
         addresseeId,
-        requesterName: displayName(toPeerBrief(requesterProfile)),
+        requesterName: displayName(requesterProfile),
         requesterAvatarUrl: await resolveAvatarUrl(requesterProfile.avatarUrl),
         createdAt: updated.createdAt.toISOString(),
       });
@@ -674,7 +675,7 @@ export const friendshipService = {
       friendshipId: friendship.id,
       requesterId,
       addresseeId,
-      requesterName: displayName(toPeerBrief(requesterProfile)),
+      requesterName: displayName(requesterProfile),
       requesterAvatarUrl: await resolveAvatarUrl(requesterProfile.avatarUrl),
       createdAt: friendship.createdAt.toISOString(),
     });
@@ -1442,7 +1443,7 @@ export const friendshipService = {
           : null;
         return {
           userId: b.blockedId,
-          username: profile?.username ?? null,
+          username: profile ? allocatedUsername(profile) : null,
           firstName: profile?.firstName ?? null,
           lastName: profile?.lastName ?? null,
           avatarUrl: avatar,

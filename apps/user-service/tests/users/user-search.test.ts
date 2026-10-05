@@ -943,3 +943,44 @@ describe("GET /api/v1/users/search — handle-first", () => {
     ).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Username presentation — registration reserves an account-derived username,
+// but other people only see it once the profile is complete.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("GET /api/v1/users/search — unallocated username", () => {
+  const search = (q: string) =>
+    request(app).get("/api/v1/users/search").query({ q }).set(auth());
+
+  const row = (body: { data: { other: { userId: string }[] } }) =>
+    body.data.other.find((r) => r.userId === OTHER_ID) as
+      | { username: string }
+      | undefined;
+
+  it("returns username '' (never the account) for an abandoned onboarding", async () => {
+    // Exactly what registration leaves behind: names empty, username = account.
+    pRepo.findUsersNotInList.mockResolvedValue([
+      profile(OTHER_ID, { username: "rajesh123", firstName: "", lastName: "" }),
+    ]);
+
+    const res = await search("rajesh123");
+
+    // Still matched — searchability is unchanged — but no handle on the row.
+    expect(row(res.body)?.username).toBe("");
+  });
+
+  it("returns the real username once the profile is complete", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([
+      profile(OTHER_ID, {
+        username: "rajesh_sharma",
+        firstName: "Rajesh",
+        lastName: "Sharma",
+      }),
+    ]);
+
+    const res = await search("rajesh");
+
+    expect(row(res.body)?.username).toBe("rajesh_sharma");
+  });
+});
