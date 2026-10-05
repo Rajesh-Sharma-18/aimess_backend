@@ -8,7 +8,12 @@
  * is the whole backward-compatibility story: nothing is migrated and nothing is
  * removed.
  */
-import { callCopy, friendCopy, DELETED_ACCOUNT_DISPLAY_NAME } from "@aimess/constants";
+import {
+  callCopy,
+  communityCopy,
+  friendCopy,
+  DELETED_ACCOUNT_DISPLAY_NAME,
+} from "@aimess/constants";
 
 import type { Notification } from "../../src/generated/prisma/index.js";
 import { serializeNotification } from "../../src/lib/notification-serializer.js";
@@ -196,5 +201,34 @@ describe("notification payload contract", () => {
 
     const data = (dto.payload as { data?: Record<string, unknown> }).data ?? {};
     expect(data.copyRef).toBeUndefined();
+  });
+
+  it("renders member-added per viewer from one stored ticket (history = realtime)", async () => {
+    const copy = communityCopy.memberAdded(
+      "Gokuldham Society",
+      "John Smith",
+      "Tom Brown",
+      "u-john",
+      "u-tom"
+    );
+    const stored = ticketedRow("community.member_added", copy, {
+      title: "Gokuldham Society",
+      body: "John Smith added You to Gokuldham Society",
+    });
+
+    const asTarget = await serializeNotification(stored, "u-tom");
+    const asThird = await serializeNotification(stored, "u-other");
+    expect(asTarget.body).toBe("John Smith added You to Gokuldham Society");
+    expect(asThird.body).toBe(
+      "John Smith added Tom Brown to Gokuldham Society"
+    );
+    // Clients rendering from the template get the ids to resolve "You" too.
+    expect(asTarget.params).toMatchObject({
+      actorId: "u-john",
+      targetUserId: "u-tom",
+      actorName: "John Smith",
+      targetName: "Tom Brown",
+      communityName: "Gokuldham Society",
+    });
   });
 });

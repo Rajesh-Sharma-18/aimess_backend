@@ -131,6 +131,14 @@ export const NOTIFICATION_MESSAGES = {
     en: "A new member joined {{community}}",
     th: "มีสมาชิกใหม่เข้าร่วม{{community}}",
   },
+  // Who added whom, to where — shared by the community and group member-added
+  // rows. `actor`/`target` are a display name or the viewer's own SYS_SENDER_YOU,
+  // resolved PER VIEWER at render time (see communityCopy.memberAdded).
+  NOTIF_MEMBER_ADDED_BY: {
+    vi: "{{actor}} đã thêm {{target}} vào {{entity}}",
+    en: "{{actor}} added {{target}} to {{entity}}",
+    th: "{{actor}}เพิ่ม{{target}}เข้า{{entity}}",
+  },
   NOTIF_COMMUNITY_ADMIN_TRANSFERRED: {
     vi: "Bạn hiện là quản trị viên của {{community}}",
     en: "You're now the admin of {{community}}",

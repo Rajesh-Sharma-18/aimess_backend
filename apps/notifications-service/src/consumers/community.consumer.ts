@@ -709,6 +709,19 @@ async function handleCommunityEvent(
         p.communityName
       );
       const communityName = identity.name;
+      // An admin/moderator's Add Member names both sides — "{actor} added
+      // {target} to {community}", with the reader's own side rendered "You".
+      // Every other path keeps its own sentence, so its copy gets no ids.
+      const byAdd = p.via === "add_members" && p.actorId !== p.targetUserId;
+      const [actorName, targetName] = byAdd
+        ? await Promise.all([
+            actorNameFor(p.actorId),
+            actorNameFor(p.targetUserId),
+          ])
+        : [undefined, undefined];
+      const who = byAdd
+        ? ([actorName, targetName, p.actorId, p.targetUserId] as const)
+        : ([] as const);
       // Welcome the joiner — UNLESS they will get the dedicated "approved" or
       // "self_join" (MEMBER_JOINED) notification.
       if (p.via !== "join_request_approved" && p.via !== "self_join") {
@@ -719,7 +732,7 @@ async function handleCommunityEvent(
           copy:
             p.via === "join_request_auto_accept"
               ? communityCopy.memberJoined(communityName)
-              : communityCopy.memberAdded(communityName),
+              : communityCopy.memberAdded(communityName, ...who),
           // Closed with the rest of the room's cards once they open it.
           collapseKey: pushTag.added(p.communityId),
           ...base(
@@ -747,7 +760,7 @@ async function handleCommunityEvent(
       if (mods.length > 0) {
         await pushToUsers(mods, (userId) => ({
           userId,
-          copy: communityCopy.memberAddedForModerators(communityName),
+          copy: communityCopy.memberAddedForModerators(communityName, ...who),
           ...base(
             type,
             identity,

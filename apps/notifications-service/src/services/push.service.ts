@@ -551,7 +551,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // session to change it overwrites for everyone. Per-device rendering happens
   // in `viewFor` below, off `DeviceToken.locale`.
   const locale = await getUserLocale(userId).catch(() => DEFAULT_LOCALE);
-  const rendered = input.copy?.(locale);
+  const rendered = input.copy?.(locale, userId);
   const title = rendered?.title ?? input.title ?? "";
   const inboxTitleOverride =
     input.inboxTitle !== undefined ? input.inboxTitle : rendered?.inboxTitle;
@@ -681,7 +681,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   const viewFor = (viewLocale: SupportedLocale): PushView => {
     const cached = views.get(viewLocale);
     if (cached) return cached;
-    const localized = input.copy?.(viewLocale);
+    const localized = input.copy?.(viewLocale, userId);
     const fullBody = localized?.body ?? input.body ?? "";
     const view: PushView = {
       title: localized?.title ?? input.title ?? "",

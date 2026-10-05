@@ -32,7 +32,7 @@ import type { PersonalizeFn } from "./emit-personalized.js";
  */
 export const localizeNotificationFrame: PersonalizeFn = (
   data: unknown,
-  _userId: string,
+  userId: string,
   locale: SupportedLocale
 ): unknown => {
   if (!data || typeof data !== "object") return data;
@@ -43,7 +43,12 @@ export const localizeNotificationFrame: PersonalizeFn = (
     return typeof value === "string" ? value : undefined;
   };
 
-  const copy = renderNotificationCopy(ref(COPY_REF_KEY), locale, frameData);
+  const copy = renderNotificationCopy(
+    ref(COPY_REF_KEY),
+    locale,
+    frameData,
+    userId
+  );
   const extra = renderNotificationData(ref(DATA_REF_KEY), locale);
   if (!copy && !extra) return data;
 

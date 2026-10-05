@@ -348,9 +348,15 @@ function scrubDeletedActor(
  */
 function localizeRow(
   data: Record<string, string>,
-  locale: SupportedLocale
+  locale: SupportedLocale,
+  viewerId: string
 ): { title?: string; body?: string; resolution?: string } | null {
-  const copy = renderNotificationCopy(data[COPY_REF_KEY], locale, data);
+  const copy = renderNotificationCopy(
+    data[COPY_REF_KEY],
+    locale,
+    data,
+    viewerId
+  );
   const extra = renderNotificationData(data[DATA_REF_KEY], locale);
   if (!copy && !extra) return null;
   return {
@@ -409,7 +415,7 @@ export async function serializeNotification(
     data?: Record<string, string>;
   };
   const storedData = storedPayload.data ?? {};
-  const localized = localizeRow(storedData, locale);
+  const localized = localizeRow(storedData, locale, viewerId);
   // The re-rendered sentence replaces the stored one for every downstream step
   // — the deleted-actor scrub and the stale-name refresh both rewrite prose, and
   // they must operate on the text the reader will actually see.

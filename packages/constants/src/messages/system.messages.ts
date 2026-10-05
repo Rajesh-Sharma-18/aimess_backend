@@ -241,10 +241,12 @@ export const SYSTEM_MESSAGES = {
     en: "{{actor}} added {{target}}",
     th: "{{actor}}เพิ่ม{{target}}",
   },
+  // The added member's own view names WHO added them — same shape as
+  // SYS_COMMUNITY_MEMBER_ADDED_SELF.
   SYS_GROUP_MEMBER_ADDED_SELF: {
-    vi: "Bạn đã được thêm vào nhóm",
-    en: "You were added to the group",
-    th: "คุณถูกเพิ่มเข้ากลุ่ม",
+    vi: "{{actor}} đã thêm bạn vào nhóm",
+    en: "{{actor}} added you to the group",
+    th: "{{actor}}เพิ่มคุณเข้ากลุ่ม",
   },
   // WhatsApp-style grouped add: ONE line per add-member operation, listing every
   // member that operation actually added ("Krish added Jane, Peter and 3 others").

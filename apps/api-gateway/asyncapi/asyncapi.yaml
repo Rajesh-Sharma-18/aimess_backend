@@ -5275,8 +5275,10 @@ components:
           payload:
             notificationId: "683abc100def0000000000a1"
             type: community.member_added
-            title: "Added to a community"
-            body: "You were added to Design Guild"
+            title: "Design Guild"
+            # Rendered per reader: the reader's own side is "You" (actor or
+            # target), anyone else by display name.
+            body: "Priya Shah added You to Design Guild"
             referenceId: "6843e1a2b5c3d4e5f6a7b8c9"
             isRead: false
             createdAt: 1749465400000

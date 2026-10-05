@@ -281,7 +281,7 @@ export function buildGroupSystemFallbackText(
           ? t("SYS_GROUP_MEMBERS_ADDED_SELF", locale, { targets })
           : t("SYS_GROUP_MEMBERS_ADDED", locale, { actor, targets });
       }
-      if (isTarget) return t("SYS_GROUP_MEMBER_ADDED_SELF", locale);
+      if (isTarget) return t("SYS_GROUP_MEMBER_ADDED_SELF", locale, { actor });
       if (isActor)
         return t("SYS_GROUP_MEMBERS_ADDED_SELF", locale, { targets: target });
       return t("SYS_GROUP_MEMBER_ADDED", locale, { actor, target });

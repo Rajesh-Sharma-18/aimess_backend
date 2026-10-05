@@ -126,7 +126,7 @@ describe("system message text — display names and You personalization", () => 
         },
         TARGET
       )
-    ).toBe("You were added to the group");
+    ).toBe("Admin User added you to the group");
   });
 
   it("leaves bystander text third-person", () => {

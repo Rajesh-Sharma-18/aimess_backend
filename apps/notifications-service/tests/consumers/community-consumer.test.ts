@@ -378,6 +378,7 @@ describe("MEMBER_ADDED branch", () => {
   });
 
   it("welcomes the joiner when via is a non-approval path (add_members)", async () => {
+    userDirectory({ [MOD]: "Sarah Jones", [REQUESTER]: "Tom Brown" });
     await deliver(CommunityEvents.MEMBER_ADDED, {
       communityId: CID,
       eventAt: "2026-06-16T10:00:00.000Z",
@@ -391,7 +392,31 @@ describe("MEMBER_ADDED branch", () => {
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(REQUESTER);
     expect(arg.copy("en").title).toBe("Your community");
-    expect(arg.copy("en").body).toBe("You were added to Your community");
+    // The actual actor (a moderator here) and "You" for the target reading it.
+    expect(arg.copy("en", REQUESTER).body).toBe(
+      "Sarah Jones added You to Your community"
+    );
+  });
+
+  it("names actor and target for the other moderators on add_members", async () => {
+    userDirectory({ [MOD]: "Sarah Jones", [REQUESTER]: "Tom Brown" });
+    await deliver(CommunityEvents.MEMBER_ADDED, {
+      communityId: CID,
+      eventAt: "2026-06-16T10:00:00.000Z",
+      actorId: MOD,
+      targetUserId: REQUESTER,
+      via: "add_members",
+      communityName: "Gokuldham Society",
+      moderatorRecipientIds: [MOD, "moderator-2"],
+    });
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const build = pushMany.mock.calls[0][1] as (id: string) => {
+      copy: (l: string, v?: string) => { body: string };
+    };
+    expect(build("moderator-2").copy("en", "moderator-2").body).toBe(
+      "Sarah Jones added Tom Brown to Gokuldham Society"
+    );
   });
 
   it("fans the moderator awareness push to admins/mods, excluding actor + joiner", async () => {

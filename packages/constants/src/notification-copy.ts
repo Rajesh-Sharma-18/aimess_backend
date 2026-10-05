@@ -65,7 +65,16 @@ export interface CopyDescriptor {
  * Carries the {@link CopyDescriptor} that produced it — attached by
  * {@link register}, so no builder has to remember to declare it.
  */
-export type LocalizedCopy = ((locale: SupportedLocale) => NotificationCopy) & {
+export type LocalizedCopy = ((
+  locale: SupportedLocale,
+  /**
+   * The AIMess userId READING the copy — the row's/push's recipient. Only
+   * viewer-relative sentences use it (member-added renders the reader's own
+   * side as "You"); it is never stored, so one ticket renders correctly for
+   * whoever reads it.
+   */
+  viewerId?: string
+) => NotificationCopy) & {
   descriptor?: CopyDescriptor;
 };
 
@@ -79,7 +88,9 @@ export type LocalizedData = ((
   descriptor?: CopyDescriptor;
 };
 
-type Replayable = (...args: never[]) => (locale: SupportedLocale) => unknown;
+type Replayable = (
+  ...args: never[]
+) => (locale: SupportedLocale, viewerId?: string) => unknown;
 
 /**
  * ref → builder. The ref strings are a PERSISTED CONTRACT: they are written
@@ -148,7 +159,8 @@ function patchLegacyArgs(
 function replay(
   raw: string | undefined | null,
   locale: SupportedLocale,
-  data?: Record<string, unknown>
+  data?: Record<string, unknown>,
+  viewerId?: string
 ): unknown {
   if (!raw) return null;
   let parsed: CopyDescriptor;
@@ -167,9 +179,11 @@ function replay(
     data
   );
   try {
-    return (build as (...a: unknown[]) => (l: SupportedLocale) => unknown)(
-      ...args
-    )(locale);
+    return (
+      build as (
+        ...a: unknown[]
+      ) => (l: SupportedLocale, viewerId?: string) => unknown
+    )(...args)(locale, viewerId);
   } catch {
     // A malformed/legacy descriptor must degrade to the row's stored text, never
     // take the notification list down with it.
@@ -190,9 +204,11 @@ function replay(
 export function renderNotificationCopy(
   copyRef: string | undefined | null,
   locale: SupportedLocale,
-  data?: Record<string, unknown>
+  data?: Record<string, unknown>,
+  /** The reader's userId — see {@link LocalizedCopy}. */
+  viewerId?: string
 ): NotificationCopy | null {
-  const out = replay(copyRef, locale, data);
+  const out = replay(copyRef, locale, data, viewerId);
   return out && typeof out === "object" && "body" in out
     ? (out as NotificationCopy)
     : null;
@@ -248,6 +264,37 @@ const person = (
   name: string | null | undefined,
   locale: SupportedLocale
 ): string => name?.trim() || t("SYS_NAME_SOMEONE", locale);
+
+/**
+ * One side of a "who did what to whom" sentence, from the READER's point of
+ * view: the reader's own userId renders as "You", anyone else by the display
+ * name captured when the event happened. Compared on the canonical AIMess
+ * userId — never a device or session — so every device of one account reads
+ * "You".
+ */
+const viewerAware = (
+  userId: string | null | undefined,
+  name: string | null | undefined,
+  viewerId: string | undefined,
+  locale: SupportedLocale
+): string =>
+  userId && viewerId && userId === viewerId
+    ? t("SYS_SENDER_YOU", locale)
+    : person(name, locale);
+
+/** "{actor} added {target} to {entity}", per viewer — see {@link viewerAware}. */
+const addedBy = (
+  entity: string,
+  actor: { id?: string | null; name?: string | null },
+  target: { id?: string | null; name?: string | null },
+  viewerId: string | undefined,
+  locale: SupportedLocale
+): string =>
+  t("NOTIF_MEMBER_ADDED_BY", locale, {
+    actor: viewerAware(actor.id, actor.name, viewerId, locale),
+    target: viewerAware(target.id, target.name, viewerId, locale),
+    entity,
+  });
 
 function roleLabel(role: string, locale: SupportedLocale): string {
   const r = String(role ?? "").toUpperCase();
@@ -452,22 +499,57 @@ export const communityCopy = register("community", {
       }),
       inboxTitle: null,
     }),
+  // An admin/moderator's Add Member: "{actor} added {target} to {community}",
+  // with the reader's own side as "You". Tickets written before actor and
+  // target were carried (args = [communityName]) have no actorId and keep
+  // their original sentence.
   memberAdded:
-    (communityName?: string | null): LocalizedCopy =>
-    (locale) => ({
+    (
+      communityName?: string | null,
+      actorName?: string | null,
+      targetName?: string | null,
+      actorId?: string | null,
+      targetUserId?: string | null
+    ): LocalizedCopy =>
+    (locale, viewerId) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_MEMBER_ADDED", locale, {
-        community: named(communityName, locale),
-      }),
+      body: actorId
+        ? addedBy(
+            named(communityName, locale),
+            { id: actorId, name: actorName },
+            { id: targetUserId, name: targetName },
+            viewerId,
+            locale
+          )
+        : t("NOTIF_COMMUNITY_MEMBER_ADDED", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
+  // The same sentence for the community's other admins/moderators, who read
+  // it in the third person. Only Add Member carries actor/target — approval,
+  // invite link and self-join keep "A new member joined …".
   memberAddedForModerators:
-    (communityName?: string | null): LocalizedCopy =>
-    (locale) => ({
+    (
+      communityName?: string | null,
+      actorName?: string | null,
+      targetName?: string | null,
+      actorId?: string | null,
+      targetUserId?: string | null
+    ): LocalizedCopy =>
+    (locale, viewerId) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_MEMBER_ADDED_FOR_MODERATORS", locale, {
-        community: named(communityName, locale),
-      }),
+      body: actorId
+        ? addedBy(
+            named(communityName, locale),
+            { id: actorId, name: actorName },
+            { id: targetUserId, name: targetName },
+            viewerId,
+            locale
+          )
+        : t("NOTIF_COMMUNITY_MEMBER_ADDED_FOR_MODERATORS", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
   adminTransferred:
@@ -862,11 +944,27 @@ export const chatMentionAllPreviewHiddenBody = (
     : t("NOTIF_CHAT_MENTION_ALL_HIDDEN", locale);
 
 export const groupCopy = register("group", {
+  // Same contract as communityCopy.memberAdded; a ticket without actorId
+  // (written before this) keeps "You were added to the group".
   memberAdded:
-    (groupName: string): LocalizedCopy =>
-    (locale) => ({
+    (
+      groupName: string,
+      actorName?: string | null,
+      targetName?: string | null,
+      actorId?: string | null,
+      targetUserId?: string | null
+    ): LocalizedCopy =>
+    (locale, viewerId) => ({
       title: groupName || t("NOTIF_GROUP_UNNAMED", locale),
-      body: t("NOTIF_GROUP_MEMBER_ADDED", locale),
+      body: actorId
+        ? addedBy(
+            groupName || t("NOTIF_GROUP_UNNAMED", locale),
+            { id: actorId, name: actorName },
+            { id: targetUserId, name: targetName },
+            viewerId,
+            locale
+          )
+        : t("NOTIF_GROUP_MEMBER_ADDED", locale),
     }),
   // Word-for-word the community mute copy, with "group" in place of the
   // community name — see communityCopy.memberMuted/memberUnmuted.
@@ -1039,8 +1137,20 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "community.joinRequestApproved": ["communityName", "decidedByName"],
   "community.joinRequestRejected": ["communityName"],
   "community.memberJoined": ["communityName"],
-  "community.memberAdded": ["communityName"],
-  "community.memberAddedForModerators": ["communityName"],
+  "community.memberAdded": [
+    "communityName",
+    "actorName",
+    "targetName",
+    "actorId",
+    "targetUserId",
+  ],
+  "community.memberAddedForModerators": [
+    "communityName",
+    "actorName",
+    "targetName",
+    "actorId",
+    "targetUserId",
+  ],
   "community.adminTransferred": ["communityName"],
   "community.roleChanged": ["newRole", "communityName"],
   "community.memberKicked": ["communityName"],
@@ -1067,7 +1177,13 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "chat.mentionAll": ["params"],
   "chat.mentionInbox": ["params"],
 
-  "group.memberAdded": ["groupName"],
+  "group.memberAdded": [
+    "groupName",
+    "actorName",
+    "targetName",
+    "actorId",
+    "targetUserId",
+  ],
   "group.memberMuted": ["groupName", "mutedUntil"],
   "group.memberUnmuted": ["groupName"],
 
@@ -1086,6 +1202,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "account.banned": [],
   "account.suspended": [],
   "account.reinstated": [],
+  "account.updatedByAdmin": [],
 
   "auth.newLogin": ["browser", "location"],
   "auth.passwordChanged": [],
