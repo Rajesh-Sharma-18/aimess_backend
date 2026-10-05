@@ -51,9 +51,10 @@ import {
   historyLineSnapshot,
   isHiddenByCutoff,
 } from "../lib/deletion-cutoff.js";
-import type {
-  ClosureIdentity,
-  GroupRoomRepository,
+import {
+  GroupNotSoleMemberError,
+  type ClosureIdentity,
+  type GroupRoomRepository,
 } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -962,7 +963,10 @@ export class GroupRoomService {
   async disbandGroup(
     roomId: string,
     userId: string,
-    opts?: { asPlatformAdmin?: boolean }
+    // asLastMember: the sole ACTIVE member (the ADMIN) is leaving. The disband
+    // then only runs on an ACTIVE room and only while they are still alone at
+    // the write; otherwise it rolls back with CHAT_OWNER_CANNOT_LEAVE.
+    opts?: { asPlatformAdmin?: boolean; asLastMember?: boolean }
   ): Promise<GroupRoom> {
     if (!opts?.asPlatformAdmin) {
       const member = await this.memberRepo.findActiveByRoomAndUser(
@@ -982,11 +986,20 @@ export class GroupRoomService {
     // One transaction: status flip, closure roster snapshot, and every
     // membership ended at the room's own `disbandedAt` (so the read cutoff and
     // the room timestamp can never disagree).
-    const disbanded = await this.roomRepo.disband(
-      roomId,
-      userId,
-      await this.closureIdentities(roomId)
-    );
+    let disbanded: GroupRoom | null;
+    try {
+      disbanded = await this.roomRepo.disband(
+        roomId,
+        userId,
+        await this.closureIdentities(roomId),
+        { asLastMember: opts?.asLastMember }
+      );
+    } catch (err: unknown) {
+      if (err instanceof GroupNotSoleMemberError) {
+        throw new BadRequestError("CHAT_OWNER_CANNOT_LEAVE");
+      }
+      throw err;
+    }
     if (!disbanded) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
 
     // Revoke all active invite links
@@ -1143,6 +1156,16 @@ export class GroupRoomService {
     if (!member || !["ACTIVE", "LEFT", "KICKED"].includes(member.status)) {
       throw new NotFoundError("CHAT_NOT_A_MEMBER");
     }
+    // Deleting a CLOSED group's conversation takes the row out of the list
+    // (it can never get a new message to come back with).
+    if (
+      member.status === "ACTIVE" &&
+      (await this.roomRepo.findActiveByRoomId(roomId))?.status ===
+        GroupRoomStatus.CLOSED
+    ) {
+      await this.dismissClosedConversation(roomId, userId);
+      return;
+    }
     const sortAt = await this.rowSortAt(roomId, userId);
     const cutoff = await this.memberRepo.setClearedAt(roomId, userId);
 
@@ -1156,34 +1179,11 @@ export class GroupRoomService {
       roomId,
       userId,
       cutoff,
-    // Deleting a CLOSED group's conversation takes the row out of the list
-    // (it can never get a new message to come back with).
-    if (
-      member.status === "ACTIVE" &&
-      (await this.roomRepo.findActiveByRoomId(roomId))?.status ===
-        GroupRoomStatus.CLOSED
-    ) {
-      await this.dismissClosedConversation(roomId, userId);
-      return;
-    }
       SystemEvent.CONVERSATION_DELETED,
       sortAt
     );
   }
 
-  /**
-   * Returns false — and changes nothing — when the member has nothing left to
-   * clear (see PrivateRoomService.clearChat).
-   */
-  async clearChat(roomId: string, userId: string): Promise<boolean> {
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      roomId,
-      userId
-    );
-    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    const clearable = await this.messageRepo.hasClearableAfter({
-      roomId,
-      userId,
   /**
    * Delete Conversation on a CLOSED group (owner banned by Super Admin): a
    * per-user dismiss, NOT a leave. Membership, role, memberCount, roster and
@@ -1220,6 +1220,19 @@ export class GroupRoomService {
     }).catch(() => {});
   }
 
+  /**
+   * Returns false — and changes nothing — when the member has nothing left to
+   * clear (see PrivateRoomService.clearChat).
+   */
+  async clearChat(roomId: string, userId: string): Promise<boolean> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    const clearable = await this.messageRepo.hasClearableAfter({
+      roomId,
+      userId,
       cutoff: getGroupVisibilityCutoff(member),
     });
     if (!clearable) return false;

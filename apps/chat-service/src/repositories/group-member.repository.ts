@@ -342,6 +342,27 @@ export class GroupMemberRepository {
     });
   }
 
+  /**
+   * ACTIVE → LEFT only while the row is still ACTIVE. Null when a concurrent
+   * leave/kick/ban got there first, so a double-submitted leave decrements
+   * memberCount and posts its system line exactly once.
+   */
+  async leaveIfActive(
+    roomId: string,
+    userId: string,
+    leftAt: Date
+  ): Promise<GroupMember | null> {
+    const { count } = await this.prisma.groupMember.updateMany({
+      where: { roomId, userId, status: "ACTIVE" },
+      // unreadCount zeroed on the SAME write that ends the membership: the
+      // group leaves this user's list, so a leftover counter could only come
+      // back as a phantom badge if they are ever added again.
+      data: { status: "LEFT", leftAt, unreadCount: 0 },
+    });
+    if (count === 0) return null;
+    return this.findByRoomAndUser(roomId, userId);
+  }
+
   async updateRole(
     roomId: string,
     userId: string,

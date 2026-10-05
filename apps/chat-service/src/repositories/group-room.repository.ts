@@ -25,6 +25,13 @@ import {
 // deliberately excluded: a disband hides the room everywhere.
 const VISIBLE_ROOM_STATUS: { in: string[] } = { in: ["ACTIVE", "CLOSED"] };
 
+/**
+ * Thrown out of a last-member disband when, at the write, the caller is no
+ * longer the room's only ACTIVE member (someone joined, or they already left).
+ * The transaction rolls back; the caller maps it to CHAT_OWNER_CANNOT_LEAVE.
+ */
+export class GroupNotSoleMemberError extends Error {}
+
 /** Identity frozen onto a GroupClosureMember row. */
 export interface ClosureIdentity {
   username: string;
@@ -520,7 +527,9 @@ export class GroupRoomRepository {
    */
   async reserveMemberSlot(roomId: string, limit: number): Promise<boolean> {
     const { count } = await this.prisma.groupRoom.updateMany({
-      where: { roomId, memberCount: { lt: limit } },
+      // ACTIVE only: a join racing a disband/close cannot claim a slot in a
+      // room that ended after its writability check.
+      where: { roomId, status: "ACTIVE", memberCount: { lt: limit } },
       data: { memberCount: { increment: 1 } },
     });
     return count === 1;
@@ -556,16 +565,20 @@ export class GroupRoomRepository {
   async disband(
     roomId: string,
     userId: string,
-    identities: Map<string, ClosureIdentity> = new Map()
+    identities: Map<string, ClosureIdentity> = new Map(),
+    /** Last-member leave: only an ACTIVE room, and only while `userId` is its
+     *  sole ACTIVE member at the write (else GroupNotSoleMemberError). */
+    opts?: { asLastMember?: boolean }
   ): Promise<GroupRoom | null> {
     const at = new Date();
     return this.closeWithSnapshot(
       roomId,
-      ["ACTIVE", "CLOSED"],
+      opts?.asLastMember ? ["ACTIVE"] : ["ACTIVE", "CLOSED"],
       { status: "DISBANDED", disbandedAt: at, disbandedBy: userId },
       at,
       identities,
-      true
+      true,
+      opts?.asLastMember ? userId : undefined
     );
   }
 
@@ -607,12 +620,26 @@ export class GroupRoomRepository {
     data: Prisma.GroupRoomUpdateInput,
     at: Date,
     identities: Map<string, ClosureIdentity>,
-    endMemberships: boolean
+    endMemberships: boolean,
+    soleMemberId?: string
   ): Promise<GroupRoom | null> {
     return withWriteConflictRetry(() =>
       this.prisma.$transaction(async (tx) => {
         const room = await tx.groupRoom.findUnique({ where: { roomId } });
         if (!room || !fromStatuses.includes(room.status)) return null;
+
+        // Last-member decision made on the same snapshot as the close itself,
+        // never on a count read before the transaction.
+        if (soleMemberId) {
+          const active = await tx.groupMember.findMany({
+            where: { roomId, status: "ACTIVE" },
+            select: { userId: true },
+            take: 2,
+          });
+          if (active.length !== 1 || active[0]?.userId !== soleMemberId) {
+            throw new GroupNotSoleMemberError();
+          }
+        }
 
         let memberCountAtClosure = room.memberCountAtClosure;
         if (room.status === "ACTIVE") {

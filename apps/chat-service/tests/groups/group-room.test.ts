@@ -429,7 +429,10 @@ describe("POST /api/chat/groups/rooms/:roomId/disband", () => {
     expect(mocks.groupRoomRepo.disband).toHaveBeenCalledWith(
       "grp_1",
       TEST_USER_ID,
-      expect.any(Map)
+      expect.any(Map),
+      // A "Close group" disband is not a last-member leave: it ends every
+      // membership, whoever is still in the room.
+      { asLastMember: undefined }
     );
   });
 
