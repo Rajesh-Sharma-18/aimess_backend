@@ -272,6 +272,41 @@ async function handleMentionRetracted(
   }
 }
 
+const CHAT_DELIVERY_WAKE = "chat.delivery_wake";
+
+/**
+ * A muted / Chat-off recipient gets no alert, but their phone must still wake to
+ * acknowledge delivery (✓✓) — the app opens no socket on a push. Silent,
+ * Android-only (the Android client is the one consuming it).
+ */
+async function sendDeliveryWake(
+  userIds: string[],
+  data: MessageSentPayload
+): Promise<void> {
+  await Promise.all(
+    userIds.map((userId) =>
+      pushToUser({
+        userId,
+        category: "chatEnabled",
+        type: CHAT_DELIVERY_WAKE,
+        dataOnly: true,
+        bypassSettings: true,
+        skipInbox: true,
+        platforms: ["ANDROID"],
+        data: {
+          type: CHAT_DELIVERY_WAKE,
+          conversationId: data.conversationId,
+          messageId: data.messageId,
+        },
+      }).catch((err: unknown) =>
+        logger.warn(
+          `delivery wake failed user=${userId} message=${data.messageId}: ${String(err)}`
+        )
+      )
+    )
+  );
+}
+
 async function handleMessageSent(
   data: MessageSentPayload,
   finalAttempt = false
@@ -322,12 +357,24 @@ async function handleMessageSent(
       recipients.map((id) => isPrivateRoomMutedBy(id, data.conversationId))
     );
     const before = recipients.length;
+    const muted = recipients.filter((_, i) => muteChecks[i]);
     recipients = recipients.filter((_, i) => !muteChecks[i]);
     if (recipients.length < before) {
       logger.info(
         `Suppressing ${data.conversationType} push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`
       );
     }
+    // Chat OFF would be dropped inside pushToUser; split it out here so it gets the wake instead.
+    const chatOff = await Promise.all(
+      recipients.map((id) =>
+        getNotificationSettings(id)
+          .then((s) => s.chatEnabled === false)
+          .catch(() => false)
+      )
+    );
+    const silenced = [...muted, ...recipients.filter((_, i) => chatOff[i])];
+    recipients = recipients.filter((_, i) => !chatOff[i]);
+    if (!data.inboxOnly) await sendDeliveryWake(silenced, data);
     if (recipients.length === 0) return;
   }
 

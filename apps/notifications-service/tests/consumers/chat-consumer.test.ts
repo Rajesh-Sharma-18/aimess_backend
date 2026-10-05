@@ -155,6 +155,8 @@ type RowWrite = {
   data: Record<string, string>;
 };
 const rowWrites: RowWrite[] = [];
+/** Silent delivery wakes sent to muted / Chat-off private recipients. */
+const wakes: string[] = [];
 async function flushPushes(): Promise<void> {
   await flushAllChatPushes();
   const all = pushOne.mock.calls.map(
@@ -164,7 +166,12 @@ async function flushPushes(): Promise<void> {
   rowWrites.push(
     ...(all.filter((i) => i.skipPush === true) as unknown as RowWrite[])
   );
-  const inputs = all.filter((i) => i.skipPush !== true);
+  wakes.push(
+    ...all.filter((i) => i.type === "chat.delivery_wake").map((i) => i.userId)
+  );
+  const inputs = all.filter(
+    (i) => i.skipPush !== true && i.type !== "chat.delivery_wake"
+  );
   if (inputs.length === 0) return;
   pushMany(
     inputs.map((i) => i.userId),
@@ -617,6 +624,26 @@ describe("startChatConsumer — private room mute suppression", () => {
     channelMock.nack.mockClear();
     isPrivateMutedMock.mockReset();
     isPrivateMutedMock.mockResolvedValue(false);
+    wakes.length = 0;
+  });
+
+  it("PRIVATE + recipient muted the room → silent delivery wake, no alert", async () => {
+    isPrivateMutedMock.mockResolvedValue(true);
+    consume(makeMsg({ ...BASE, conversationType: "PRIVATE" }));
+    await flush();
+
+    expect(wakes).toEqual(["recipient-uuid"]);
+    expect(pushMany).not.toHaveBeenCalled();
+  });
+
+  it("PRIVATE + recipient has Chat notifications OFF → silent delivery wake, no alert", async () => {
+    const settingsMock = getNotificationSettings as jest.Mock;
+    settingsMock.mockResolvedValueOnce({ chatEnabled: false });
+    consume(makeMsg({ ...BASE, conversationType: "PRIVATE" }));
+    await flush();
+
+    expect(wakes).toEqual(["recipient-uuid"]);
+    expect(pushMany).not.toHaveBeenCalled();
   });
 
   it("PRIVATE + recipient muted the room → pushToUsers NOT called, message still ACKed", async () => {
@@ -1312,7 +1339,7 @@ describe("startChatConsumer — group @all", () => {
     expect(pushTo("a")!.data.mentionType).toBe("ALL");
   });
 
-  it("PRIVATE ignores @all fields: no settings read, no mention flag, mentionOnly ignored", async () => {
+  it("PRIVATE ignores @all fields: only the Chat-toggle settings read, no mention flag, mentionOnly ignored", async () => {
     consume(
       makeMsg({
         ...BASE,
@@ -1323,7 +1350,7 @@ describe("startChatConsumer — group @all", () => {
     );
     await flush();
 
-    expect(settingsMock).not.toHaveBeenCalled();
+    expect(settingsMock).toHaveBeenCalledTimes(1);
     const pushes = flushed();
     expect(pushes).toHaveLength(1);
     expect(pushes[0]!.data.notificationType).toBeUndefined();
