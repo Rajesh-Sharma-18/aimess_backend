@@ -39,6 +39,9 @@ export function rankCommunitiesByHandle<T extends { handle: string }>(
   return rankByHandle(rows, q, (row) => row.handle);
 }
 
+/** Only "@"s (and spaces): a handle search that has not named anyone yet. */
+const BARE_HANDLE_PREFIX = /^[\s@]*@[\s@]*$/;
+
 /**
  * Builds the Prisma `AND`-of-`OR` clauses backing community search by name
  * and/or handle.
@@ -65,9 +68,12 @@ export function rankCommunitiesByHandle<T extends { handle: string }>(
 export function buildCommunitySearchFilter(
   q: string
 ): Prisma.CommunityWhereInput[] {
+  // A bare "@" starts a handle search: list communities unfiltered (the
+  // caller's visibility rules still apply).
+  if (BARE_HANDLE_PREFIX.test(q)) return [];
   const tokens = tokenizeAndNormalize(q);
-  // No searchable characters at all ("@", "...", an emoji) → match nothing,
-  // never `AND: []` (every public community).
+  // Any other query with no searchable characters ("...", an emoji) → match
+  // nothing, never `AND: []` (every public community).
   if (!tokens.length) return q.trim() ? [{ id: { in: [] } }] : [];
   return tokens.map(({ raw, normalized }) => ({
     OR: [

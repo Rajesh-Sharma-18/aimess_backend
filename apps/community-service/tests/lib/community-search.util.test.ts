@@ -172,9 +172,14 @@ describe("buildCommunitySearchFilter", () => {
 
   it("matches NOTHING for a query that is only punctuation or emoji", () => {
     // Not `[]`: the caller spreads this into AND, and AND [] matched every community.
-    for (const q of ["...", "@", "_", "😀"]) {
+    for (const q of ["...", "_", "😀"]) {
       expect(buildCommunitySearchFilter(q)).toEqual([{ id: { in: [] } }]);
     }
+  });
+
+  it("browses (no text filter) on a bare @ — the start of a handle search", () => {
+    expect(buildCommunitySearchFilter("@")).toEqual([]);
+    expect(buildCommunitySearchFilter("@@")).toEqual([]);
   });
 
   it("a 3-token query produces 3 independent AND-ed OR clauses", () => {

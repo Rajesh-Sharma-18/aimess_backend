@@ -17,8 +17,14 @@ const VIEWER = { friendIds: [], friendOfFriendIds: [] } as never;
 
 describe("people search filter", () => {
   it("matches nothing for a query with no searchable characters", () => {
-    for (const q of ["@", "%", "_", ".", "-", "😀", "@ _"]) {
+    for (const q of ["%", "_", ".", "-", "😀", "@ _"]) {
       expect(buildUserSearchFilter(q)).toEqual([{ userId: { in: [] } }]);
+    }
+  });
+
+  it("browses (no text filter) on a bare @ — the start of a handle search", () => {
+    for (const q of ["@", "@@", " @ "]) {
+      expect(buildUserSearchFilter(q)).toEqual([]);
     }
   });
 

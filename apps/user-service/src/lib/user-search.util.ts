@@ -68,6 +68,9 @@ export function decodePeopleCursor(
   return { firstName: firstName ?? "", userId };
 }
 
+/** Only "@"s (and spaces): a handle search that has not named anyone yet. */
+const BARE_HANDLE_PREFIX = /^[\s@]*@[\s@]*$/;
+
 /** People's handle IS their `username` — the shared ranker just needs the field. */
 export function rankByUsername<T extends { username: string }>(
   rows: T[],
@@ -79,10 +82,12 @@ export function rankByUsername<T extends { username: string }>(
 export function buildUserSearchFilter(
   q: string
 ): Prisma.UserProfileWhereInput[] {
+  // A bare "@" is the start of a handle search: browse everyone the viewer may
+  // discover (no text filter — every eligibility gate still applies, paged).
+  if (BARE_HANDLE_PREFIX.test(q)) return [];
   const tokens = tokenizeAndNormalize(q);
-  // A query with no searchable characters ("@", "%", "_", an emoji) matches
-  // NOTHING. Returning no clauses would mean `AND: []` — every discoverable
-  // user — and "@" is the first key people type for a handle.
+  // Any other query with no searchable characters ("%", "_", an emoji)
+  // matches NOTHING — `AND: []` would be every discoverable user.
   if (!tokens.length) return q.trim() ? [{ userId: { in: [] } }] : [];
   return tokens.map(({ raw, normalized }) => ({
     OR: [
