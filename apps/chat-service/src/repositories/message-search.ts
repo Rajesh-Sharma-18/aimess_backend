@@ -16,17 +16,53 @@ interface RawSearchDoc {
   score?: number;
 }
 
-// ponytail: newest 80 rooms per user feed the cross-room search `$in`. The number is
-// set by Mongo's explode-for-sort ceiling, NOT by `$in` size: the planner refuses to
-// explode a scan into more than `internalQueryMaxScansToExplode` (default 200) index
-// intervals, and from page 2 on the keyset adds a two-branch `$or`, so the budget is
-// rooms x 2 <= 200. Over it, explosion is refused and the sort goes BLOCKING with no
-// early termination — and `aggregate` runs allowDiskUse:false, so a large enough sort
-// input fails with QueryExceededMemoryLimitNoDiskUseAllowed instead of returning.
-// Ceiling: a heavier account searches only its 80 most recently active rooms. Upgrade
-// path is paging the scope (cursor over rooms) or a server-side view spanning the
-// three collections — raising this number is what breaks the explode.
-export const SEARCH_SCOPE_ROOM_LIMIT = 80;
+// Rooms per cross-room search QUERY. The number is set by Mongo's explode-for-sort
+// ceiling, NOT by `$in` size: the planner refuses to explode a scan into more than
+// `internalQueryMaxScansToExplode` (default 200) index intervals, and from page 2 on
+// the keyset adds a two-branch `$or`, so the budget is rooms x 2 <= 200. Over it,
+// explosion is refused and the sort goes BLOCKING with no early termination — and
+// `aggregate` runs allowDiskUse:false, so a large enough sort input fails with
+// QueryExceededMemoryLimitNoDiskUseAllowed instead of returning.
+//
+// So the scope is never capped: every room the caller can read is searched, split
+// into chunks of this size, one top-k query per chunk, merged on the same
+// (createdAt desc, _id desc) key (see `mergeSearchDocs`). Raising this number is
+// what breaks the explode.
+// ponytail: one query per chunk per keystroke — an account in 2,000 rooms of one
+// type runs 25. A server-side view spanning the rooms is the upgrade if that bites.
+export const SEARCH_ROOM_CHUNK_SIZE = 80;
+
+/** Splits `roomIds` into {@link SEARCH_ROOM_CHUNK_SIZE}-sized query scopes. */
+export function chunkRoomIds(roomIds: string[]): string[][] {
+  const chunks: string[][] = [];
+  for (let i = 0; i < roomIds.length; i += SEARCH_ROOM_CHUNK_SIZE) {
+    chunks.push(roomIds.slice(i, i + SEARCH_ROOM_CHUNK_SIZE));
+  }
+  return chunks;
+}
+
+/**
+ * Merges the per-chunk top-k lists into one, ordered like each list already is
+ * (createdAt desc, _id desc), keeping `limit + 1` rows so `readTextSearchPage`
+ * still sees the extra row that means `hasMore`. Each chunk returned its own
+ * `limit + 1`, so the global top `limit + 1` is always inside the union.
+ */
+export function mergeSearchDocs(
+  lists: RawSearchDoc[][],
+  limit: number
+): RawSearchDoc[] {
+  if (lists.length === 1) return lists[0] ?? [];
+  return lists
+    .flat()
+    .sort((a, b) => {
+      const at = docCreatedAtMs(b) - docCreatedAtMs(a);
+      if (at !== 0) return at;
+      const ai = docObjectId(a) ?? "";
+      const bi = docObjectId(b) ?? "";
+      return ai < bi ? 1 : ai > bi ? -1 : 0;
+    })
+    .slice(0, limit + 1);
+}
 
 // Both halves are validated here, not just the epoch: the id half is fed straight
 // into `_id: { $lt: { $oid } }` inside aggregateRaw, so a non-ObjectId (an inbox
@@ -132,11 +168,11 @@ export function escapeRegex(value: string): string {
  *   and the sort. A common term early-exits almost immediately; the worst case
  *   is a zero-match term, which walks that one room.
  * - CROSS-ROOM (whole-account search): `roomId` is `{ $in: [...] }` over up to
- *   SEARCH_SCOPE_ROOM_LIMIT rooms (message-search.repository.ts). A term with
+ *   SEARCH_ROOM_CHUNK_SIZE rooms per query (message-search.repository.ts). A term with
  *   matches still early-exits, but a zero-match term reads EVERY live
  *   non-system message in ALL of those rooms, across all three collections, on
  *   every debounced keystroke. That is the real ceiling, and the reason the room
- *   scope is capped — see SEARCH_SCOPE_ROOM_LIMIT.
+ *   scope is queried in chunks — see SEARCH_ROOM_CHUNK_SIZE.
  *
  * The caller debounces, and `$limit` caps the rows returned either way.
  *

@@ -18,7 +18,6 @@ import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
 import { assertPrivateParticipants } from "../lib/room-id.js";
-import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
 import {
   shouldCountInUnread,
   UNREAD_COUNTABLE_EVENT_RAW_MATCH,
@@ -249,12 +248,9 @@ export class PrivateRoomRepository {
         deletedFor: true,
         clearFor: true,
       },
-      // Capped and recency-ordered: the whole list becomes one `$in` per keystroke.
-      // Served by [participants, lastMessageAt desc] — the standalone
-      // [lastMessageAt desc] does NOT serve this, it would walk the whole
-      // collection newest-first until N of the caller's rooms surface.
-      orderBy: { lastMessageAt: "desc" },
-      take: SEARCH_SCOPE_ROOM_LIMIT,
+      // Uncapped: the search queries the list in chunks (SEARCH_ROOM_CHUNK_SIZE),
+      // so no room the caller can read is left out. Served by
+      // [participants, lastMessageAt desc].
     });
   }
 

@@ -77,18 +77,34 @@ type Fetched =
   | { ok: true; data: unknown }
   | { ok: false; status: number | null; code: string | null };
 
+// `n` = the page this cursor opens, `t` = rows served before it. They make the
+// response's page counters true (exact once `hasMore` is false) without a count
+// query no leg can answer across three services.
 const encodeAllCursor = (legs: {
   v: 1;
-  m: string | null | undefined;
-  c: string | null | undefined;
-  p: string | null | undefined;
-  g: string | null | undefined;
+  m?: string | null;
+  c?: string | null;
+  p?: string | null;
+  g?: string | null;
+  n: number;
+  t: number;
 }): string =>
   Buffer.from(JSON.stringify(legs), "utf8").toString("base64url");
 
+interface DecodedCursor {
+  legs: LegCursors;
+  page: number;
+  served: number;
+}
+
+const counter = (value: unknown, fallback: number, min: number): number =>
+  typeof value === "number" && Number.isInteger(value) && value >= min
+    ? value
+    : fallback;
+
 // A cursor this route cannot read is a 400, never a silent page 1 — the silent
 // restart is what makes infinite scroll re-serve the first page forever.
-function decodeAllCursor(raw: string): LegCursors {
+function decodeAllCursor(raw: string): DecodedCursor {
   let parsed: unknown;
   try {
     // `Buffer.from(…, "base64url")` never throws; garbage bytes fail here instead.
@@ -112,7 +128,12 @@ function decodeAllCursor(raw: string): LegCursors {
     }
     cursors[leg] = value;
   }
-  return cursors;
+  // Cursors minted before the counters existed carry neither; they still page.
+  return {
+    legs: cursors,
+    page: counter(wrapper.n, 2, 2),
+    served: counter(wrapper.t, 0, 0),
+  };
 }
 
 const trimBase = (url: string): string => url.replace(/\/+$/, "");
@@ -319,12 +340,19 @@ searchRouter.get(
             group: limit,
           };
 
-    const incoming: LegCursors =
-      cursor == null
-        ? {}
-        : filter === "all"
-          ? decodeAllCursor(cursor)
-          : ({ [filter]: cursor } as LegCursors);
+    // Every filter now pages on the composite token. A single-filter cursor from
+    // before that was the leg's own cursor, forwarded as-is; it still is, so a
+    // scroll open across a deploy keeps going (the leg rejects real garbage).
+    let decoded: DecodedCursor = { legs: {}, page: 1, served: 0 };
+    if (cursor != null) {
+      try {
+        decoded = decodeAllCursor(cursor);
+      } catch (err) {
+        if (filter === "all") throw err;
+        decoded = { legs: { [filter]: cursor }, page: 2, served: 0 };
+      }
+    }
+    const incoming = decoded.legs;
 
     const targets: { leg: Leg; url: string }[] = [];
     // What each leg was actually SENT — the community sentinel means a leg can
@@ -405,6 +433,12 @@ searchRouter.get(
       people: peoplePage(fetched.get("people")),
       group: groupPage(fetched.get("group")),
     };
+    const unavailable = [...fetched]
+      .filter(([, result]) => !result.ok)
+      .map(([leg]) => leg);
+    const servedThrough =
+      decoded.served +
+      ALL_LEGS.reduce((sum, leg) => sum + pages[leg].rows.length, 0);
     const outCursor = (leg: Leg): string | null | undefined => {
       if (incoming[leg] === null) return null;
       const result = fetched.get(leg);
@@ -418,7 +452,6 @@ searchRouter.get(
     let nextCursor: string | null;
     if (filter === "all") {
       const composite = {
-        v: 1 as const,
         m: outCursor("message"),
         c: outCursor("community"),
         p: outCursor("people"),
@@ -430,9 +463,20 @@ searchRouter.get(
       const more = [composite.m, composite.c, composite.p, composite.g].some(
         (value) => typeof value === "string"
       );
-      nextCursor = more ? encodeAllCursor(composite) : null;
+      nextCursor = more
+        ? encodeAllCursor({ v: 1, ...composite, n: decoded.page + 1, t: servedThrough })
+        : null;
     } else {
-      nextCursor = pages[filter].cursor ?? null;
+      const legCursor = outCursor(filter);
+      nextCursor =
+        typeof legCursor === "string"
+          ? encodeAllCursor({
+              v: 1,
+              [LEG_KEY[filter]]: legCursor,
+              n: decoded.page + 1,
+              t: servedThrough,
+            })
+          : null;
     }
     const hasMore = nextCursor !== null;
 
@@ -451,11 +495,12 @@ searchRouter.get(
       new ApiResponse(
         {
           pagination: {
-            // Page length, not a corpus total: no leg reports one across three
-            // services. Never derive a page count from it — page on nextCursor.
-            totalData: data.length,
-            totalPage: 1,
-            currentPage: 1,
+            // Rows served through this page and the pages known so far. No leg
+            // can count across three services, so both are lower bounds while
+            // `hasMore` and exact on the last page. Page on nextCursor.
+            totalData: servedThrough,
+            totalPage: hasMore ? decoded.page + 1 : decoded.page,
+            currentPage: decoded.page,
             limit,
             nextCursor,
             hasMore,
@@ -463,6 +508,9 @@ searchRouter.get(
           data,
           hasMore,
           nextCursor,
+          // Categories whose service failed this page. Their rows are missing,
+          // not empty — a client says so instead of implying "no results".
+          unavailable,
         },
         t("SEARCH_FETCHED", req.locale)
       )

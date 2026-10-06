@@ -6,7 +6,6 @@
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 import { isObjectId } from "../lib/object-id.js";
-import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
 
 export class GroupMemberRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -231,10 +230,8 @@ export class GroupMemberRepository {
         clearChatAt: true,
         joinedAt: true,
       },
-      // Capped and recency-ordered — [userId, status, updatedAt desc] serves both
-      // the equality and the sort, so this early-terminates at the take.
-      orderBy: { updatedAt: "desc" },
-      take: SEARCH_SCOPE_ROOM_LIMIT,
+      // Uncapped: the search queries the list in chunks (SEARCH_ROOM_CHUNK_SIZE).
+      // [userId, status, updatedAt desc] serves the equality.
     });
   }
 

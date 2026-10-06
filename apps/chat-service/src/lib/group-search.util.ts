@@ -16,7 +16,11 @@ export { normalizeForSearch, tokenizeSearchQuery } from "@aimess/utils";
 export function buildGroupSearchFilter(
   q: string
 ): Prisma.GroupRoomWhereInput[] {
-  return tokenizeAndNormalize(q).map(({ raw, normalized }) => ({
+  const tokens = tokenizeAndNormalize(q);
+  // No searchable characters ("@", "_", an emoji) → match nothing, never
+  // `AND: []` (every group the caller is in).
+  if (!tokens.length) return q.trim() ? [{ roomId: { in: [] } }] : [];
+  return tokens.map(({ raw, normalized }) => ({
     OR: [
       { normalizedName: { contains: normalized } },
       { name: { contains: raw, mode: "insensitive" } },

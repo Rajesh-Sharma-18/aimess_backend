@@ -48,6 +48,26 @@ const buildDeps = (existing: unknown) => {
 };
 
 describe("ensurePrivateRoom", () => {
+  it("returns the winner's room when a concurrent first open wins the insert", async () => {
+    const deps = buildDeps(null);
+    const winner = { roomId: "prv_winner" };
+    (deps.privateRoomRepo.findByParticipantsKey as unknown as jest.Mock)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(winner);
+    deps.privateRoomRepo.create.mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" })
+    );
+
+    await expect(ensurePrivateRoom(deps, USER_A, USER_B)).resolves.toBe(winner);
+  });
+
+  it("still throws a create failure that is not a duplicate", async () => {
+    const deps = buildDeps(null);
+    deps.privateRoomRepo.create.mockRejectedValueOnce(new Error("boom"));
+
+    await expect(ensurePrivateRoom(deps, USER_A, USER_B)).rejects.toThrow("boom");
+  });
+
   it("creates the room when none exists", async () => {
     const deps = buildDeps(null);
 

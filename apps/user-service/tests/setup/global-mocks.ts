@@ -73,6 +73,7 @@ jest.mock("../../src/grpc/messaging.client.js", () => ({
     resolvePrivateRooms: jest.fn(async () => []),
     listPrivateRoomPeers: jest.fn(async () => []),
     listActiveGroups: jest.fn(async () => []),
+    searchActiveGroups: jest.fn(async () => []),
     listOtherGroups: jest.fn(async () => []),
     getGroupsByIds: jest.fn(async () => []),
     getOrCreatePrivateRooms: jest.fn(async () => []),

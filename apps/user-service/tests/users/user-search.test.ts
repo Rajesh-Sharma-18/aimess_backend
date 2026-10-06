@@ -706,15 +706,15 @@ describe("GET /api/v1/users/search", () => {
     });
   });
 
-  it("treats an undecodable cursor as the first page rather than 400ing", async () => {
+  it("400s an undecodable cursor instead of silently serving page 1 again", async () => {
     const res = await request(app)
       .get("/api/v1/users/search")
       .query({ q: "jane", cursor: "not-a-real-cursor" })
       .set(auth());
 
-    expect(res.status).toBe(200);
-    expect(res.body.data.chat).toEqual([]);
-    expect(pRepo.findUsersNotInList.mock.calls[0][5]).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("INVALID_CURSOR");
+    expect(pRepo.findUsersNotInList).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
@@ -966,7 +966,9 @@ describe("GET /api/v1/users/search — unallocated username", () => {
 
     const res = await search("rajesh123");
 
-    // Still matched — searchability is unchanged — but no handle on the row.
+    // The discovery queries now exclude such a row (DISCOVERABLE_PROFILE_WHERE,
+    // see search-hardening.test.ts); this pins the mapper for any row that still
+    // reaches it — never the account as a handle.
     expect(row(res.body)?.username).toBe("");
   });
 

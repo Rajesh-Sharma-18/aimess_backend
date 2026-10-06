@@ -167,8 +167,14 @@ describe("buildCommunitySearchFilter", () => {
   });
 
   it("drops tokens that normalize to nothing (pure punctuation)", () => {
-    expect(buildCommunitySearchFilter("...")).toEqual([]);
     expect(buildCommunitySearchFilter("text ...")).toHaveLength(1);
+  });
+
+  it("matches NOTHING for a query that is only punctuation or emoji", () => {
+    // Not `[]`: the caller spreads this into AND, and AND [] matched every community.
+    for (const q of ["...", "@", "_", "😀"]) {
+      expect(buildCommunitySearchFilter(q)).toEqual([{ id: { in: [] } }]);
+    }
   });
 
   it("a 3-token query produces 3 independent AND-ed OR clauses", () => {

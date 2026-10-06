@@ -304,12 +304,11 @@ export class GroupRoomRepository {
       // Same normalizer the in-app group search uses (AND-of-token-ORs), so the
       // admin box is never weaker than the product one. Wrapped in a single AND
       // branch — spreading it into the OR would turn it into match-any-token.
-      // A punctuation-only q tokenizes to [] and `{AND: []}` matches everything,
-      // hence the length guard.
-      const nameFilter = buildGroupSearchFilter(q);
+      // A punctuation-only q yields a match-nothing clause, so only the id
+      // branches below can hit.
       and.push({
         OR: [
-          ...(nameFilter.length ? [{ AND: nameFilter }] : []),
+          { AND: buildGroupSearchFilter(q) },
           { roomId: q },
           ...(idsFromUserSearch?.length
             ? [{ roomId: { in: idsFromUserSearch } }]

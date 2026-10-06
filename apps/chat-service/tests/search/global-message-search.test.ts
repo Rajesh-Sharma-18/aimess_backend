@@ -74,6 +74,10 @@ interface Scopes {
   privateHits?: ReturnType<typeof privateMsg>[];
   groupHits?: ReturnType<typeof groupMsg>[];
   communityHits?: ReturnType<typeof communityMsg>[];
+  /** Group rooms whose own status is DISBANDED (hidden everywhere). */
+  disbandedGroups?: string[];
+  /** Replaces the default "Peer Person" snapshot for PEER. */
+  peerSnapshot?: Record<string, unknown>;
 }
 
 function build(scopes: Scopes) {
@@ -104,6 +108,10 @@ function build(scopes: Scopes) {
       findManyByRoomIds: async () => [
         { roomId: "grp_1", name: "Group One", avatar: "" },
       ],
+      findLastMessageAtForRooms: async (roomIds: string[]) =>
+        roomIds
+          .filter((id) => !(scopes.disbandedGroups ?? []).includes(id))
+          .map((roomId) => ({ roomId, lastMessageAt: null })),
     } as never,
     { findSearchScope: async () => scopes.groupMembers ?? [] } as never,
     {
@@ -115,7 +123,14 @@ function build(scopes: Scopes) {
     {
       getUserSnapshotsMap: async () =>
         new Map([
-          [PEER, { userId: PEER, fullName: "Peer Person", avatar: "" }],
+          [
+            PEER,
+            scopes.peerSnapshot ?? {
+              userId: PEER,
+              fullName: "Peer Person",
+              avatar: "",
+            },
+          ],
         ]),
     } as never,
     {} as never
@@ -179,6 +194,57 @@ describe("MessageSearchService", () => {
       conversationName: "Group One",
       senderName: "Peer Person",
     });
+  });
+
+  it("keeps the frozen sender name when the identity lookup did not resolve", async () => {
+    const { service } = build({
+      privateRooms: [{ roomId: "prv_1", participants: [ME, PEER] }],
+      groupMembers: [
+        { roomId: "grp_1", clearedAt: null, clearChatAt: null, joinedAt: null },
+      ],
+      privateHits: [privateMsg("p1", "prv_1", "2026-01-02T00:00:00Z")],
+      groupHits: [groupMsg("g1", "grp_1", "2026-01-01T00:00:00Z")],
+      peerSnapshot: {
+        userId: PEER,
+        displayName: "",
+        memberId: "",
+        avatar: "",
+        isUnresolved: true,
+      },
+    });
+
+    const { hits } = await search(service);
+
+    // Never the English "Unknown User" literal: the private title is left ""
+    // for the client's localized fallback, the group sender keeps its frozen name.
+    expect(hits[0]).toMatchObject({ conversationName: "", senderName: "" });
+    expect(hits[1]).toMatchObject({ senderName: "Frozen Name" });
+  });
+
+  it("keeps the frozen sender name for a profile with no name to show", async () => {
+    const { service } = build({
+      groupMembers: [
+        { roomId: "grp_1", clearedAt: null, clearChatAt: null, joinedAt: null },
+      ],
+      groupHits: [groupMsg("g1", "grp_1", "2026-01-01T00:00:00Z")],
+      peerSnapshot: { userId: PEER, fullName: "", username: "", avatar: "" },
+    });
+
+    const { hits } = await search(service);
+    expect(hits[0]).toMatchObject({ senderName: "Frozen Name" });
+  });
+
+  it("leaves a DISBANDED group out of the scope", async () => {
+    const { service, searchGroup } = build({
+      groupMembers: [
+        { roomId: "grp_1", clearedAt: null, clearChatAt: null, joinedAt: null },
+        { roomId: "grp_gone", clearedAt: null, clearChatAt: null, joinedAt: null },
+      ],
+      disbandedGroups: ["grp_gone"],
+    });
+
+    await search(service);
+    expect(searchGroup.mock.calls[0]?.[0]).toMatchObject({ roomIds: ["grp_1"] });
   });
 
   it("hides a private message the caller cleared away", async () => {

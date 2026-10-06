@@ -56,7 +56,8 @@ export function rankCommunitiesByHandle<T extends { handle: string }>(
  *      works if a row hasn't been backfilled with the normalized shadows yet).
  *
  * Tokens that normalize to nothing (pure punctuation, e.g. "...") are
- * dropped — they carry no search signal.
+ * dropped — they carry no search signal. A query made ONLY of such tokens
+ * matches no community at all.
  *
  * Returns an array of `Prisma.CommunityWhereInput` (one per token) meant to
  * be spread into the caller's `AND` list.
@@ -64,7 +65,11 @@ export function rankCommunitiesByHandle<T extends { handle: string }>(
 export function buildCommunitySearchFilter(
   q: string
 ): Prisma.CommunityWhereInput[] {
-  return tokenizeAndNormalize(q).map(({ raw, normalized }) => ({
+  const tokens = tokenizeAndNormalize(q);
+  // No searchable characters at all ("@", "...", an emoji) → match nothing,
+  // never `AND: []` (every public community).
+  if (!tokens.length) return q.trim() ? [{ id: { in: [] } }] : [];
+  return tokens.map(({ raw, normalized }) => ({
     OR: [
       { normalizedName: { contains: normalized } },
       { normalizedHandle: { contains: normalized } },

@@ -96,7 +96,9 @@ const searchUserGroupsBreaker = makeBreaker(
       }))
     )
 );
-searchUserGroupsBreaker.fallback(() => []);
+// No breaker-level fallback: every list wrapper below degrades to [] in its own
+// catch, while `searchActiveGroups` (the Group search leg) lets the failure
+// surface — an outage there must read as "unavailable", not "no groups".
 
 const roomParticipantIdsBreaker = makeBreaker(
   "messaging.getRoomParticipantIds",
@@ -171,6 +173,26 @@ export const messagingGrpcClient = {
       logger.warn(`messaging.searchUserGroups(ACTIVE) failed: ${String(err)}`);
       return [];
     }
+  },
+
+  /**
+   * Same rows as {@link listActiveGroups}, but THROWS when chat-service cannot
+   * answer — for the Group search leg, where `[]` would tell the user they have
+   * no such group.
+   */
+  searchActiveGroups(
+    viewerId: string,
+    q: string | undefined,
+    limit: number,
+    skip = 0
+  ): Promise<GroupSummary[]> {
+    return searchUserGroupsBreaker.fire({
+      viewerId,
+      q,
+      mode: "ACTIVE",
+      limit,
+      skip,
+    });
   },
 
   /**

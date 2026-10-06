@@ -52,6 +52,7 @@ import {
   resolveAccountDefaultSetting,
 } from "../lib/auto-delete.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
+import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { foldTickStatus } from "../lib/tick-status.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import { publishRoomCardsGoneSafe } from "../events/publish-conversation-read.js";
@@ -120,21 +121,33 @@ export async function ensurePrivateRoom(
     .catch(() => AUTO_DELETE_OFF);
 
   const roomId = generateRoomId("prv");
-  const room = await deps.privateRoomRepo.create({
-    roomId,
-    participants: [userId, peerId].sort(),
-    participantsKey,
-    ...(accountDefault.mode === "OFF"
-      ? {}
-      : {
-          autoDelete: {
-            mode: accountDefault.mode,
-            ttlSeconds: accountDefault.ttlSeconds,
-            setAt: new Date().toISOString(),
-            setBy: userId,
-          },
-        }),
-  });
+  let room: PrivateRoom;
+  try {
+    room = await deps.privateRoomRepo.create({
+      roomId,
+      participants: [userId, peerId].sort(),
+      participantsKey,
+      ...(accountDefault.mode === "OFF"
+        ? {}
+        : {
+            autoDelete: {
+              mode: accountDefault.mode,
+              ttlSeconds: accountDefault.ttlSeconds,
+              setAt: new Date().toISOString(),
+              setBy: userId,
+            },
+          }),
+    });
+  } catch (err) {
+    // Two first opens of the same pair (a double click, two devices) both miss
+    // the lookup above; `participantsKey` is unique, so the loser lands here.
+    // The pair HAS a room now — return the winner's instead of a conflict.
+    if (!isDuplicateKeyError(err)) throw err;
+    const winner =
+      await deps.privateRoomRepo.findByParticipantsKey(participantsKey);
+    if (!winner) throw err;
+    return winner;
+  }
 
   logger.debug(`PrivateRoomService|ensurePrivateRoom|created room=${roomId}`);
 

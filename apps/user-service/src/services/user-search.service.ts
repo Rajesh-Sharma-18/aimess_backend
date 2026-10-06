@@ -1,3 +1,5 @@
+import { ServiceUnavailableError } from "@aimess/errors";
+import { logger } from "@aimess/logger";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 
@@ -403,12 +405,17 @@ export const userSearchService = {
     const skip = query.cursor ?? 0;
     // One row past the page: its presence IS `hasMore`, and it is sliced off
     // before mapping so it never reaches the client.
-    const rows = await messagingGrpcClient.listActiveGroups(
-      viewerId,
-      query.q?.trim() || undefined,
-      query.limit + 1,
-      skip
-    );
+    const rows = await messagingGrpcClient
+      .searchActiveGroups(
+        viewerId,
+        query.q?.trim() || undefined,
+        query.limit + 1,
+        skip
+      )
+      .catch((err: unknown) => {
+        logger.warn(`searchGroups: chat-service unavailable: ${String(err)}`);
+        throw new ServiceUnavailableError("SERVICE_UNAVAILABLE");
+      });
     const page = rows.slice(0, query.limit);
     const hasMore = rows.length > query.limit;
     return {
