@@ -74,7 +74,7 @@ describe("community:message:send — ack surfaces the specific media-limit error
       "CHAT_DOCUMENT_TOO_LARGE"
     );
     const ack = simulateSendCatch(err);
-    expect(ack.message).toBe("Document exceeds 25 MB");
+    expect(ack.message).toBe("Document exceeds 50 MB");
     expect(ack.retryable).toBe(false);
   });
 

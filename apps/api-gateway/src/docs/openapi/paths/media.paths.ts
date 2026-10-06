@@ -140,8 +140,8 @@ Without \`resourceId\`, media-service would have no way to know which room each 
 - **Images** — \`image/jpeg\` (.jpg/.jpeg), \`image/png\`, \`image/webp\`, \`image/heic\`, \`image/heif\` (25 MB); \`image/gif\` (30 MB)
 - **Video** — \`video/mp4\`, \`video/quicktime\` (mov), \`video/x-matroska\` (mkv), \`video/webm\`, \`video/x-msvideo\` (avi), \`video/x-m4v\` (≤100 MB ceiling)
 - **Audio / voice** — \`audio/mpeg\` (mp3), \`audio/ogg\`, \`audio/opus\`, \`audio/wav\`, \`audio/mp4\` / \`audio/x-m4a\` (m4a), \`audio/aac\`, \`audio/flac\` (25 MB)
-- **Documents** — \`application/pdf\`; Word \`application/msword\` / \`…wordprocessingml.document\`; Excel \`application/vnd.ms-excel\` / \`…spreadsheetml.sheet\`; PowerPoint \`application/vnd.ms-powerpoint\` / \`…presentationml.presentation\`; \`text/plain\`, \`text/csv\`, \`application/json\`, \`application/xml\`, \`text/xml\` (25 MB)
-- **Archives** — \`application/zip\`, \`application/x-zip-compressed\` (25 MB)
+- **Documents** — \`application/pdf\`; Word \`application/msword\` / \`…wordprocessingml.document\`; Excel \`application/vnd.ms-excel\` / \`…spreadsheetml.sheet\`; PowerPoint \`application/vnd.ms-powerpoint\` / \`…presentationml.presentation\`; \`text/plain\`, \`text/csv\`, \`application/json\`, \`application/xml\`, \`text/xml\` (50 MB)
+- **Archives** — \`application/zip\`, \`application/x-zip-compressed\` (50 MB)
 
 The declared \`contentType\` is only the *entry* check. After the PUT, **POST /media/confirm** re-reads the MIME the server itself recorded, verifies the file signature, walks the container structure, and runs the AV scan — a file whose bytes contradict its declared type is rejected there, never at the client's word.`,
     security: [{ bearerAuth: [] }],

@@ -112,7 +112,7 @@ describe("sendPush — platform collapse/grouping headers", () => {
 
   // Regression guard for the Android missed-call: without `channelId`, FCM falls
   // back to the silent low-importance channel and the user never sees or hears it.
-  it("stamps channelId=calls on the CALL_MISSED Android notification block", async () => {
+  it("stamps channelId=calls_v2 (the app's call channel) on the CALL_MISSED Android notification block", async () => {
     await sendPush({
       token: "tok1",
       title: "Missed call",
@@ -123,7 +123,7 @@ describe("sendPush — platform collapse/grouping headers", () => {
     });
 
     const arg = sendMock.mock.calls[0][0];
-    expect(arg.android.notification.channelId).toBe("calls");
+    expect(arg.android.notification.channelId).toBe("calls_v2");
   });
 
   it("does not stamp channelId on non-CALL_MISSED Android notifications", async () => {

@@ -247,7 +247,7 @@ export async function sendPush({
           ? {}
           : {
               notification: {
-                ...(kind === "CALL_MISSED" ? { channelId: "calls" } : {}),
+                ...(kind === "CALL_MISSED" ? { channelId: "calls_v2" } : {}),
                 ...(image ? { imageUrl: image } : {}),
               },
             }),
