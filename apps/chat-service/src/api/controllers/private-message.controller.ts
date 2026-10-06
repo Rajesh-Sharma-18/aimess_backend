@@ -13,6 +13,7 @@ import {
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
+import { bumpSystemParams } from "../../lib/bump-system-params.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import { publishConvEffectiveLastLoss } from "../../events/publish-effective-last-loss.js";
@@ -505,6 +506,7 @@ export class PrivateMessageController {
               seq: recalc.sequenceNumber,
               revision: recalc.revision,
               createdAt: recalc.createdAt.getTime(),
+              ...bumpSystemParams(recalc),
             },
           });
         })
@@ -570,6 +572,7 @@ export class PrivateMessageController {
               seq: recalc.sequenceNumber,
               revision: recalc.revision,
               createdAt: recalc.createdAt.getTime(),
+              ...bumpSystemParams(recalc),
             },
           });
         })

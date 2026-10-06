@@ -320,6 +320,10 @@ message UpdateMessageActivityRequest {
   // `lastActivityAt <= rollbackNotNewerThan` (the removed message's createdAt) —
   // so a message that arrived after the delete is never clobbered.
   int64  rollbackNotNewerThan = 13;
+  // ROLLBACK mode, SYSTEM previous message only: the event + JSON params the
+  // list re-renders per viewer ("You …") and per language. "" = not a SYSTEM line.
+  string systemMessageType    = 14;
+  string systemMetadataJson   = 15;
 }
 message UpdateMessageActivityResponse {
   bool ok = 1;
@@ -340,6 +344,9 @@ message AdminListCommunitiesRequest {
   string sort_dir     = 8;  // asc | desc
   int32  page         = 9;  // 1-based
   int32  limit        = 10; // page size
+  // AND-restrict to these community ids (drives the admin "Livestreaming" filter,
+  // resolved from stream-service). Empty = no restriction.
+  repeated string community_ids = 11;
 }
 
 // One community row, shared by the list + the detail core. Admin identity is

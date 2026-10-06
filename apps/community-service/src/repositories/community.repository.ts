@@ -348,6 +348,17 @@ const NOT_REVOKED: Prisma.CommunityInviteLinkWhereInput = {
   OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }],
 };
 
+/** The reaction overlay columns, emptied. */
+const NO_REACTION_ACTIVITY = {
+  lastActivityReactionAt: null,
+  lastActivityReactionMessageId: null,
+  lastActivityReactionEmoji: null,
+  lastActivityReactionActorId: null,
+  lastActivityReactionActorPreview: null,
+  lastActivityReactionTargetId: null,
+  lastActivityReactionTargetPreview: null,
+};
+
 export const communityRepository = {
   // ---------------------------------------------------------------------------
   // Categories
@@ -1966,6 +1977,9 @@ export const communityRepository = {
       clientMessageId?: string | null;
       seq?: number | null;
       contentType?: string | null;
+      /** SYSTEM previous message only — see updateLastActivity's `system`. */
+      systemType?: string | null;
+      systemMetadata?: Record<string, unknown> | null;
     }
   ): Promise<number> {
     const row = await prisma.community.findUnique({
@@ -1994,9 +2008,14 @@ export const communityRepository = {
         lastActivitySeq: empty ? 0 : (activity.seq ?? 0),
         lastActivityContentType: empty ? null : activity.contentType || null,
         // The rolled-back pointer is a different message — never keep the
-        // removed system line's render params.
-        lastActivitySystemType: null,
-        lastActivitySystemMetadata: null,
+        // removed system line's render params; carry the new one's instead.
+        lastActivitySystemType: empty ? null : activity.systemType || null,
+        lastActivitySystemMetadata: empty
+          ? null
+          : ((activity.systemMetadata as Prisma.InputJsonValue | undefined) ??
+            null),
+        // The overlay only shows while newer than this pointer; rolling it back would resurrect a reaction the removed message superseded (or was the target of).
+        ...NO_REACTION_ACTIVITY,
       },
     });
     return result.count;
@@ -2086,16 +2105,20 @@ export const communityRepository = {
         lastActivityReactionEmoji: params.emoji,
         lastActivityReactionActorId: params.actorId,
       },
-      data: {
-        lastActivityReactionAt: null,
-        lastActivityReactionMessageId: null,
-        lastActivityReactionEmoji: null,
-        lastActivityReactionActorId: null,
-        lastActivityReactionActorPreview: null,
-        lastActivityReactionTargetId: null,
-        lastActivityReactionTargetPreview: null,
-      },
+      data: NO_REACTION_ACTIVITY,
     });
+  },
+
+  /** Clear the overlay iff it points at `messageId` (that message was deleted); true when it did. */
+  async clearReactionActivityForMessage(
+    communityId: string,
+    messageId: string
+  ): Promise<boolean> {
+    const { count } = await prisma.community.updateMany({
+      where: { id: communityId, lastActivityReactionMessageId: messageId },
+      data: NO_REACTION_ACTIVITY,
+    });
+    return count > 0;
   },
 
   /**
@@ -2449,11 +2472,14 @@ export const communityRepository = {
     sortDir: "asc" | "desc";
     page: number;
     limit: number;
+    /** AND-restrict to these ids (admin "Livestreaming" filter). */
+    communityIds?: string[];
   }) {
     const dir: Prisma.SortOrder = params.sortDir === "asc" ? "asc" : "desc";
 
     const where: Prisma.CommunityWhereInput = {
       deletedAt: { isSet: false },
+      ...(params.communityIds ? { id: { in: params.communityIds } } : {}),
     };
 
     if (params.type) {

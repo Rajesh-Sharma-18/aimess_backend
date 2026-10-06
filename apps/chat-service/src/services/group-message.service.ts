@@ -1372,7 +1372,23 @@ export class GroupMessageService {
     clientMessageId: string | null;
     sequenceNumber: number;
     revision: number;
+    systemEvent: string | null;
+    systemData: unknown;
   } | null> {
+    const resultFor = (m: GroupMessage) => ({
+      prevMessageId: m.id,
+      messageType: m.messageType,
+      content: m.content,
+      senderId: m.senderId ?? null,
+      senderName: m.senderName ?? "",
+      createdAt: m.createdAt,
+      hasLastMessage: true,
+      clientMessageId: m.clientMessageId ?? null,
+      sequenceNumber: m.sequenceNumber,
+      revision: m.revision,
+      systemEvent: m.systemEvent ?? null,
+      systemData: m.systemData ?? null,
+    });
     for (let attempt = 0; attempt < RECALC_CAS_ATTEMPTS; attempt++) {
       const [room, prev] = await Promise.all([
         this.roomRepo.findByRoomId(roomId),
@@ -1383,6 +1399,17 @@ export class GroupMessageService {
         room.lastMessageId !== deletedMessageId &&
         room.lastMessageId === (prev?.id ?? null)
       ) {
+        // See PrivateMessageService.recalculateLastMessageAfterDelete — retire a reaction line about the removed message.
+        if (
+          prev &&
+          room.reactionActivityMessageId === deletedMessageId &&
+          (await this.roomRepo.clearReactionActivityForMessage(
+            roomId,
+            deletedMessageId
+          ))
+        ) {
+          return resultFor(prev);
+        }
         return null;
       }
       const expectLastMessageId = room.lastMessageId ?? null;
@@ -1400,23 +1427,14 @@ export class GroupMessageService {
             clientMessageId: prev.clientMessageId,
             sequenceNumber: prev.sequenceNumber,
             revision: prev.revision,
+            systemEvent: prev.systemEvent,
+            systemData: prev.systemData,
           },
           { expectLastMessageId }
         );
         // Strict `=== false`: only an explicit CAS refusal re-runs the pass.
         if (applied === false) continue;
-        return {
-          prevMessageId: prev.id,
-          messageType: prev.messageType,
-          content: prev.content,
-          senderId: prev.senderId ?? null,
-          senderName: prev.senderName ?? "",
-          createdAt: prev.createdAt,
-          hasLastMessage: true,
-          clientMessageId: prev.clientMessageId ?? null,
-          sequenceNumber: prev.sequenceNumber,
-          revision: prev.revision,
-        };
+        return resultFor(prev);
       }
 
       const cleared = await this.roomRepo.setLastMessage(roomId, null, {
@@ -1434,6 +1452,8 @@ export class GroupMessageService {
         clientMessageId: null,
         sequenceNumber: 0,
         revision: 0,
+        systemEvent: null,
+        systemData: null,
       };
     }
     // See PrivateMessageService.recalculateLastMessageAfterDelete — contended
@@ -1564,6 +1584,8 @@ export class GroupMessageService {
     sequenceNumber: number;
     revision: number;
     wasEffectiveLast: boolean;
+    systemEvent: string | null;
+    systemData: unknown;
   } | null> {
     const room = await this.roomRepo.findByRoomId(roomId);
     if (!room) return null;
@@ -1595,6 +1617,8 @@ export class GroupMessageService {
         clientMessageId: prev.clientMessageId ?? null,
         sequenceNumber: prev.sequenceNumber,
         revision: prev.revision,
+        systemEvent: prev.systemEvent ?? null,
+        systemData: prev.systemData ?? null,
       };
     }
     return {
@@ -1609,6 +1633,8 @@ export class GroupMessageService {
       clientMessageId: null,
       sequenceNumber: 0,
       revision: 0,
+      systemEvent: null,
+      systemData: null,
     };
   }
 

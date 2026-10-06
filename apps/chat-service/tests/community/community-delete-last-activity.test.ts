@@ -716,6 +716,12 @@ describe("REST DELETE forEveryone — community:updated socket carries recalcula
       messageType: "text",
       createdAt: new Date(),
     });
+    // No reaction line pointed at the removed message.
+    reconcileClient.mockReturnValue({
+      listCommunities: jest.fn(),
+      updateReactionActivity: jest.fn(async () => false),
+      updateMessageActivity,
+    });
 
     const res = await request(app)
       .delete(`${BASE}/messages/${MSG}?type=forEveryone`)
@@ -724,6 +730,57 @@ describe("REST DELETE forEveryone — community:updated socket carries recalcula
     expect(res.status).toBe(200);
     expect(updateMessageActivity).not.toHaveBeenCalled();
     expect(pubCommunityUpdated).not.toHaveBeenCalled();
+  });
+
+  it("deleting a middle message a reaction line pointed at: repaints the unchanged last message, persists no rollback", async () => {
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      sentBy: TEST_USER_ID,
+      messageType: "text",
+      deletedForAll: false,
+    });
+    mocks.generalRoomMessageRepo.deleteForAll.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      createdAt: new Date(),
+    });
+    mocks.generalRoomRepo.findRoomById.mockResolvedValue({
+      id: ROOM,
+      status: "active",
+      lastMessageId: "newer-msg",
+    });
+    mocks.generalRoomMessageRepo.findPreviousVisibleMessage.mockResolvedValue({
+      id: "newer-msg",
+      sentBy: "u",
+      message: "still here",
+      messageType: "text",
+      createdAt: new Date(),
+      sequenceNumber: 9,
+    });
+    const updateReactionActivity = jest.fn(async () => true);
+    reconcileClient.mockReturnValue({
+      listCommunities: jest.fn(),
+      updateReactionActivity,
+      updateMessageActivity,
+    });
+
+    const res = await request(app)
+      .delete(`${BASE}/messages/${MSG}?type=forEveryone`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(updateReactionActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ added: false, messageId: MSG, emoji: "" })
+    );
+    expect(updateMessageActivity).not.toHaveBeenCalled();
+    expect(pubCommunityUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lastMessageId: "newer-msg",
+        deleteRecalc: true,
+        preview: expect.objectContaining({ text: "still here", seq: 9 }),
+      })
+    );
   });
 });
 

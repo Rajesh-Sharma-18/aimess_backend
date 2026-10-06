@@ -33,6 +33,7 @@ import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
+import { bumpSystemParams } from "../lib/bump-system-params.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { renderCommunityOverrides } from "../lib/recipient-override-render.js";
 import { getCommunityReconcileClient } from "./community.client.js";
@@ -4705,20 +4706,32 @@ export function createCommunityImpl(
 
           // delete-for-everyone: recalculate and persist to community-service.
           if (req.deleteType === "forEveryone" && result?.roomId) {
+            // A reaction line about the removed message lives in community-service — retire it there first.
+            const reactionRetired =
+              await getCommunityReconcileClient().updateReactionActivity({
+                communityId: req.communityId,
+                added: false,
+                messageId: req.messageId,
+                emoji: "",
+                actorId: "",
+              });
             forEveryoneRecalc =
               await deps.communityMessageService.recalculateLastMessageAfterDelete(
                 result.roomId,
-                req.messageId
+                req.messageId,
+                { reactionRetired }
               );
             if (forEveryoneRecalc !== null) {
               // Persist the ROLLED-BACK activity — the previous visible
               // message's own timestamp, never the deletion's. Shared with the
               // REST delete path (events/community-last-activity.ts).
-              await reconcileCommunityLastActivityAfterDelete({
-                communityId: req.communityId,
-                recalc: forEveryoneRecalc,
-                removedAt: result?.createdAt,
-              });
+              if (!forEveryoneRecalc.unchanged) {
+                await reconcileCommunityLastActivityAfterDelete({
+                  communityId: req.communityId,
+                  recalc: forEveryoneRecalc,
+                  removedAt: result?.createdAt,
+                });
+              }
             } else if (result?.createdAt) {
               // The SHARED snapshot did not move — but a member who had hidden
               // everything newer than the removed message was previewing IT.
@@ -4815,6 +4828,8 @@ export function createCommunityImpl(
               preview: {
                 contentType: normalizeMessageType(recalc.messageType),
                 text: recalc.preview,
+                seq: recalc.sequenceNumber,
+                ...bumpSystemParams(recalc),
               },
             });
           }
@@ -4850,6 +4865,8 @@ export function createCommunityImpl(
               preview: {
                 contentType: normalizeMessageType(recalc.messageType),
                 text: recalc.preview,
+                seq: recalc.sequenceNumber,
+                ...bumpSystemParams(recalc),
               },
             });
           }

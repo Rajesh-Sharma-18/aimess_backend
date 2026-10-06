@@ -13,6 +13,7 @@ import {
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
+import { bumpSystemParams } from "../../lib/bump-system-params.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import { recalcConvAfterSystemLineRetraction } from "../../events/recalc-conv-after-retraction.js";
@@ -629,7 +630,11 @@ export class GroupMessageController {
             senderName: recalc.senderName,
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),
-            preview: { contentType: recalc.messageType, text: preview },
+            preview: {
+              contentType: recalc.messageType,
+              text: preview,
+              ...bumpSystemParams(recalc),
+            },
           });
         })
         .catch(() => {
@@ -682,7 +687,11 @@ export class GroupMessageController {
             lastMessageAt: recalc.hasLastMessage
               ? recalc.createdAt.getTime()
               : 0,
-            preview: { contentType: recalc.messageType, text: preview },
+            preview: {
+              contentType: recalc.messageType,
+              text: preview,
+              ...bumpSystemParams(recalc),
+            },
           });
         })
         .catch(() => {});

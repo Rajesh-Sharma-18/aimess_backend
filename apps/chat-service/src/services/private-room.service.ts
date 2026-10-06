@@ -155,9 +155,8 @@ export async function ensurePrivateRoom(
   //
   // Nothing is lost by staying quiet: every caller already announces the room at
   // the moment it genuinely becomes listable.
-  //   - friendship.created → `postFriendshipSystemMessage` or `stampRoomActivity`
-  //     sets `lastMessageAt` and publishes `conv:updated`
-  //     (events/friendship.consumer.ts).
+  //   - friendship.created → listable only when the pair already talked
+  //     (`postFriendshipSystemMessage`, events/friendship.consumer.ts).
   //   - first user message → its own `conv:created`, which is the real "this
   //     conversation now exists" moment (services/private-message.service.ts).
   //   - a client opening the chat gets the whole room, peer included, from
@@ -1060,6 +1059,8 @@ export class PrivateRoomService {
               content: prev.content,
               senderId: prev.senderId,
               messageType: prev.messageType,
+              systemEvent: prev.systemEvent ?? null,
+              systemData: prev.systemData ?? null,
               createdAt: prev.createdAt.toISOString(),
               ...listRowIdentity({ ...prev, id: prev.messageId }),
             } as unknown as PrivateRoom["lastMessage"])
@@ -1329,10 +1330,12 @@ export class PrivateRoomService {
       // the clear still previews, even though its target message is below the
       // cutoff; hiding that too needs the target's createdAt, i.e. a per-row
       // message lookup.
+      // A viewer who hid the shared last (delete-for-me) previews their fallback, exactly as the live recalc bump did; the overlay would resurrect a reaction their delete superseded.
       if (
         room.reactionActivityAt &&
         room.reactionActivityAt.getTime() > lastActivityAt &&
-        !isHiddenByCutoff(room.reactionActivityAt, cutoff)
+        !isHiddenByCutoff(room.reactionActivityAt, cutoff) &&
+        !perUserFallback.has(room.roomId)
       ) {
         const isActor = room.reactionActivityActorId === userId;
         const isTarget = room.reactionActivityTargetId === userId;

@@ -101,6 +101,39 @@ describe("PRIVATE conversation list — effective lastActivity", () => {
     expect(row.lastActivity.dateTime).toBe(T_10_05.getTime());
   });
 
+  it("REGRESSION: delete-for-me of the reacted latest message does not resurrect the reaction line", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      privateRoom({
+        // The viewer reacted to m3 at 10:11, then hid m3 for themselves.
+        reactionActivityAt: new Date("2026-08-10T10:11:00.000Z"),
+        reactionActivityMessageId: "m3",
+        reactionActivityEmoji: "🔥",
+        reactionActivityActorId: TEST_USER_ID,
+        reactionActivityActorPreview: 'You reacted 🔥 to "How are you?"',
+        reactionActivityTargetId: PEER,
+        reactionActivityTargetPreview: 'reacted 🔥 to "How are you?"',
+      }),
+    ]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(1);
+    mocks.privateMessageRepo.filterHiddenFromUser.mockResolvedValue(
+      new Set(["m3"])
+    );
+    mocks.privateMessageRepo.findPreviousVisibleForUser.mockResolvedValue({
+      id: "m2",
+      senderId: PEER,
+      content: { text: "Hi" },
+      messageType: "TEXT",
+      createdAt: T_10_05,
+      clientMessageId: null,
+      sequenceNumber: 2,
+      revision: 2,
+    });
+
+    const row = (await listPrivate()).body.data.data[0];
+    expect(row.lastActivity.preview).toBe("Hi");
+    expect(row.lastActivity.dateTime).toBe(T_10_05.getTime());
+  });
+
   it("cleared conversation: previews the viewer's own clear line but KEEPS the row's sort time", async () => {
     mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
       // Cleared at 10:11 — after the room's only message.
@@ -292,6 +325,41 @@ describe("GROUP inbox rows — effective lastActivity", () => {
     const res = await inbox();
 
     const row = res.body.data.data[0];
+    expect(row.lastActivity.preview).toBe("Message 2");
+    expect(row.lastActivity.dateTime).toBe(T_10_05.getTime());
+  });
+
+  it("REGRESSION: delete-for-me of the reacted latest message does not resurrect the reaction line", async () => {
+    mockGroupSide(
+      [
+        groupRoom({
+          reactionActivityAt: new Date("2026-08-10T10:11:00.000Z"),
+          reactionActivityMessageId: "g3",
+          reactionActivityEmoji: "🔥",
+          reactionActivityActorId: TEST_USER_ID,
+          reactionActivityActorPreview: 'You reacted 🔥 to "Message 3"',
+          reactionActivityTargetId: "member-c",
+          reactionActivityTargetPreview: 'reacted 🔥 to "Message 3"',
+        }),
+      ],
+      { unreadCount: 0, notificationSettings: {} }
+    );
+    mocks.groupMessageRepo.filterHiddenFromUser.mockResolvedValue(
+      new Set(["g3"])
+    );
+    mocks.groupMessageRepo.findPreviousVisibleForUser.mockResolvedValue({
+      id: "g2",
+      senderId: "member-b",
+      senderName: "B",
+      content: { text: "Message 2" },
+      messageType: "TEXT",
+      createdAt: T_10_05,
+      clientMessageId: null,
+      sequenceNumber: 2,
+      revision: 2,
+    });
+
+    const row = (await inbox()).body.data.data[0];
     expect(row.lastActivity.preview).toBe("Message 2");
     expect(row.lastActivity.dateTime).toBe(T_10_05.getTime());
   });

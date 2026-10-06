@@ -34,6 +34,8 @@ export interface DeleteRecalcActivity {
   hasLastMessage: boolean;
   clientMessageId?: string | null;
   sequenceNumber?: number;
+  systemMessageType?: string | null;
+  systemMetadata?: unknown;
 }
 
 /**
@@ -48,6 +50,8 @@ export async function reconcileCommunityLastActivityAfterDelete(params: {
 }): Promise<void> {
   const { communityId, recalc } = params;
   const rollbackNotNewerThan = (params.removedAt ?? new Date()).getTime();
+  // Same shape the system-message send path writes: sender-less, so the list never prefixes the sentence with a name.
+  const isSystem = normalizeMessageType(recalc.messageType) === "SYSTEM";
 
   if (recalc.hasLastMessage) {
     // Async backstop. Carries the previous message's REAL timestamp, so under
@@ -59,12 +63,16 @@ export async function reconcileCommunityLastActivityAfterDelete(params: {
       lastMessageAt: recalc.createdAt.toISOString(),
       lastMessageId: recalc.prevMessageId ?? "",
       senderUserId: recalc.sentBy,
-      senderUsername: recalc.senderName,
+      senderUsername: isSystem ? "" : recalc.senderName,
       messagePreview: recalc.preview,
-      type: "message",
+      type: isSystem ? "system" : "message",
       clientMessageId: recalc.clientMessageId ?? null,
       seq: recalc.sequenceNumber ?? 0,
       contentType: normalizeMessageType(recalc.messageType),
+      systemMessageType: recalc.systemMessageType ?? undefined,
+      systemMetadata: (recalc.systemMetadata ?? undefined) as
+        | Record<string, unknown>
+        | undefined,
     });
   }
 
@@ -77,9 +85,9 @@ export async function reconcileCommunityLastActivityAfterDelete(params: {
     lastMessageAt: recalc.hasLastMessage ? recalc.createdAt.getTime() : 0,
     lastMessageId: recalc.hasLastMessage ? (recalc.prevMessageId ?? "") : "",
     senderUserId: recalc.hasLastMessage ? recalc.sentBy : "",
-    senderUsername: recalc.hasLastMessage ? recalc.senderName : "",
+    senderUsername: recalc.hasLastMessage && !isSystem ? recalc.senderName : "",
     messagePreview: recalc.hasLastMessage ? recalc.preview : "",
-    activityType: "message",
+    activityType: isSystem ? "system" : "message",
     clientMessageId: recalc.hasLastMessage
       ? (recalc.clientMessageId ?? null)
       : null,
@@ -88,6 +96,9 @@ export async function reconcileCommunityLastActivityAfterDelete(params: {
       ? normalizeMessageType(recalc.messageType)
       : "",
     rollbackNotNewerThan,
+    // The rolled-back pointer keeps its SYSTEM params, so the list can still say "You …" and translate it.
+    systemMessageType: recalc.systemMessageType ?? "",
+    systemMetadata: recalc.systemMetadata ?? null,
   });
 }
 

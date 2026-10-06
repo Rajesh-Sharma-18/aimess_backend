@@ -34,6 +34,9 @@ export interface UpdateMessageActivityParams {
   clientMessageId?: string | null;
   seq?: number;
   contentType?: string;
+  /** SYSTEM rows only — the event + params the list re-renders per viewer; rollback mode. */
+  systemMessageType?: string;
+  systemMetadata?: unknown;
 }
 
 /**
@@ -66,5 +69,9 @@ export function toUpdateMessageActivityRequest(
     seq: p.seq ?? 0,
     contentType: p.contentType ?? "",
     rollbackNotNewerThan: String(p.rollbackNotNewerThan ?? 0),
+    systemMessageType: p.systemMessageType ?? "",
+    systemMetadataJson: p.systemMetadata
+      ? JSON.stringify(p.systemMetadata)
+      : "",
   };
 }
