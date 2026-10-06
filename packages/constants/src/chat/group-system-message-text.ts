@@ -1,6 +1,14 @@
 import { resolvePersonDisplayName } from "../community/system-message-text.js";
 import { t } from "../i18n.js";
 import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
+import {
+  administratorActorLabel,
+  BACKOFFICE_SOURCE,
+  entityLabel,
+  memberChangeText,
+  SYSTEM_ACTOR_ID,
+  systemActorLabel,
+} from "../member-change-text.js";
 
 export { resolvePersonDisplayName };
 
@@ -177,7 +185,7 @@ function formatNameList(labels: string[], locale: SupportedLocale): string {
  * Display labels for a BATCH system line's `targetUserIds` / `targetNames`
  * (one add-member operation ⇒ one row), or null when the row is the classic
  * single-target shape. The viewer, if they are one of the targets, is rendered
- * as "you" and hoisted to the front so they still see themselves named even
+ * as "You" and hoisted to the front so they still see themselves named even
  * when the list overflows into "and N others".
  */
 function groupedTargetLabels(
@@ -197,7 +205,7 @@ function groupedTargetLabels(
     : -1;
   if (viewerIndex >= 0) {
     const [self] = entries.splice(viewerIndex, 1);
-    self!.label = t("SYS_NAME_YOU_OBJECT", locale);
+    self!.label = t("SYS_SENDER_YOU", locale);
     entries.unshift(self!);
   }
   return entries.map((entry) => entry.label);
@@ -239,6 +247,45 @@ function groupRoleArticleForm(role: string, locale: SupportedLocale): string {
   return t("SYS_ROLE_MEMBER_ARTICLE", locale);
 }
 
+/** Events a Super Admin can post into a group from Backoffice. */
+const BACKOFFICE_GROUP_EVENTS = new Set([
+  "MEMBER_REMOVED",
+  "MEMBER_BANNED",
+  "MEMBER_UNBANNED",
+]);
+
+/**
+ * True when a group SYSTEM line was posted by a Super Admin from Backoffice.
+ * New rows carry `source: "BO"`. Legacy rows are recognised by shape: those
+ * three events were only ever posted actor-less (`actorId: null`) by the
+ * platform-admin path — every in-group removal/ban names its member actor.
+ */
+export function isBackofficeGroupSystemLine(
+  event: string,
+  data: Record<string, unknown>
+): boolean {
+  if (!BACKOFFICE_GROUP_EVENTS.has(event)) return false;
+  return (
+    data.source === BACKOFFICE_SOURCE || !String(data.actorId ?? "").trim()
+  );
+}
+
+/**
+ * The stored/wire `systemData` of a Backoffice line minus the acting admin's
+ * name. Legacy rows baked the admin's real name into `actorName`; readers render
+ * "Administrator" from the line's shape, so the name has no reader left.
+ */
+export function scrubBackofficeGroupSystemData(
+  event: string,
+  data: Record<string, unknown>
+): Record<string, unknown> {
+  if (!isBackofficeGroupSystemLine(event, data) || !("actorName" in data)) {
+    return data;
+  }
+  const { actorName: _admin, ...rest } = data;
+  return rest;
+}
+
 /**
  * Localized text per group SYSTEM event. When `viewerUserId` matches the actor
  * or subject, names are replaced with first-person "You …" forms.
@@ -265,26 +312,47 @@ export function buildGroupSystemFallbackText(
   const viewer = viewerUserId?.trim() ?? "";
   const isActor = Boolean(viewer && actorId && viewer === actorId);
   const isTarget = Boolean(viewer && targetId && viewer === targetId);
+  // A Super Admin is named "Administrator" for every reader, never by the name
+  // a legacy row may still carry.
+  const byBackoffice = isBackofficeGroupSystemLine(event, data);
+  const lineActor = byBackoffice ? administratorActorLabel(locale) : actor;
 
   switch (event) {
     case "GROUP_CREATED":
       if (isActor) return t("SYS_GROUP_CREATED_SELF", locale);
       return t("SYS_GROUP_CREATED", locale, { actor });
 
-    case "MEMBER_ADDED": {
-      // Batch add (one operation, many members) → ONE grouped line. The actor is
-      // the same for every viewer; only the wording is personalized.
-      const grouped = groupedTargetLabels(data, viewer, locale);
-      if (grouped) {
-        const targets = formatNameList(grouped, locale);
-        return isActor
-          ? t("SYS_GROUP_MEMBERS_ADDED_SELF", locale, { targets })
-          : t("SYS_GROUP_MEMBERS_ADDED", locale, { actor, targets });
-      }
-      if (isTarget) return t("SYS_GROUP_MEMBER_ADDED_SELF", locale);
-      if (isActor)
-        return t("SYS_GROUP_MEMBERS_ADDED_SELF", locale, { targets: target });
-      return t("SYS_GROUP_MEMBER_ADDED", locale, { actor, target });
+    // "{actor} added {target} to {group}" / "{actor} removed {target} from
+    // {group}" — the shared member-change sentence (member-change-text.ts), with
+    // the reader's own side as "You". `groupName` is captured when the line is
+    // posted; rows written before that read "… to the group".
+    case "MEMBER_ADDED":
+    case "MEMBER_REMOVED": {
+      // Batch add (one operation, many members) → ONE grouped line listing
+      // every target; the reader, if one of them, is hoisted to the front.
+      const grouped =
+        event === "MEMBER_ADDED"
+          ? groupedTargetLabels(data, viewer, locale)
+          : null;
+      return memberChangeText(
+        event === "MEMBER_ADDED" ? "ADDED" : "REMOVED",
+        {
+          actor: byBackoffice
+            ? lineActor
+            : isActor
+              ? t("SYS_SENDER_YOU", locale)
+              : actorId && actorId !== SYSTEM_ACTOR_ID
+                ? actor
+                : systemActorLabel(locale),
+          target: grouped
+            ? formatNameList(grouped, locale)
+            : isTarget
+              ? t("SYS_SENDER_YOU", locale)
+              : target,
+          entity: entityLabel(data.groupName as string, "GROUP", locale),
+        },
+        locale
+      );
     }
 
     case "MEMBER_JOINED":
@@ -295,27 +363,23 @@ export function buildGroupSystemFallbackText(
       if (isActor) return t("SYS_GROUP_MEMBER_LEFT_SELF", locale);
       return t("SYS_GROUP_MEMBER_LEFT", locale, { actor });
 
-    // Three perspectives, in priority order: the removed member (who is
-    // excluded from the live fan-out but can still read the row in history),
-    // the admin who did it, and everyone else. The actor branch is what stops
-    // the remover being shown their own name in the third person.
-    case "MEMBER_REMOVED":
-      if (isTarget) return t("SYS_GROUP_MEMBER_REMOVED_SELF", locale);
-      if (isActor)
-        return t("SYS_GROUP_MEMBER_REMOVED_ACTOR", locale, { target });
-      return t("SYS_GROUP_MEMBER_REMOVED", locale, { actor, target });
-
     case "MEMBER_BANNED":
       if (isTarget) return t("SYS_GROUP_MEMBER_BANNED_SELF", locale);
       if (isActor)
         return t("SYS_GROUP_MEMBER_BANNED_ACTOR", locale, { target });
-      return t("SYS_GROUP_MEMBER_BANNED", locale, { actor, target });
+      return t("SYS_GROUP_MEMBER_BANNED", locale, {
+        actor: lineActor,
+        target,
+      });
 
     case "MEMBER_UNBANNED":
       if (isTarget) return t("SYS_GROUP_MEMBER_UNBANNED_SELF", locale);
       if (isActor)
         return t("SYS_GROUP_MEMBER_UNBANNED_ACTOR", locale, { target });
-      return t("SYS_GROUP_MEMBER_UNBANNED", locale, { actor, target });
+      return t("SYS_GROUP_MEMBER_UNBANNED", locale, {
+        actor: lineActor,
+        target,
+      });
 
     case "ADMIN_ASSIGNED":
       if (isTarget) return t("SYS_GROUP_ADMIN_ASSIGNED_SELF", locale);

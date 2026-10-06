@@ -208,3 +208,22 @@ describe("enforceMediaLimits — Zod superRefine mirrors the same caps", () => {
     expect(collectIssues("AUDIO", [{ size: 10 * MB }])).toEqual([]);
   });
 });
+
+describe("media-limits — duration caps (3 min video, 5 min voice)", () => {
+  const MIN = 60 * 1000;
+  it("VIDEO: 3 min passes, longer fails as CHAT_VIDEO_TOO_LONG", () => {
+    expect(thrownCode("VIDEO", [{ size: MB, mime: "video/mp4", durationMs: 3 * MIN }])).toBeNull();
+    expect(thrownCode("VIDEO", [{ size: MB, mime: "video/mp4", durationMs: 3 * MIN + 1 }])).toBe("CHAT_VIDEO_TOO_LONG");
+  });
+  it("a video inside an IMAGE album is checked too; images ignore durationMs", () => {
+    expect(thrownCode("IMAGE", [{ size: MB, mime: "video/mp4", durationMs: 4 * MIN }])).toBe("CHAT_VIDEO_TOO_LONG");
+    expect(thrownCode("IMAGE", [{ size: MB, mime: "image/jpeg", durationMs: 4 * MIN }])).toBeNull();
+  });
+  it("VOICE: 5 min passes, longer fails as CHAT_VOICE_TOO_LONG", () => {
+    expect(thrownCode("VOICE", [{ size: MB, durationMs: 5 * MIN }])).toBeNull();
+    expect(thrownCode("VOICE", [{ size: MB, durationMs: 5 * MIN + 1 }])).toBe("CHAT_VOICE_TOO_LONG");
+  });
+  it("a missing durationMs is not rejected", () => {
+    expect(thrownCode("VIDEO", [{ size: MB, mime: "video/mp4" }])).toBeNull();
+  });
+});

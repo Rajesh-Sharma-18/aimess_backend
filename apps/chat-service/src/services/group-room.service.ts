@@ -51,9 +51,10 @@ import {
   historyLineSnapshot,
   isHiddenByCutoff,
 } from "../lib/deletion-cutoff.js";
-import type {
-  ClosureIdentity,
-  GroupRoomRepository,
+import {
+  GroupNotSoleMemberError,
+  type ClosureIdentity,
+  type GroupRoomRepository,
 } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -322,12 +323,14 @@ export class GroupRoomService {
                   senderName: prev.senderName,
                   messageType: prev.messageType,
                   createdAt: prev.createdAt,
+                  systemEvent: prev.systemEvent ?? null,
+                  systemData: prev.systemData ?? null,
                   ...listRowIdentity({ ...prev, id: prev.messageId }),
                 }
               : null,
           } as T;
         });
-    return this.applyReactionOverlay(withDeleteOverlay, userId);
+    return this.applyReactionOverlay(withDeleteOverlay, userId, overrides);
   }
 
   /**
@@ -633,13 +636,16 @@ export class GroupRoomService {
    */
   private applyReactionOverlay<T extends GroupRoom>(
     rooms: T[],
-    userId: string
+    userId: string,
+    // Rooms whose shared last this viewer hid (delete-for-me): they preview the fallback, exactly as the live recalc bump did.
+    hiddenSharedLast: ReadonlyMap<string, unknown>
   ): T[] {
     return rooms.map((room) => {
       const lastAt = room.lastMessageAt?.getTime() ?? 0;
       if (
         !room.reactionActivityAt ||
-        room.reactionActivityAt.getTime() <= lastAt
+        room.reactionActivityAt.getTime() <= lastAt ||
+        hiddenSharedLast.has(room.roomId)
       )
         return room;
       const isActor = room.reactionActivityActorId === userId;
@@ -962,7 +968,10 @@ export class GroupRoomService {
   async disbandGroup(
     roomId: string,
     userId: string,
-    opts?: { asPlatformAdmin?: boolean }
+    // asLastMember: the sole ACTIVE member (the ADMIN) is leaving. The disband
+    // then only runs on an ACTIVE room and only while they are still alone at
+    // the write; otherwise it rolls back with CHAT_OWNER_CANNOT_LEAVE.
+    opts?: { asPlatformAdmin?: boolean; asLastMember?: boolean }
   ): Promise<GroupRoom> {
     if (!opts?.asPlatformAdmin) {
       const member = await this.memberRepo.findActiveByRoomAndUser(
@@ -982,11 +991,20 @@ export class GroupRoomService {
     // One transaction: status flip, closure roster snapshot, and every
     // membership ended at the room's own `disbandedAt` (so the read cutoff and
     // the room timestamp can never disagree).
-    const disbanded = await this.roomRepo.disband(
-      roomId,
-      userId,
-      await this.closureIdentities(roomId)
-    );
+    let disbanded: GroupRoom | null;
+    try {
+      disbanded = await this.roomRepo.disband(
+        roomId,
+        userId,
+        await this.closureIdentities(roomId),
+        { asLastMember: opts?.asLastMember }
+      );
+    } catch (err: unknown) {
+      if (err instanceof GroupNotSoleMemberError) {
+        throw new BadRequestError("CHAT_OWNER_CANNOT_LEAVE");
+      }
+      throw err;
+    }
     if (!disbanded) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
 
     // Revoke all active invite links
@@ -1143,6 +1161,16 @@ export class GroupRoomService {
     if (!member || !["ACTIVE", "LEFT", "KICKED"].includes(member.status)) {
       throw new NotFoundError("CHAT_NOT_A_MEMBER");
     }
+    // Deleting a CLOSED group's conversation takes the row out of the list
+    // (it can never get a new message to come back with).
+    if (
+      member.status === "ACTIVE" &&
+      (await this.roomRepo.findActiveByRoomId(roomId))?.status ===
+        GroupRoomStatus.CLOSED
+    ) {
+      await this.dismissClosedConversation(roomId, userId);
+      return;
+    }
     const sortAt = await this.rowSortAt(roomId, userId);
     const cutoff = await this.memberRepo.setClearedAt(roomId, userId);
 
@@ -1159,6 +1187,42 @@ export class GroupRoomService {
       SystemEvent.CONVERSATION_DELETED,
       sortAt
     );
+  }
+
+  /**
+   * Delete Conversation on a CLOSED group (owner banned by Super Admin): a
+   * per-user dismiss, NOT a leave. Membership, role, memberCount, roster and
+   * the room are untouched, so no owner rule, no system line and nothing any
+   * other member can see; the caller's inbox skips the row from now on
+   * (`getInboxMemberships`), which survives refetch, re-login and reconnect —
+   * a closed group never reopens and never gets a new message.
+   *
+   * Callers must have checked the room is CLOSED. Idempotent: a repeat finds
+   * nothing to write and still succeeds. CHAT_NOT_A_MEMBER for a caller with
+   * no ACTIVE membership, so it cannot touch a room they are not in.
+   */
+  async dismissClosedConversation(
+    roomId: string,
+    userId: string
+  ): Promise<void> {
+    const wrote = await this.memberRepo.setDismissed(roomId, userId);
+    if (!wrote) {
+      const member = await this.memberRepo.findActiveByRoomAndUser(
+        roomId,
+        userId
+      );
+      if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+      return; // already dismissed
+    }
+    // setDismissed zeroed the stored unread: recompute the nav badge, close
+    // the room's tray cards, and drop the row on every device of the caller.
+    notifyUnreadChanged(userId);
+    publishRoomCardsGoneSafe(userId, roomId, "GROUP", "DELETED");
+    void publishChatUserEvent(this.redis, userId, "conv:deleted", {
+      roomId,
+      deletedBy: userId,
+      type: "GROUP",
+    }).catch(() => {});
   }
 
   /**
@@ -1279,7 +1343,10 @@ export class GroupRoomService {
     userId: string,
     params: { limit: number; cursor?: string | null; q?: string }
   ): Promise<GroupRoomMembership[]> {
-    const memberships = await this.memberRepo.getActiveMemberships(userId);
+    // Same rule as the inbox: a CLOSED group the caller deleted is not listed.
+    const memberships = (
+      await this.memberRepo.getActiveMemberships(userId)
+    ).filter((m) => !m.dismissedAt);
     if (!memberships.length) return [];
     const roomIds = memberships.map((m) => m.roomId);
     const rawRooms = await this.roomRepo.getUserGroups(userId, roomIds, params);

@@ -78,7 +78,24 @@ describe("toUpdateMessageActivityRequest", () => {
         "senderUserId",
         "senderUsername",
         "seq",
+        "systemMessageType",
+        "systemMetadataJson",
       ].sort()
     );
+  });
+
+  it('carries a rolled-back SYSTEM line\'s params so the list can still say "You …"', () => {
+    const req = toUpdateMessageActivityRequest({
+      communityId: "cmt-1",
+      rollbackNotNewerThan: REMOVED_AT,
+      systemMessageType: "MESSAGE_PINNED",
+      systemMetadata: { actorId: "u1", actorName: "Peter Parker" },
+    });
+
+    expect(req.systemMessageType).toBe("MESSAGE_PINNED");
+    expect(JSON.parse(String(req.systemMetadataJson))).toEqual({
+      actorId: "u1",
+      actorName: "Peter Parker",
+    });
   });
 });

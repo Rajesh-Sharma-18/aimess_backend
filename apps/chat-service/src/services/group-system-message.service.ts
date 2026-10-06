@@ -207,20 +207,24 @@ export class GroupSystemMessageService {
           )
         : new Map<string, Record<string, unknown>>();
 
-      // A caller-supplied `actorName` is the fallback, never an override: a real
-      // chat actor is always named from the live snapshot so the row can't bake
-      // a stale name. It only wins when `actorId` is null — the platform-admin
-      // paths, whose actor lives in admin_db and has no snapshot to resolve. That
-      // gap is what left every backoffice removal reading "Someone removed X".
-      const actorName =
-        this.nameOf(snapshots, actorId) ||
-        String(inData.actorName ?? "").trim();
+      // A Backoffice (platform-admin) line is actor-less with `source: "BO"`:
+      // readers render "Administrator", so no admin name is ever stored.
+      const actorName = this.nameOf(snapshots, actorId);
       const targetName = this.nameOf(snapshots, targetUserId);
       const actorAvatar = actorId
         ? ((snapshots.get(actorId)?.avatar as string) ?? "")
         : "";
 
       const targetNames = targetUserIds.map((id) => this.nameOf(snapshots, id));
+
+      // Member added / removed read "{actor} added {target} to {group}", so the
+      // group's name is captured with the line — the same event-time snapshot
+      // the names above are. Best-effort: no row → the line reads "… the group".
+      const groupName =
+        systemEvent === "MEMBER_ADDED" || systemEvent === "MEMBER_REMOVED"
+          ? ((await this.roomRepo.findByRoomId(roomId).catch(() => null))
+              ?.name ?? "")
+          : "";
 
       // Resolved names are folded into systemData so clients can render without
       // a second lookup, while keeping the raw ids for navigation.
@@ -230,6 +234,7 @@ export class GroupSystemMessageService {
         actorName,
         ...(targetUserId ? { targetUserId, targetName } : {}),
         ...(targetUserIds.length ? { targetUserIds, targetNames } : {}),
+        ...(groupName ? { groupName } : {}),
       };
 
       const text = buildGroupSystemFallbackText(systemEvent, systemData);

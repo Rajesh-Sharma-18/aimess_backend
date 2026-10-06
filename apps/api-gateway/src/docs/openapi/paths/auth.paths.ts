@@ -110,7 +110,13 @@ export const authPaths = {
         "**Business scenarios:**\n" +
         "- `available: true` — the account handle is free and valid; safe to proceed with registration.\n" +
         "- `available: false` — already taken; prompt the user to choose a different one.\n" +
-        "- `400` — the format itself is invalid (length, characters, or reserved word).",
+        "- `400` — the format itself is invalid (length, characters, or reserved word).\n\n" +
+        "**Login step 1 (`purpose: \"login\"`, optional):** a login form sends it to learn, before showing a password field, that an existing account cannot use one. The 409 then carries one of these codes instead of `AUTH_ACCOUNT_TAKEN`. It is decided by whether the account has a password NOW, not by how it was created: an account with a password plus Google/Apple still answers `AUTH_ACCOUNT_TAKEN` (show the password step).\n" +
+        "- `AUTH_GOOGLE_LOGIN_REQUIRED` — no password, Google linked: send the user to Google sign-in.\n" +
+        "- `AUTH_APPLE_LOGIN_REQUIRED` — no password, Apple linked: send the user to Apple sign-in.\n" +
+        "- `AUTH_SOCIAL_LOGIN_REQUIRED` — no password, both linked: either works.\n" +
+        "- `AUTH_PASSWORD_NOT_SET` — no password and no social link.\n\n" +
+        "Banned, inactive, locked or deleted accounts keep `AUTH_ACCOUNT_TAKEN`, so the password step and `POST /auth/login` keep their own precedence. Without `purpose` the response is unchanged. `POST /auth/login` answers the same codes (401) for a client that skips this.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,

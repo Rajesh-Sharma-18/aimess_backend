@@ -8,6 +8,7 @@ import {
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
+import { userIdentityClient } from "../grpc/user-identity.client.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { groupCopy } from "../lib/notification-copy.js";
 import { pushTag } from "../lib/push-tags.js";
@@ -27,12 +28,25 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
     case ChatEvents.GROUP_MEMBER_ADDED: {
       const p = data as ChatGroupMemberAddedPayload;
       const deepLink = buildDeepLink("group", p.roomId);
+      // "{actor} added {target} to {group}" — names from user-service, the same
+      // "Firstname Lastname" source as the community copy; "" falls back to the
+      // localized "Someone" rather than a fabricated name.
+      const [actorName, targetName] = await Promise.all([
+        userIdentityClient.getDisplayName(p.actorId),
+        userIdentityClient.getDisplayName(p.addedUserId),
+      ]);
       await pushToUser({
         userId: p.addedUserId,
         category: "chatEnabled",
         type,
         actorId: p.actorId,
-        copy: groupCopy.memberAdded(p.groupName),
+        copy: groupCopy.memberAdded(
+          p.groupName,
+          actorName?.trim() ?? "",
+          targetName?.trim() ?? "",
+          p.actorId,
+          p.addedUserId
+        ),
         deepLink,
         apnsThreadId: generateThreadId("GROUP", p.roomId),
         // Closed with the rest of the room's cards once they open it.

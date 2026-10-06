@@ -100,7 +100,7 @@ const envSchema = z.object({
   // apart — see @aimess/constants media/limits.ts.
   CHAT_IMAGE_MAX_BYTES: z.coerce.number().positive().default(26214400), // 25 MB
   CHAT_AUDIO_MAX_BYTES: z.coerce.number().positive().default(26214400), // 25 MB
-  CHAT_DOCUMENT_MAX_BYTES: z.coerce.number().positive().default(26214400), // 25 MB
+  CHAT_DOCUMENT_MAX_BYTES: z.coerce.number().positive().default(52428800), // 50 MB
 
   // Redis — used for scan-status cache and rate-limit store
   REDIS_HOST: z.string().default("127.0.0.1"),

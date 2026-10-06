@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { logger } from "@aimess/logger";
+import { normalizeForSearch } from "@aimess/utils";
 import type { UserPurgedPayload } from "@aimess/shared-types";
 
 import { prisma } from "../config/prisma.js";
@@ -40,7 +41,7 @@ export async function handleUserPurged(data: UserPurgedPayload): Promise<void> {
       // The search shadows are lowercase/de-spaced copies of the name columns.
       // Leaving them would keep the real name searchable after the name itself
       // was erased — the exact leak the erasure is meant to close.
-      normalizedUsername: placeholderUsername,
+      normalizedUsername: normalizeForSearch(placeholderUsername),
       normalizedFirstName: "deleted",
       normalizedLastName: "account",
       normalizedFullName: "deletedaccount",

@@ -39,6 +39,9 @@ export function rankCommunitiesByHandle<T extends { handle: string }>(
   return rankByHandle(rows, q, (row) => row.handle);
 }
 
+/** Only "@"s (and spaces): a handle search that has not named anyone yet. */
+const BARE_HANDLE_PREFIX = /^[\s@]*@[\s@]*$/;
+
 /**
  * Builds the Prisma `AND`-of-`OR` clauses backing community search by name
  * and/or handle.
@@ -56,7 +59,8 @@ export function rankCommunitiesByHandle<T extends { handle: string }>(
  *      works if a row hasn't been backfilled with the normalized shadows yet).
  *
  * Tokens that normalize to nothing (pure punctuation, e.g. "...") are
- * dropped — they carry no search signal.
+ * dropped — they carry no search signal. A query made ONLY of such tokens
+ * matches no community at all.
  *
  * Returns an array of `Prisma.CommunityWhereInput` (one per token) meant to
  * be spread into the caller's `AND` list.
@@ -64,7 +68,14 @@ export function rankCommunitiesByHandle<T extends { handle: string }>(
 export function buildCommunitySearchFilter(
   q: string
 ): Prisma.CommunityWhereInput[] {
-  return tokenizeAndNormalize(q).map(({ raw, normalized }) => ({
+  // A bare "@" starts a handle search: list communities unfiltered (the
+  // caller's visibility rules still apply).
+  if (BARE_HANDLE_PREFIX.test(q)) return [];
+  const tokens = tokenizeAndNormalize(q);
+  // Any other query with no searchable characters ("...", an emoji) → match
+  // nothing, never `AND: []` (every public community).
+  if (!tokens.length) return q.trim() ? [{ id: { in: [] } }] : [];
+  return tokens.map(({ raw, normalized }) => ({
     OR: [
       { normalizedName: { contains: normalized } },
       { normalizedHandle: { contains: normalized } },

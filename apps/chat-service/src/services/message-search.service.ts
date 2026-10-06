@@ -22,9 +22,21 @@ import {
 } from "../lib/deletion-cutoff.js";
 import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
 import {
+  isUnresolvedSnapshot,
   resolveDisplayName,
   type UserSnapshotService,
 } from "./user-snapshot.service.js";
+
+const UNKNOWN_USER = "Unknown User";
+
+/** A real display name, or "" when the lookup failed or there is none to show. */
+function liveDisplayName(
+  snapshot: Record<string, unknown> | null | undefined
+): string {
+  if (!snapshot || isUnresolvedSnapshot(snapshot)) return "";
+  const name = resolveDisplayName(snapshot);
+  return name === UNKNOWN_USER ? "" : name;
+}
 
 export type SearchConversationType = "PRIVATE" | "GROUP" | "COMMUNITY";
 
@@ -120,8 +132,19 @@ export class MessageSearchService {
         room.participants.find((id) => id !== userId) ?? null
       );
     }
+    // A DISBANDED group hides everywhere (VISIBLE_ROOM_STATUS), but its member
+    // rows stay ACTIVE — so the room's own status gates the scope, or its hits
+    // come back with no name and open nothing.
+    const visibleGroupIds = new Set(
+      (
+        await this.groupRoomRepo.findLastMessageAtForRooms(
+          groupMembers.map((m) => m.roomId)
+        )
+      ).map((r) => r.roomId)
+    );
     const groupCutoffs = new Map<string, Date | undefined>();
     for (const member of groupMembers) {
+      if (!visibleGroupIds.has(member.roomId)) continue;
       groupCutoffs.set(member.roomId, getGroupVisibilityCutoff(member));
     }
     // A banned member keeps read access only up to the instant of the ban.
@@ -303,14 +326,17 @@ export class MessageSearchService {
 
     for (const { hit } of page) {
       if (hit.senderId) {
-        const snapshot = snapshots.get(hit.senderId);
-        // Stale beats blank: a degraded lookup keeps the frozen name.
-        if (snapshot) hit.senderName = resolveDisplayName(snapshot);
+        // Stale beats blank: an unresolved lookup, or a profile with no name
+        // yet, keeps the frozen name the message was stored with.
+        const live = liveDisplayName(snapshots.get(hit.senderId));
+        if (live) hit.senderName = live;
       }
       if (hit.conversationType === "PRIVATE") {
         const peer = peerByRoom.get(hit.roomId) ?? null;
         const snapshot = peer ? snapshots.get(peer) : null;
-        hit.conversationName = resolveDisplayName(snapshot);
+        // "" rather than the English "Unknown User" literal — the client renders
+        // its own localized fallback (same contract as resolve-sender-identity).
+        hit.conversationName = liveDisplayName(snapshot);
         hit.conversationAvatarUrl = urlFromMap(
           urlMap,
           typeof snapshot?.avatar === "string" ? snapshot.avatar : ""

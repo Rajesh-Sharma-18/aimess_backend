@@ -29,6 +29,8 @@ export function communityVisibilitySource(
             clientMessageId: m.clientMessageId ?? null,
             sequenceNumber: m.sequenceNumber,
             revision: m.revision,
+            systemMessageType: m.systemMessageType,
+            systemMetadata: m.systemMetadata,
           }
         : null;
     },
@@ -63,6 +65,8 @@ export function privateVisibilitySource(
             clientMessageId: m.clientMessageId ?? null,
             sequenceNumber: m.sequenceNumber,
             revision: m.revision,
+            systemEvent: m.systemEvent,
+            systemData: m.systemData,
           }
         : null;
     },
@@ -94,6 +98,8 @@ export function groupVisibilitySource(
             clientMessageId: m.clientMessageId ?? null,
             sequenceNumber: m.sequenceNumber,
             revision: m.revision,
+            systemEvent: m.systemEvent,
+            systemData: m.systemData,
           }
         : null;
     },

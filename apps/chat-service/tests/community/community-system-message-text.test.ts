@@ -126,7 +126,7 @@ describe("system message text — display names and You personalization", () => 
         },
         TARGET
       )
-    ).toBe("You were added to the group");
+    ).toBe("Admin User added You to the group");
   });
 
   it("leaves bystander text third-person", () => {
@@ -247,6 +247,86 @@ describe("system message text — display names and You personalization", () => 
         ACTOR
       )
     ).toBe("System ended the livestream (36m)");
+  });
+
+  it('Super Admin end (endedReason ADMIN) reads "Administrator ended {host}\'s livestream" for everyone but the host', () => {
+    // The ADMIN row's actor is the host (the Super Admin is never carried).
+    const meta = {
+      actorUserId: ACTOR,
+      duration: "10s",
+      durationSeconds: 10,
+      endedReason: "ADMIN",
+    };
+    for (const viewer of [undefined, "viewer"]) {
+      const text = buildCommunitySystemFallbackText(
+        "LIVE_STREAM_ENDED",
+        meta,
+        "Mind Flayer",
+        "",
+        viewer
+      );
+      expect(text).toBe("Administrator ended Mind Flayer's livestream (10s)");
+    }
+    const render = (locale: "vi" | "th") =>
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", "viewer", locale);
+    expect(render("vi").startsWith("Quản trị viên đã kết thúc buổi phát trực tiếp của Mind Flayer (")).toBe(true);
+    expect(render("th").startsWith("ผู้ดูแลระบบจบไลฟ์สตรีมของMind Flayer (")).toBe(true);
+  });
+
+  it('Super Admin end: the host reads "Administrator ended the livestream", never "You" or "System"', () => {
+    const legacy = { actorUserId: ACTOR, duration: "2m", durationSeconds: 120, endedReason: "ADMIN" };
+    const current = { ...legacy, hostUserId: ACTOR };
+    for (const meta of [legacy, current]) {
+      expect(
+        buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", ACTOR)
+      ).toBe("Administrator ended the livestream (2m)");
+      expect(
+        buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", ACTOR, "vi")
+      ).toMatch(/^Quản trị viên đã kết thúc buổi phát trực tiếp \(/);
+    }
+  });
+
+  it("Super Admin end with no host name falls back to the host-less line, never a blank", () => {
+    const meta = { actorUserId: ACTOR, duration: "10s", durationSeconds: 10, endedReason: "ADMIN" };
+    const text = buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "", "");
+    expect(text).toBe("Administrator ended the livestream (10s)");
+  });
+
+  it("community admin end reads \"{admin} ended {host}'s livestream\"; the admin reads \"You ended {host}'s…\"", () => {
+    const meta = {
+      actorUserId: "admin-id",
+      targetUserId: ACTOR,
+      targetName: "Mind Flayer",
+      hostUserId: ACTOR,
+      duration: "8s",
+      durationSeconds: 8,
+      endedReason: "USER",
+    };
+    for (const viewer of [undefined, ACTOR, "viewer"]) {
+      expect(
+        buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "", viewer)
+      ).toBe("Smiley Creatures ended Mind Flayer's livestream (8s)");
+    }
+    expect(
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "", "admin-id")
+    ).toBe("You ended Mind Flayer's livestream (8s)");
+    expect(
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "", "x", "vi")
+    ).toBe("Smiley Creatures đã kết thúc buổi phát trực tiếp của Mind Flayer (8 giây)");
+  });
+
+  it("community admin end with no resolvable host name keeps the host-less line", () => {
+    const meta = { actorUserId: "admin-id", targetUserId: ACTOR, duration: "8s", durationSeconds: 8, endedReason: "USER" };
+    expect(
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "")
+    ).toBe("Smiley Creatures ended the livestream (8s)");
+  });
+
+  it("legacy admin-ended row (no target) still renders", () => {
+    const meta = { actorUserId: "admin-id", duration: "4m", durationSeconds: 240, endedReason: "USER" };
+    expect(
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Rajesh Sharma", "", ACTOR)
+    ).toBe("Rajesh Sharma ended the livestream (4m)");
   });
 
   it("host end with endedReason USER keeps the host name", () => {
@@ -722,8 +802,8 @@ describe("community moderation lines — actor reads first person", () => {
     );
 
   it.each([
-    ["MEMBER_ADDED", "You added Peter Parker to the community", "Smiley Creatures added you to the community", "Smiley Creatures added Peter Parker to the community"],
-    ["MEMBER_REMOVED", "You removed Peter Parker from the community", "You were removed", "Peter Parker was removed"],
+    ["MEMBER_ADDED", "You added Peter Parker to the community", "Smiley Creatures added You to the community", "Smiley Creatures added Peter Parker to the community"],
+    ["MEMBER_REMOVED", "You removed Peter Parker from the community", "Smiley Creatures removed You from the community", "Smiley Creatures removed Peter Parker from the community"],
     ["MEMBER_BANNED", "You banned Peter Parker", "You were banned from this community.", "Smiley Creatures banned Peter Parker"],
     ["MEMBER_UNBANNED", "You unbanned Peter Parker", "You were unbanned", "Smiley Creatures unbanned Peter Parker"],
     ["MEMBER_MUTED", "You muted Peter Parker indefinitely", "You are muted indefinitely", "Smiley Creatures muted Peter Parker indefinitely"],
@@ -791,5 +871,58 @@ describe("community moderation lines — manual vs automatic actor", () => {
     expect(
       render("MEMBER_UNMUTED", { actorUserId: "system", source: "auto" }, BYSTANDER, "vi")
     ).toBe("Boyd Stevens đã được bỏ cấm nói");
+  });
+});
+
+describe("community moderation lines — Backoffice (Super Admin) actor", () => {
+  const ADMIN_USER_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  // What a Backoffice ban persisted before this change: the AdminUser id as
+  // actorUserId and the unresolved "Unknown user" as actorName.
+  const legacyBo = {
+    targetUserId: TARGET,
+    source: "BO",
+    actorUserId: ADMIN_USER_ID,
+    actorName: "Unknown user",
+  };
+  const render = (type: string, metadata: Record<string, unknown>, viewer: string, locale?: "en" | "vi" | "th") =>
+    buildCommunitySystemFallbackText(type as never, metadata, "Unknown user", "Boyd Stevens", viewer, locale);
+
+  it("a Backoffice ban / unban reads 'Administrator' for every moderator", () => {
+    for (const viewer of [BYSTANDER, ""]) {
+      expect(render("MEMBER_BANNED", legacyBo, viewer)).toBe("Administrator banned Boyd Stevens");
+      expect(render("MEMBER_UNBANNED", legacyBo, viewer)).toBe("Administrator unbanned Boyd Stevens");
+    }
+    expect(render("MEMBER_BANNED", legacyBo, BYSTANDER, "vi")).toContain("Quản trị viên");
+    expect(render("MEMBER_BANNED", legacyBo, BYSTANDER, "th")).toContain("ผู้ดูแลระบบ");
+  });
+
+  it("nobody reads a Backoffice line as 'You banned …' — not even a viewer whose id is on the row", () => {
+    expect(render("MEMBER_BANNED", legacyBo, ADMIN_USER_ID)).toBe("Administrator banned Boyd Stevens");
+  });
+
+  it("the target keeps their own wording", () => {
+    expect(render("MEMBER_BANNED", legacyBo, TARGET)).toBe(
+      buildCommunitySystemFallbackText("MEMBER_BANNED" as never, { targetUserId: TARGET }, "", "", TARGET)
+    );
+  });
+
+  it("a community admin's own ban still names that admin", () => {
+    expect(
+      buildCommunitySystemFallbackText("MEMBER_BANNED", { targetUserId: TARGET, actorUserId: ACTOR }, "Julia Doyle", "Boyd Stevens", BYSTANDER)
+    ).toBe("Julia Doyle banned Boyd Stevens");
+    expect(render("MEMBER_BANNED", { targetUserId: TARGET, actorUserId: ACTOR }, ACTOR)).toBe("You banned Boyd Stevens");
+  });
+
+  it("the wire metadata drops the admin's id and name, keeps the target", () => {
+    const wire = sanitizeCommunitySystemMetadata("MEMBER_BANNED", legacyBo);
+    expect(wire).toEqual({ targetUserId: TARGET, source: "BO" });
+    // Re-rendering from the sanitized wire metadata gives the same sentence.
+    expect(render("MEMBER_BANNED", wire, BYSTANDER)).toBe("Administrator banned Boyd Stevens");
+  });
+
+  it("an automated (auto-unmute) line is not relabelled", () => {
+    expect(render("MEMBER_UNMUTED", { targetUserId: TARGET, actorUserId: "system", source: "auto" }, BYSTANDER)).toBe(
+      "Boyd Stevens was unmuted"
+    );
   });
 });

@@ -198,7 +198,11 @@ export class UserSnapshotService {
             userId: entry.userId,
             displayName: "", // no full name yet
             avatar: "",
-            memberId: entry.account, // account = the login username
+            // The login account is NOT a username, and clients render
+            // memberId as "@<handle>". No profile yet means no username.
+            memberId: "",
+            // Read only by the display-NAME fallback chain (resolveDisplayName),
+            // never rendered with "@".
             username: entry.account,
             isDeletedUser: false,
             isOnline: false,

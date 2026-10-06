@@ -401,9 +401,8 @@ const startServer = async () => {
     // of every community message, which is exactly the path that has to stay
     // cheap as membership grows. Declared on the schema too; created here so
     // existing deployments pick it up without a `prisma db push`.
-    // updatedAt trails the pair so findSearchScope's recency-ordered cap
-    // (`orderBy updatedAt desc`, take SEARCH_SCOPE_ROOM_LIMIT) is index-served
-    // instead of sorting every membership row the user holds.
+    // updatedAt trails the pair; [userId, status] is the prefix every
+    // by-user read (unread summary, findSearchScope) is served by.
     try {
       await ensureMongoIndex(prisma, "room_members", {
         key: { userId: 1, status: 1, updatedAt: -1 },

@@ -410,6 +410,7 @@ export function registerStreamNamespace(
             hlsUrl?: string;
             flvUrl?: string;
             startedAt?: number;
+            endedReason?: string;
           };
           // Broadcast the clean status event to all viewers in the room.
           // communityId is included so FE on the stream viewer screen can update
@@ -418,6 +419,9 @@ export function registerStreamNamespace(
             streamId: d.streamId,
             status: d.status,
             communityId: d.communityId,
+            // ENDED only (absent otherwise): HOST_ENDED, COMMUNITY_ADMIN_ENDED, ...
+            // so the host can tell an admin force-end from their own End Live.
+            ...(d.endedReason ? { endedReason: d.endedReason } : {}),
           });
           // If this is a LIVE transition, find the broadcaster's socket and send them
           // a targeted confirmation so their UI can switch to "You are live!".
@@ -457,6 +461,7 @@ export function registerStreamNamespace(
                     streamId: d.streamId,
                     status: "ENDED",
                     communityId: d.communityId,
+                    ...(d.endedReason ? { endedReason: d.endedReason } : {}),
                   });
                 }
               } catch (err) {

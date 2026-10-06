@@ -10,6 +10,7 @@
 import {
   authCopy,
   callCopy,
+  communityCopy,
   friendCopy,
   resolutionCopy,
   t,
@@ -233,5 +234,32 @@ describe("/notify frame localization", () => {
 
     expect(newDevice.emit).not.toHaveBeenCalled();
     expect(bodyOf(otherDevice)).toBe(t("NOTIF_CALL_MISSED_VOICE", "vi"));
+  });
+
+describe("member-added frame is viewer-aware on every device", () => {
+  it("both of the target's devices read 'You', in their own language", () => {
+    const copy = communityCopy.memberAdded(
+      "Gokuldham Society",
+      "John Smith",
+      "Tom Brown",
+      "u-john",
+      "u-tom"
+    );
+    const frame = {
+      notificationId: "n2",
+      type: "community.member_added",
+      title: "Gokuldham Society",
+      body: copy("en", "u-tom").body,
+      data: { copyRef: JSON.stringify(copy.descriptor) },
+    };
+    const render = (locale: "en" | "vi") =>
+      (localizeNotificationFrame(frame, "u-tom", locale) as { body: string })
+        .body;
+    expect(render("en")).toBe("John Smith added You to Gokuldham Society");
+    expect(render("vi")).toBe("John Smith đã thêm Bạn vào Gokuldham Society");
+    // A frame read by anyone else names the target.
+    expect(
+      (localizeNotificationFrame(frame, "u-mod", "en") as { body: string }).body
+    ).toBe("John Smith added Tom Brown to Gokuldham Society");
   });
 });

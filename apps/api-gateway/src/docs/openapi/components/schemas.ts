@@ -2787,6 +2787,27 @@ export const openApiSchemas = {
       totalComments: { type: "integer", example: 203 },
       livedAt: { type: "string", format: "date-time", nullable: true },
       endedAt: { type: "string", format: "date-time", nullable: true },
+      endedReason: {
+        type: "string",
+        nullable: true,
+        example: "COMMUNITY_ADMIN_ENDED",
+        description:
+          "Why the stream ended; null while it runs and on streams ended before this was recorded. `HOST_ENDED` = the creator's End Live; `COMMUNITY_ADMIN_ENDED` = a community ADMIN's End for Everyone on a moderator-hosted stream. Other values are system/moderation ends (e.g. `ADMIN_FORCE_ENDED`, `COMMUNITY_CLOSED`, `ROLE_UPDATED`, `SESSION_ENDED`) — treat any unknown value as a generic end.",
+      },
+      creatorRole: {
+        type: "string",
+        nullable: true,
+        enum: ["ADMIN", "MODERATOR", null],
+        example: "MODERATOR",
+        description:
+          "The creator's CURRENT community role, null when unknown or no longer a host role. UI hint only — show End for Everyone when the viewer is an ADMIN, not the creator, and this is `MODERATOR`. The server re-checks roles on every stop.",
+      },
+      creatorName: {
+        type: "string",
+        example: "Priya Sharma",
+        description:
+          "Creator display name, username fallback, `\"\"` when unresolved.",
+      },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
@@ -4345,6 +4366,12 @@ export const openApiSchemas = {
         maxLength: 32,
         pattern: "^[a-z0-9_]+$",
         example: "johndoe",
+      },
+      purpose: {
+        type: "string",
+        enum: ["login"],
+        description:
+          "Login step 1: on 409, name AUTH_GOOGLE_LOGIN_REQUIRED / AUTH_APPLE_LOGIN_REQUIRED / AUTH_SOCIAL_LOGIN_REQUIRED / AUTH_PASSWORD_NOT_SET instead of AUTH_ACCOUNT_TAKEN when the account has no password.",
       },
     },
     required: ["account"],
@@ -10654,7 +10681,7 @@ export const openApiSchemas = {
           "Per-type extra fields: " +
           "COMMUNITY_CREATED: { communityName }. " +
           "COMMUNITY_NAME_UPDATED: { newName } — the rename target. " +
-          "LIVE_STREAM_ENDED: { duration?, durationSeconds?, endedReason? } — human-readable runtime, e.g. '2 hours 15 minutes'; endedReason 'SYSTEM' (Super Admin force-end / moderation) renders 'System ended the livestream', 'USER' or absent renders the host name. " +
+          "LIVE_STREAM_ENDED: { duration?, durationSeconds?, endedReason? } — human-readable runtime, e.g. '2 hours 15 minutes'; endedReason 'ADMIN' (Super Admin, Backoffice) renders \"Administrator ended {host}'s livestream\" (host = actorName; the host reads \"Administrator ended the livestream\"), 'SYSTEM' (moderation / bans / timeouts) renders 'System ended the livestream', 'USER' or absent renders \"{actorName} ended the livestream\" — or \"{actorName} ended {targetName}'s livestream\" when a community admin ended the host's (targetUserId = host). " +
           "ROLE_CHANGED / MEMBER_ROLE_CHANGED: { targetUserId, targetName, oldRole, newRole }. " +
           "MEMBER_BANNED / MEMBER_UNBANNED / MEMBER_UNMUTED: { targetUserId, targetName }. " +
           "MEMBER_MUTED: { targetUserId, targetName, mutedUntil, durationMinutes } — mutedUntil is an " +

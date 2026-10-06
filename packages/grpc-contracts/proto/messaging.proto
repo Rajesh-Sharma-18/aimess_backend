@@ -359,11 +359,10 @@ message AdminRemoveGroupMemberRequest {
   string actor_admin_id = 3;
   // Persisted as GroupMember.kickReason.
   string reason         = 4;
-  // Display name of the acting backoffice admin. The AdminUser row lives in
-  // admin_db, which chat-service cannot read, so the name has to travel with
-  // the call — without it the MEMBER_REMOVED row has no actor to name and
-  // renders as "Someone removed X" for every member, permanently. "" = unknown.
-  string actor_admin_name = 5;
+  // Was the acting admin's display name. Retired: a Backoffice line reads
+  // "Administrator" for every member, so the admin's name never leaves admin_db.
+  reserved 5;
+  reserved "actor_admin_name";
 }
 message AdminGroupMutationResult {
   bool   ok         = 1;
@@ -378,15 +377,17 @@ message AdminBanGroupMemberRequest {
   string actor_admin_id = 3; // backoffice AdminUser.id
   // Persisted as GroupMember.kickReason.
   string reason         = 4;
-  // See AdminRemoveGroupMemberRequest.actor_admin_name.
-  string actor_admin_name = 5;
+  // See AdminRemoveGroupMemberRequest field 5.
+  reserved 5;
+  reserved "actor_admin_name";
 }
 message AdminUnbanGroupMemberRequest {
   string group_id       = 1;
   string user_id        = 2;
   string actor_admin_id = 3;
-  // See AdminRemoveGroupMemberRequest.actor_admin_name.
-  string actor_admin_name = 4;
+  // See AdminRemoveGroupMemberRequest field 5.
+  reserved 4;
+  reserved "actor_admin_name";
 }
 message AdminGroupBanResult {
   bool   ok           = 1;

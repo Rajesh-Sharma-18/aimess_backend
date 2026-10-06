@@ -9,6 +9,7 @@ export * from "./media/limits.js";
 export * from "./messages/index.js";
 export * from "./message-preview.js";
 export * from "./notification-copy.js";
+export * from "./member-change-text.js";
 export * from "./webrtc.js";
 export * from "./community/system-message.js";
 export * from "./community/system-message-text.js";

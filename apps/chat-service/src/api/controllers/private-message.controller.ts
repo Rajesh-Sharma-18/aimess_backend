@@ -13,6 +13,7 @@ import {
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
+import { bumpSystemParams } from "../../lib/bump-system-params.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import { publishConvEffectiveLastLoss } from "../../events/publish-effective-last-loss.js";
@@ -106,6 +107,32 @@ export class PrivateMessageController {
     });
 
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true, readToSeq }));
+  });
+
+  /**
+   * `POST /private/rooms/:roomId/delivered` — delivered receipt over REST. Same effect and the same
+   * `message:delivered` broadcast as the socket event (room + the sender's own channel).
+   */
+  markDelivered = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { upToMessageId } = req.body as { upToMessageId: string };
+
+    const { count, messageIds, senderId } = await this.messageService.markDeliveredAsParticipant({
+      roomId,
+      recipientId: userId,
+      upToMessageId,
+    });
+    if (count > 0) {
+      const payload = JSON.stringify({
+        event: "message:delivered",
+        data: { conversationId: roomId, recipientId: userId, upToMessageId, messageIds },
+      });
+      await this.redis.publish(`conv:${roomId}`, payload);
+      if (senderId) await this.redis.publish(`user:${senderId}`, payload);
+    }
+
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ updatedCount: count }));
   });
 
   /**
@@ -479,6 +506,7 @@ export class PrivateMessageController {
               seq: recalc.sequenceNumber,
               revision: recalc.revision,
               createdAt: recalc.createdAt.getTime(),
+              ...bumpSystemParams(recalc),
             },
           });
         })
@@ -544,6 +572,7 @@ export class PrivateMessageController {
               seq: recalc.sequenceNumber,
               revision: recalc.revision,
               createdAt: recalc.createdAt.getTime(),
+              ...bumpSystemParams(recalc),
             },
           });
         })

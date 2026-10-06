@@ -44,6 +44,24 @@ async function lockLinkedIdentityState(
   return state;
 }
 
+/**
+ * Rows whose account equals `account` ignoring case, the exact-case row first.
+ * At most two: callers only tell "none / one / ambiguous" apart. Served by the
+ * `auth_users_account_lower_key` expression index — Prisma's `mode:
+ * "insensitive"` is an unescaped ILIKE, where the `_` every handle may contain
+ * is a wildcard ("test_c" matched "testXc").
+ */
+function accountMatchesIgnoringCase(
+  account: string
+): Promise<{ id: string; exact: boolean }[]> {
+  return prisma.$queryRaw`
+    SELECT id::text AS id, account = ${account} AS exact
+    FROM auth_users
+    WHERE lower(account) = lower(${account})
+    ORDER BY exact DESC
+    LIMIT 2`;
+}
+
 const loginUserSelect = {
   id: true,
   account: true,
@@ -55,17 +73,11 @@ const loginUserSelect = {
   deletedAt: true,
   isProfileCompleted: true,
   role: true,
-  // Read ONLY when `passwordHash` is null, to name the provider a
+  // Read ONLY when `passwordHash` is null, to name the provider(s) a
   // password-less account must sign in with. Selected here rather than fetched
   // in a second query because the login path is hot and this costs one join on
-  // a row that is already being read. Ordered oldest-first so an account that
-  // linked both providers falls back to the one that founded it when
-  // `primaryAccount` cannot decide. See lib/sign-in-methods.ts.
-  primaryAccount: true,
-  linkedAccounts: {
-    select: { provider: true },
-    orderBy: { linkedAt: "asc" },
-  },
+  // a row that is already being read. See lib/sign-in-methods.ts.
+  linkedAccounts: { select: { provider: true } },
 } as const;
 
 export const authRepository = {
@@ -544,15 +556,39 @@ export const authRepository = {
     });
   },
 
-  findByAccount(account: string) {
-    return prisma.authUser.findUnique({ where: { account } });
+  /**
+   * The account that owns `account` IGNORING CASE — "taken" semantics, used by
+   * registration, availability and social account generation.
+   *
+   * Case-insensitive because "Rajesh_Sharma" and "rajesh_sharma" are one
+   * identity: new handles are stored lowercase, but legacy ones keep the case
+   * they were created with, so an exact match would let a newcomer claim
+   * "rajesh_sharma" next to a legacy "Rajesh_Sharma". When several legacy rows
+   * share a lowercase form (`accountCaseConflict`), the exact-case one wins,
+   * else any of them — every caller only asks "is it taken?".
+   */
+  async findByAccount(account: string) {
+    const [match] = await accountMatchesIgnoringCase(account);
+    return match
+      ? prisma.authUser.findUnique({ where: { id: match.id } })
+      : null;
   },
 
-  findByAccountForLogin(account: string) {
-    return prisma.authUser.findUnique({
-      where: { account },
-      select: loginUserSelect,
-    });
+  /**
+   * Login resolves the exact-case handle first, then a case-insensitive one —
+   * but only when it is unambiguous. Legacy rows that differ only by case
+   * (`accountCaseConflict`) each still sign in with their own exact spelling;
+   * a third spelling of theirs matches nobody rather than a guess.
+   */
+  async findByAccountForLogin(account: string) {
+    const matches = await accountMatchesIgnoringCase(account);
+    const match = matches[0]?.exact || matches.length === 1 ? matches[0] : null;
+    return match
+      ? prisma.authUser.findUnique({
+          where: { id: match.id },
+          select: loginUserSelect,
+        })
+      : null;
   },
 
   findByEmailForLogin(email: string) {

@@ -21,6 +21,13 @@
  * here and replay them through {@link renderNotificationCopy}.
  */
 import { t } from "./i18n.js";
+import {
+  memberChangeText,
+  personLabel,
+  PLATFORM_ADMIN_ACTOR_ID,
+  SYSTEM_ACTOR_ID,
+  type MemberChange,
+} from "./member-change-text.js";
 import { localizeMessagePreview } from "./message-preview.js";
 import {
   buildCallActivityText,
@@ -65,7 +72,16 @@ export interface CopyDescriptor {
  * Carries the {@link CopyDescriptor} that produced it — attached by
  * {@link register}, so no builder has to remember to declare it.
  */
-export type LocalizedCopy = ((locale: SupportedLocale) => NotificationCopy) & {
+export type LocalizedCopy = ((
+  locale: SupportedLocale,
+  /**
+   * The AIMess userId READING the copy — the row's/push's recipient. Only
+   * viewer-relative sentences use it (member-added renders the reader's own
+   * side as "You"); it is never stored, so one ticket renders correctly for
+   * whoever reads it.
+   */
+  viewerId?: string
+) => NotificationCopy) & {
   descriptor?: CopyDescriptor;
 };
 
@@ -79,7 +95,9 @@ export type LocalizedData = ((
   descriptor?: CopyDescriptor;
 };
 
-type Replayable = (...args: never[]) => (locale: SupportedLocale) => unknown;
+type Replayable = (
+  ...args: never[]
+) => (locale: SupportedLocale, viewerId?: string) => unknown;
 
 /**
  * ref → builder. The ref strings are a PERSISTED CONTRACT: they are written
@@ -148,7 +166,8 @@ function patchLegacyArgs(
 function replay(
   raw: string | undefined | null,
   locale: SupportedLocale,
-  data?: Record<string, unknown>
+  data?: Record<string, unknown>,
+  viewerId?: string
 ): unknown {
   if (!raw) return null;
   let parsed: CopyDescriptor;
@@ -167,9 +186,11 @@ function replay(
     data
   );
   try {
-    return (build as (...a: unknown[]) => (l: SupportedLocale) => unknown)(
-      ...args
-    )(locale);
+    return (
+      build as (
+        ...a: unknown[]
+      ) => (l: SupportedLocale, viewerId?: string) => unknown
+    )(...args)(locale, viewerId);
   } catch {
     // A malformed/legacy descriptor must degrade to the row's stored text, never
     // take the notification list down with it.
@@ -190,9 +211,11 @@ function replay(
 export function renderNotificationCopy(
   copyRef: string | undefined | null,
   locale: SupportedLocale,
-  data?: Record<string, unknown>
+  data?: Record<string, unknown>,
+  /** The reader's userId — see {@link LocalizedCopy}. */
+  viewerId?: string
 ): NotificationCopy | null {
-  const out = replay(copyRef, locale, data);
+  const out = replay(copyRef, locale, data, viewerId);
   return out && typeof out === "object" && "body" in out
     ? (out as NotificationCopy)
     : null;
@@ -248,6 +271,29 @@ const person = (
   name: string | null | undefined,
   locale: SupportedLocale
 ): string => name?.trim() || t("SYS_NAME_SOMEONE", locale);
+
+/**
+ * "{actor} added {target} to {entity}" / "{actor} removed {target} from
+ * {entity}" — the same member-change sentence the chat lines render
+ * (member-change-text.ts), with the reader's own side as "You".
+ */
+const memberChange = (
+  change: MemberChange,
+  entity: string,
+  actor: { id?: string | null; name?: string | null },
+  target: { id?: string | null; name?: string | null },
+  viewerId: string | undefined,
+  locale: SupportedLocale
+): string =>
+  memberChangeText(
+    change,
+    {
+      actor: personLabel(actor.id, actor.name, viewerId, locale),
+      target: personLabel(target.id, target.name, viewerId, locale),
+      entity,
+    },
+    locale
+  );
 
 function roleLabel(role: string, locale: SupportedLocale): string {
   const r = String(role ?? "").toUpperCase();
@@ -387,28 +433,71 @@ export const communityCopy = register("community", {
       }),
       inboxTitle: null,
     }),
+  /**
+   * `hostName` is the ACTOR (the host on their own end; the param predates
+   * admin ends). `streamHostName` is set only when someone else ended it:
+   * "{admin} ended {host}'s livestream …".
+   */
   livestreamEnded:
     (
       communityName: string,
       hostName: string,
-      duration?: string | null
+      duration?: string | null,
+      streamHostName?: string | null
     ): LocalizedCopy =>
-    (locale) => ({
-      title: named(communityName, locale),
-      body:
-        duration && !/^0[smh]?$/.test(duration.trim())
-          ? t("NOTIF_COMMUNITY_LIVESTREAM_ENDED_DURATION", locale, {
-              name: person(hostName, locale),
-              community: named(communityName, locale),
-              duration,
-            })
-          : t("NOTIF_COMMUNITY_LIVESTREAM_ENDED", locale, {
-              name: person(hostName, locale),
-              community: named(communityName, locale),
-            }),
-      inboxTitle: null,
-    }),
-  /** Platform-ended (Super Admin force-end, moderation): never names the host. */
+    (locale) => {
+      const host = streamHostName?.trim();
+      const withDuration = duration && !/^0[smh]?$/.test(duration.trim());
+      const key = host
+        ? withDuration
+          ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST_DURATION"
+          : "NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST"
+        : withDuration
+          ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_DURATION"
+          : "NOTIF_COMMUNITY_LIVESTREAM_ENDED";
+      return {
+        title: named(communityName, locale),
+        body: t(key, locale, {
+          name: person(hostName, locale),
+          community: named(communityName, locale),
+          duration: duration ?? "",
+          host: host ?? "",
+        }),
+        inboxTitle: null,
+      };
+    },
+  /**
+   * Super Admin / Backoffice End Live: "Administrator ended {host}'s livestream
+   * …". The admin's own name is never sent to community clients (it stays in
+   * the audit log).
+   */
+  livestreamEndedByAdmin:
+    (
+      communityName: string,
+      duration?: string | null,
+      hostName?: string | null
+    ): LocalizedCopy =>
+    (locale) => {
+      const host = hostName?.trim();
+      const withDuration = duration && !/^0[smh]?$/.test(duration.trim());
+      const key = host
+        ? withDuration
+          ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST_DURATION"
+          : "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST"
+        : withDuration
+          ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_DURATION"
+          : "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN";
+      return {
+        title: named(communityName, locale),
+        body: t(key, locale, {
+          community: named(communityName, locale),
+          duration: duration ?? "",
+          host: host ?? "",
+        }),
+        inboxTitle: null,
+      };
+    },
+  /** Platform-ended (moderation, bans, timeouts): never names the host. */
   livestreamEndedBySystem:
     (communityName: string, duration?: string | null): LocalizedCopy =>
     (locale) => ({
@@ -452,22 +541,59 @@ export const communityCopy = register("community", {
       }),
       inboxTitle: null,
     }),
+  // An admin/moderator's Add Member: "{actor} added {target} to {community}",
+  // with the reader's own side as "You". Tickets written before actor and
+  // target were carried (args = [communityName]) have no actorId and keep
+  // their original sentence.
   memberAdded:
-    (communityName?: string | null): LocalizedCopy =>
-    (locale) => ({
+    (
+      communityName?: string | null,
+      actorName?: string | null,
+      targetName?: string | null,
+      actorId?: string | null,
+      targetUserId?: string | null
+    ): LocalizedCopy =>
+    (locale, viewerId) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_MEMBER_ADDED", locale, {
-        community: named(communityName, locale),
-      }),
+      body: actorId
+        ? memberChange(
+            "ADDED",
+            named(communityName, locale),
+            { id: actorId, name: actorName },
+            { id: targetUserId, name: targetName },
+            viewerId,
+            locale
+          )
+        : t("NOTIF_COMMUNITY_MEMBER_ADDED", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
+  // The same sentence for the community's other admins/moderators, who read
+  // it in the third person. Only Add Member carries actor/target — approval,
+  // invite link and self-join keep "A new member joined …".
   memberAddedForModerators:
-    (communityName?: string | null): LocalizedCopy =>
-    (locale) => ({
+    (
+      communityName?: string | null,
+      actorName?: string | null,
+      targetName?: string | null,
+      actorId?: string | null,
+      targetUserId?: string | null
+    ): LocalizedCopy =>
+    (locale, viewerId) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_MEMBER_ADDED_FOR_MODERATORS", locale, {
-        community: named(communityName, locale),
-      }),
+      body: actorId
+        ? memberChange(
+            "ADDED",
+            named(communityName, locale),
+            { id: actorId, name: actorName },
+            { id: targetUserId, name: targetName },
+            viewerId,
+            locale
+          )
+        : t("NOTIF_COMMUNITY_MEMBER_ADDED_FOR_MODERATORS", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
   adminTransferred:
@@ -489,13 +615,37 @@ export const communityCopy = register("community", {
       }),
       inboxTitle: null,
     }),
+  // "{actor} removed {target} from {community}", reader's side as "You" —
+  // same contract as memberAdded. A ticket written before actor/target were
+  // carried keeps "You were removed from …".
   memberKicked:
-    (communityName?: string | null): LocalizedCopy =>
-    (locale) => ({
+    (
+      communityName?: string | null,
+      actorName?: string | null,
+      targetName?: string | null,
+      actorId?: string | null,
+      targetUserId?: string | null
+    ): LocalizedCopy =>
+    (locale, viewerId) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_MEMBER_KICKED", locale, {
-        community: named(communityName, locale),
-      }),
+      body: actorId
+        ? memberChange(
+            "REMOVED",
+            named(communityName, locale),
+            {
+              // Inbox rows written before PLATFORM_ADMIN_ACTOR_ID carry
+              // SYSTEM_ACTOR_ID, which only the Backoffice removal ever stored.
+              id:
+                actorId === SYSTEM_ACTOR_ID ? PLATFORM_ADMIN_ACTOR_ID : actorId,
+              name: actorName,
+            },
+            { id: targetUserId, name: targetName },
+            viewerId,
+            locale
+          )
+        : t("NOTIF_COMMUNITY_MEMBER_KICKED", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
   memberBanned:
@@ -862,11 +1012,28 @@ export const chatMentionAllPreviewHiddenBody = (
     : t("NOTIF_CHAT_MENTION_ALL_HIDDEN", locale);
 
 export const groupCopy = register("group", {
+  // Same contract as communityCopy.memberAdded; a ticket without actorId
+  // (written before this) keeps "You were added to the group".
   memberAdded:
-    (groupName: string): LocalizedCopy =>
-    (locale) => ({
+    (
+      groupName: string,
+      actorName?: string | null,
+      targetName?: string | null,
+      actorId?: string | null,
+      targetUserId?: string | null
+    ): LocalizedCopy =>
+    (locale, viewerId) => ({
       title: groupName || t("NOTIF_GROUP_UNNAMED", locale),
-      body: t("NOTIF_GROUP_MEMBER_ADDED", locale),
+      body: actorId
+        ? memberChange(
+            "ADDED",
+            groupName || t("NOTIF_GROUP_UNNAMED", locale),
+            { id: actorId, name: actorName },
+            { id: targetUserId, name: targetName },
+            viewerId,
+            locale
+          )
+        : t("NOTIF_GROUP_MEMBER_ADDED", locale),
     }),
   // Word-for-word the community mute copy, with "group" in place of the
   // community name — see communityCopy.memberMuted/memberUnmuted.
@@ -1034,16 +1201,40 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
 
   "community.joinRequested": ["communityName", "requesterName"],
   "community.livestreamStarted": ["communityName", "hostName"],
-  "community.livestreamEnded": ["communityName", "hostName", "duration"],
+  "community.livestreamEnded": [
+    "communityName",
+    "hostName",
+    "duration",
+    "streamHostName",
+  ],
   "community.livestreamEndedBySystem": ["communityName", "duration"],
+  "community.livestreamEndedByAdmin": ["communityName", "duration", "hostName"],
   "community.joinRequestApproved": ["communityName", "decidedByName"],
   "community.joinRequestRejected": ["communityName"],
   "community.memberJoined": ["communityName"],
-  "community.memberAdded": ["communityName"],
-  "community.memberAddedForModerators": ["communityName"],
+  "community.memberAdded": [
+    "communityName",
+    "actorName",
+    "targetName",
+    "actorId",
+    "targetUserId",
+  ],
+  "community.memberAddedForModerators": [
+    "communityName",
+    "actorName",
+    "targetName",
+    "actorId",
+    "targetUserId",
+  ],
   "community.adminTransferred": ["communityName"],
   "community.roleChanged": ["newRole", "communityName"],
-  "community.memberKicked": ["communityName"],
+  "community.memberKicked": [
+    "communityName",
+    "actorName",
+    "targetName",
+    "actorId",
+    "targetUserId",
+  ],
   "community.memberBanned": ["communityName"],
   "community.memberUnbanned": ["communityName"],
   "community.memberMuted": ["mutedUntil", "communityName"],
@@ -1067,7 +1258,13 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "chat.mentionAll": ["params"],
   "chat.mentionInbox": ["params"],
 
-  "group.memberAdded": ["groupName"],
+  "group.memberAdded": [
+    "groupName",
+    "actorName",
+    "targetName",
+    "actorId",
+    "targetUserId",
+  ],
   "group.memberMuted": ["groupName", "mutedUntil"],
   "group.memberUnmuted": ["groupName"],
 
@@ -1086,6 +1283,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "account.banned": [],
   "account.suspended": [],
   "account.reinstated": [],
+  "account.updatedByAdmin": [],
 
   "auth.newLogin": ["browser", "location"],
   "auth.passwordChanged": [],

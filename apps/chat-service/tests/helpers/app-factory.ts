@@ -250,6 +250,17 @@ export function buildApp(): BuiltApp {
   );
   // Groups have an owner unless a spec says otherwise.
   groupMemberRepo.countActiveByRole = jest.fn(async () => 1);
+  // Leave ends the membership with a conditional ACTIVE → LEFT write in
+  // production (`leaveIfActive`). The mock routes it through the same
+  // `updateStatus` specs already program and assert on, and reports success
+  // unless a spec scripts the lost race by returning null directly.
+  groupMemberRepo.leaveIfActive = jest.fn(
+    async (roomId: string, userId: string, leftAt: Date) =>
+      (await groupMemberRepo.updateStatus(roomId, userId, "LEFT", {
+        leftAt,
+        unreadCount: 0,
+      })) ?? { roomId, userId, status: "LEFT" }
+  );
   const groupMessagePinRepo = repoMock();
   const communityMessagePinRepo = repoMock();
   // CommunityPinService.pin() runs its switch-pin logic inside

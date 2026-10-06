@@ -36,10 +36,10 @@ describe("withLocalizedSystemPreview", () => {
   it("renders the group row in the reader's language", () => {
     expect(
       textOf(withLocalizedSystemPreview(GROUP_SNAPSHOT, "GROUP", "x", "en"))
-    ).toBe("Alex removed Jim");
+    ).toBe("Alex removed Jim from the group");
     expect(
       textOf(withLocalizedSystemPreview(GROUP_SNAPSHOT, "GROUP", "x", "vi"))
-    ).toBe("Alex đã xóa Jim");
+    ).toBe("Alex đã xóa Jim khỏi nhóm");
     expect(
       textOf(withLocalizedSystemPreview(GROUP_SNAPSHOT, "GROUP", "x", "th"))
     ).toBe("AlexนำJimออกจากกลุ่ม");
@@ -50,7 +50,7 @@ describe("withLocalizedSystemPreview", () => {
       textOf(
         withLocalizedSystemPreview(GROUP_SNAPSHOT, "GROUP", "target-1", "th")
       )
-    ).toBe(t("SYS_GROUP_MEMBER_REMOVED_SELF", "th"));
+    ).toBe("Alexนำคุณออกจากกลุ่ม");
   });
 
   it("never translates interpolated names", () => {
@@ -110,7 +110,7 @@ describe("localizedActivityPreview", () => {
         "x",
         "vi"
       )
-    ).toBe("Alex đã xóa Jim");
+    ).toBe("Alex đã xóa Jim khỏi nhóm");
   });
 
   it("returns the preview unchanged when there is no snapshot to rebuild from", () => {

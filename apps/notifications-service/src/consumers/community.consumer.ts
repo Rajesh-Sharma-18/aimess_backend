@@ -1,5 +1,9 @@
 import { logger } from "@aimess/logger";
-import { t, type SupportedLocale } from "@aimess/constants";
+import {
+  PLATFORM_ADMIN_ACTOR_ID,
+  t,
+  type SupportedLocale,
+} from "@aimess/constants";
 import { publishUserSocketEvent } from "@aimess/redis";
 import amqp from "amqplib";
 import {
@@ -483,22 +487,33 @@ async function handleCommunityEvent(
 
     case CommunityEvents.LIVESTREAM_ENDED: {
       const p = data as CommunityLivestreamEndedPayload;
-      const recipients = withoutActor(p.recipientIds, p.hostUserId);
+      // The actor of the End Live — never pushed about their own action: the
+      // community admin on End for Everyone (the host IS told), else the host.
+      // A Super Admin end (ADMIN) has no AIMess actor, so the host is told too.
+      const endActorId =
+        p.endedByUserId ??
+        (p.endedReason === "ADMIN" ? undefined : p.hostUserId);
+      const recipients = withoutActor(p.recipientIds, endActorId);
       if (recipients.length === 0) break;
-      const [identity, resolvedHostName] = await Promise.all([
+      const [identity, resolvedHostName, endedByName] = await Promise.all([
         communityIdentityFor(
           p.communityId,
           p.communityName,
           p.communityAvatarUrl
         ),
         actorNameFor(p.hostUserId, p.hostDisplayName),
+        p.endedByUserId
+          ? actorNameFor(p.endedByUserId, p.endedByDisplayName)
+          : Promise.resolve(""),
       ]);
       const hostName = resolvedHostName || "Someone";
-      const actorSnapshot = {
-        userId: p.hostUserId,
-        displayName: resolvedHostName,
-        avatarUrl: p.hostAvatarUrl,
-      };
+      const actorSnapshot = p.endedByUserId
+        ? { userId: p.endedByUserId, displayName: endedByName, avatarUrl: null }
+        : {
+            userId: p.hostUserId,
+            displayName: resolvedHostName,
+            avatarUrl: p.hostAvatarUrl,
+          };
       await pushToUsers(recipients, (userId) => ({
         userId,
         // ponytail: replaces the "started" card only where "ended" is delivered;
@@ -506,20 +521,32 @@ async function handleCommunityEvent(
         // user opens the community (roomTags). Send dismissTrayCards here too if
         // that matters.
         collapseKey: pushTag.live(p.communityId),
-        // A platform end (Super Admin force-end, moderation) never names the
-        // host; the host still rides in data/actorSnapshot as the stream owner.
+        // A Super Admin end reads "An administrator", a platform end (moderation,
+        // bans) "System" — neither names the host; the host still rides in
+        // data/actorSnapshot as the stream owner.
         copy:
-          p.endedReason === "SYSTEM"
+          p.endedReason === "ADMIN"
+            ? communityCopy.livestreamEndedByAdmin(
+                identity.name,
+                p.duration,
+                // The host reads "Administrator ended the livestream …".
+                userId === p.hostUserId ? undefined : resolvedHostName
+              )
+            : p.endedReason === "SYSTEM"
             ? communityCopy.livestreamEndedBySystem(identity.name, p.duration)
             : communityCopy.livestreamEnded(
                 identity.name,
-                resolvedHostName,
-                p.duration
+                endedByName || resolvedHostName,
+                p.duration,
+                // "{admin} ended {host}'s livestream" when the admin ended it.
+                endedByName ? resolvedHostName : undefined
               ),
         ...base(
           type,
           identity,
-          p.hostUserId,
+          // push.service drops the recipient equal to actorId: this must be the
+          // ending actor, not the host, or the host never hears an admin's end.
+          endActorId,
           {
             livestreamId: p.livestreamId,
             hostUserId: p.hostUserId,
@@ -709,6 +736,19 @@ async function handleCommunityEvent(
         p.communityName
       );
       const communityName = identity.name;
+      // An admin/moderator's Add Member names both sides — "{actor} added
+      // {target} to {community}", with the reader's own side rendered "You".
+      // Every other path keeps its own sentence, so its copy gets no ids.
+      const byAdd = p.via === "add_members" && p.actorId !== p.targetUserId;
+      const [actorName, targetName] = byAdd
+        ? await Promise.all([
+            actorNameFor(p.actorId),
+            actorNameFor(p.targetUserId),
+          ])
+        : [undefined, undefined];
+      const who = byAdd
+        ? ([actorName, targetName, p.actorId, p.targetUserId] as const)
+        : ([] as const);
       // Welcome the joiner — UNLESS they will get the dedicated "approved" or
       // "self_join" (MEMBER_JOINED) notification.
       if (p.via !== "join_request_approved" && p.via !== "self_join") {
@@ -719,7 +759,7 @@ async function handleCommunityEvent(
           copy:
             p.via === "join_request_auto_accept"
               ? communityCopy.memberJoined(communityName)
-              : communityCopy.memberAdded(communityName),
+              : communityCopy.memberAdded(communityName, ...who),
           // Closed with the rest of the room's cards once they open it.
           collapseKey: pushTag.added(p.communityId),
           ...base(
@@ -747,7 +787,7 @@ async function handleCommunityEvent(
       if (mods.length > 0) {
         await pushToUsers(mods, (userId) => ({
           userId,
-          copy: communityCopy.memberAddedForModerators(communityName),
+          copy: communityCopy.memberAddedForModerators(communityName, ...who),
           ...base(
             type,
             identity,
@@ -811,15 +851,29 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_KICKED: {
       const p = data as CommunityMemberKickedPayload;
-      const identity = await communityIdentityFor(p.communityId);
+      // "{actor} removed You from {community}" — same sentence and name
+      // sources as the add. A Super Admin is not an AIMess user: the copy
+      // carries PLATFORM_ADMIN_ACTOR_ID and reads "Administrator removed You …",
+      // and the admin's own id never reaches the row.
+      const [identity, actorName, targetName] = await Promise.all([
+        communityIdentityFor(p.communityId),
+        p.byPlatformAdmin ? "" : actorNameFor(p.actorId),
+        actorNameFor(p.targetUserId),
+      ]);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberKicked(identity.name),
+        copy: communityCopy.memberKicked(
+          identity.name,
+          actorName,
+          targetName,
+          p.byPlatformAdmin ? PLATFORM_ADMIN_ACTOR_ID : p.actorId,
+          p.targetUserId
+        ),
         bypassSettings: true,
         ...base(
           type,
           identity,
-          p.actorId,
+          p.byPlatformAdmin ? undefined : p.actorId,
           {
             reason: p.reason ?? "",
           },

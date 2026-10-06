@@ -63,8 +63,8 @@ describe("emitPersonalizedSender — one broadcast, one language per recipient",
     const textOf = (s: FakeSocket): string =>
       (s.emit.mock.calls[0][1] as { contentText: string }).contentText;
 
-    expect(textOf(bystanderEn)).toBe("Alex removed Jim");
-    expect(textOf(bystanderVi)).toBe("Alex đã xóa Jim");
+    expect(textOf(bystanderEn)).toBe("Alex removed Jim from the group");
+    expect(textOf(bystanderVi)).toBe("Alex đã xóa Jim khỏi nhóm");
     expect(textOf(bystanderTh)).toBe("AlexนำJimออกจากกลุ่ม");
   });
 
@@ -80,7 +80,7 @@ describe("emitPersonalizedSender — one broadcast, one language per recipient",
     );
 
     const payload = target.emit.mock.calls[0][1] as { contentText: string };
-    expect(payload.contentText).toBe(t("SYS_GROUP_MEMBER_REMOVED_SELF", "th"));
+    expect(payload.contentText).toBe("Alexนำคุณออกจากกลุ่ม");
   });
 
   it("localizes the sender-is-you swap instead of always saying 'You'", async () => {

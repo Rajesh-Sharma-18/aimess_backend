@@ -546,7 +546,17 @@ const ACTOR_IDENTITY_METADATA_KEYS = [
 export function sanitizeCommunitySystemMetadata<
   T extends Record<string, unknown> | null | undefined,
 >(type: string | null | undefined, metadata: T): T {
-  if (!metadata || !isActorLessSystemMessage(type)) return metadata;
+  if (!metadata) return metadata;
+  // A Backoffice (Super Admin) line keeps its target but never the acting
+  // admin's id or name — readers render "Administrator" from `source` alone.
+  // Covers legacy rows, which stored the admin's id as actorUserId.
+  if (metadata.source === "BO" /* BACKOFFICE_SOURCE */) {
+    const out: Record<string, unknown> = { ...metadata };
+    delete out.actorUserId;
+    delete out.actorName;
+    return out as T;
+  }
+  if (!isActorLessSystemMessage(type)) return metadata;
   const out: Record<string, unknown> = { ...metadata };
   for (const k of ACTOR_IDENTITY_METADATA_KEYS) delete out[k];
   return out as T;

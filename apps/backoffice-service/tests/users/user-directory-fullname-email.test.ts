@@ -184,4 +184,32 @@ describe("GrpcUserDirectoryRepository.list — fullName + email mapping", () => 
       isBanned: false,
     });
   });
+
+  // The account is its own column; it must never fill the username slot.
+  it("username is '' (account kept separately) when user-service has no allocated username", async () => {
+    mockAdminListUsers.mockResolvedValue({
+      users: [{ ...authUser("u1", "u1@x.com"), account: "rajesh123" }],
+      total: 1,
+    });
+    // user-service answers "" for a profile whose onboarding was abandoned.
+    mockAdminGetProfilesByIds.mockResolvedValue([
+      { ...profile("u1", "", ""), username: "" },
+    ]);
+
+    const result = await repo.list(baseQuery());
+
+    expect(result.data[0]).toMatchObject({ username: "", account: "rajesh123" });
+  });
+
+  it("username is '' (not the account) when the profile row is missing", async () => {
+    mockAdminListUsers.mockResolvedValue({
+      users: [{ ...authUser("u1", "u1@x.com"), account: "rajesh123" }],
+      total: 1,
+    });
+    mockAdminGetProfilesByIds.mockResolvedValue([]);
+
+    const result = await repo.list(baseQuery());
+
+    expect(result.data[0]).toMatchObject({ username: "", account: "rajesh123" });
+  });
 });

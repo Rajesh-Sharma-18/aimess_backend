@@ -16,14 +16,24 @@ export type UsernameAvailabilityResult = {
 };
 
 export class UsernameService {
-  async generateFromAccount(account: string): Promise<{ username: string }> {
+  /**
+   * Suggest a handle for `account`: the bare base when free, else `base_1`,
+   * `base_2`, … (first free). `excludeUserId` is the caller — registration seeds
+   * the profile row with a username, so without it the user's OWN handle reads
+   * as taken and the suggestion jumps a suffix. A suggestion is not a claim; the
+   * unique index decides at save time.
+   */
+  async generateFromAccount(
+    account: string,
+    excludeUserId?: string
+  ): Promise<{ username: string }> {
     const base = usernameBaseFromAccount(account);
 
     if (!isValidUsernameFormat(base)) {
       throw new BadRequestError("INVALID_USERNAME_FORMAT");
     }
 
-    const username = await this.findAvailableUsername(base);
+    const username = await this.findAvailableUsername(base, excludeUserId);
     return { username };
   }
 
@@ -40,24 +50,28 @@ export class UsernameService {
       canonical,
       excludeUserId
     );
+    let available: boolean;
     if (cached !== null) {
-      return {
-        username: canonical,
-        available: cached.available,
-      };
+      available = cached.available;
+    } else {
+      ({ available } = await this.resolveUsernameAvailability(
+        canonical,
+        excludeUserId
+      ));
+      await userCache.setUsernameAvailability(
+        canonical,
+        excludeUserId,
+        available
+      );
     }
 
-    const result = await this.resolveUsernameAvailability(
-      canonical,
-      excludeUserId
-    );
-    await userCache.setUsernameAvailability(
-      canonical,
-      excludeUserId,
-      result.available
-    );
+    // Holds expire on their own, so they are checked live, never cached.
+    if (available) {
+      const holder = await userCache.getUsernameHolder(canonical);
+      available = holder === null || holder === excludeUserId;
+    }
 
-    return result;
+    return { username: canonical, available };
   }
 
   private async resolveUsernameAvailability(
@@ -81,35 +95,58 @@ export class UsernameService {
     return userProfileRepository.findByUsername(username);
   }
 
-  private async isUsernameTaken(username: string): Promise<boolean> {
+  private async isUsernameTaken(
+    username: string,
+    excludeUserId?: string
+  ): Promise<boolean> {
     const canonical = normalizeUsername(username);
-    const cachedTaken = await userCache.getUsernameTaken(canonical);
-    if (cachedTaken === true) {
-      return true;
+    // The taken-cache does not record the owner, so it may only short-circuit
+    // when there is no "self" to exclude.
+    if (excludeUserId === undefined) {
+      const cachedTaken = await userCache.getUsernameTaken(canonical);
+      if (cachedTaken === true) {
+        return true;
+      }
     }
 
+    // Unfiltered by status on purpose: a BANNED profile keeps its handle (no
+    // impersonation); a purged one already had it swapped for a placeholder.
     const existing = await this.findProfileByUsername(canonical);
-    if (existing) {
-      await userCache.markUsernameTaken(canonical);
-      return true;
+    if (!existing) {
+      return false;
     }
 
-    return false;
+    await userCache.markUsernameTaken(canonical);
+    return existing.userId !== excludeUserId;
   }
 
-  private async findAvailableUsername(base: string): Promise<string> {
+  private async findAvailableUsername(
+    base: string,
+    excludeUserId?: string
+  ): Promise<string> {
     const canonicalBase = normalizeUsername(base);
-    if (!(await this.isUsernameTaken(canonicalBase))) {
-      return canonicalBase;
-    }
 
-    for (let suffix = 2; suffix <= 9999; suffix += 1) {
-      const candidate = usernameWithSuffix(canonicalBase, suffix);
+    // n=0 is the bare base; suffixes only after it.
+    for (let suffix = 0; suffix <= 9999; suffix += 1) {
+      const candidate =
+        suffix === 0
+          ? canonicalBase
+          : usernameWithSuffix(canonicalBase, suffix);
       if (!isValidUsernameFormat(candidate)) {
         continue;
       }
 
-      if (!(await this.isUsernameTaken(candidate))) {
+      if (await this.isUsernameTaken(candidate, excludeUserId)) {
+        continue;
+      }
+
+      // A user asking for a suggestion holds it for 5 minutes; registration
+      // (no caller) just steps around anyone else's hold.
+      const reserved =
+        excludeUserId === undefined
+          ? (await userCache.getUsernameHolder(candidate)) === null
+          : await userCache.claimUsernameHold(candidate, excludeUserId);
+      if (reserved) {
         return candidate;
       }
     }

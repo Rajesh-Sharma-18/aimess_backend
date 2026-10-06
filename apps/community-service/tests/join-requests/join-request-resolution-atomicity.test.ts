@@ -23,10 +23,14 @@ const muteDeleteMany = jest.fn();
 const warningDeleteMany = jest.fn();
 const joinRequestUpdateMany = jest.fn();
 const joinRequestFindMany = jest.fn();
+const communityUpdate = jest.fn();
 
 jest.mock("../../src/config/prisma.js", () => ({
   prisma: {
     $transaction: (...args: unknown[]) => tx(...args),
+    community: {
+      update: (...a: unknown[]) => communityUpdate(...a),
+    },
     communityMember: {
       create: (...a: unknown[]) => memberCreate(...a),
       createMany: (...a: unknown[]) => memberCreateMany(...a),
@@ -71,6 +75,8 @@ const UPDATE_OP = { __op: "member.update" };
 const MUTE_OP = { __op: "mute.deleteMany" };
 const WARN_OP = { __op: "warning.deleteMany" };
 const RESOLVE_OP = { __op: "joinRequest.updateMany" };
+// The open-community guard every activation transaction starts with.
+const OPEN_OP = { __op: "community.update" };
 
 const memberFixture = { userId: B, role: "MEMBER", joinedAt: new Date() };
 
@@ -82,12 +88,15 @@ beforeEach(() => {
   muteDeleteMany.mockReturnValue(MUTE_OP);
   warningDeleteMany.mockReturnValue(WARN_OP);
   joinRequestUpdateMany.mockReturnValue(RESOLVE_OP);
+  communityUpdate.mockReturnValue(OPEN_OP);
   // Batch $transaction resolves an array of results, positionally.
   tx.mockImplementation(async (ops: unknown[]) =>
     ops.map((op) =>
       op === CREATE_OP || op === UPDATE_OP
         ? memberFixture
-        : { count: op === RESOLVE_OP ? 1 : 0 }
+        : op === OPEN_OP
+          ? { id: CID }
+          : { count: op === RESOLVE_OP ? 1 : 0 }
     )
   );
 });
@@ -111,7 +120,7 @@ describe("createMember", () => {
     );
 
     expect(tx).toHaveBeenCalledTimes(1);
-    expect(txOps()).toEqual([CREATE_OP, RESOLVE_OP]);
+    expect(txOps()).toEqual([OPEN_OP, CREATE_OP, RESOLVE_OP]);
   });
 
   it("resolves ONLY this user's PENDING rows in THIS community, stamped with the actor", async () => {
@@ -176,13 +185,63 @@ describe("createMember", () => {
     // Both operations were only ever handed to the transaction — neither was
     // awaited on its own, so there is nothing to half-commit.
     expect(tx).toHaveBeenCalledTimes(1);
-    expect(txOps()).toEqual([CREATE_OP, RESOLVE_OP]);
+    expect(txOps()).toEqual([OPEN_OP, CREATE_OP, RESOLVE_OP]);
+  });
+
+  it("a community that closed after the caller's check refuses the join: COMMUNITY_IS_CLOSED, nothing written", async () => {
+    // What Prisma raises when the guard's filtered update matches no community.
+    tx.mockRejectedValue(
+      Object.assign(new Error("Record to update not found."), {
+        code: "P2025",
+        meta: { modelName: "Community" },
+      })
+    );
+
+    await expect(
+      communityRepository.createMember({
+        communityId: CID,
+        userId: B,
+        role: "MEMBER" as never,
+        status: "ACTIVE" as never,
+        snapshotUsername: "b",
+        snapshotDisplayName: "B",
+        snapshotAvatarKey: null,
+      })
+    ).rejects.toMatchObject({ messageKey: "COMMUNITY_IS_CLOSED" });
+    expect(communityUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: CID,
+          status: { not: "CLOSED" },
+          moderationStatus: { not: "SUSPENDED" },
+        }),
+      })
+    );
+  });
+
+  it("retries a write conflict with a concurrent community write", async () => {
+    tx.mockRejectedValueOnce(
+      Object.assign(new Error("Write conflict"), { code: "P2034" })
+    );
+
+    await communityRepository.createMember({
+      communityId: CID,
+      userId: B,
+      role: "MEMBER" as never,
+      status: "ACTIVE" as never,
+      snapshotUsername: "b",
+      snapshotDisplayName: "B",
+      snapshotAvatarKey: null,
+    });
+
+    expect(tx).toHaveBeenCalledTimes(2);
   });
 });
 
 describe("reactivateMemberWithSnapshot", () => {
   it("D3: rejoin reactivation carries the request resolution in the same transaction", async () => {
     tx.mockResolvedValue([
+      { id: CID },
       memberFixture,
       { count: 0 },
       { count: 0 },
@@ -201,7 +260,7 @@ describe("reactivateMemberWithSnapshot", () => {
     );
 
     expect(tx).toHaveBeenCalledTimes(1);
-    expect(txOps()).toEqual([UPDATE_OP, MUTE_OP, WARN_OP, RESOLVE_OP]);
+    expect(txOps()).toEqual([OPEN_OP, UPDATE_OP, MUTE_OP, WARN_OP, RESOLVE_OP]);
     expect(joinRequestUpdateMany.mock.calls[0][0].data.decidedBy).toBe(ADMIN);
   });
 });
@@ -233,7 +292,7 @@ describe("createManyMembers", () => {
       ADMIN
     );
 
-    expect(txOps()).toEqual([CREATE_MANY_OP, RESOLVE_OP]);
+    expect(txOps()).toEqual([OPEN_OP, CREATE_MANY_OP, RESOLVE_OP]);
     expect(joinRequestUpdateMany.mock.calls[0][0].where.userId).toEqual({
       in: [B, ADMIN],
     });

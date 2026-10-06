@@ -93,6 +93,13 @@ export const AUTH_MESSAGES = {
     en: "Your account is linked to Apple. Please continue with Apple to log in.",
     th: "บัญชีของคุณเชื่อมกับ Apple กรุณาดำเนินการต่อด้วย Apple เพื่อเข้าสู่ระบบ",
   },
+  // Password-less with BOTH providers linked: either works, so neither is
+  // named as "the" way in.
+  AUTH_SOCIAL_LOGIN_REQUIRED: {
+    vi: "Tài khoản của bạn được liên kết với Google và Apple. Vui lòng tiếp tục bằng Google hoặc Apple để đăng nhập",
+    en: "Your account is linked to Google and Apple. Please continue with Google or Apple to log in.",
+    th: "บัญชีของคุณเชื่อมกับ Google และ Apple กรุณาดำเนินการต่อด้วย Google หรือ Apple เพื่อเข้าสู่ระบบ",
+  },
   AUTH_UNAUTHORIZED: {
     vi: "Yêu cầu xác thực",
     en: "Authentication token is required.",

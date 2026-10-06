@@ -40,6 +40,7 @@ function makeDeps(hlen: number | (() => number), initialPeak = 0) {
     findById: jest.fn(),
     findBySrsName: jest.fn(),
     findBySrsNames: jest.fn().mockResolvedValue([]),
+    claimEnded: jest.fn().mockResolvedValue(true),
     updateById: jest.fn(async (_id: string, data: Record<string, unknown>) => ({
       ...makeStream({ peakViewers: peakStore.get() }),
       ...data,

@@ -9,7 +9,8 @@ import { deviceInfoField } from "./device-info.validator.js";
 const accountShape = z
   .string()
   .trim()
-  // .toLowerCase()
+  // Not lowercased here: this shape also reads EXISTING handles, and legacy
+  // ones keep the case they were created with. New ones: `newAccountSchema`.
   .min(3, "Account name must be at least 3 characters")
   .regex(
     /^[-a-zA-Z0-9_]+$/,
@@ -31,8 +32,10 @@ export const accountSchema = accountShape.max(
 );
 
 /**
- * The account name a NEW registration may claim: the same shape, capped at the
- * shared 30 (`TEXT_NAME_MAX_LENGTH`). The charset is ASCII-only, so UTF-16
+ * The account name a NEW registration may claim: the same shape, lowercased
+ * (the canonical form — see `findByAccount` for why "Rajesh_Sharma" and
+ * "rajesh_sharma" are one identity), capped at the shared 30
+ * (`TEXT_NAME_MAX_LENGTH`). The charset is ASCII-only, so UTF-16
  * length and character count are the same thing here, and this `.max()` agrees
  * exactly with the website's character counter. The message is a message KEY —
  * `validateBody` renders it in the caller's locale.
@@ -41,10 +44,9 @@ export const accountSchema = accountShape.max(
  * 50-character handle is answered with THIS sentence; layered over the 32 cap it
  * would have reported "at most 32 characters" to someone being held to 30.
  */
-export const newAccountSchema = accountShape.max(
-  TEXT_NAME_MAX_LENGTH,
-  "VALIDATION_ACCOUNT_MAX_LENGTH"
-);
+export const newAccountSchema = accountShape
+  .max(TEXT_NAME_MAX_LENGTH, "VALIDATION_ACCOUNT_MAX_LENGTH")
+  .toLowerCase();
 
 /**
  * Proof-of-work credential.
@@ -101,6 +103,10 @@ export const loginIdentifierSchema = z
  */
 export const validateAccountSchema = z.object({
   account: loginIdentifierSchema,
+  // Opt-in, so the signup form and every existing client keep the plain
+  // 409 AUTH_ACCOUNT_TAKEN. A login form sends "login" to also learn, before
+  // it shows a password field, that the account cannot use one.
+  purpose: z.literal("login").optional(),
 });
 
 export type ValidateAccountInput = z.infer<typeof validateAccountSchema>;

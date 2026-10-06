@@ -1,6 +1,7 @@
 /**
  * "My Communities" list visibility (business rules):
- *  - ACTIVE  → visible.
+ *  - ACTIVE  → visible, unless the caller deleted it from their list while
+ *    the community was CLOSED (dismissedAt set; a reopen clears it).
  *  - BANNED  → visible UNTIL the caller dismisses it (dismissedAt set) — the
  *    community stays in the list even though every action on it is denied
  *    with USER_BANNED.
@@ -12,7 +13,7 @@
  *    removedAt is an audit-only marker) → never visible — rejoin via the
  *    normal flow.
  * listMineByActivity (and its V2 keyset counterpart) encode this as:
- *   status=ACTIVE
+ *   (status=ACTIVE AND dismissedAt unset)
  *   OR (status=BANNED AND dismissedAt unset)
  *   OR (status=LEFT AND unbannedAt set AND dismissedAt unset)
  */
@@ -40,7 +41,7 @@ const EXPECTED_MEMBER_FILTER = {
   some: {
     userId: "user-1",
     OR: [
-      { status: "ACTIVE" },
+      { status: "ACTIVE", dismissedAt: { isSet: false } },
       { status: "BANNED", dismissedAt: { isSet: false } },
       {
         status: "LEFT",

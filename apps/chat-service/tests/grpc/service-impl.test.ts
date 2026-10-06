@@ -1202,6 +1202,93 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
     expect(notifRepo.create).not.toHaveBeenCalled();
   });
 
+  // ---- community membership card (added → removed → added …) ---------------
+  const membershipRow = (actorId: string) => ({
+    ...resolvedRow("community.member_added"),
+    actorId,
+    actorSnapshot: { userId: actorId, displayName: "Earlier Actor" },
+    groupKey: "community:comm-1:membership",
+  });
+
+  it("a Backoffice removal clears the membership card's previous actor", async () => {
+    const applyStateTransition = jest.fn(async () => membershipRow(""));
+    const notifRepo = makeNotifRepo({
+      // Includes the legacy case: an older build stored the admin id here.
+      findActiveByGroupKey: jest.fn(async () => membershipRow("admin-uuid")),
+      applyStateTransition,
+    });
+    const handler = createNotificationImpl(
+      makeDeps({ notificationRepo: notifRepo })
+    ).createNotification as Handler;
+
+    await invoke(handler, {
+      userId: "user-A",
+      type: "community.member_kicked",
+      title: "Comm",
+      body: "Administrator removed You from Comm",
+      data: { communityId: "comm-1" },
+    });
+
+    expect(applyStateTransition).toHaveBeenCalledWith(
+      "notif-old",
+      expect.objectContaining({ actorId: "", actorSnapshot: {} })
+    );
+  });
+
+  it("an in-app removal names its own actor on the membership card", async () => {
+    const applyStateTransition = jest.fn(async () => membershipRow("mod-1"));
+    const notifRepo = makeNotifRepo({
+      findActiveByGroupKey: jest.fn(async () => membershipRow("owner-1")),
+      applyStateTransition,
+    });
+    const handler = createNotificationImpl(
+      makeDeps({ notificationRepo: notifRepo })
+    ).createNotification as Handler;
+
+    await invoke(handler, {
+      userId: "user-A",
+      actorId: "mod-1",
+      type: "community.member_kicked",
+      title: "Comm",
+      body: "Mod removed You from Comm",
+      data: { communityId: "comm-1" },
+    });
+
+    expect(applyStateTransition).toHaveBeenCalledWith(
+      "notif-old",
+      expect.objectContaining({ actorId: "mod-1" })
+    );
+  });
+
+  it("other cards still keep their actor when the update carries none", async () => {
+    const applyStateTransition = jest.fn(async () =>
+      resolvedRow("friend.accepted")
+    );
+    const notifRepo = makeNotifRepo({
+      findActiveByGroupKey: jest.fn(async () => ({
+        ...resolvedRow("friend.requested"),
+        actorId: "user-B",
+      })),
+      applyStateTransition,
+    });
+    const handler = createNotificationImpl(
+      makeDeps({ notificationRepo: notifRepo })
+    ).createNotification as Handler;
+
+    await invoke(handler, {
+      userId: "user-A",
+      type: "friend.accepted",
+      title: "Accepted",
+      body: "You are now friends",
+      data: { friendshipId: FRIENDSHIP_ID },
+    });
+
+    expect(applyStateTransition).toHaveBeenCalledWith(
+      "notif-old",
+      expect.objectContaining({ actorId: "user-B" })
+    );
+  });
+
   // Test 6: getNotifications returns navigation as parsed object
   it("getNotifications returns navigation as a parsed object (not a JSON string)", async () => {
     const nav = {

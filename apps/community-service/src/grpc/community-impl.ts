@@ -55,6 +55,21 @@ function dateToBound(s: unknown): Date | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
+/** JSON system params → object; empty/unparseable → null, so bad params never block the rollback itself. */
+function parseSystemMetadata(
+  json: string | undefined
+): Record<string, unknown> | null {
+  if (!json) return null;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export const communityImpl: grpc.UntypedServiceImplementation = {
   // Community message persistence lives in chat-service (Mongo GeneralRoomMessage
   // store + broadcast + push). This RPC is the gateway's `community:message:send`
@@ -1065,6 +1080,16 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         const messageId = (req.messageId ?? "").trim();
         const emoji = req.emoji ?? "";
         const actorId = (req.actorId ?? "").trim();
+        // The reacted message was deleted: clear whichever reaction on it is shown; ok says whether one was.
+        if (communityId && messageId && !req.added && !emoji && !actorId) {
+          callback(null, {
+            ok: await communityRepository.clearReactionActivityForMessage(
+              communityId,
+              messageId
+            ),
+          });
+          return;
+        }
         if (!communityId || !messageId || !emoji || !actorId) {
           callback(null, { ok: false });
           return;
@@ -1125,6 +1150,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           seq?: number;
           contentType?: string;
           rollbackNotNewerThan?: number | string;
+          systemMessageType?: string;
+          systemMetadataJson?: string;
         };
         const communityId = (req.communityId ?? "").trim();
         if (!communityId) {
@@ -1157,6 +1184,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
               clientMessageId: req.clientMessageId ?? null,
               seq: Number(req.seq ?? 0),
               contentType: req.contentType ?? null,
+              systemType: req.systemMessageType || null,
+              systemMetadata: parseSystemMetadata(req.systemMetadataJson),
             }
           );
         } else {
@@ -1206,6 +1235,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           sortDir?: string;
           page?: number;
           limit?: number;
+          communityIds?: string[];
+          excludeCommunityIds?: string[];
         };
 
         const type =
@@ -1232,6 +1263,10 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           sortDir: req.sortDir === "asc" ? "asc" : "desc",
           page: coercePage(req.page),
           limit: coerceLimit(req.limit),
+          communityIds: req.communityIds?.length ? req.communityIds : undefined,
+          excludeCommunityIds: req.excludeCommunityIds?.length
+            ? req.excludeCommunityIds
+            : undefined,
         });
 
         // Resolve each admin's snapshot avatar key → presigned download URL

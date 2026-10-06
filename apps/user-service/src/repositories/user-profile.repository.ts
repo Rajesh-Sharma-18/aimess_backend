@@ -54,6 +54,25 @@ const DISCOVERABLE_ACCOUNT_WHERE = {
   status: { not: ProfileStatus.BANNED },
 } as const satisfies Prisma.UserProfileWhereInput;
 
+/**
+ * DISCOVERY additionally requires a completed profile — the same three fields
+ * `isProfileComplete` checks. Registration reserves an account-derived username
+ * that `allocatedUsername()` blanks for other viewers, so an abandoned
+ * onboarding used to surface as a nameless row that still MATCHED on the
+ * hidden handle (confirming the account exists) and, sorting on an empty
+ * `firstName`, led every page. In the WHERE for the same reason as the ban:
+ * counts, `hasMore` and the keyset stay honest.
+ *
+ * Not applied to `findUsersInList` (the viewer's accepted friends): that list
+ * is already authorized, exactly like the `whoCanFindMe` exemption there.
+ */
+const DISCOVERABLE_PROFILE_WHERE = {
+  ...DISCOVERABLE_ACCOUNT_WHERE,
+  username: { not: "" },
+  firstName: { not: "" },
+  lastName: { not: "" },
+} as const satisfies Prisma.UserProfileWhereInput;
+
 const DISCOVERY_SELECT = {
   userId: true,
   username: true,
@@ -183,7 +202,7 @@ export const userProfileRepository = {
       where: {
         userId: { in: userIds },
         deletedAt: null,
-        ...DISCOVERABLE_ACCOUNT_WHERE,
+        ...DISCOVERABLE_PROFILE_WHERE,
         ...discoverableWhere(viewer),
       },
       select: DISCOVERY_SELECT,
@@ -213,7 +232,7 @@ export const userProfileRepository = {
       where: {
         normalizedUsername,
         deletedAt: null,
-        ...DISCOVERABLE_ACCOUNT_WHERE,
+        ...DISCOVERABLE_PROFILE_WHERE,
         ...(alwaysVisibleIds?.length
           ? {
               OR: [
@@ -227,9 +246,14 @@ export const userProfileRepository = {
     });
   },
 
-  /** Case-insensitive — canonical storage is lowercase; legacy rows may differ in casing. */
+  /**
+   * Case-insensitive — canonical storage is lowercase; legacy rows may differ in
+   * casing. Prisma's `mode: "insensitive"` is an ILIKE, where `_` (legal in
+   * every username) is a wildcard, so it is escaped: unescaped, "test_c" found
+   * "testxc" and was reported taken.
+   */
   findByUsername(username: string) {
-    const normalized = normalizeUsername(username);
+    const normalized = normalizeUsername(username).replace(/[\\%_]/g, "\\$&");
     return prisma.userProfile.findFirst({
       where: {
         username: { equals: normalized, mode: "insensitive" },
@@ -366,7 +390,7 @@ export const userProfileRepository = {
       where: {
         userId: { notIn: excludeIds },
         deletedAt: null,
-        ...DISCOVERABLE_ACCOUNT_WHERE,
+        ...DISCOVERABLE_PROFILE_WHERE,
         ...buildDiscoveryWhere(q, viewer, cursor, alwaysVisibleIds),
       },
       select: DISCOVERY_SELECT,
@@ -387,7 +411,7 @@ export const userProfileRepository = {
       where: {
         userId: { notIn: excludeIds },
         deletedAt: null,
-        ...DISCOVERABLE_ACCOUNT_WHERE,
+        ...DISCOVERABLE_PROFILE_WHERE,
         ...buildDiscoveryWhere(q, viewer),
       },
     });

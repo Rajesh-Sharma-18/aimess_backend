@@ -25,6 +25,24 @@ import {
 // deliberately excluded: a disband hides the room everywhere.
 const VISIBLE_ROOM_STATUS: { in: string[] } = { in: ["ACTIVE", "CLOSED"] };
 
+/**
+ * Thrown out of a last-member disband when, at the write, the caller is no
+ * longer the room's only ACTIVE member (someone joined, or they already left).
+ * The transaction rolls back; the caller maps it to CHAT_OWNER_CANNOT_LEAVE.
+ */
+export class GroupNotSoleMemberError extends Error {}
+
+/** The reaction overlay columns, emptied. */
+const NO_REACTION_ACTIVITY = {
+  reactionActivityAt: null,
+  reactionActivityMessageId: null,
+  reactionActivityEmoji: null,
+  reactionActivityActorId: null,
+  reactionActivityActorPreview: null,
+  reactionActivityTargetId: null,
+  reactionActivityTargetPreview: null,
+};
+
 /** Identity frozen onto a GroupClosureMember row. */
 export interface ClosureIdentity {
   username: string;
@@ -286,12 +304,11 @@ export class GroupRoomRepository {
       // Same normalizer the in-app group search uses (AND-of-token-ORs), so the
       // admin box is never weaker than the product one. Wrapped in a single AND
       // branch — spreading it into the OR would turn it into match-any-token.
-      // A punctuation-only q tokenizes to [] and `{AND: []}` matches everything,
-      // hence the length guard.
-      const nameFilter = buildGroupSearchFilter(q);
+      // A punctuation-only q yields a match-nothing clause, so only the id
+      // branches below can hit.
       and.push({
         OR: [
-          ...(nameFilter.length ? [{ AND: nameFilter }] : []),
+          { AND: buildGroupSearchFilter(q) },
           { roomId: q },
           ...(idsFromUserSearch?.length
             ? [{ roomId: { in: idsFromUserSearch } }]
@@ -413,6 +430,8 @@ export class GroupRoomRepository {
       clientMessageId?: string | null;
       sequenceNumber?: number | null;
       revision?: number | null;
+      systemEvent?: string | null;
+      systemData?: unknown;
     } | null,
     /** See PrivateRoomRepository.setLastMessage — same compare-and-swap. */
     opts?: { expectLastMessageId?: string | null }
@@ -439,14 +458,20 @@ export class GroupRoomRepository {
               senderName: message.senderName,
               messageType: message.messageType,
               createdAt: message.createdAt,
+              // Same pair updateLastMessage stores, so the inbox can still re-render a rolled-back SYSTEM line per viewer.
+              systemEvent: message.systemEvent ?? null,
+              systemData: (message.systemData ?? null) as Prisma.InputJsonValue,
               ...listRowIdentity(message),
             },
+            // See PrivateRoomRepository.setLastMessage — a rollback must not resurrect the reaction overlay.
+            ...NO_REACTION_ACTIVITY,
           }
         : {
             lastMessageId: null,
             lastMessageAt: null,
             lastMessageSeq: null,
             lastMessagePreview: null as unknown as Prisma.InputJsonValue,
+            ...NO_REACTION_ACTIVITY,
           },
     });
     return count > 0;
@@ -495,16 +520,20 @@ export class GroupRoomRepository {
         reactionActivityEmoji: identity.emoji,
         reactionActivityActorId: identity.actorId,
       },
-      data: {
-        reactionActivityAt: null,
-        reactionActivityMessageId: null,
-        reactionActivityEmoji: null,
-        reactionActivityActorId: null,
-        reactionActivityActorPreview: null,
-        reactionActivityTargetId: null,
-        reactionActivityTargetPreview: null,
-      },
+      data: NO_REACTION_ACTIVITY,
     });
+  }
+
+  /** See PrivateRoomRepository.clearReactionActivityForMessage — identical semantics. */
+  async clearReactionActivityForMessage(
+    roomId: string,
+    messageId: string
+  ): Promise<boolean> {
+    const { count } = await this.prisma.groupRoom.updateMany({
+      where: { roomId, reactionActivityMessageId: messageId },
+      data: NO_REACTION_ACTIVITY,
+    });
+    return count > 0;
   }
 
   /**
@@ -520,7 +549,9 @@ export class GroupRoomRepository {
    */
   async reserveMemberSlot(roomId: string, limit: number): Promise<boolean> {
     const { count } = await this.prisma.groupRoom.updateMany({
-      where: { roomId, memberCount: { lt: limit } },
+      // ACTIVE only: a join racing a disband/close cannot claim a slot in a
+      // room that ended after its writability check.
+      where: { roomId, status: "ACTIVE", memberCount: { lt: limit } },
       data: { memberCount: { increment: 1 } },
     });
     return count === 1;
@@ -556,16 +587,20 @@ export class GroupRoomRepository {
   async disband(
     roomId: string,
     userId: string,
-    identities: Map<string, ClosureIdentity> = new Map()
+    identities: Map<string, ClosureIdentity> = new Map(),
+    /** Last-member leave: only an ACTIVE room, and only while `userId` is its
+     *  sole ACTIVE member at the write (else GroupNotSoleMemberError). */
+    opts?: { asLastMember?: boolean }
   ): Promise<GroupRoom | null> {
     const at = new Date();
     return this.closeWithSnapshot(
       roomId,
-      ["ACTIVE", "CLOSED"],
+      opts?.asLastMember ? ["ACTIVE"] : ["ACTIVE", "CLOSED"],
       { status: "DISBANDED", disbandedAt: at, disbandedBy: userId },
       at,
       identities,
-      true
+      true,
+      opts?.asLastMember ? userId : undefined
     );
   }
 
@@ -607,12 +642,26 @@ export class GroupRoomRepository {
     data: Prisma.GroupRoomUpdateInput,
     at: Date,
     identities: Map<string, ClosureIdentity>,
-    endMemberships: boolean
+    endMemberships: boolean,
+    soleMemberId?: string
   ): Promise<GroupRoom | null> {
     return withWriteConflictRetry(() =>
       this.prisma.$transaction(async (tx) => {
         const room = await tx.groupRoom.findUnique({ where: { roomId } });
         if (!room || !fromStatuses.includes(room.status)) return null;
+
+        // Last-member decision made on the same snapshot as the close itself,
+        // never on a count read before the transaction.
+        if (soleMemberId) {
+          const active = await tx.groupMember.findMany({
+            where: { roomId, status: "ACTIVE" },
+            select: { userId: true },
+            take: 2,
+          });
+          if (active.length !== 1 || active[0]?.userId !== soleMemberId) {
+            throw new GroupNotSoleMemberError();
+          }
+        }
 
         let memberCountAtClosure = room.memberCountAtClosure;
         if (room.status === "ACTIVE") {

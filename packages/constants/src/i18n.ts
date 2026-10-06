@@ -51,7 +51,7 @@ export function interpolate(text: string, params?: MessageParams): string {
  *
  * @example
  * t("CHAT_MESSAGE_SENT", "th")
- * t("SYS_GROUP_MEMBER_REMOVED", "vi", { actor: "An", target: "Bình" })
+ * t("SYS_MEMBER_REMOVED_FROM", "vi", { actor: "An", target: "Bình", entity: "Nhóm A" })
  */
 export function t(
   key: MessageKey,

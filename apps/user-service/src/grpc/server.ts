@@ -26,6 +26,7 @@ import {
 } from "../lib/privacy-scope.js";
 import { avatarService } from "../services/avatar.service.js";
 import { buildFriendshipView } from "../lib/friendship-view.js";
+import { allocatedUsername } from "../lib/username.util.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -52,7 +53,7 @@ function toAdminProfileRecord(row: {
 }): AdminProfileRecord {
   return {
     userId: row.userId,
-    username: row.username,
+    username: allocatedUsername(row),
     avatarUrl: row.avatarUrl ?? "",
     firstName: row.firstName,
     lastName: row.lastName,
@@ -83,7 +84,7 @@ function toAdminEditableProfile(profile: {
 }) {
   return {
     userId: profile.userId,
-    username: profile.username,
+    username: allocatedUsername(profile),
     firstName: profile.firstName,
     lastName: profile.lastName,
     bio: profile.bio ?? "",
@@ -418,7 +419,7 @@ export function startUserGrpcServer(): grpc.Server {
                 Boolean(p.deletedAt) || p.status === ProfileStatus.DELETED;
               return {
                 userId: p.userId,
-                username: isDeleted ? "" : p.username,
+                username: isDeleted ? "" : allocatedUsername(p),
                 displayName: isDeleted
                   ? DELETED_ACCOUNT_DISPLAY_NAME
                   : buildDisplayName(p.firstName, p.lastName),

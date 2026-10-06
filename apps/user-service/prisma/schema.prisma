@@ -22,7 +22,9 @@ datasource db {
 model UserProfile {
   userId                 String                @id @db.Uuid
   // Public identity
-  username               String                @unique // @handle
+  // @handle. Stored lowercase; also unique on lower(username) via the raw
+  // expression index `user_profiles_username_lower_key` (Prisma cannot declare it).
+  username               String                @unique
   account                String?               @unique @db.VarChar(32)
   isGoogleLogin          Boolean               @default(false)
   firstName              String                @db.VarChar(200)

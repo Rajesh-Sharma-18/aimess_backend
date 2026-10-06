@@ -18,7 +18,6 @@ import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
 import { assertPrivateParticipants } from "../lib/room-id.js";
-import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
 import {
   shouldCountInUnread,
   UNREAD_COUNTABLE_EVENT_RAW_MATCH,
@@ -48,6 +47,17 @@ function isVisibleAfterDelete(
 
 /** Batch cap for the hidden-row refill loop in `fillVisible`. */
 const MAX_VISIBLE_FILL_BATCHES = 10;
+
+/** The reaction overlay columns, emptied. */
+const NO_REACTION_ACTIVITY = {
+  reactionActivityAt: null,
+  reactionActivityMessageId: null,
+  reactionActivityEmoji: null,
+  reactionActivityActorId: null,
+  reactionActivityActorPreview: null,
+  reactionActivityTargetId: null,
+  reactionActivityTargetPreview: null,
+};
 
 export class PrivateRoomRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -238,12 +248,9 @@ export class PrivateRoomRepository {
         deletedFor: true,
         clearFor: true,
       },
-      // Capped and recency-ordered: the whole list becomes one `$in` per keystroke.
-      // Served by [participants, lastMessageAt desc] — the standalone
-      // [lastMessageAt desc] does NOT serve this, it would walk the whole
-      // collection newest-first until N of the caller's rooms surface.
-      orderBy: { lastMessageAt: "desc" },
-      take: SEARCH_SCOPE_ROOM_LIMIT,
+      // Uncapped: the search queries the list in chunks (SEARCH_ROOM_CHUNK_SIZE),
+      // so no room the caller can read is left out. Served by
+      // [participants, lastMessageAt desc].
     });
   }
 
@@ -1153,6 +1160,8 @@ export class PrivateRoomRepository {
       clientMessageId?: string | null;
       sequenceNumber?: number | null;
       revision?: number | null;
+      systemEvent?: string | null;
+      systemData?: unknown;
     } | null,
     opts?: { expectLastMessageId?: string | null }
   ): Promise<boolean> {
@@ -1176,15 +1185,21 @@ export class PrivateRoomRepository {
               content: message.content as Prisma.InputJsonValue,
               senderId: message.senderId,
               messageType: message.messageType,
+              // Same pair updateRoomOnNewMessage stores — a SYSTEM line rolled back onto must still re-render per viewer ("You …").
+              systemEvent: message.systemEvent || null,
+              systemData: message.systemData || null,
               createdAt: message.createdAt.toISOString(),
               ...listRowIdentity(message),
             } as unknown as Prisma.InputJsonValue,
+            // The overlay only shows while newer than this snapshot; a delete rolling it back would resurrect a reaction the removed message superseded (or was the target of).
+            ...NO_REACTION_ACTIVITY,
           }
         : {
             lastMessageId: null,
             lastMessageAt: null,
             lastMessageSeq: null,
             lastMessage: null as unknown as Prisma.InputJsonValue,
+            ...NO_REACTION_ACTIVITY,
           },
     });
     return count > 0;
@@ -1237,16 +1252,20 @@ export class PrivateRoomRepository {
         reactionActivityEmoji: identity.emoji,
         reactionActivityActorId: identity.actorId,
       },
-      data: {
-        reactionActivityAt: null,
-        reactionActivityMessageId: null,
-        reactionActivityEmoji: null,
-        reactionActivityActorId: null,
-        reactionActivityActorPreview: null,
-        reactionActivityTargetId: null,
-        reactionActivityTargetPreview: null,
-      },
+      data: NO_REACTION_ACTIVITY,
     });
+  }
+
+  /** Clear the overlay iff it points at `messageId` (that message was deleted); true when it did. */
+  async clearReactionActivityForMessage(
+    roomId: string,
+    messageId: string
+  ): Promise<boolean> {
+    const { count } = await this.prisma.privateRoom.updateMany({
+      where: { roomId, reactionActivityMessageId: messageId },
+      data: NO_REACTION_ACTIVITY,
+    });
+    return count > 0;
   }
 
   /** Returns the cutoff it stamped (null when the room is gone). */

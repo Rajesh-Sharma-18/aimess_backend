@@ -1,6 +1,15 @@
 import { t } from "../i18n.js";
 import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
 import {
+  administratorActorLabel,
+  BACKOFFICE_SOURCE,
+  entityLabel,
+  memberChangeText,
+  PLATFORM_ADMIN_ACTOR_ID,
+  SYSTEM_ACTOR_ID,
+  systemActorLabel,
+} from "../member-change-text.js";
+import {
   CommunitySystemMessageType,
   type CommunitySystemMessageType as CommunitySystemMessageTypeValue,
 } from "./system-message.js";
@@ -154,7 +163,15 @@ export function buildCommunitySystemFallbackText(
   viewerUserId?: string | null,
   locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
-  const actor = actorName || t("SYS_NAME_SOMEONE", locale);
+  // A Super Admin acting from Backoffice (`source: "BO"`, stamped on new and
+  // legacy rows alike) is named "Administrator" for every reader and is never
+  // anybody's "You" — whatever id or name the row also carries.
+  const byBackoffice =
+    metadata.source === BACKOFFICE_SOURCE ||
+    actorUserIdOf(metadata) === PLATFORM_ADMIN_ACTOR_ID;
+  const actor = byBackoffice
+    ? administratorActorLabel(locale)
+    : actorName || t("SYS_NAME_SOMEONE", locale);
   const target =
     (metadata.targetName as string) ||
     targetName ||
@@ -163,14 +180,33 @@ export function buildCommunitySystemFallbackText(
   const actorId = actorUserIdOf(metadata);
   const targetId = targetUserIdOf(metadata);
   const viewer = viewerUserId?.trim() ?? "";
-  const isActor = Boolean(viewer && actorId && viewer === actorId);
+  const isActor = Boolean(
+    !byBackoffice && viewer && actorId && viewer === actorId
+  );
   const isTarget = Boolean(viewer && targetId && viewer === targetId);
   // A moderation line names its actor to the other moderators only when a person
   // acted: the auto-unmute sweeper posts `source: "auto"` with the "system" actor,
   // and legacy rows may carry no actorUserId — both stay passive ("X was unmuted").
-  const namesActor = Boolean(
-    actorId && actorId !== "system" && metadata.source !== "auto"
-  );
+  const namesActor =
+    byBackoffice ||
+    Boolean(actorId && actorId !== "system" && metadata.source !== "auto");
+  // Labels for the shared member-change sentence (member-change-text.ts).
+  // `communityName` is captured when the line is posted; a row written before
+  // that reads "… to the community".
+  const memberChangeLabels = () => ({
+    actor: isActor
+      ? t("SYS_SENDER_YOU", locale)
+      : actorId === SYSTEM_ACTOR_ID && !byBackoffice
+        ? systemActorLabel(locale)
+        : actor,
+    // Mid-sentence, so the lower-case "a member" fallback, not the line-initial one.
+    target: isTarget
+      ? t("SYS_SENDER_YOU", locale)
+      : (metadata.targetName as string) ||
+        targetName ||
+        t("SYS_NAME_A_MEMBER", locale),
+    entity: entityLabel(metadata.communityName as string, "COMMUNITY", locale),
+  });
 
   switch (type) {
     case "COMMUNITY_CREATED":
@@ -236,15 +272,44 @@ export function buildCommunitySystemFallbackText(
         typeof metadata.durationSeconds === "number"
           ? formatStreamDuration(metadata.durationSeconds, locale)
           : ((metadata.duration as string) || "").trim();
-      // `endedReason: "SYSTEM"` = the platform ended it (Super Admin force-end,
-      // moderation, account ban). The host never did, so nobody — the host
-      // included — reads a name or "You". Missing on legacy rows ⇒ host-ended.
+      // `endedReason: "ADMIN"` = a Super Admin ended it from Backoffice: every
+      // viewer reads "Administrator ended {host}'s livestream", never the
+      // admin's name (that row's actor IS the host); the host reads
+      // "Administrator ended the livestream". "SYSTEM" = the platform
+      // (moderation, account ban, timeouts). A community admin's end names
+      // both: "{admin} ended {host}'s livestream", the host being the target.
+      // A host's own end, and every legacy row, keeps "{host} ended the
+      // livestream". No host name ⇒ the host-less form, never a blank.
+      const endedHost = (
+        (metadata.targetName as string) ||
+        targetName ||
+        (metadata.endedReason === "ADMIN" ? actorName : "") ||
+        ""
+      ).trim();
+      const viewerIsHost = Boolean(
+        viewer && viewer === ((metadata.hostUserId as string) || actorId)
+      );
       const lead =
-        metadata.endedReason === "SYSTEM"
-          ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale)
-          : isActor
-            ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)
-            : t("SYS_COMMUNITY_LIVESTREAM_ENDED", locale, { actor });
+        metadata.endedReason === "ADMIN"
+          ? endedHost && !viewerIsHost
+            ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST", locale, {
+                host: endedHost,
+              })
+            : t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN", locale)
+          : metadata.endedReason === "SYSTEM"
+            ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale)
+            : endedHost && targetId && targetId !== actorId
+              ? isActor
+                ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_HOST_SELF", locale, {
+                    host: endedHost,
+                  })
+                : t("SYS_COMMUNITY_LIVESTREAM_ENDED_HOST", locale, {
+                    actor,
+                    host: endedHost,
+                  })
+              : isActor
+                ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)
+                : t("SYS_COMMUNITY_LIVESTREAM_ENDED", locale, { actor });
       return duration
         ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION", locale, {
             lead,
@@ -310,11 +375,11 @@ export function buildCommunitySystemFallbackText(
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_LEFT_SELF", locale);
       return t("SYS_COMMUNITY_MEMBER_LEFT", locale, { target });
 
+    // Hidden from every read path (HIDDEN_SYSTEM_MESSAGE_TYPES — removal is
+    // silent in chat); rendered with the shared sentence for any surface that
+    // still resolves a legacy row.
     case "MEMBER_REMOVED":
-      if (isTarget) return t("SYS_COMMUNITY_MEMBER_REMOVED_SELF", locale);
-      if (isActor)
-        return t("SYS_COMMUNITY_MEMBER_REMOVED_ACTOR", locale, { target });
-      return t("SYS_COMMUNITY_MEMBER_REMOVED", locale, { target });
+      return memberChangeText("REMOVED", memberChangeLabels(), locale);
 
     // Ban / unban / mute / unmute: the target's own wording is checked FIRST and is
     // unchanged; the acting moderator reads "You …"; every other moderator reads
@@ -397,20 +462,12 @@ export function buildCommunitySystemFallbackText(
     case "COMMUNITY_JOINED":
     case "JOIN_REQUEST_APPROVED":
       return t("SYS_COMMUNITY_MEMBER_JOINED_SELF", locale);
-    // Two copies, same subtype (see MODERATION_TYPES_WITH_PERSONAL_COPY):
-    //  - the added member's own PERSONAL notice → second-person, names the admin;
-    //  - the MODERATION audit line read by owner/admin/moderators → third-person,
-    //    names both sides, because "who added whom" IS the audit record.
-    // `actor`/`target` fall back to "Someone" when a snapshot is unresolved, same
-    // as every other actor-bearing line here.
+    // Two copies, same subtype (see MODERATION_TYPES_WITH_PERSONAL_COPY): the
+    // added member's own PERSONAL notice and the MODERATION audit line read by
+    // owner/admin/moderators. Both are the shared "{actor} added {target} to
+    // {community}" sentence; only the reader's own side changes to "You".
     case "MEMBER_ADDED":
-      if (isTarget) {
-        return t("SYS_COMMUNITY_MEMBER_ADDED_SELF", locale, { actor });
-      }
-      if (isActor) {
-        return t("SYS_COMMUNITY_MEMBER_ADDED_ACTOR", locale, { target });
-      }
-      return t("SYS_COMMUNITY_MEMBER_ADDED", locale, { actor, target });
+      return memberChangeText("ADDED", memberChangeLabels(), locale);
     case "JOIN_REQUEST_REJECTED":
       return t("SYS_COMMUNITY_JOIN_REQUEST_REJECTED", locale);
 

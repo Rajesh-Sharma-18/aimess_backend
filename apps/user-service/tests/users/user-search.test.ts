@@ -706,15 +706,15 @@ describe("GET /api/v1/users/search", () => {
     });
   });
 
-  it("treats an undecodable cursor as the first page rather than 400ing", async () => {
+  it("400s an undecodable cursor instead of silently serving page 1 again", async () => {
     const res = await request(app)
       .get("/api/v1/users/search")
       .query({ q: "jane", cursor: "not-a-real-cursor" })
       .set(auth());
 
-    expect(res.status).toBe(200);
-    expect(res.body.data.chat).toEqual([]);
-    expect(pRepo.findUsersNotInList.mock.calls[0][5]).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("INVALID_CURSOR");
+    expect(pRepo.findUsersNotInList).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
@@ -941,5 +941,48 @@ describe("GET /api/v1/users/search — handle-first", () => {
     expect(
       res.body.data.chat.some((r: { type: string }) => r.type === "GROUP")
     ).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Username presentation — registration reserves an account-derived username,
+// but other people only see it once the profile is complete.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("GET /api/v1/users/search — unallocated username", () => {
+  const search = (q: string) =>
+    request(app).get("/api/v1/users/search").query({ q }).set(auth());
+
+  const row = (body: { data: { other: { userId: string }[] } }) =>
+    body.data.other.find((r) => r.userId === OTHER_ID) as
+      | { username: string }
+      | undefined;
+
+  it("returns username '' (never the account) for an abandoned onboarding", async () => {
+    // Exactly what registration leaves behind: names empty, username = account.
+    pRepo.findUsersNotInList.mockResolvedValue([
+      profile(OTHER_ID, { username: "rajesh123", firstName: "", lastName: "" }),
+    ]);
+
+    const res = await search("rajesh123");
+
+    // The discovery queries now exclude such a row (DISCOVERABLE_PROFILE_WHERE,
+    // see search-hardening.test.ts); this pins the mapper for any row that still
+    // reaches it — never the account as a handle.
+    expect(row(res.body)?.username).toBe("");
+  });
+
+  it("returns the real username once the profile is complete", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([
+      profile(OTHER_ID, {
+        username: "rajesh_sharma",
+        firstName: "Rajesh",
+        lastName: "Sharma",
+      }),
+    ]);
+
+    const res = await search("rajesh");
+
+    expect(row(res.body)?.username).toBe("rajesh_sharma");
   });
 });

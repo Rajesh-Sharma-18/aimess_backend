@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 
 import { renderConvOverrides } from "../lib/recipient-override-render.js";
 import { publishConvUpdatedSafe } from "./publish-conv-updated.js";
+import { bumpSystemParams } from "../lib/bump-system-params.js";
 import { buildMessagePreview } from "./publish-message-sent.js";
 
 import type { RecipientOverride } from "../services/last-visible-resolver.js";
@@ -26,6 +27,8 @@ export interface ConvLastMessageRecalcSource {
     clientMessageId: string | null;
     sequenceNumber: number;
     revision: number;
+    systemEvent?: string | null;
+    systemData?: unknown;
   } | null>;
   resolveForEveryoneOverrides(
     roomId: string,
@@ -113,6 +116,7 @@ export async function recalcConvAfterSystemLineRetraction(params: {
         seq: recalc.sequenceNumber,
         revision: recalc.revision,
         createdAt: recalc.createdAt.getTime(),
+        ...bumpSystemParams(recalc),
       },
     });
   } catch (err) {

@@ -340,7 +340,7 @@ describe("selectListPreview — actor reads first person", () => {
       "You added Mind Flayer to the community"
     );
     expect(selectListPreview(added, "u-target")).toBe(
-      "Smiley Creatures added you to the community"
+      "Smiley Creatures added You to the community"
     );
     expect(selectListPreview(added, "u-other")).toBe(
       "Smiley Creatures added Mind Flayer to the community"

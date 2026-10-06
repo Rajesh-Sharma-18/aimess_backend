@@ -1,3 +1,4 @@
+import { BadRequestError } from "@aimess/errors";
 import {
   normalizeForSearch,
   rankByHandle,
@@ -48,8 +49,12 @@ export function encodePeopleCursor(row: PeopleSearchCursor): string {
   );
 }
 
-// Unparseable input decodes to undefined, i.e. "no cursor" — a garbled cursor
-// restarts at the head rather than 400ing a caller mid-walk.
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// A cursor that does not decode is 400 INVALID_CURSOR, same as the gateway's
+// own: silently restarting at the head handed the caller page 1 again as if it
+// were the next page — duplicate rows, or an endless walk.
 export function decodePeopleCursor(
   raw: string | undefined
 ): PeopleSearchCursor | undefined {
@@ -57,8 +62,14 @@ export function decodePeopleCursor(
   const [firstName, userId] = Buffer.from(raw, "base64url")
     .toString("utf8")
     .split("\u0000");
-  return userId ? { firstName: firstName ?? "", userId } : undefined;
+  if (!userId || !UUID_PATTERN.test(userId)) {
+    throw new BadRequestError("INVALID_CURSOR");
+  }
+  return { firstName: firstName ?? "", userId };
 }
+
+/** Only "@"s (and spaces): a handle search that has not named anyone yet. */
+const BARE_HANDLE_PREFIX = /^[\s@]*@[\s@]*$/;
 
 /** People's handle IS their `username` — the shared ranker just needs the field. */
 export function rankByUsername<T extends { username: string }>(
@@ -71,7 +82,14 @@ export function rankByUsername<T extends { username: string }>(
 export function buildUserSearchFilter(
   q: string
 ): Prisma.UserProfileWhereInput[] {
-  return tokenizeAndNormalize(q).map(({ raw, normalized }) => ({
+  // A bare "@" is the start of a handle search: browse everyone the viewer may
+  // discover (no text filter — every eligibility gate still applies, paged).
+  if (BARE_HANDLE_PREFIX.test(q)) return [];
+  const tokens = tokenizeAndNormalize(q);
+  // Any other query with no searchable characters ("%", "_", an emoji)
+  // matches NOTHING — `AND: []` would be every discoverable user.
+  if (!tokens.length) return q.trim() ? [{ userId: { in: [] } }] : [];
+  return tokens.map(({ raw, normalized }) => ({
     OR: [
       { normalizedUsername: { contains: normalized } },
       { normalizedFirstName: { contains: normalized } },

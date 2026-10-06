@@ -42,6 +42,13 @@ function usernameAvailabilityKey(
   return `${KEY_PREFIX}:username:avail:${username}:${owner}`;
 }
 
+/** Short soft-reservation of a SUGGESTED username — not ownership; the unique index is. */
+const USERNAME_HOLD_TTL_SEC = 300;
+
+function usernameHoldKey(username: string): string {
+  return `${KEY_PREFIX}:username:hold:${username}`;
+}
+
 function profileRecordKey(userId: string): string {
   return `${KEY_PREFIX}:profile:record:${userId}`;
 }
@@ -131,6 +138,41 @@ export const userCache = {
   async invalidateUsernameAvailability(username: string): Promise<void> {
     await withCache(async () => {
       await cacheDelByPattern(redis, usernameAvailabilityPattern(username));
+    }, undefined);
+  },
+
+  /**
+   * Hold `username` for `userId` for 5 minutes (refreshed if already theirs, so
+   * two tabs of one user agree). False only when ANOTHER user holds it. Fails
+   * open without Redis: the hold is a courtesy, the unique index still decides.
+   */
+  async claimUsernameHold(username: string, userId: string): Promise<boolean> {
+    return withCache(async () => {
+      const key = usernameHoldKey(username);
+      if (await redis.set(key, userId, "EX", USERNAME_HOLD_TTL_SEC, "NX")) {
+        return true;
+      }
+      if ((await redis.get(key)) !== userId) {
+        return false;
+      }
+      await redis.expire(key, USERNAME_HOLD_TTL_SEC);
+      return true;
+    }, true);
+  },
+
+  async getUsernameHolder(username: string): Promise<string | null> {
+    return withCache(() => redis.get(usernameHoldKey(username)), null);
+  },
+
+  /** Drop the hold only if `userId` still owns it (compare-and-delete). */
+  async releaseUsernameHold(username: string, userId: string): Promise<void> {
+    await withCache(async () => {
+      await redis.eval(
+        'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) end return 0',
+        1,
+        usernameHoldKey(username),
+        userId
+      );
     }, undefined);
   },
 

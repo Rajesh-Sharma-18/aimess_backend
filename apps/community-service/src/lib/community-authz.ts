@@ -86,8 +86,10 @@ export const communityPermission = {
     } | null
   ): boolean {
     if (!m) return false;
-    if (m.status === CommunityMemberStatus.ACTIVE) return true;
+    // Any dismissed row is hidden — an ACTIVE one is a CLOSED community the
+    // member deleted from their list.
     if (m.dismissedAt) return false;
+    if (m.status === CommunityMemberStatus.ACTIVE) return true;
     if (m.status === CommunityMemberStatus.BANNED) return true;
     return m.status === CommunityMemberStatus.LEFT && Boolean(m.unbannedAt);
   },

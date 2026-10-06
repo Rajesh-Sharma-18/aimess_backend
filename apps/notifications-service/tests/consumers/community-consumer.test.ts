@@ -53,6 +53,7 @@ jest.mock("../../src/grpc/community.client.js", () => ({
   communityClient: { getCommunityBrief: jest.fn(async () => null) },
 }));
 
+import { communityCopy } from "@aimess/constants";
 import { CommunityEvents } from "@aimess/shared-types";
 import { publishUserSocketEvent } from "@aimess/redis";
 
@@ -378,6 +379,7 @@ describe("MEMBER_ADDED branch", () => {
   });
 
   it("welcomes the joiner when via is a non-approval path (add_members)", async () => {
+    userDirectory({ [MOD]: "Sarah Jones", [REQUESTER]: "Tom Brown" });
     await deliver(CommunityEvents.MEMBER_ADDED, {
       communityId: CID,
       eventAt: "2026-06-16T10:00:00.000Z",
@@ -391,7 +393,31 @@ describe("MEMBER_ADDED branch", () => {
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(REQUESTER);
     expect(arg.copy("en").title).toBe("Your community");
-    expect(arg.copy("en").body).toBe("You were added to Your community");
+    // The actual actor (a moderator here) and "You" for the target reading it.
+    expect(arg.copy("en", REQUESTER).body).toBe(
+      "Sarah Jones added You to Your community"
+    );
+  });
+
+  it("names actor and target for the other moderators on add_members", async () => {
+    userDirectory({ [MOD]: "Sarah Jones", [REQUESTER]: "Tom Brown" });
+    await deliver(CommunityEvents.MEMBER_ADDED, {
+      communityId: CID,
+      eventAt: "2026-06-16T10:00:00.000Z",
+      actorId: MOD,
+      targetUserId: REQUESTER,
+      via: "add_members",
+      communityName: "Gokuldham Society",
+      moderatorRecipientIds: [MOD, "moderator-2"],
+    });
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const build = pushMany.mock.calls[0][1] as (id: string) => {
+      copy: (l: string, v?: string) => { body: string };
+    };
+    expect(build("moderator-2").copy("en", "moderator-2").body).toBe(
+      "Sarah Jones added Tom Brown to Gokuldham Society"
+    );
   });
 
   it("fans the moderator awareness push to admins/mods, excluding actor + joiner", async () => {
@@ -931,5 +957,84 @@ describe("actor name resolution", () => {
     );
     expect(arg.copy("en").body).toBe("Smiley Creatures is live in Cool Community");
     expect(arg.data.hostName).toBe("Smiley Creatures");
+  });
+});
+
+describe("MEMBER_KICKED branch — who removed the member", () => {
+  it("an in-app removal names the actual admin/moderator", async () => {
+    userDirectory({ [MOD]: "Sarah Jones", [REQUESTER]: "Tom Brown" });
+    communityDirectory({ [CID]: "Mission AIMess" });
+    await deliver(CommunityEvents.MEMBER_KICKED, {
+      communityId: CID,
+      eventAt: "2026-10-05T10:00:00.000Z",
+      actorId: MOD,
+      targetUserId: REQUESTER,
+      reason: null,
+    });
+    const arg = push.mock.calls[0][0];
+    expect(arg.userId).toBe(REQUESTER);
+    expect(arg.copy("en", REQUESTER).body).toBe(
+      "Sarah Jones removed You from Mission AIMess"
+    );
+  });
+
+  it("a Super Admin removal reads 'Administrator', never the admin's name or id", async () => {
+    communityDirectory({ [CID]: "Mission AIMess" });
+    userDirectory({ [REQUESTER]: "Tom Brown" });
+    await deliver(CommunityEvents.MEMBER_KICKED, {
+      communityId: CID,
+      eventAt: "2026-10-05T10:00:00.000Z",
+      actorId: "admin-user-1",
+      targetUserId: REQUESTER,
+      reason: null,
+      byPlatformAdmin: true,
+    });
+    const arg = push.mock.calls[0][0];
+    // Push and inbox body render from this one copy, in every locale.
+    expect(arg.copy("en", REQUESTER).body).toBe(
+      "Administrator removed You from Mission AIMess"
+    );
+    expect(arg.copy("vi", REQUESTER).body).toContain("Quản trị viên");
+    expect(arg.copy("th", REQUESTER).body).toContain("ผู้ดูแลระบบ");
+    // The title stays the community name.
+    expect(arg.copy("en", REQUESTER).title).toBe("Mission AIMess");
+    // The AdminUser id is not an AIMess user — never looked up, never stored
+    // as the row's actor, never sent in the data payload.
+    expect(getDisplayName).not.toHaveBeenCalledWith("admin-user-1");
+    expect(arg.actorId).toBeUndefined();
+    expect(JSON.stringify(arg.data)).not.toContain("admin-user-1");
+    // Recipient and delivery rules are unchanged.
+    expect(arg.userId).toBe(REQUESTER);
+    expect(arg.bypassSettings).toBe(true);
+  });
+
+  it("an in-app admin removal keeps its actor id on the row", async () => {
+    userDirectory({ [MOD]: "Sarah Jones", [REQUESTER]: "Tom Brown" });
+    communityDirectory({ [CID]: "Mission AIMess" });
+    await deliver(CommunityEvents.MEMBER_KICKED, {
+      communityId: CID,
+      eventAt: "2026-10-05T10:00:00.000Z",
+      actorId: MOD,
+      targetUserId: REQUESTER,
+      reason: null,
+    });
+    expect(push.mock.calls[0][0].actorId).toBe(MOD);
+  });
+
+  it("an inbox row written before this change ('system' actor) re-renders as 'Administrator'", () => {
+    // Only the Backoffice removal ever stored SYSTEM_ACTOR_ID on this copy.
+    const legacy = communityCopy.memberKicked(
+      "Mission AIMess",
+      "",
+      "Tom Brown",
+      "system",
+      REQUESTER
+    );
+    expect(legacy("en", REQUESTER).body).toBe(
+      "Administrator removed You from Mission AIMess"
+    );
+    expect(legacy("en", "someone-else").body).toBe(
+      "Administrator removed Tom Brown from Mission AIMess"
+    );
   });
 });

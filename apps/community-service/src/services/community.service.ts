@@ -80,6 +80,7 @@ import {
 } from "../lib/community-slug.util.js";
 import {
   CLOSE_REASON_ADMIN_BANNED,
+  CLOSE_REASON_LAST_MEMBER_LEFT,
   COMMUNITY_MEMBER_LIMIT,
 } from "../constants/index.js";
 import { isCommunityMuted } from "../lib/community-notification-pref.js";
@@ -381,7 +382,7 @@ const SELF_JOIN_ACTIVITY_PREVIEW = t(
  * ACTUALLY happened — an admin adding someone is not that someone joining, and
  * it is certainly not their request being accepted:
  *
- *   add_members           → MEMBER_ADDED     "{admin} added you to the community"
+ *   add_members           → MEMBER_ADDED     "{admin} added You to {community}"
  *   join_request_approved → COMMUNITY_JOINED "You joined the community"
  *   self_join / invite /  → COMMUNITY_JOINED "You joined the community"
  *   invite_link_redeem
@@ -401,17 +402,6 @@ const JOIN_LINE_TYPE_BY_VIA: Partial<
   Record<CommunityMemberAddedPayload["via"], CommunitySystemMessageType>
 > = {
   add_members: "MEMBER_ADDED",
-};
-
-/**
- * English preview for the joiner's own community-LIST row, matched to the chat
- * line above. Actor-less on purpose: community-service does not resolve the
- * adding admin's display name (chat-service hydrates snapshots for the timeline
- * line), and a preview reading "Someone added you…" is worse than the neutral
- * passive form. Stored/wire text stays English; readers localize.
- */
-const JOIN_ACTIVITY_PREVIEW_KEY_BY_TYPE: Record<string, MessageKey> = {
-  MEMBER_ADDED: "SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT",
 };
 
 /**
@@ -2094,9 +2084,11 @@ async function enrichMineCommunities(
         bannedAt != null &&
         row.lastActivityReactionAt != null &&
         row.lastActivityReactionAt.getTime() > bannedAt.getTime();
-      const reactionOverlaid = reactionAfterBan
-        ? reconciledBase
-        : applyReactionOverlay(reconciledBase, row, userId);
+      // A viewer who hid the community-wide last (delete-for-me) previews their fallback, exactly as the live recalc bump did; the overlay would resurrect a reaction their delete superseded.
+      const reactionOverlaid =
+        reactionAfterBan || chat.perUserResolved
+          ? reconciledBase
+          : applyReactionOverlay(reconciledBase, row, userId);
       // The viewer's own "You joined the community" personal line still wins
       // when it is genuinely the newest visible thing (compared against the
       // base's REAL timestamp — no +1ms inflation can wrongly suppress it).
@@ -4146,6 +4138,9 @@ export const communityService = {
       actorId: actorAdminId,
       targetUserId,
       reason: reason ?? null,
+      // The removed member reads "Administrator removed You from …" — a Super Admin
+      // is not an AIMess user, so no person is named.
+      byPlatformAdmin: true,
     });
 
     try {
@@ -4194,7 +4189,9 @@ export const communityService = {
     void getStreamClient().forceEndStreamsByCreator(
       communityId,
       targetUserId,
-      "MEMBER_REMOVED"
+      "MEMBER_REMOVED",
+      // Backoffice (Super Admin) action: "Administrator ended …".
+      true
     );
 
     return {
@@ -4319,7 +4316,9 @@ export const communityService = {
     void getStreamClient().forceEndStreamsByCreator(
       communityId,
       targetUserId,
-      "MEMBER_BANNED"
+      "MEMBER_BANNED",
+      // Backoffice (Super Admin) action: "Administrator ended …".
+      true
     );
 
     // Banning a community's OWN admin leaves it with nobody who can run it —
@@ -4552,9 +4551,24 @@ export const communityService = {
 
     // Which "you are now a member" line this path posts — see JOIN_LINE_TYPE_BY_VIA.
     const joinLineType = JOIN_LINE_TYPE_BY_VIA[via] ?? "COMMUNITY_JOINED";
-    const joinPreviewKey =
-      JOIN_ACTIVITY_PREVIEW_KEY_BY_TYPE[joinLineType] ??
-      SELF_JOIN_ACTIVITY_PREVIEW_KEY;
+    const joinPreviewKey = SELF_JOIN_ACTIVITY_PREVIEW_KEY;
+
+    // An admin/moderator ADD reads "{actor} added {target} to {community}" on
+    // every surface. The community's name rides with the event (event-time
+    // snapshot, like the names); chat-service resolves the actor's name for the
+    // chat lines itself, and the list preview below needs it here.
+    const addedMetadata: Record<string, unknown> | null =
+      joinLineType === "MEMBER_ADDED"
+        ? {
+            targetUserId: member.userId,
+            targetName: member.snapshotDisplayName ?? "",
+            actorUserId: actorId,
+            actorName:
+              (await fetchUserSnapshotHits([actorId])).get(actorId)
+                ?.displayName ?? "",
+            communityName: community.name,
+          }
+        : null;
 
     const moderatorRecipientIds =
       args.moderatorRecipientIds ??
@@ -4632,19 +4646,37 @@ export const communityService = {
       // timestamp as its createdAt. Using args.eventAt (not Date.now()) ensures
       // the socket payload's dateTime matches what the Mine API returns once the
       // async write lands, keeping both values bit-for-bit identical.
+      // Must match the chat line this same call posts below, or the new
+      // member's list row reads "You joined…" while their timeline reads
+      // "{admin} added You…". English on the wire, ALWAYS — `previewKey` /
+      // the system event is what makes it readable in the recipient's
+      // language. Rendering here in the ADDING ADMIN's request locale (this
+      // runs inside their POST) would ship one member's language to another
+      // member's device.
+      //
+      // An admin ADD carries the event itself (the same metadata as the chat
+      // line), so the gateway renders "{actor} added You to {community}" per
+      // socket; the parameter-less joins keep their message key.
       const joinLastActivity = {
         type: "system" as const,
         userId: null,
         username: null,
-        // Must match the chat line this same call posts below, or the new
-        // member's list row reads "You joined…" while their timeline reads
-        // "{admin} added you…".
-        // English on the wire, ALWAYS — `previewKey` is what makes it readable
-        // in the recipient's language. Rendering here in the ADDING ADMIN's
-        // request locale (this runs inside their POST) would ship one member's
-        // language to another member's device, which is the bug this pair fixes.
-        preview: t(joinPreviewKey, STORED_TEXT_LOCALE),
-        previewKey: joinPreviewKey,
+        ...(addedMetadata
+          ? {
+              preview: buildCommunitySystemFallbackText(
+                "MEMBER_ADDED",
+                addedMetadata,
+                String(addedMetadata.actorName ?? ""),
+                String(addedMetadata.targetName ?? ""),
+                member.userId
+              ),
+              systemMessageType: "MEMBER_ADDED",
+              systemMetadata: addedMetadata,
+            }
+          : {
+              preview: t(joinPreviewKey, STORED_TEXT_LOCALE),
+              previewKey: joinPreviewKey,
+            }),
         dateTime: new Date(args.eventAt).getTime(),
       };
       const addedAt = Date.now();
@@ -4701,7 +4733,9 @@ export const communityService = {
       communityId: community.id,
       systemMessageType: joinLineType,
       metadata:
-        joinLineType === "MEMBER_ADDED" ? { targetUserId: member.userId } : {},
+        joinLineType === "MEMBER_ADDED"
+          ? { targetUserId: member.userId, communityName: community.name }
+          : {},
       triggeredByUserId:
         joinLineType === "MEMBER_ADDED" ? actorId : member.userId,
       eventAt: args.eventAt,
@@ -4722,7 +4756,7 @@ export const communityService = {
       publishCommunitySystemMessageForChatSafe({
         communityId: community.id,
         systemMessageType: "MEMBER_ADDED",
-        metadata: { targetUserId: member.userId },
+        metadata: { targetUserId: member.userId, communityName: community.name },
         triggeredByUserId: actorId,
         eventAt: args.eventAt,
       });
@@ -5214,7 +5248,9 @@ export const communityService = {
   async leaveCommunity(
     communityId: string,
     callerId: string,
-    reasonInput?: { reason: string | null; reasonText: string | null }
+    reasonInput?: { reason: string | null; reasonText: string | null },
+    /** Internal: set on the one re-decision after a lost close race. */
+    isRetry = false
   ): Promise<CommunityMemberData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
@@ -5245,28 +5281,54 @@ export const communityService = {
     // trapped holding a dead room in their list forever. Let them leave like a
     // plain member; the community stays CLOSED and readable for the rest.
     if (isAdmin && !communityAccessPolicy.isOwnerClosed(community)) {
+      // Fast refusal on the live roster; the close-and-leave transaction below
+      // re-checks it at the write, so a stale count never decides alone.
       const activeMembers =
         await communityRepository.countActiveMembers(communityId);
       if (activeMembers !== 1) {
         throw new BadRequestError("COMMUNITY_ADMIN_CANNOT_LEAVE");
       }
 
-      await this.deleteCommunity(communityId, callerId);
-      logger.info(
-        `Community deleted as last member left: community=${communityId} by=${callerId}`
-      );
-      return toMemberData({
-        ...membership,
-        status: CommunityMemberStatus.LEFT,
-      });
+      // Platform-SUSPENDED (Super Admin close) and the admin is the last
+      // member: it is already closed, so they simply leave and it stays
+      // closed — no second close, no transfer (there is nobody to take it).
+      // Falls through to the plain leave below.
+      if (!communityAccessPolicy.isPlatformSuspended(community)) {
+        const outcome = await this.closeAndLeaveAsLastAdmin(
+          communityId,
+          community.name,
+          callerId,
+          leaveMeta
+        );
+        if (outcome === "CLOSED_AND_LEFT") {
+          return toMemberData({
+            ...membership,
+            status: CommunityMemberStatus.LEFT,
+          });
+        }
+        if (outcome === "OTHERS_REMAIN") {
+          throw new BadRequestError("COMMUNITY_ADMIN_CANNOT_LEAVE");
+        }
+        if (outcome === "NOT_MEMBER") {
+          throw new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND");
+        }
+        // NOT_OPEN: an owner or Super Admin close landed between the read and
+        // the write. Decide once more on the fresh state (now the closed rules).
+        if (!isRetry) {
+          return this.leaveCommunity(communityId, callerId, reasonInput, true);
+        }
+        throw new BadRequestError("COMMUNITY_ADMIN_CANNOT_LEAVE");
+      }
     }
 
-    // Non-admin leave: status → LEFT + recompute. Single-document update +
-    // recompute of memberCount — no $transaction.
+    // Plain leave: status → LEFT + recompute. The LEFT write is conditional on
+    // the row still being ACTIVE, so a double-submitted leave runs once and
+    // the loser gets COMMUNITY_MEMBER_NOT_FOUND like a later retry would.
     const { updated } = await this.removeActiveMember(communityId, callerId, {
       auditMetadata: leaveMeta,
       reason: leaveReason,
       eventAt: new Date().toISOString(),
+      onlyIfActive: true,
     });
 
     this.emitMemberSystemMessage({
@@ -5277,6 +5339,67 @@ export const communityService = {
     });
 
     return toMemberData(updated);
+  },
+
+  /**
+   * The ADMIN is the last ACTIVE member of an OPEN community and leaves: the
+   * community closes and they leave, as ONE logical operation. The two writes
+   * commit in a single transaction (see the repository); everything after it
+   * is the existing close lifecycle followed by the existing leave events, so
+   * nothing here is new behaviour — only the pairing. No ownership-transfer
+   * audit, event or system line is ever produced: there was nobody to take it.
+   *
+   * Only the request that wins the transaction fans out side effects, so a
+   * double submit or retry cannot duplicate the close or the leave.
+   */
+  async closeAndLeaveAsLastAdmin(
+    communityId: string,
+    communityName: string,
+    callerId: string,
+    leaveMeta: { reason: string | null; reasonText: string | null }
+  ): Promise<"CLOSED_AND_LEFT" | "NOT_OPEN" | "OTHERS_REMAIN" | "NOT_MEMBER"> {
+    const closedAt = new Date();
+    const outcome = await communityRepository.closeAndLeaveAsLastAdmin(
+      communityId,
+      callerId,
+      closedAt
+    );
+    if (outcome !== "CLOSED_AND_LEFT") return outcome;
+
+    logger.info(
+      `Community closed as its last member (admin) left: community=${communityId} by=${callerId}`
+    );
+
+    // Close first, then the leave: clients see the community turn read-only
+    // and then drop out of the leaver's list. The leaver is the whole close
+    // audience, and the push service never notifies an actor about their own
+    // action, so no device gets a "community closed" push for this.
+    await this.announceOwnerClose({
+      communityId,
+      communityName,
+      actorId: callerId,
+      reason: null,
+      reasonCode: CLOSE_REASON_LAST_MEMBER_LEFT,
+      closedAt,
+      memberIds: [callerId],
+    });
+    await this.announceMemberRemoval(
+      communityId,
+      callerId,
+      CommunityMemberStatus.LEFT,
+      {
+        auditMetadata: leaveMeta,
+        reason: leaveMeta.reason,
+        eventAt: closedAt.toISOString(),
+      }
+    );
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_LEFT",
+      actorId: callerId,
+      targetUserId: callerId,
+    });
+    return outcome;
   },
 
   /**
@@ -5319,36 +5442,82 @@ export const communityService = {
       // its own admin AuditLog + ModerationAction. The community's own audit
       // row is still written either way. Defaults false.
       skipAdminMirror?: boolean;
+      // Plain LEFT only: write only while the row is still ACTIVE, and throw
+      // COMMUNITY_MEMBER_NOT_FOUND (no side effects) when it no longer is.
+      onlyIfActive?: boolean;
     }
   ): Promise<{
     updated: Awaited<ReturnType<typeof communityRepository.updateMemberStatus>>;
     memberCount: number;
   }> {
     const status = opts.status ?? CommunityMemberStatus.LEFT;
+
+    let updated: Awaited<
+      ReturnType<typeof communityRepository.updateMemberStatus>
+    >;
+    if (opts.onlyIfActive && status === CommunityMemberStatus.LEFT) {
+      const row = await communityRepository.markActiveMemberLeft(
+        communityId,
+        targetUserId
+      );
+      if (!row) throw new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND");
+      updated = row;
+    } else if (opts.banMeta) {
+      // Banning resets role to MEMBER in the same write so a banned
+      // MODERATOR/ADMIN can never have their rank silently restored when they
+      // rejoin later — rejoin flows read priorRole off this row.
+      updated = await communityRepository.updateMemberStatus(
+        communityId,
+        targetUserId,
+        status,
+        opts.banMeta,
+        CommunityMemberRole.MEMBER,
+        opts.removedMeta
+      );
+    } else {
+      updated = await communityRepository.updateMemberStatus(
+        communityId,
+        targetUserId,
+        status,
+        undefined,
+        undefined,
+        opts.removedMeta
+      );
+    }
+
+    const memberCount = await this.announceMemberRemoval(
+      communityId,
+      targetUserId,
+      status,
+      opts
+    );
+    return { updated, memberCount };
+  },
+
+  /**
+   * Post-write half of removeActiveMember: recount memberCount, audit, and fan
+   * out the domain + realtime removal events. Split out so the last-admin
+   * leave-and-close, whose status write happens inside a transaction, sends
+   * exactly the events an ordinary leave sends. Returns the recounted total.
+   */
+  async announceMemberRemoval(
+    communityId: string,
+    targetUserId: string,
+    status: CommunityMemberStatus,
+    opts: {
+      actorId?: string;
+      auditMetadata?: Prisma.InputJsonValue;
+      reason?: string | null;
+      eventAt: string;
+      removedReason?: "left" | "banned";
+      auditAction?: "MEMBER_LEFT" | "MEMBER_BANNED";
+      emitLeftDomainEvent?: boolean;
+      skipAdminMirror?: boolean;
+    }
+  ): Promise<number> {
     const actorId = opts.actorId ?? targetUserId;
     const removedReason = opts.removedReason ?? "left";
     const auditAction = opts.auditAction ?? "MEMBER_LEFT";
-
-    // Banning resets role to MEMBER in the same write so a banned
-    // MODERATOR/ADMIN can never have their rank silently restored when they
-    // rejoin later — rejoin flows read priorRole off this row.
-    const updated = opts.banMeta
-      ? await communityRepository.updateMemberStatus(
-          communityId,
-          targetUserId,
-          status,
-          opts.banMeta,
-          CommunityMemberRole.MEMBER,
-          opts.removedMeta
-        )
-      : await communityRepository.updateMemberStatus(
-          communityId,
-          targetUserId,
-          status,
-          undefined,
-          undefined,
-          opts.removedMeta
-        );
 
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
@@ -5414,7 +5583,7 @@ export const communityService = {
                 // Shared derivation — identical field set to the unban event
                 // and to a fresh GET, so the client applies one state model
                 // for every membership transition.
-                ...deriveMembershipState(updated),
+                ...deriveMembershipState({ status }),
                 reason: removedReason,
                 restrictedAt: now,
               }
@@ -5437,7 +5606,7 @@ export const communityService = {
       );
     }
 
-    return { updated, memberCount: count };
+    return count;
   },
 
   /**
@@ -5503,7 +5672,19 @@ export const communityService = {
       return "ALREADY_REMOVED";
     }
 
-    if (membership.status === CommunityMemberStatus.BANNED) {
+    // A closed community (owner close or Super Admin suspension) keeps every
+    // membership ACTIVE, so its row stays in each member's list. Deleting it
+    // from there is the same per-user dismiss a banned row gets: role,
+    // membership, memberCount and the community itself stay exactly as they
+    // are, so there is no ownership to hand over and nothing to leave — for
+    // the admin as much as anyone. A reopen clears the dismiss
+    // (clearClosureSnapshot), since the caller is a member of a live
+    // community again.
+    const isClosedActiveRow =
+      membership.status === CommunityMemberStatus.ACTIVE &&
+      (await this.isCommunityClosed(community.id));
+
+    if (membership.status === CommunityMemberStatus.BANNED || isClosedActiveRow) {
       // A banned community stays in the caller's list until THEY dismiss it.
       // Dismissing only HIDES the entry (dismissedAt) — status stays BANNED
       // and the ban metadata survives; only an admin unban lifts the ban.
@@ -5511,10 +5692,10 @@ export const communityService = {
         return "ALREADY_REMOVED";
       }
       await communityRepository.setMemberDismissed(community.id, callerId);
-      // The Community nav badge counts BANNED rows (their pre-ban unread, same
-      // as the row shows). A dismissed row leaves the list, so its unread has
-      // to leave the badge too — reading it up to the ban does exactly that
-      // (and pushes the fresh total). Best-effort: the dismiss itself stands.
+      // The Community nav badge counts BANNED (and ACTIVE) rows. A dismissed
+      // row leaves the list, so its unread has to leave the badge too —
+      // reading it up to the ban / close does exactly that (and pushes the
+      // fresh total). Best-effort: the dismiss itself stands.
       await getChatClient()
         .bulkMarkCommunityRead({
           userId: callerId,
@@ -5554,14 +5735,23 @@ export const communityService = {
     return "REMOVED";
   },
 
+  /** Owner-closed or Super Admin–suspended right now (false once deleted). */
+  async isCommunityClosed(communityId: string): Promise<boolean> {
+    const community = await communityRepository.findById(communityId);
+    return (
+      !!community && communityAccessPolicy.isEffectivelyClosed(community)
+    );
+  },
+
   /**
    * Delete a single community from the CALLER's own account/list only — never
    * touches other members. Active member → same removal as leaveCommunity.
    * Banned member → the community was still visible in their list, so this
    * HIDES it (dismissedAt) while the ban itself survives — only an admin
    * unban lifts it. Left/kicked member → already gone, idempotent success.
-   * Admin/owner → rejected; they must transfer ownership or use the admin
-   * delete flow.
+   * Closed community (any role, admin included) → HIDES it (dismissedAt);
+   * nothing else changes. Admin/owner of an open community → rejected; they
+   * must transfer ownership or use the admin delete flow.
    */
   async deleteCommunityForSelf(
     communityId: string,
@@ -5599,7 +5789,8 @@ export const communityService = {
    * Rules (mirroring single leaveCommunity):
    *  - Not an active member → FAILED / NOT_MEMBER
    *  - Community not found  → FAILED / NOT_FOUND
-   *  - Admin, sole member   → community auto-deleted, status DELETED
+   *  - Admin, sole member   → open community CLOSED + admin LEFT, status LEFT
+   *                           (Super Admin–suspended: just LEFT, stays closed)
    *  - Admin, others exist  → FAILED / ADMIN_CANNOT_LEAVE
    *  - Non-admin            → LEFT; memberCount recomputed; MEMBER_LEFT audit + event
    */
@@ -5644,7 +5835,13 @@ export const communityService = {
       }
 
       const membership = membershipMap.get(communityId);
-      if (!membership || membership.status !== CommunityMemberStatus.ACTIVE) {
+      // A CLOSED community's row is removed by the same self-removal resolver:
+      // a per-user dismiss, never a leave (see resolveSelfRemoval).
+      if (
+        !membership ||
+        membership.status !== CommunityMemberStatus.ACTIVE ||
+        (await this.isCommunityClosed(communityId))
+      ) {
         // Not ACTIVE, but the row may still be SHOWING in the caller's list: a
         // BANNED membership, or a LEFT one an admin unbanned, both stay visible
         // until the caller dismisses them. Rejecting those with NOT_MEMBER left
@@ -5688,28 +5885,29 @@ export const communityService = {
       const bulkCommunity = communityMap.get(communityId)!;
       const isAdmin = membership.role === CommunityMemberRole.ADMIN;
 
-      // A CLOSED community (owner banned) can never transfer ownership, so the
-      // admin block is void — let them leave like a member (mirrors single
-      // leaveCommunity). Falls through to the non-admin LEFT path below.
+      // Admin rows run the single leaveCommunity, so the bulk path applies the
+      // exact same owner rules: transfer required while others remain, the
+      // last admin of an open community closes it on the way out, and a
+      // closed one (owner close or Super Admin suspension) is simply left.
       if (isAdmin && !communityAccessPolicy.isOwnerClosed(bulkCommunity)) {
-        const activeMembers =
-          await communityRepository.countActiveMembers(communityId);
-        if (activeMembers !== 1) {
-          results.push({
-            communityId,
-            status: "FAILED",
-            errorCode: "ADMIN_CANNOT_LEAVE",
-          });
+        try {
+          await this.leaveCommunity(communityId, callerId);
+          results.push({ communityId, status: "LEFT" });
+          leftCount++;
+        } catch (err: unknown) {
+          const key = (err as { messageKey?: string } | null)?.messageKey;
+          const errorCode =
+            key === "COMMUNITY_ADMIN_CANNOT_LEAVE"
+              ? "ADMIN_CANNOT_LEAVE"
+              : key === "COMMUNITY_NOT_FOUND"
+                ? "NOT_FOUND"
+                : key === "COMMUNITY_MEMBER_NOT_FOUND"
+                  ? "NOT_MEMBER"
+                  : null;
+          if (!errorCode) throw err;
+          results.push({ communityId, status: "FAILED", errorCode });
           failedCount++;
-          continue;
         }
-
-        await this.deleteCommunity(communityId, callerId);
-        logger.info(
-          `Community auto-deleted (last member left via bulk): community=${communityId} by=${callerId}`
-        );
-        results.push({ communityId, status: "DELETED" });
-        leftCount++;
         continue;
       }
 
@@ -7194,10 +7392,47 @@ export const communityService = {
       statusClosedBy: callerId,
       statusClosedReason: reason,
     });
+    await this.announceOwnerClose({
+      communityId,
+      communityName: community.name,
+      actorId: callerId,
+      reason,
+      reasonCode: null,
+      closedAt,
+      memberIds,
+    });
+  },
+
+  /**
+   * Post-write half of an owner close (status is already CLOSED): closure
+   * snapshot, join-request expiry, audit, realtime + push fan-out, chat-room
+   * suspension and livestream force-end. Shared by closeCommunity and the
+   * last-admin leave-and-close so both run the exact same close lifecycle.
+   */
+  async announceOwnerClose(args: {
+    communityId: string;
+    communityName: string;
+    actorId: string;
+    reason: string | null;
+    // statusClosedReasonCode written with the close (null for a plain close).
+    reasonCode: string | null;
+    closedAt: Date;
+    // Everyone ACTIVE at close time — the realtime + push audience.
+    memberIds: string[];
+  }): Promise<void> {
+    const {
+      communityId,
+      actorId: callerId,
+      reason,
+      reasonCode,
+      closedAt,
+      memberIds,
+    } = args;
+
     await communityRepository.captureClosureSnapshot(communityId, closedAt);
     await this.expireJoinRequestsOfUnavailableCommunity({
       communityId,
-      communityName: community.name,
+      communityName: args.communityName,
       actorId: callerId,
       reason: "COMMUNITY_CLOSED",
     });
@@ -7206,20 +7441,21 @@ export const communityService = {
       communityId,
       actorId: callerId,
       action: "COMMUNITY_CLOSED",
-      metadata: { reason },
+      metadata: reasonCode ? { reason, reasonCode } : { reason },
     });
 
     logger.info(
-      `Community closed: community=${communityId} by=${callerId} members=${String(memberIds.length)}`
+      `Community closed: community=${communityId} by=${callerId} members=${String(memberIds.length)}${reasonCode ? ` reasonCode=${reasonCode}` : ""}`
     );
 
     // Real-time: broadcast to the community room AND to every ex-member's
     // `user:<id>` room so connected clients disable actions immediately.
+    const wireReason = reasonCode ?? reason;
     const payload: CommunityClosedPayload = {
       communityId,
       status: "CLOSED",
       closedAt: closedAt.getTime(),
-      ...(reason ? { reason } : {}),
+      ...(wireReason ? { reason: wireReason } : {}),
     };
     try {
       await publishCommunityRoomEvent(
@@ -7364,7 +7600,9 @@ export const communityService = {
 
     void getStreamClient().forceEndStreamsByCommunity(
       communityId,
-      CLOSE_REASON_ADMIN_BANNED
+      CLOSE_REASON_ADMIN_BANNED,
+      // Backoffice (Super Admin) action: "Administrator ended …".
+      true
     );
 
     return true;
@@ -7439,6 +7677,12 @@ export const communityService = {
     // restores login only, so reviving the community needs its own admin action.
     if (community.statusClosedReasonCode === CLOSE_REASON_ADMIN_BANNED) {
       throw new ForbiddenError("COMMUNITY_CLOSED_ADMIN_BANNED");
+    }
+    // Closed because its last member, the admin, left: the caller no longer
+    // belongs to it, and reopening would make an open community with no
+    // members and no admin.
+    if (community.statusClosedReasonCode === CLOSE_REASON_LAST_MEMBER_LEFT) {
+      throw new ForbiddenError("COMMUNITY_FORBIDDEN");
     }
 
     // Idempotent: reopening an already-open community returns its current state.
@@ -10243,7 +10487,9 @@ export const communityService = {
       if (target === CommunityModerationStatus.SUSPENDED) {
         void getStreamClient().forceEndStreamsByCommunity(
           communityId,
-          "COMMUNITY_SUSPENDED"
+          "COMMUNITY_SUSPENDED",
+          // Backoffice (Super Admin) action: "Administrator ended …".
+          true
         );
       }
     }

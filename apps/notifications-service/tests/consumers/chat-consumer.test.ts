@@ -37,7 +37,12 @@ jest.mock("amqplib", () => ({
 jest.mock("../../src/services/push.service.js", () => ({
   pushToUser: jest.fn(async () => undefined),
   pushToUsers: jest.fn(async () => undefined),
+  sendDeliveryWake: jest.fn(async (userId: string) => {
+    mockWakes.push(userId);
+  }),
 }));
+/** Silent delivery wakes sent to muted recipients. */
+const mockWakes: string[] = [];
 
 // The coalescer asks Redis whether the recipient is currently reading the room
 // (a pipeline of EXISTS), and the mention-row writer claims each row with a
@@ -617,6 +622,25 @@ describe("startChatConsumer — private room mute suppression", () => {
     channelMock.nack.mockClear();
     isPrivateMutedMock.mockReset();
     isPrivateMutedMock.mockResolvedValue(false);
+    mockWakes.length = 0;
+  });
+
+  it("GROUP + recipient muted the group → silent delivery wake, no alert", async () => {
+    groupMuteFilterMock.mockResolvedValueOnce([]);
+    consume(makeMsg({ ...BASE, conversationType: "GROUP" }));
+    await flush();
+
+    expect(mockWakes).toEqual(["recipient-uuid"]);
+    expect(pushMany).not.toHaveBeenCalled();
+  });
+
+  it("PRIVATE + recipient muted the room → silent delivery wake, no alert", async () => {
+    isPrivateMutedMock.mockResolvedValue(true);
+    consume(makeMsg({ ...BASE, conversationType: "PRIVATE" }));
+    await flush();
+
+    expect(mockWakes).toEqual(["recipient-uuid"]);
+    expect(pushMany).not.toHaveBeenCalled();
   });
 
   it("PRIVATE + recipient muted the room → pushToUsers NOT called, message still ACKed", async () => {

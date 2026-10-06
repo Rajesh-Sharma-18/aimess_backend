@@ -3820,8 +3820,36 @@ components:
               duration: "1h 24m"
               durationSeconds: 5040
               endedReason: USER
+        - name: community_system_live_ended_by_admin
+          summary: "Community lifecycle system message — a Super Admin ended the livestream from Backoffice. Reads "Administrator ended {host}'s livestream" for every viewer but the host, who reads "Administrator ended the livestream"; the admin's identity is never sent (actorUserId/actorName stay the host). Render content.text."
+          payload:
+            id: "684abc123def456789012353"
+            messageId: "684abc123def456789012353"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: ""
+            senderName: ""
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "Administrator ended Jane Doe's livestream (4m)"
+              files: []
+            message: "Administrator ended Jane Doe's livestream (4m)"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750008500000
+            sentAt: 1750008500000
+            systemMessageType: LIVE_STREAM_ENDED
+            isPersonal: false
+            systemMetadata:
+              actorUserId: user_xyz
+              actorName: Jane Doe
+              livestreamId: "684abc123def4567890123ff"
+              duration: "4m"
+              durationSeconds: 240
+              endedReason: ADMIN
         - name: community_system_live_ended_by_system
-          summary: "Community lifecycle system message — livestream force-ended by the platform (Super Admin / moderation). Never host-named, for any viewer; actorUserId stays the host."
+          summary: "Community lifecycle system message — livestream ended by the platform (moderation, bans, timeouts). Never host-named, for any viewer; actorUserId stays the host."
           payload:
             id: "684abc123def456789012352"
             messageId: "684abc123def456789012352"
@@ -5275,8 +5303,10 @@ components:
           payload:
             notificationId: "683abc100def0000000000a1"
             type: community.member_added
-            title: "Added to a community"
-            body: "You were added to Design Guild"
+            title: "Design Guild"
+            # Rendered per reader: the reader's own side is "You" (actor or
+            # target), anyone else by display name.
+            body: "Priya Shah added You to Design Guild"
             referenceId: "6843e1a2b5c3d4e5f6a7b8c9"
             isRead: false
             createdAt: 1749465400000
@@ -8207,6 +8237,15 @@ components:
               nullable: true
               description: "Object key or resolved URL; resolve on read. May be null."
           required: [userId, displayName, avatarUrl]
+        creatorId: { type: string, description: "Same as host.userId; mirrors the REST StreamView." }
+        creatorRole:
+          type: string
+          nullable: true
+          enum: [ADMIN, MODERATOR, null]
+          description: "Creator's community role at go-live; null when unresolved. UI hint for the admin End for Everyone button only — never an authorization source."
+        creatorName:
+          type: string
+          description: 'Creator display name, username fallback, "" when unresolved.'
         title: { type: string, nullable: true }
         sourceType:
           type: string
@@ -8287,6 +8326,9 @@ components:
         hasActiveLivestream:
           type: boolean
           description: "Stays true while other streams run; false only when the last ends."
+        reason:
+          type: string
+          description: "Why it ended: HOST_ENDED (creator's End Live), COMMUNITY_ADMIN_ENDED (a community ADMIN's End for Everyone), or a system/moderation code (ADMIN_FORCE_ENDED, COMMUNITY_CLOSED, ROLE_UPDATED, MEMBER_BANNED, SESSION_ENDED, ...). Treat unknown values as a generic end."
       required:
         [
           communityId,
@@ -8702,6 +8744,9 @@ components:
         communityId:
           type: string
           description: "Lets a viewer screen update the community's isLive badge without a separate /community subscription."
+        endedReason:
+          type: string
+          description: "ENDED only (absent on other statuses and on ends that predate it). COMMUNITY_ADMIN_ENDED tells the broadcaster a community ADMIN ended their stream for everyone, vs HOST_ENDED for their own End Live. Same values as the REST StreamView.endedReason."
       required: [streamId, status, communityId]
     StreamBroadcastLivePayload:
       type: object

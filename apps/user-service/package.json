@@ -9,6 +9,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
+    "audit:handle-case": "tsx scripts/audit-handle-case.ts",
     "db:seed": "tsx prisma/seed/index.ts",
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",

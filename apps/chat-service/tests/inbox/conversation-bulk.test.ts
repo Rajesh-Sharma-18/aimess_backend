@@ -786,3 +786,144 @@ describe("POST /conversations/read/bulk", () => {
     expect(res.status).toBe(400);
   });
 });
+
+// A group CLOSED by Super Admin (owner permanently banned) keeps every
+// membership ACTIVE, the owner's ADMIN row included, so it stays listed.
+// Removing it from the list is a per-user dismiss — never a Leave.
+describe("Delete Conversation on a CLOSED group", () => {
+  const closedRoom = () =>
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: GROUP_ROOM,
+      status: "CLOSED",
+      closedReasonCode: "ADMIN_BANNED",
+    });
+
+  function expectNothingButTheDismiss() {
+    expect(mocks.groupMemberRepo.setDismissed).toHaveBeenCalledWith(
+      GROUP_ROOM,
+      TEST_USER_ID
+    );
+    // No leave, no owner rule, no history clear, nothing anyone else sees.
+    expect(mocks.groupMemberRepo.updateStatus).not.toHaveBeenCalled();
+    expect(mocks.groupMemberRepo.leaveIfActive).not.toHaveBeenCalled();
+    expect(mocks.groupRoomRepo.incMemberCount).not.toHaveBeenCalled();
+    expect(mocks.groupRoomRepo.disband).not.toHaveBeenCalled();
+    expect(mocks.groupMemberRepo.setClearedAt).not.toHaveBeenCalled();
+    expect(publishedOn(`conv:${GROUP_ROOM}`)).toEqual([]);
+    expect(
+      publishedOn(`user:${TEST_USER_ID}`).map((e) => e.event)
+    ).not.toContain("group:removed");
+  }
+
+  it.each(["LEAVE", "LEAVE_AND_DELETE", "DELETE"] as const)(
+    "POSITIVE: former ADMIN, groupAction %s → DELETED, row dismissed for the caller only",
+    async (groupAction) => {
+      closedRoom();
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+        roomId: GROUP_ROOM,
+        userId: TEST_USER_ID,
+        status: "ACTIVE",
+        role: "ADMIN",
+      });
+      mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(4);
+      mocks.groupMemberRepo.setDismissed.mockResolvedValue(true);
+
+      const res = await request(app)
+        .post("/api/chat/conversations/leave/bulk")
+        .set(auth())
+        .send({ roomIds: [GROUP_ROOM], groupAction });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.results).toEqual([
+        { roomId: GROUP_ROOM, type: "GROUP", status: "DELETED" },
+      ]);
+      expectNothingButTheDismiss();
+      // The caller's other devices drop the row; their badge is recomputed.
+      expect(publishedOn(`user:${TEST_USER_ID}`)).toContainEqual({
+        event: "conv:deleted",
+        data: { roomId: GROUP_ROOM, deletedBy: TEST_USER_ID, type: "GROUP" },
+      });
+      expect(notifyUnreadChanged).toHaveBeenCalledWith(TEST_USER_ID);
+    }
+  );
+
+  it("POSITIVE: DELETE /groups/rooms/:roomId on a CLOSED group dismisses instead of clearing", async () => {
+    closedRoom();
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      roomId: GROUP_ROOM,
+      userId: TEST_USER_ID,
+      status: "ACTIVE",
+      role: "MEMBER",
+    });
+    mocks.groupMemberRepo.setDismissed.mockResolvedValue(true);
+
+    const res = await request(app)
+      .delete(`/api/chat/groups/rooms/${GROUP_ROOM}`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expectNothingButTheDismiss();
+  });
+
+  it("IDEMPOTENT: a repeat finds nothing to write and still succeeds, silently", async () => {
+    closedRoom();
+    mocks.groupMemberRepo.setDismissed.mockResolvedValue(false);
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: GROUP_ROOM,
+      userId: TEST_USER_ID,
+      status: "ACTIVE",
+      role: "ADMIN",
+    });
+
+    const res = await request(app)
+      .post("/api/chat/conversations/leave/bulk")
+      .set(auth())
+      .send({ roomIds: [GROUP_ROOM] });
+
+    expect(res.body.data.results[0].status).toBe("DELETED");
+    expect(publishedOn(`user:${TEST_USER_ID}`)).toEqual([]);
+  });
+
+  it("NEGATIVE: a user with no ACTIVE membership cannot dismiss someone else's room", async () => {
+    closedRoom();
+    mocks.groupMemberRepo.setDismissed.mockResolvedValue(false);
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post("/api/chat/conversations/leave/bulk")
+      .set(auth())
+      .send({ roomIds: [GROUP_ROOM] });
+
+    expect(res.body.data.results[0]).toEqual({
+      roomId: GROUP_ROOM,
+      type: "GROUP",
+      status: "FAILED",
+      errorCode: "NOT_MEMBER",
+    });
+  });
+
+  it("REGRESSION: an ACTIVE group's admin still cannot leave while others remain", async () => {
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: GROUP_ROOM,
+      status: "ACTIVE",
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: GROUP_ROOM,
+      userId: TEST_USER_ID,
+      status: "ACTIVE",
+      role: "ADMIN",
+    });
+    mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(3);
+
+    const res = await request(app)
+      .post("/api/chat/conversations/leave/bulk")
+      .set(auth())
+      .send({ roomIds: [GROUP_ROOM] });
+
+    expect(res.body.data.results[0]).toMatchObject({
+      status: "FAILED",
+      errorCode: "OWNER_CANNOT_LEAVE",
+    });
+    expect(mocks.groupMemberRepo.setDismissed).not.toHaveBeenCalled();
+  });
+});

@@ -106,6 +106,36 @@ export const NOTIFICATION_MESSAGES = {
     en: "System ended the livestream in {{community}} after {{duration}}",
     th: "ระบบจบไลฟ์สตรีมใน{{community}}หลังจาก {{duration}}",
   },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST: {
+    vi: "{{name}} đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}}",
+    en: "{{name}} ended {{host}}'s livestream in {{community}}",
+    th: "{{name}}จบไลฟ์สตรีมของ{{host}}ใน{{community}}แล้ว",
+  },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST_DURATION: {
+    vi: "{{name}} đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}} sau {{duration}}",
+    en: "{{name}} ended {{host}}'s livestream in {{community}} after {{duration}}",
+    th: "{{name}}จบไลฟ์สตรีมของ{{host}}ใน{{community}}หลังจาก {{duration}}",
+  },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN: {
+    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp trong {{community}}",
+    en: "Administrator ended the livestream in {{community}}",
+    th: "ผู้ดูแลระบบจบไลฟ์สตรีมใน{{community}}แล้ว",
+  },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_DURATION: {
+    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp trong {{community}} sau {{duration}}",
+    en: "Administrator ended the livestream in {{community}} after {{duration}}",
+    th: "ผู้ดูแลระบบจบไลฟ์สตรีมใน{{community}}หลังจาก {{duration}}",
+  },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST: {
+    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}}",
+    en: "Administrator ended {{host}}'s livestream in {{community}}",
+    th: "ผู้ดูแลระบบจบไลฟ์สตรีมของ{{host}}ใน{{community}}แล้ว",
+  },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST_DURATION: {
+    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}} sau {{duration}}",
+    en: "Administrator ended {{host}}'s livestream in {{community}} after {{duration}}",
+    th: "ผู้ดูแลระบบจบไลฟ์สตรีมของ{{host}}ใน{{community}}หลังจาก {{duration}}",
+  },
   NOTIF_COMMUNITY_JOIN_REQUEST_APPROVED: {
     vi: "{{name}} đã chấp thuận yêu cầu tham gia {{community}} của bạn",
     en: "{{name}} approved your request to join {{community}}",
@@ -121,6 +151,8 @@ export const NOTIFICATION_MESSAGES = {
     en: "You're now a member of {{community}}",
     th: "คุณเป็นสมาชิกของ{{community}}แล้ว",
   },
+  // LEGACY rows only: a notification written before actor/target were carried.
+  // New ones render SYS_MEMBER_ADDED_TO / SYS_MEMBER_REMOVED_FROM.
   NOTIF_COMMUNITY_MEMBER_ADDED: {
     vi: "Bạn đã được thêm vào {{community}}",
     en: "You were added to {{community}}",
@@ -141,6 +173,8 @@ export const NOTIFICATION_MESSAGES = {
     en: "You're now {{role}} in {{community}}",
     th: "คุณเป็น{{role}}ใน{{community}}แล้ว",
   },
+  // LEGACY rows only: a notification written before actor/target were carried.
+  // New ones render SYS_MEMBER_ADDED_TO / SYS_MEMBER_REMOVED_FROM.
   NOTIF_COMMUNITY_MEMBER_KICKED: {
     vi: "Bạn đã bị xóa khỏi {{community}}",
     en: "You were removed from {{community}}",
@@ -340,6 +374,8 @@ export const NOTIFICATION_MESSAGES = {
     en: "this group",
     th: "กลุ่มนี้",
   },
+  // LEGACY rows only: a notification written before actor/target were carried.
+  // New ones render SYS_MEMBER_ADDED_TO / SYS_MEMBER_REMOVED_FROM.
   NOTIF_GROUP_MEMBER_ADDED: {
     vi: "Bạn đã được thêm vào nhóm",
     en: "You were added to the group",

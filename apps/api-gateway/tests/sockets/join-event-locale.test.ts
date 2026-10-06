@@ -20,6 +20,26 @@ import {
   personalizeConvUpdatedPreview,
 } from "../../src/sockets/system-message-personalize.js";
 
+/** The MEMBER_ADDED event both the list row and the chat line carry. */
+const ADD_META = {
+  actorName: "Harshil Vekariya 5",
+  actorUserId: "bff2848c-614e-4162-b228-e2c4ce3f74f8",
+  targetUserId: "u1",
+  targetName: "Mind Flayer",
+  communityName: "Flute Class10",
+};
+
+/** "{actor} added {target} to {community}", with `target` already resolved. */
+const added = (locale: "en" | "vi" | "th", target: string) =>
+  t("SYS_MEMBER_ADDED_TO", locale, {
+    actor: "Harshil Vekariya 5",
+    target,
+    entity: "Flute Class10",
+  });
+const selfLine = (locale: "en" | "vi" | "th") =>
+  added(locale, t("SYS_SENDER_YOU", locale));
+const modLine = (locale: "en" | "vi" | "th") => added(locale, "Mind Flayer");
+
 /** The payload community-service publishes for an admin-initiated add. */
 const COMMUNITY_ADDED = {
   communityId: "c1",
@@ -30,10 +50,11 @@ const COMMUNITY_ADDED = {
     type: "system",
     userId: null,
     username: null,
-    preview: t("SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT", "en"),
-    previewKey: "SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT",
+    preview: selfLine("en"),
+    systemMessageType: "MEMBER_ADDED",
+    systemMetadata: ADD_META,
     dateTime: 1787741385949,
-  },
+  } as Record<string, unknown>,
 };
 
 /**
@@ -44,20 +65,9 @@ const COMMUNITY_ADDED = {
 const COMMUNITY_JOIN_LINE = {
   contentType: "SYSTEM",
   systemMessageType: "MEMBER_ADDED",
-  systemMetadata: {
-    actorName: "Harshil Vekariya 5",
-    actorUserId: "bff2848c-614e-4162-b228-e2c4ce3f74f8",
-    targetUserId: "u1",
-    targetName: "A member",
-  },
-  message: t("SYS_COMMUNITY_MEMBER_ADDED_SELF", "en", {
-    actor: "Harshil Vekariya 5",
-  }),
-  content: {
-    text: t("SYS_COMMUNITY_MEMBER_ADDED_SELF", "en", {
-      actor: "Harshil Vekariya 5",
-    }),
-  },
+  systemMetadata: ADD_META,
+  message: selfLine("en"),
+  content: { text: selfLine("en") },
   isPersonal: true,
   communityId: "c1",
 };
@@ -69,13 +79,13 @@ const lineOf = (payload: unknown): string =>
 
 describe("community:added — the list row follows the recipient's socket", () => {
   it.each(["en", "vi", "th"] as const)(
-    "renders the row in %s from the key, not the baked English",
+    "renders the row in %s from the event, not the baked English",
     (locale) => {
       expect(
         previewOf(
           personalizeCommunityAddedPreview(COMMUNITY_ADDED, "u1", locale)
         )
-      ).toBe(t("SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT", locale));
+      ).toBe(selfLine(locale));
     }
   );
 
@@ -87,14 +97,9 @@ describe("community:added — the list row follows the recipient's socket", () =
       const line = lineOf(
         personalizeCommunitySocketMessage(COMMUNITY_JOIN_LINE, "u1", locale)
       );
-      // Not the same sentence (the row is deliberately actor-less), but they
-      // must never disagree about which LANGUAGE they are in.
-      expect(row).toBe(t("SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT", locale));
-      expect(line).toBe(
-        t("SYS_COMMUNITY_MEMBER_ADDED_SELF", locale, {
-          actor: "Harshil Vekariya 5",
-        })
-      );
+      // The SAME sentence, in the SAME language: one event, one rendering.
+      expect(row).toBe(selfLine(locale));
+      expect(line).toBe(selfLine(locale));
     }
   });
 
@@ -111,12 +116,7 @@ describe("community:added — the list row follows the recipient's socket", () =
           locale
         )
       );
-      expect(line).toBe(
-        t("SYS_COMMUNITY_MEMBER_ADDED", locale, {
-          actor: "Harshil Vekariya 5",
-          target: "A member",
-        })
-      );
+      expect(line).toBe(modLine(locale));
     }
   });
   it("is the exact reported repro: an English session gets neither row nor line in Vietnamese", () => {
@@ -126,12 +126,8 @@ describe("community:added — the list row follows the recipient's socket", () =
     const line = lineOf(
       personalizeCommunitySocketMessage(COMMUNITY_JOIN_LINE, "u1", "en")
     );
-    expect(row).not.toBe(t("SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT", "vi"));
-    expect(line).not.toBe(
-      t("SYS_COMMUNITY_MEMBER_ADDED_SELF", "vi", {
-        actor: "Harshil Vekariya 5",
-      })
-    );
+    expect(row).not.toBe(selfLine("vi"));
+    expect(line).not.toBe(selfLine("vi"));
   });
 
   it("keeps the baked sentence for an unknown key rather than showing the key", () => {
@@ -141,6 +137,8 @@ describe("community:added — the list row follows the recipient's socket", () =
         ...COMMUNITY_ADDED.lastActivity,
         preview: "Something happened",
         previewKey: "SYS_NOT_IN_THIS_BUILD",
+        systemMessageType: undefined,
+        systemMetadata: undefined,
       },
     };
     expect(
@@ -148,10 +146,18 @@ describe("community:added — the list row follows the recipient's socket", () =
     ).toBe("Something happened");
   });
 
-  it("keeps a legacy row (no key at all) exactly as published", () => {
+  it("keeps a legacy row (retired key, no event) exactly as published", () => {
+    // What community-service published before the add carried its event.
     const legacy = {
       ...COMMUNITY_ADDED,
-      lastActivity: { ...COMMUNITY_ADDED.lastActivity, previewKey: undefined },
+      lastActivity: {
+        type: "system",
+        userId: null,
+        username: null,
+        preview: "You were added to the community",
+        previewKey: "SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT",
+        dateTime: 1787741385949,
+      },
     };
     expect(personalizeCommunityAddedPreview(legacy, "u1", "th")).toBe(legacy);
   });
@@ -175,12 +181,8 @@ describe("community:added — the list row follows the recipient's socket", () =
       personalizeCommunityAddedPreview
     );
 
-    expect(previewOf(phone.emit.mock.calls[0][1])).toBe(
-      t("SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT", "vi")
-    );
-    expect(previewOf(laptop.emit.mock.calls[0][1])).toBe(
-      t("SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT", "en")
-    );
+    expect(previewOf(phone.emit.mock.calls[0][1])).toBe(selfLine("vi"));
+    expect(previewOf(laptop.emit.mock.calls[0][1])).toBe(selfLine("en"));
   });
 });
 
@@ -208,7 +210,7 @@ describe("group:added — the same rebuild on the DB snapshot shape", () => {
 
   it("rebuilds a SYSTEM snapshot that names its type `messageType`", () => {
     expect(textOf(personalizeConvUpdatedPreview(GROUP_ADDED, "x", "en"))).toBe(
-      "Alex added Jim"
+      "Alex added Jim to the group"
     );
     expect(
       textOf(personalizeConvUpdatedPreview(GROUP_ADDED, "x", "vi"))
@@ -218,6 +220,6 @@ describe("group:added — the same rebuild on the DB snapshot shape", () => {
   it("gives the ADDED member their own first-person line, in their language", () => {
     expect(
       textOf(personalizeConvUpdatedPreview(GROUP_ADDED, "target-1", "th"))
-    ).toBe(t("SYS_GROUP_MEMBER_ADDED_SELF", "th", { actor: "Alex" }));
+    ).toBe("Alexเพิ่มคุณเข้ากลุ่ม");
   });
 });

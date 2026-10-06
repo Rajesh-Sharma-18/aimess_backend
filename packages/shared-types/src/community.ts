@@ -44,6 +44,16 @@ export type CommunityLastActivity =
        * `preview` too, never be shown raw.
        */
       previewKey?: string;
+      /**
+       * For a sentence WITH parameters that depends on who reads it — today the
+       * added member's own "{actor} added You to {community}" row — the system
+       * event it was rendered from, exactly as on the chat line
+       * (`systemMessageType` + `systemMetadata`). The gateway re-renders it per
+       * receiving socket; a client SHOULD render it the same way it renders the
+       * chat line. Optional and additive, like `previewKey`.
+       */
+      systemMessageType?: string;
+      systemMetadata?: Record<string, unknown>;
       /** Epoch milliseconds. */
       dateTime: number;
     };
@@ -215,6 +225,15 @@ export interface CommunityStreamStartedSocketPayload {
     displayName: string;
     avatarUrl: string | null;
   };
+  /** Same as `host.userId`; mirrors the REST StreamView. */
+  creatorId: string;
+  /**
+   * Creator's community role at go-live, null when unresolved. A display hint
+   * for the admin "End for Everyone" button only — never authorization.
+   */
+  creatorRole: "ADMIN" | "MODERATOR" | null;
+  /** Creator display name, username fallback, "" when unresolved. */
+  creatorName: string;
   /** Stream title, when set. */
   title: string | null;
   /** Stream source, matching the REST stream read model. */
@@ -263,6 +282,11 @@ export interface CommunityStreamEndedSocketPayload {
   /** Remaining LIVE count (0 when the final stream ended). */
   liveStreamCount: number;
   hasActiveLivestream: boolean;
+  /**
+   * Why it ended: HOST_ENDED, COMMUNITY_ADMIN_ENDED (a community ADMIN's End
+   * for Everyone), or a system/moderation code. Unknown values = generic end.
+   */
+  reason?: string;
 }
 
 /**

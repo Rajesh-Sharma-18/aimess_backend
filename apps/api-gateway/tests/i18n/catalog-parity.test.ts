@@ -141,7 +141,7 @@ describe("system message rendering per locale", () => {
     const en = buildGroupSystemFallbackText("MEMBER_REMOVED", data, null, "en");
     const vi = buildGroupSystemFallbackText("MEMBER_REMOVED", data, null, "vi");
     const th = buildGroupSystemFallbackText("MEMBER_REMOVED", data, null, "th");
-    expect(en).toBe("Alex removed Jim");
+    expect(en).toBe("Alex removed Jim from the group");
     expect(new Set([en, vi, th]).size).toBe(3);
     for (const text of [en, vi, th]) {
       expect(text).toContain("Alex");
@@ -152,15 +152,15 @@ describe("system message rendering per locale", () => {
   it("keeps the first-person form per viewer inside each language", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", data, "t1", "th")
-    ).toBe(t("SYS_GROUP_MEMBER_REMOVED_SELF", "th"));
+    ).toBe("Alexนำคุณออกจากกลุ่ม");
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", data, "t1", "vi")
-    ).toBe(t("SYS_GROUP_MEMBER_REMOVED_SELF", "vi"));
+    ).toBe("Alex đã xóa Bạn khỏi nhóm");
   });
 
   it("defaults to English so stored SYSTEM text never shifts language", () => {
     expect(buildGroupSystemFallbackText("MEMBER_REMOVED", data)).toBe(
-      "Alex removed Jim"
+      "Alex removed Jim from the group"
     );
     expect(
       buildPrivateSystemFallbackText("FRIENDSHIP_BLOCKED", {

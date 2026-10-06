@@ -374,6 +374,38 @@ export interface PushInput {
    * ask for it again.
    */
   actions?: (locale: SupportedLocale) => ReadonlyArray<PushAction>;
+  /**
+   * Chat message alert: when Chat-off or quiet hours drops it, still send the
+   * silent delivery wake so the sender gets ✓✓.
+   */
+  deliveryWake?: { conversationId: string; messageId: string };
+}
+
+export const CHAT_DELIVERY_WAKE = "chat.delivery_wake";
+
+/**
+ * The recipient gets no alert, but their phone must still wake to acknowledge
+ * delivery (✓✓) — the Android app opens no socket on a push. Silent, no inbox
+ * row, Android-only (the Android client is the one consuming it).
+ */
+export async function sendDeliveryWake(
+  userId: string,
+  wake: { conversationId: string; messageId: string }
+): Promise<void> {
+  await pushToUser({
+    userId,
+    category: "chatEnabled",
+    type: CHAT_DELIVERY_WAKE,
+    dataOnly: true,
+    bypassSettings: true,
+    skipInbox: true,
+    platforms: ["ANDROID"],
+    data: { type: CHAT_DELIVERY_WAKE, ...wake },
+  }).catch((err: unknown) =>
+    logger.warn(
+      `delivery wake failed user=${userId} message=${wake.messageId}: ${String(err)}`
+    )
+  );
 }
 
 /**
@@ -519,7 +551,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // session to change it overwrites for everyone. Per-device rendering happens
   // in `viewFor` below, off `DeviceToken.locale`.
   const locale = await getUserLocale(userId).catch(() => DEFAULT_LOCALE);
-  const rendered = input.copy?.(locale);
+  const rendered = input.copy?.(locale, userId);
   const title = rendered?.title ?? input.title ?? "";
   const inboxTitleOverride =
     input.inboxTitle !== undefined ? input.inboxTitle : rendered?.inboxTitle;
@@ -565,13 +597,11 @@ export async function pushToUser(input: PushInput): Promise<void> {
   //
   // Call history ONLY. A group @mention row is also inbox-only, but it is an
   // alert, not a log — Chat OFF must not leave it in the Mentions tab.
-  if (
-    decision === "CATEGORY_OFF" &&
-    !(skipPush && type === "call.activity")
-  ) {
+  if (decision === "CATEGORY_OFF" && !(skipPush && type === "call.activity")) {
     logger.info(
       `Notification suppressed by category setting: user=${userId} type=${type} category=${category}`
     );
+    if (input.deliveryWake) await sendDeliveryWake(userId, input.deliveryWake);
     return;
   }
 
@@ -651,7 +681,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   const viewFor = (viewLocale: SupportedLocale): PushView => {
     const cached = views.get(viewLocale);
     if (cached) return cached;
-    const localized = input.copy?.(viewLocale);
+    const localized = input.copy?.(viewLocale, userId);
     const fullBody = localized?.body ?? input.body ?? "";
     const view: PushView = {
       title: localized?.title ?? input.title ?? "",
@@ -739,6 +769,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     logger.info(
       `Push suppressed by quiet hours (inbox row kept): user=${userId} type=${type}`
     );
+    if (input.deliveryWake) await sendDeliveryWake(userId, input.deliveryWake);
     return;
   }
 

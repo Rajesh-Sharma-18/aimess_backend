@@ -256,12 +256,19 @@ const forceEndByCreatorBreaker = makeBreaker(
   "stream.forceEndStreamsByCreator",
   (args: { creatorId: string; reason: string }) =>
     call<
-      { creatorId: string; communityId: string; reason: string },
+      {
+        creatorId: string;
+        communityId: string;
+        reason: string;
+        byPlatformAdmin: boolean;
+      },
       { ok?: boolean; endedCount?: number }
     >("forceEndStreamsByCreator", {
       creatorId: args.creatorId,
       communityId: "", // unscoped — account-level action ends every stream everywhere
       reason: args.reason,
+      // Every caller here is a Super Admin action: "Administrator ended …".
+      byPlatformAdmin: true,
     }).then((r) => ({
       ok: r.ok ?? false,
       endedCount: Number(r.endedCount ?? 0),

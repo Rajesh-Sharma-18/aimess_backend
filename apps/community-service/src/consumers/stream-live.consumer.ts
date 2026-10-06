@@ -72,16 +72,32 @@ type StreamLiveData = StreamStartedData | StreamEndedData | StreamUpdatedData;
 
 export function buildStreamSocketPayload(
   type: string,
-  data: StreamLiveData
+  data: StreamLiveData,
+  // STARTED only: the host's member row, so this fan-out carries the same
+  // creatorRole/creatorName as stream-service's room broadcast and REST view.
+  creator?: {
+    role: string;
+    status: string;
+    snapshotUsername: string;
+    snapshotDisplayName: string;
+  } | null
 ): Record<string, unknown> {
   const { communityId, streamId } = data;
   if (type === STREAM_STARTED) {
     const d = data as StreamStartedData;
     const startedAt = d.startedAt ?? d.livedAt ?? Date.now();
+    const isHost =
+      creator?.status === "ACTIVE" &&
+      (creator.role === "ADMIN" || creator.role === "MODERATOR");
     return {
       communityId,
       livestreamId: streamId,
       streamId,
+      creatorId: d.creatorId,
+      // Display hint for the admin force-end button, never authorization.
+      creatorRole: isHost ? creator!.role : null,
+      creatorName:
+        creator?.snapshotDisplayName || creator?.snapshotUsername || "",
       title: d.title ?? null,
       ...(d.sourceType ? { sourceType: d.sourceType } : {}),
       sourceUrl: d.sourceUrl ?? null,
@@ -212,7 +228,12 @@ export async function startStreamLiveConsumer(): Promise<void> {
       // Fan out to every active member's personal channel. Each publish is
       // independently guarded — a single user channel failure must not abort
       // the rest of the fan-out.
-      const socketPayload = buildStreamSocketPayload(type, data);
+      const creator = isStarted
+        ? await communityRepository
+            .findMemberByUserId(communityId, data.creatorId)
+            .catch(() => null)
+        : null;
+      const socketPayload = buildStreamSocketPayload(type, data, creator);
 
       await Promise.allSettled(
         memberIds.map((memberId) =>

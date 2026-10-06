@@ -60,28 +60,51 @@ interface StreamEndedData {
    * account reason. Absent on the PENDING-timeout sweeper's event.
    */
   reason?: string;
+  /** The user who ended it: the host, or the community admin on COMMUNITY_ADMIN_ENDED. */
+  endedBy?: string | null;
+  /** A Super Admin ended it from Backoffice (adminForceEnd). */
+  byPlatformAdmin?: boolean;
 }
 
 /**
  * Coarsen the raw reason to who ended the stream — the same split
- * stream-service's audit row makes (actorType USER only for HOST_ENDED). The
- * raw reason never reaches clients: a moderation code would leak why.
+ * stream-service's audit row makes: USER when a community member did it (the
+ * host's End Live, a community admin's End for Everyone), ADMIN for a Super
+ * Admin's Backoffice End Live ("An administrator"), SYSTEM for the platform
+ * (moderation, bans, timeouts). The raw reason never reaches clients: a
+ * moderation code would leak why.
  */
-export function streamEndedReason(reason?: string): "USER" | "SYSTEM" {
-  return !reason || reason === "HOST_ENDED" ? "USER" : "SYSTEM";
+export function streamEndedReason(
+  reason?: string,
+  byPlatformAdmin?: boolean
+): "USER" | "ADMIN" | "SYSTEM" {
+  if (byPlatformAdmin) return "ADMIN";
+  return !reason || reason === "HOST_ENDED" || reason === "COMMUNITY_ADMIN_ENDED"
+    ? "USER"
+    : "SYSTEM";
 }
 
-/** Active members eligible for the push (minus the host, minus stream-muted). */
+/**
+ * Who the "{actor} ended the livestream" line names: the community admin who
+ * forced the end, otherwise the host.
+ */
+export function streamEndedActorId(data: StreamEndedData): string {
+  return data.reason === "COMMUNITY_ADMIN_ENDED" && data.endedBy
+    ? data.endedBy
+    : data.creatorId;
+}
+
+/** Active members eligible for the push (minus `excludeUserId`, minus stream-muted). */
 async function resolveRecipients(
   communityId: string,
-  hostUserId: string
+  excludeUserId: string | null
 ): Promise<string[]> {
   const [memberIds, mutedIds] = await Promise.all([
     communityRepository.findActiveMemberIds(communityId),
     communityRepository.findStreamMutedMemberIds(communityId),
   ]);
   const muted = new Set(mutedIds);
-  return memberIds.filter((id) => id !== hostUserId && !muted.has(id));
+  return memberIds.filter((id) => id !== excludeUserId && !muted.has(id));
 }
 
 /** Resolve the host's display-name + avatar URL from the community member snapshot. */
@@ -191,14 +214,16 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
   const eventAt = new Date(data.endedAt || Date.now()).toISOString();
   const durationSeconds = Math.max(0, Math.floor(data.durationSeconds ?? 0));
   const duration = formatStreamDuration(durationSeconds);
-  const endedReason = streamEndedReason(data.reason);
+  const endedReason = streamEndedReason(data.reason, data.byPlatformAdmin);
   logger.info(
     `[LIVE-SIDEBAR:COMMUNITY] stream.ended lifecycle received communityId=${communityId} streamId=${streamId} creatorId=${creatorId} eventAt=${eventAt} durationSeconds=${durationSeconds} reason=${data.reason ?? ""} endedReason=${endedReason}`
   );
 
-  // 1. Chat SYSTEM message: "{host} ended the livestream (1h 24m)", or "System
-  //    ended the livestream (1h 24m)" for endedReason SYSTEM. The host stays the
-  //    triggering user either way — only the rendered actor changes.
+  // 1. Chat SYSTEM message: "{actor} ended the livestream (1h 24m)", where the
+  //    actor is the host or, on a community admin's End for Everyone, that
+  //    admin; "Administrator ended {host}'s …" for ADMIN (Super Admin, Backoffice),
+  //    "System ended …" for SYSTEM. Both keep the host as the triggering user.
+  const actorId = streamEndedActorId(data);
   publishCommunitySystemMessageForChatSafe({
     communityId,
     systemMessageType: CommunitySystemMessageType.LIVE_STREAM_ENDED,
@@ -207,8 +232,12 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
       duration,
       durationSeconds,
       endedReason,
+      hostUserId: creatorId,
+      // Someone else ended it: chat-service resolves the host's name as the
+      // target, so the line reads "{admin} ended {host}'s livestream".
+      ...(actorId !== creatorId ? { targetUserId: creatorId } : {}),
     },
-    triggeredByUserId: creatorId,
+    triggeredByUserId: actorId,
     eventAt,
   });
   logger.info(
@@ -229,9 +258,15 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
     );
     return;
   }
-  const [recipientIds, host, communityAvatarView] = await Promise.all([
-    resolveRecipients(communityId, creatorId),
+  // Nobody is pushed about their own End Live: the host on their own end, the
+  // community admin on End for Everyone (the host IS told). A Super Admin is not
+  // a member, so the host is told too. A SYSTEM end keeps the host out, as before.
+  const pushExcluded =
+    endedReason === "ADMIN" ? null : endedReason === "SYSTEM" ? creatorId : actorId;
+  const [recipientIds, host, actor, communityAvatarView] = await Promise.all([
+    resolveRecipients(communityId, pushExcluded),
     resolveHost(communityId, creatorId),
+    actorId !== creatorId ? resolveHost(communityId, actorId) : null,
     communityImageService.resolveViewUrlForClient(community.avatarUrl),
   ]);
   logger.info(
@@ -252,6 +287,9 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
     duration,
     durationSeconds,
     endedReason,
+    ...(actor
+      ? { endedByUserId: actorId, endedByDisplayName: actor.displayName }
+      : {}),
     recipientIds,
   });
 }

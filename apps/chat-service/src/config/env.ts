@@ -107,7 +107,7 @@ const envSchema = z.object({
   // can never silently drift apart — see @aimess/constants media/limits.ts.
   CHAT_IMAGE_MAX_BYTES: z.coerce.number().positive().default(26_214_400), // 25 MB (image cap)
   CHAT_AUDIO_MAX_BYTES: z.coerce.number().positive().default(26_214_400), // 25 MB (audio cap)
-  CHAT_DOCUMENT_MAX_BYTES: z.coerce.number().positive().default(26_214_400), // 25 MB (document cap)
+  CHAT_DOCUMENT_MAX_BYTES: z.coerce.number().positive().default(52_428_800), // 50 MB (document cap)
   CHAT_TEXT_MAX_CHARS: z.coerce.number().positive().default(4000),
 
   MESSAGE_PAGE_SIZE: z.coerce.number().positive().default(30),

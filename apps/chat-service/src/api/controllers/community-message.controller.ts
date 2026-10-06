@@ -24,6 +24,7 @@ import {
   publishCommunityUpdatedSafe,
   type RecipientBump,
 } from "../../events/publish-conv-updated.js";
+import { bumpSystemParams } from "../../lib/bump-system-params.js";
 import { publishCommunityActivitySafe } from "../../events/publish-community-activity.js";
 import {
   reconcileCommunityLastActivityAfterDelete,
@@ -866,6 +867,8 @@ export class CommunityMessageController {
             preview: {
               contentType: normalizeMessageType(recalc.messageType),
               text: recalc.preview,
+              seq: recalc.sequenceNumber,
+              ...bumpSystemParams(recalc),
             },
           });
         }
@@ -905,9 +908,20 @@ export class CommunityMessageController {
       | null
   ): Promise<void> {
     try {
+      // A reaction line about the removed message lives in community-service; only a real delete (not a pin-line retraction) can orphan one.
+      const reactionRetired = deletedMessage
+        ? await getCommunityReconcileClient().updateReactionActivity({
+            communityId: roomId,
+            added: false,
+            messageId: deletedMessageId,
+            emoji: "",
+            actorId: "",
+          })
+        : false;
       const recalc = await this.service.recalculateLastMessageAfterDelete(
         roomId,
-        deletedMessageId
+        deletedMessageId,
+        { reactionRetired }
       );
       if (recalc === null) {
         // The SHARED snapshot did not move — but a member who had personally
@@ -931,11 +945,13 @@ export class CommunityMessageController {
 
       // Persist the ROLLED-BACK activity (previous visible message's own
       // timestamp, or the empty state) — see events/community-last-activity.ts.
-      await reconcileCommunityLastActivityAfterDelete({
-        communityId: roomId,
-        recalc,
-        removedAt,
-      });
+      if (!recalc.unchanged) {
+        await reconcileCommunityLastActivityAfterDelete({
+          communityId: roomId,
+          recalc,
+          removedAt,
+        });
+      }
       // Realtime bump — fire-and-forget, the DB write above is already
       // guaranteed by the time this fires.
       publishCommunityUpdatedSafe({
@@ -976,6 +992,8 @@ export class CommunityMessageController {
         preview: {
           contentType: normalizeMessageType(recalc.messageType),
           text: recalc.preview,
+          seq: recalc.sequenceNumber,
+          ...bumpSystemParams(recalc),
         },
       });
     } catch (err) {

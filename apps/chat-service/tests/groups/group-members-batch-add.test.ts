@@ -102,7 +102,7 @@ describe("POST /api/chat/group-members/add — batch", () => {
       "User C",
       "User D",
     ]);
-    expect(rows[0]!.content.text).toBe("Krish added User B, User C and User D");
+    expect(rows[0]!.content.text).toBe("Krish added User B, User C and User D to Squad");
   });
 
   it("POSITIVE: only members actually added are named — a skipped id never appears", async () => {
@@ -125,7 +125,7 @@ describe("POST /api/chat/group-members/add — batch", () => {
     const rows = systemRows();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.systemData.targetUserIds).toEqual(["user-b", "user-d"]);
-    expect(rows[0]!.content.text).toBe("Krish added User B and User D");
+    expect(rows[0]!.content.text).toBe("Krish added User B and User D to Squad");
   });
 
   it("EDGE: a batch of one keeps the classic single-target shape", async () => {
@@ -139,7 +139,7 @@ describe("POST /api/chat/group-members/add — batch", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.systemData.targetUserId).toBe("user-b");
     expect(rows[0]!.systemData.targetUserIds).toBeUndefined();
-    expect(rows[0]!.content.text).toBe("Krish added User B");
+    expect(rows[0]!.content.text).toBe("Krish added User B to Squad");
   });
 
   it("EDGE: duplicate ids in one request add (and announce) the member once", async () => {
@@ -208,8 +208,8 @@ describe("POST /api/chat/group-members/add — batch", () => {
 
     const rows = systemRows();
     expect(rows).toHaveLength(2);
-    expect(rows[0]!.content.text).toBe("Krish added User B");
-    expect(rows[1]!.content.text).toBe("Krish added User C");
+    expect(rows[0]!.content.text).toBe("Krish added User B to Squad");
+    expect(rows[1]!.content.text).toBe("Krish added User C to Squad");
   });
 });
 
@@ -230,7 +230,7 @@ describe("grouped MEMBER_ADDED text — per-viewer wording", () => {
         stored,
         "admin-1"
       )
-    ).toBe("You added User B, User C and User D");
+    ).toBe("You added User B, User C and User D to the group");
   });
 
   it("an existing member reads the third-person form naming the actor", () => {
@@ -241,7 +241,7 @@ describe("grouped MEMBER_ADDED text — per-viewer wording", () => {
         stored,
         "bystander"
       )
-    ).toBe("Krish added User B, User C and User D");
+    ).toBe("Krish added User B, User C and User D to the group");
   });
 
   it("a newly added member is named 'you' — the actor stays the admin", () => {
@@ -251,7 +251,7 @@ describe("grouped MEMBER_ADDED text — per-viewer wording", () => {
       stored,
       "user-c"
     );
-    expect(text).toBe("Krish added you, User B and User D");
+    expect(text).toBe("Krish added You, User B and User D to the group");
     expect(text).not.toContain("You added");
   });
 
@@ -262,19 +262,19 @@ describe("grouped MEMBER_ADDED text — per-viewer wording", () => {
       targetNames: ["User B", "User C", "User D", "User E", "User F"],
     };
     expect(buildGroupSystemFallbackText("MEMBER_ADDED", many)).toBe(
-      "Krish added User B, User C, User D and 2 others"
+      "Krish added User B, User C, User D and 2 others to the group"
     );
     expect(buildGroupSystemFallbackText("MEMBER_ADDED", many, "user-f")).toBe(
-      "Krish added you, User B, User C and 2 others"
+      "Krish added You, User B, User C and 2 others to the group"
     );
   });
 
   it("localizes instead of concatenating English", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_ADDED", systemData, null, "vi")
-    ).toBe("Krish đã thêm User B, User C và User D");
+    ).toBe("Krish đã thêm User B, User C và User D vào nhóm");
     expect(
       buildGroupSystemFallbackText("MEMBER_ADDED", systemData, "admin-1", "th")
-    ).toBe("คุณเพิ่มUser B, User C และUser D");
+    ).toBe("คุณเพิ่มUser B, User C และUser Dเข้ากลุ่ม");
   });
 });

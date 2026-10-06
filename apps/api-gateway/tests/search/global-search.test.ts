@@ -97,6 +97,14 @@ const urlsOf = (spy: ReturnType<typeof routeFetch>) =>
 const paramOf = (url: string, key: string) =>
   new URL(url).searchParams.get(key);
 
+// Every filter pages on the composite token: the leg's own cursor under its key,
+// plus the page counters.
+const tokenOf = (cursor: string) =>
+  JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Record<
+    string,
+    unknown
+  >;
+
 describe("GET /api/v1/search", () => {
   const realFetch = global.fetch;
   afterEach(() => {
@@ -149,10 +157,17 @@ describe("GET /api/v1/search", () => {
       { type: "message", id: "m1", message: HITS[0] },
     ]);
     // The frontend's shared stop condition reads these two and nothing else.
-    expect(res.body.data.pagination.nextCursor).toBe(MESSAGE_CURSOR);
+    expect(tokenOf(res.body.data.pagination.nextCursor)).toEqual({
+      v: 1,
+      m: MESSAGE_CURSOR,
+      n: 2,
+      t: 1,
+    });
     expect(res.body.data.pagination.hasMore).toBe(true);
     expect(res.body.data.pagination.totalData).toBe(1);
-    expect(res.body.data.nextCursor).toBe(MESSAGE_CURSOR);
+    expect(res.body.data.pagination.currentPage).toBe(1);
+    expect(res.body.data.pagination.totalPage).toBe(2);
+    expect(res.body.data.nextCursor).toBe(res.body.data.pagination.nextCursor);
   });
 
   it("filter=community reads community-service's real {pagination,data} envelope", async () => {
@@ -176,7 +191,7 @@ describe("GET /api/v1/search", () => {
         community: { id: "c1", name: "Johns Club" },
       },
     ]);
-    expect(res.body.data.nextCursor).toBe(COMMUNITY_CURSOR);
+    expect(tokenOf(res.body.data.nextCursor).c).toBe(COMMUNITY_CURSOR);
   });
 
   it("filter=people carries the user rows verbatim and drops the groups", async () => {
@@ -199,7 +214,7 @@ describe("GET /api/v1/search", () => {
         person: { type: "USER", userId: "u1", username: "john" },
       },
     ]);
-    expect(res.body.data.nextCursor).toBe(PEOPLE_CURSOR);
+    expect(tokenOf(res.body.data.nextCursor).p).toBe(PEOPLE_CURSOR);
   });
 
   it("filter=group calls the group leg and pages it, not the people leg", async () => {
@@ -228,7 +243,7 @@ describe("GET /api/v1/search", () => {
       },
     ]);
     // A real cursor, so a group list actually walks past page 1.
-    expect(res.body.data.nextCursor).toBe(GROUP_CURSOR);
+    expect(tokenOf(res.body.data.nextCursor).g).toBe(GROUP_CURSOR);
     expect(res.body.data.hasMore).toBe(true);
   });
 
@@ -489,6 +504,49 @@ describe("GET /api/v1/search", () => {
     expect(
       res.body.data.data.map((item: { type: string }) => item.type)
     ).toEqual(["community", "person", "group"]);
+    // Missing, not empty: the client says so instead of "no results".
+    expect(res.body.data.unavailable).toEqual(["message"]);
+  });
+
+  it("counts pages and rows served across a single-filter walk", async () => {
+    const spy = routeFetch({
+      messages: json({ data: HITS, hasMore: true, nextCursor: MESSAGE_CURSOR }),
+    });
+    global.fetch = spy as unknown as typeof fetch;
+    const first = await request(app)
+      .get(`${BASE}?q=john&filter=message`)
+      .set("authorization", AUTH);
+
+    global.fetch = routeFetch({
+      messages: json({ data: HITS, hasMore: false, nextCursor: null }),
+    }) as unknown as typeof fetch;
+    const second = await request(app)
+      .get(
+        `${BASE}?q=john&filter=message&cursor=${encodeURIComponent(first.body.data.nextCursor as string)}`
+      )
+      .set("authorization", AUTH);
+
+    expect(second.status).toBe(200);
+    // Last page: the counters are exact.
+    expect(second.body.data.pagination).toMatchObject({
+      currentPage: 2,
+      totalPage: 2,
+      totalData: 2,
+      hasMore: false,
+      nextCursor: null,
+    });
+  });
+
+  it("still forwards a pre-composite single-filter cursor to its leg", async () => {
+    const spy = routeFetch({
+      messages: json({ data: HITS, hasMore: false, nextCursor: null }),
+    });
+    global.fetch = spy as unknown as typeof fetch;
+    const res = await request(app)
+      .get(`${BASE}?q=john&filter=message&cursor=${MESSAGE_CURSOR}`)
+      .set("authorization", AUTH);
+    expect(res.status).toBe(200);
+    expect(paramOf(urlsOf(spy)[0] as string, "cursor")).toBe(MESSAGE_CURSOR);
   });
 
   it("surfaces a 400 on the sentinel this route sends itself", async () => {

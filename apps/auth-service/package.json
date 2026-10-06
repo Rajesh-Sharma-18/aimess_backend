@@ -11,6 +11,7 @@
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed/index.ts",
     "db:backfill:audit-activity": "tsx scripts/backfill-audit-activity.ts",
+    "audit:account-case": "tsx scripts/audit-account-case.ts",
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",
     "lint": "eslint .",

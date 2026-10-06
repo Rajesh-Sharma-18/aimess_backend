@@ -1,5 +1,4 @@
 ﻿import type { PrismaClient, RoomMember } from "../generated/prisma/index.js";
-import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
 import { MODERATION_VIEWER_ROLES } from "@aimess/constants";
 
 export class RoomMemberRepository {
@@ -344,10 +343,8 @@ export class RoomMemberRepository {
     return this.prisma.roomMember.findMany({
       where: { userId, status: { in: ["active", "banned"] } },
       select: { roomId: true, status: true, bannedAt: true },
-      // Capped and recency-ordered. [userId, status] could not serve this sort, so
-      // it was widened to [userId, status, updatedAt desc] (schema + server.ts).
-      orderBy: { updatedAt: "desc" },
-      take: SEARCH_SCOPE_ROOM_LIMIT,
+      // Uncapped: the search queries the list in chunks (SEARCH_ROOM_CHUNK_SIZE).
+      // [userId, status, updatedAt desc] (schema + server.ts) serves the equality.
     });
   }
 

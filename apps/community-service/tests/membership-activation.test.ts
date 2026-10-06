@@ -215,7 +215,8 @@ describe("notifyMemberJoined — community:added lastActivity (Test 1: Admin add
       username: null,
       // An admin adding someone is not that someone joining — the list preview
       // says what happened, matching the MEMBER_ADDED line posted to them.
-      preview: "You were added to the community",
+      preview: "Someone added You to Test Community",
+      systemMessageType: "MEMBER_ADDED",
     });
   });
 
@@ -253,7 +254,7 @@ describe("notifyMemberJoined — community:added lastActivity (Test 1: Admin add
 
   it("community:added lastActivity is present for all via values, worded per path", async () => {
     const expectedPreview: Record<string, string> = {
-      add_members: "You were added to the community",
+      add_members: "Someone added You to Test Community",
       // The approval is the admin's action; what the requester experiences is
       // becoming a member, so their row reads like every other join.
       join_request_approved: "You joined the community",
@@ -445,7 +446,10 @@ describe("notifyMemberJoined — retry idempotency (Test 4)", () => {
     const audit = added.filter((a) => !a.visibleToUserId);
     expect(audit).toHaveLength(1);
     expect(audit[0]!.triggeredByUserId).toBe(BASE_ARGS.actorId);
-    expect(audit[0]!.metadata).toMatchObject({ targetUserId: member.userId });
+    expect(audit[0]!.metadata).toMatchObject({
+      targetUserId: member.userId,
+      communityName: "Test Community",
+    });
 
     // One eventAt for both: chat-service's dedup key appends `:u:{userId}` for a
     // personal copy only, so the two rows never collide and a redelivery still

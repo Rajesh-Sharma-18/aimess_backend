@@ -118,6 +118,37 @@ describe("communityRepository.rollbackLastActivity", () => {
     expect(data.lastActivityTargetPreview).toBeNull();
   });
 
+  it('a SYSTEM previous message keeps its render params, so the row can still say "You …"', async () => {
+    await communityRepository.rollbackLastActivity(COMMUNITY_ID, REMOVED_AT, {
+      ...prevActivity,
+      type: "system",
+      systemType: "MESSAGE_PINNED",
+      systemMetadata: { actorId: "peer-1", actorName: "Peer One" },
+    });
+
+    const { data } = db.community.updateMany.mock.calls[0][0];
+    expect(data.lastActivityType).toBe("system");
+    expect(data.lastActivitySystemType).toBe("MESSAGE_PINNED");
+    expect(data.lastActivitySystemMetadata).toEqual({
+      actorId: "peer-1",
+      actorName: "Peer One",
+    });
+  });
+
+  it("drops the reaction overlay, which the rollback would otherwise make 'newer' again", async () => {
+    await communityRepository.rollbackLastActivity(
+      COMMUNITY_ID,
+      REMOVED_AT,
+      prevActivity
+    );
+
+    const { data } = db.community.updateMany.mock.calls[0][0];
+    expect(data.lastActivityReactionAt).toBeNull();
+    expect(data.lastActivityReactionMessageId).toBeNull();
+    expect(data.lastActivityReactionActorPreview).toBeNull();
+    expect(data.lastActivityReactionTargetPreview).toBeNull();
+  });
+
   it("emptied community: falls back to the community's own createdAt + the 'created' type, never a fabricated 'now'", async () => {
     await communityRepository.rollbackLastActivity(COMMUNITY_ID, REMOVED_AT, {
       ...prevActivity,

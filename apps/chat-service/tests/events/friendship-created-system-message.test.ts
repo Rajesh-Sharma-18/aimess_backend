@@ -1,16 +1,6 @@
 /**
- * FriendshipEventConsumer — the "You and X are now friends" SYSTEM row is
- * gated on CONVERSATION ACTIVITY, not on whether the pair was friends before.
- *
- * Rule: the row separates a new chapter from an existing conversation. With
- * nothing above it, it is noise — so a pair that never exchanged a message,
- * media or call gets no row, however many times they unfriend and re-friend.
- * A pair that has talked gets it on every re-friend.
- *
- * Activity means a NON-SYSTEM row exists. `lastSequence` (never decremented)
- * is only the cheap "nothing was ever written" pre-filter, so clear/delete
- * cannot reclassify a pair that really did talk, while the app's own SYSTEM
- * rows (auto-delete setting changed, an earlier "now friends") do not fake it.
+ * FriendshipEventConsumer — `friendship.created` is never chat activity: no "now friends" row and no
+ * inbox bump for any pair; earlier FRIENDSHIP_CREATED rows are pruned and the room snapshot repaired.
  */
 
 const post = jest.fn(async () => undefined);
@@ -18,6 +8,7 @@ const update = jest.fn(async () => ({}));
 const findUnique = jest.fn();
 const findFirst = jest.fn();
 const findMany = jest.fn(async () => []);
+const updateMany = jest.fn(async () => ({ count: 1 }));
 
 jest.mock("../../src/config/redis.js", () => ({
   redis: { publish: jest.fn(async () => 1), on: jest.fn(), del: jest.fn() },
@@ -28,6 +19,7 @@ jest.mock("../../src/config/prisma.js", () => ({
     privateRoom: {
       findUnique: (...args: unknown[]) => findUnique(...args),
       update: (...args: unknown[]) => update(...args),
+      updateMany: (...args: unknown[]) => updateMany(...args),
     },
     privateMessage: {
       findFirst: (...args: unknown[]) => findFirst(...args),
@@ -117,40 +109,11 @@ async function accept(
   );
 }
 
-describe("friendship.created — system message gate", () => {
-  it("posts NO row for a first-ever friendship with no conversation", async () => {
+describe("friendship.created — never chat activity", () => {
+  it("leaves a first-ever friendship with no conversation off both inboxes", async () => {
     await accept(0, false);
     expect(post).not.toHaveBeenCalled();
-    // Hidden in the chat room, but still the room's latest LIST activity:
-    // GET /chat/inbox keysets on lastMessageAt and skips NULLs, so without the
-    // stamp the new friend's row has no time and sorts last.
-    expect(update).toHaveBeenCalledTimes(1);
-    expect(update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: { lastMessageAt: expect.any(Date) },
-      })
-    );
-  });
-
-  it("does not drag the row backwards when the event is older than the room", async () => {
-    jest.clearAllMocks();
-    findUnique.mockResolvedValue({
-      roomId: "prv_1",
-      lastSequence: 0,
-      lastMessageAt: new Date(Date.now() + 60_000),
-    });
-    findFirst.mockResolvedValue(null);
-    const fake = makeFakeConnection();
-    const consumer = new FriendshipEventConsumer();
-    await consumer.start(fake.connection as never);
-    await fake.deliver(
-      JSON.stringify({
-        type: "friendship.created",
-        userA: A,
-        userB: B,
-        timestamp: Date.now(),
-      })
-    );
+    // GET /chat/inbox skips NULL lastMessageAt; stamping it listed an empty chat.
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -159,28 +122,10 @@ describe("friendship.created — system message gate", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
-  it("posts the row on re-friend when the pair has conversation activity", async () => {
+  it("posts NO row and does not bump the list when the pair has history", async () => {
     await accept(4, true);
-    expect(post).toHaveBeenCalledTimes(1);
-    // Activity already put the room on both inboxes — no stamping.
-    expect(update).not.toHaveBeenCalled();
-  });
-
-  it("posts the row on activity even if the publisher omits isRefriend", async () => {
-    await accept(4, false);
-    expect(post).toHaveBeenCalledTimes(1);
-  });
-
-  it("does NOT count the app's own SYSTEM rows as conversation", async () => {
-    // Room holds only SYSTEM rows — an auto-delete setting change, or a "now
-    // friends" bubble posted by the older build. Both bump lastSequence.
-    await accept(2, true, false);
     expect(post).not.toHaveBeenCalled();
-    expect(findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ messageType: { not: "SYSTEM" } }),
-      })
-    );
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("prunes earlier FRIENDSHIP_CREATED rows even when posting none", async () => {
@@ -189,5 +134,28 @@ describe("friendship.created — system message gate", () => {
     await accept(2, true, false);
     expect(findMany).toHaveBeenCalledTimes(1);
     expect(post).not.toHaveBeenCalled();
+  });
+
+  it("unlists a never-talked room whose only preview was a pruned bubble", async () => {
+    jest.clearAllMocks();
+    findUnique.mockResolvedValue({
+      roomId: "prv_1",
+      lastSequence: 1,
+      lastMessageId: "sys_old",
+      lastMessageAt: new Date(),
+    });
+    findFirst.mockResolvedValue(null);
+    const fake = makeFakeConnection();
+    const consumer = new FriendshipEventConsumer();
+    await consumer.start(fake.connection as never);
+    await fake.deliver(
+      JSON.stringify({ type: "friendship.created", userA: A, userB: B, timestamp: Date.now() })
+    );
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ lastMessageId: null, lastMessageAt: null }),
+      })
+    );
+    expect(update).not.toHaveBeenCalled();
   });
 });

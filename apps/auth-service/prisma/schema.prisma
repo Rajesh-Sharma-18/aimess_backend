@@ -22,6 +22,14 @@ model AuthUser {
   id                   String               @id @default(uuid()) @db.Uuid
   // Login handles (one of these is required at registration)
   account              String               @unique // username/account for login
+  // Account names are unique IGNORING CASE: the unique expression index
+  // `auth_users_account_lower_key` (raw SQL, migration
+  // 20261005000000_account_case_insensitive_unique — Prisma cannot declare it).
+  // New accounts are stored lowercase. true = a legacy row that already shared
+  // its lowercase form with another row when the index was created; such rows
+  // are kept out of the index's uniqueness instead of being renamed or merged.
+  // Clear the flag once the clash is resolved and the index enforces it again.
+  accountCaseConflict  Boolean              @default(false)
   email                String?              @unique
   phone                String?              @unique // future-proofing; SOW Phase 1 is email-first
   // Credentials

@@ -7,7 +7,7 @@ import { buildDeepLink } from "../lib/deep-link.js";
 import { chatCopy } from "../lib/notification-copy.js";
 import { generateThreadId } from "../lib/thread-id.js";
 import { enqueueChatPush } from "../services/chat-push-coalescer.js";
-import { pushToUser } from "../services/push.service.js";
+import { pushToUser, sendDeliveryWake } from "../services/push.service.js";
 import {
   getNotificationSettings,
   isMentionAllMuted,
@@ -272,6 +272,21 @@ async function handleMentionRetracted(
   }
 }
 
+/** Muted recipients get no alert; the silent wake still earns the sender ✓✓. */
+function wakeForDelivery(
+  userIds: string[],
+  data: MessageSentPayload
+): Promise<unknown> {
+  return Promise.all(
+    userIds.map((id) =>
+      sendDeliveryWake(id, {
+        conversationId: data.conversationId,
+        messageId: data.messageId,
+      })
+    )
+  );
+}
+
 async function handleMessageSent(
   data: MessageSentPayload,
   finalAttempt = false
@@ -322,12 +337,14 @@ async function handleMessageSent(
       recipients.map((id) => isPrivateRoomMutedBy(id, data.conversationId))
     );
     const before = recipients.length;
+    const muted = recipients.filter((_, i) => muteChecks[i]);
     recipients = recipients.filter((_, i) => !muteChecks[i]);
     if (recipients.length < before) {
       logger.info(
         `Suppressing ${data.conversationType} push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`
       );
     }
+    if (!data.inboxOnly) await wakeForDelivery(muted, data);
     if (recipients.length === 0) return;
   }
 
@@ -387,6 +404,12 @@ async function handleMessageSent(
         ? await filterOutMutedGroupMembers(data.conversationId, others)
         : []
     );
+    if (!data.inboxOnly) {
+      await wakeForDelivery(
+        others.filter((id) => !unmuted.has(id)),
+        data
+      );
+    }
     recipients = [...new Set(recipients)].filter(
       (id) => mentioned.has(id) || unmuted.has(id)
     );

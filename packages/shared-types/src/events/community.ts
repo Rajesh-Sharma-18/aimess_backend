@@ -73,6 +73,12 @@ export type CommunityMemberKickedPayload = CommunityEventBase & {
   actorId: string;
   targetUserId: string;
   reason: string | null;
+  /**
+   * True when a platform (Super) Admin removed the member from the backoffice.
+   * `actorId` is then an AdminUser id, not an AIMess user, and the removal reads
+   * "Administrator removed You from …". Absent on in-app removals and older events.
+   */
+  byPlatformAdmin?: boolean;
 };
 
 export type CommunityMemberBannedPayload = CommunityEventBase & {
@@ -265,11 +271,18 @@ export type CommunityLivestreamEndedPayload = CommunityEventBase & {
   durationSeconds: number;
   /**
    * Who ended it, coarsened (same vocabulary as a call's `endedReason`):
-   * `USER` = the host; `SYSTEM` = the platform (Super Admin force-end,
-   * moderation, account ban). The host stays in `hostUserId` either way.
-   * Absent on events from older producers ⇒ treat as `USER`.
+   * `USER` = the host or a community admin (`endedByUserId`); `ADMIN` = a
+   * Super Admin from Backoffice (rendered "An administrator", no identity
+   * carried); `SYSTEM` = the platform (moderation, account ban, timeouts). The
+   * host stays in `hostUserId` either way. Absent on older producers ⇒ `USER`.
    */
-  endedReason?: "USER" | "SYSTEM";
+  endedReason?: "USER" | "ADMIN" | "SYSTEM";
+  /**
+   * Set only when someone other than the host ended it (a community admin's
+   * End for Everyone): the push names this user instead of the host.
+   */
+  endedByUserId?: string;
+  endedByDisplayName?: string;
   recipientIds: string[];
 };
 

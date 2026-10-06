@@ -109,6 +109,19 @@ export interface StreamView {
   totalComments: number;
   livedAt: Date | null;
   endedAt: Date | null;
+  /**
+   * Why the stream ended (HOST_ENDED, COMMUNITY_ADMIN_ENDED, ...); null while
+   * it runs and on rows ended before the reason was recorded.
+   */
+  endedReason: string | null;
+  /**
+   * The host's CURRENT role in the community ("ADMIN" | "MODERATOR"), null when
+   * unknown or no longer a host role. A display hint for the force-end button
+   * only — stopStream re-reads roles itself and never trusts it.
+   */
+  creatorRole: string | null;
+  /** Host display name, username fallback, "" when unresolved. */
+  creatorName: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -319,6 +332,10 @@ function toView(
     totalComments: s.totalComments,
     livedAt: s.livedAt,
     endedAt: s.endedAt,
+    endedReason: s.endedReason ?? null,
+    // Filled by LivestreamService.withCreatorMeta on the REST paths.
+    creatorRole: null,
+    creatorName: "",
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
   };
@@ -563,7 +580,7 @@ export class LivestreamService {
     });
 
     return {
-      ...toView(created, this.cdnService),
+      ...(await this.viewOf(created)),
       streamKey,
       ingest: isYoutube
         ? {}
@@ -1094,6 +1111,13 @@ export class LivestreamService {
    * is always safe to call even if the stream never had (or no longer has) an
    * active SRS publisher: it's a no-op lookup-then-DELETE, bounded and
    * swallows its own errors (see SrsService.kickStream).
+   *
+   * The transition is claimed atomically first ({@link LivestreamRepository.claimEnded}),
+   * so when two end paths race — a host's End Live and a community admin's
+   * force-end, or either one retried — exactly one runs the tail below: one
+   * status broadcast, one `stream.ended`, one publisher kick (the CDN's
+   * StopLivestreaming allows one call per 5 minutes). Returns null to the
+   * loser, which must not emit anything.
    */
   private async finalizeAsEnded(
     stream: Livestream,
@@ -1109,11 +1133,24 @@ export class LivestreamService {
     // — set this true. The natural-end paths (a PENDING timeout, the
     // reconnect-grace sweeper) leave it false: the publisher is already gone, so
     // there is nothing to kick and no reason to spend the scarce budget.
-    kickCdnPublisher = false
-  ): Promise<Livestream> {
+    kickCdnPublisher = false,
+    // The user who ended it: the host on HOST_ENDED, the acting community admin
+    // on COMMUNITY_ADMIN_ENDED, null for every system end.
+    endedBy: string | null = reason === "HOST_ENDED" ? stream.creatorId : null,
+    // A Super Admin's Backoffice action caused this end (directly, or as a
+    // side effect of a ban / removal / community close): users read
+    // "Administrator ended …". The direct force-end implies it.
+    byPlatformAdmin = skipAdminActivity
+  ): Promise<Livestream | null> {
+    const end = {
+      endedAt: new Date(),
+      endedReason: reason,
+      endedBy,
+    };
+    if (!(await this.streamRepo.claimEnded(stream.id, end))) return null;
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "ENDED",
-      endedAt: new Date(),
+      ...end,
     });
 
     if (isCdnStream(stream)) {
@@ -1138,20 +1175,21 @@ export class LivestreamService {
     );
     await this.publishStatus(updated.id, "ENDED", updated.communityId, {
       creatorId: stream.creatorId,
+      endedReason: reason,
     });
     void this.publishCommunityStreamEnded(updated, liveStreamCount, reason);
     void this.closeOpenViewerSessions(
       updated.id,
       updated.endedAt ?? new Date()
     );
-    // Only HOST_ENDED is the broadcaster's own doing. An admin force-end, a heartbeat
-    // timeout or a reconnect timeout is the platform ending someone else's stream, and
-    // attributing those to the broadcaster misreads the trail.
-    const hostEnded = reason === "HOST_ENDED";
+    // Attributed to the user who ended it: the broadcaster on HOST_ENDED, the
+    // acting admin on COMMUNITY_ADMIN_ENDED. A heartbeat or reconnect timeout is
+    // the platform's doing, and attributing it to the broadcaster misreads the
+    // trail.
     if (!skipAdminActivity) {
       publishAdminActivitySafe({
-        actorId: hostEnded ? updated.creatorId : null,
-        actorType: hostEnded ? "USER" : "SYSTEM",
+        actorId: endedBy,
+        actorType: endedBy ? "USER" : "SYSTEM",
         action: USER_AUDIT_ACTIONS.STREAM_ENDED,
         targetType: "stream",
         targetId: updated.id,
@@ -1161,6 +1199,7 @@ export class LivestreamService {
           durationSeconds: computeDurationSeconds(updated),
           peakViewers: updated.peakViewers,
           reason,
+          endedBy,
         },
       });
     }
@@ -1173,6 +1212,11 @@ export class LivestreamService {
       peakViewers: updated.peakViewers,
       liveStreamCount,
       reason,
+      endedBy,
+      // Every Backoffice (Super Admin) end; community copy then reads
+      // "Administrator ended {host}'s …". The admin's id is deliberately
+      // absent — backoffice-service's audit row holds it.
+      ...(byPlatformAdmin ? { byPlatformAdmin: true } : {}),
     });
 
     return updated;
@@ -1213,23 +1257,75 @@ export class LivestreamService {
     };
   }
 
+  /**
+   * End Live. The creator ends their own stream (HOST_ENDED). Anyone else is
+   * a community-admin force-end ({@link assertCanForceEnd}): a community ADMIN
+   * ending a MODERATOR's broadcast for everyone (COMMUNITY_ADMIN_ENDED). Both
+   * finish through the same claimed {@link finalizeAsEnded}, so a host stop
+   * racing an admin force-end ends the stream once, and an already-ENDED
+   * stream (a retry, or the race's loser) returns its current view.
+   */
   async stopStream(id: string, requesterId: string): Promise<StreamView> {
     const stream = await this.streamRepo.findById(id);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
-    if (stream.creatorId !== requesterId) {
+    const isCreator = stream.creatorId === requesterId;
+    if (!isCreator) await this.assertCanForceEnd(stream, requesterId);
+
+    if (stream.status === "ENDED") return this.viewOf(stream);
+
+    // The encoder (OBS) may still be pushing, so kick it off the CDN — this is
+    // the whole point of the feature, and the admin force-end needs it most.
+    const ended = await this.finalizeAsEnded(
+      stream,
+      isCreator ? "HOST_ENDED" : "COMMUNITY_ADMIN_ENDED",
+      false,
+      true,
+      requesterId
+    );
+    // null: another end path won the race — report the row as it now stands.
+    return this.viewOf(
+      ended ?? (await this.streamRepo.findById(id)) ?? stream
+    );
+  }
+
+  /**
+   * Community-admin force-end gate. Roles are re-read from community-service
+   * here, never taken from the client or from the creatorRole display hint.
+   *
+   * Allowed only for an ACTIVE community ADMIN, and only when the creator is
+   * not an ACTIVE ADMIN themselves: a current MODERATOR, or a creator who has
+   * since lost broadcast rights (demoted, removed, left) and whose stream
+   * outlived the best-effort force-end that should have stopped it. A closed or
+   * suspended community does not block it — ending a broadcast is a
+   * de-escalation. Every refusal is the same STREAM_NOT_OWNER the endpoint has
+   * always returned, so nothing about membership leaks.
+   */
+  private async assertCanForceEnd(
+    stream: Livestream,
+    requesterId: string
+  ): Promise<void> {
+    await assertNotSystemBanned(this.redis, requesterId);
+    let requester, creator;
+    try {
+      [requester, creator] = await Promise.all([
+        this.communityClient.validateMembership(stream.communityId, requesterId),
+        this.communityClient.validateMembership(
+          stream.communityId,
+          stream.creatorId
+        ),
+      ]);
+    } catch (error) {
+      // Fail-closed: an unverifiable role never ends someone else's stream.
+      logger.warn(
+        `stopStream: role check failed stream=${stream.id} requester=${requesterId}: ${String(error)}`
+      );
       throw new ForbiddenError("STREAM_NOT_OWNER");
     }
-
-    if (stream.status === "ENDED") {
-      return toView(stream, this.cdnService);
+    const requesterIsAdmin = requester.isMember && requester.role === "ADMIN";
+    const creatorIsAdmin = creator.isMember && creator.role === "ADMIN";
+    if (!requesterIsAdmin || creatorIsAdmin) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
     }
-
-    // Host clicked End Live. The encoder (OBS) may still be pushing, so kick it
-    // off the CDN — this is the whole point of the feature.
-    return toView(
-      await this.finalizeAsEnded(stream, "HOST_ENDED", false, true),
-      this.cdnService
-    );
   }
 
   /**
@@ -1255,7 +1351,7 @@ export class LivestreamService {
       throw new BadRequestError("STREAM_ALREADY_ENDED");
     }
     if (stream.status === "LIVE") {
-      return toView(stream, this.cdnService);
+      return this.viewOf(stream);
     }
 
     const isResume = stream.status === "RECONNECTING";
@@ -1331,7 +1427,7 @@ export class LivestreamService {
       });
     }
 
-    return toView(updated, this.cdnService);
+    return this.viewOf(updated);
   }
 
   /**
@@ -1349,15 +1445,17 @@ export class LivestreamService {
     if (stream.status === "ENDED") {
       return { success: false, status: stream.status };
     }
-    if (!(await this.streamRepo.claimEnded(stream.id))) {
-      return { success: false, status: "ENDED" };
-    }
 
     // The reason was accepted and then dropped, so a force-end was indistinguishable
     // from the host ending their own broadcast in every downstream event.
-    await this.finalizeAsEnded(stream, reason || "ADMIN_FORCE_ENDED", true, true);
+    const ended = await this.finalizeAsEnded(
+      stream,
+      reason || "ADMIN_FORCE_ENDED",
+      true,
+      true
+    );
 
-    return { success: true, status: "ENDED" };
+    return { success: ended !== null, status: "ENDED" };
   }
 
   /**
@@ -1420,7 +1518,7 @@ export class LivestreamService {
     for (const stream of active) {
       if (!streamIds.includes(stream.id)) continue;
       try {
-        await this.finalizeAsEnded(stream, "SESSION_ENDED", false, true);
+        if (!(await this.finalizeAsEnded(stream, "SESSION_ENDED", false, true))) continue;
         endedCount++;
         logger.info(
           `endStreamsOfRevokedSession: ended stream=${stream.id} creator=${userId} session=${sessionId}`
@@ -1449,7 +1547,8 @@ export class LivestreamService {
   async forceEndStreamsByCreator(
     creatorId: string,
     communityId: string | undefined,
-    reason: string
+    reason: string,
+    byPlatformAdmin = false
   ): Promise<{ endedCount: number }> {
     let streams: Livestream[];
     try {
@@ -1468,7 +1567,17 @@ export class LivestreamService {
     let endedCount = 0;
     for (const stream of streams) {
       try {
-        await this.finalizeAsEnded(stream, reason, false, true);
+        if (
+          !(await this.finalizeAsEnded(
+            stream,
+            reason,
+            false,
+            true,
+            null,
+            byPlatformAdmin
+          ))
+        )
+          continue;
         endedCount++;
         logger.info(
           `forceEndStreamsByCreator: ended stream=${stream.id} creator=${creatorId} community=${stream.communityId} reason=${reason}`
@@ -1491,7 +1600,8 @@ export class LivestreamService {
    */
   async forceEndStreamsByCommunity(
     communityId: string,
-    reason: string
+    reason: string,
+    byPlatformAdmin = false
   ): Promise<{ endedCount: number }> {
     let streams: Livestream[];
     try {
@@ -1507,7 +1617,17 @@ export class LivestreamService {
     let endedCount = 0;
     for (const stream of streams) {
       try {
-        await this.finalizeAsEnded(stream, reason, false, true);
+        if (
+          !(await this.finalizeAsEnded(
+            stream,
+            reason,
+            false,
+            true,
+            null,
+            byPlatformAdmin
+          ))
+        )
+          continue;
         endedCount++;
         logger.info(
           `forceEndStreamsByCommunity: ended stream=${stream.id} creator=${stream.creatorId} community=${communityId} reason=${reason}`
@@ -1573,7 +1693,7 @@ export class LivestreamService {
       );
     }
 
-    return toView(updated, this.cdnService);
+    return this.viewOf(updated);
   }
 
   /**
@@ -1658,13 +1778,17 @@ export class LivestreamService {
       throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
     }
 
-    return this.listStreamsInternal({
+    const result = await this.listStreamsInternal({
       communityId: params.communityId,
       status: params.status,
       limit: params.limit,
       cursor: params.cursor,
       excludeBannedFor: params.requesterId,
     });
+    // Enriched here, not in listStreamsInternal: the gRPC and relay callers
+    // never read the creator fields and should not pay the lookups.
+    await this.withCreatorMeta(result.items);
+    return result;
   }
 
   /**
@@ -1759,7 +1883,7 @@ export class LivestreamService {
       }
     }
 
-    const view = toView(stream, this.cdnService);
+    const view = await this.viewOf(stream);
 
     try {
       view.viewerCount = await this.redis.hlen(sessionKey(id));
@@ -2360,9 +2484,13 @@ export class LivestreamService {
     );
     for (const stream of stale) {
       try {
+        // Claimed like every other end: a host stop landing between the query
+        // and here already ended it, and must not be announced twice.
+        const end = { endedAt: new Date(), endedReason: "PENDING_TIMEOUT" };
+        if (!(await this.streamRepo.claimEnded(stream.id, end))) continue;
         const updated = await this.streamRepo.updateById(stream.id, {
           status: "ENDED",
-          endedAt: new Date(),
+          ...end,
         });
         // Best-effort — a PENDING stream never published, but a client may have
         // gotten as far as opening the ingest connection. No-op for CDN rows:
@@ -3425,7 +3553,7 @@ export class LivestreamService {
       );
     }
 
-    return toView(updated, this.cdnService);
+    return this.viewOf(updated);
   }
 
   /**
@@ -3533,6 +3661,8 @@ export class LivestreamService {
       hlsUrl?: string | null;
       flvUrl?: string | null;
       startedAt?: number;
+      /** ENDED only — lets the host tell "an admin ended it" from their own end. */
+      endedReason?: string;
     }
   ): Promise<void> {
     try {
@@ -3648,6 +3778,69 @@ export class LivestreamService {
   }
 
   /**
+   * Fill `creatorRole`/`creatorName` in place: names in one bulk user-service
+   * call, roles once per distinct (community, creator). Best-effort — a failed
+   * lookup leaves the null/"" defaults instead of failing the read. The role is
+   * a display hint; authorization never reads it (see assertCanForceEnd).
+   */
+  private async withCreatorMeta<
+    T extends {
+      communityId: string;
+      creatorId: string;
+      creatorRole: string | null;
+      creatorName: string;
+    },
+  >(items: T[]): Promise<T[]> {
+    if (!items.length) return items;
+    const pairKey = (i: T) => `${i.communityId}|${i.creatorId}`;
+    const names = new Map<string, string>();
+    const roles = new Map<string, string | null>();
+    await Promise.all([
+      (async () => {
+        try {
+          const snaps = await this.userClient.bulkGetUserSnapshots([
+            ...new Set(items.map((i) => i.creatorId)),
+          ]);
+          for (const s of snaps) {
+            names.set(s.userId, s.displayName || s.username || "");
+          }
+        } catch (error) {
+          logger.warn(`creator name resolve failed: ${String(error)}`);
+        }
+      })(),
+      ...[...new Map(items.map((i) => [pairKey(i), i])).values()].map(
+        async (i) => {
+          try {
+            const m = await this.communityClient.validateMembership(
+              i.communityId,
+              i.creatorId
+            );
+            roles.set(
+              pairKey(i),
+              m.isMember && canStartLivestream(m.role) ? m.role : null
+            );
+          } catch (error) {
+            logger.warn(
+              `creator role resolve failed community=${i.communityId} creator=${i.creatorId}: ${String(error)}`
+            );
+          }
+        }
+      ),
+    ]);
+    for (const i of items) {
+      i.creatorName = names.get(i.creatorId) ?? "";
+      i.creatorRole = roles.get(pairKey(i)) ?? null;
+    }
+    return items;
+  }
+
+  /** A single REST stream view, creator metadata included. */
+  private async viewOf(s: Livestream): Promise<StreamView> {
+    const [view] = await this.withCreatorMeta([toView(s, this.cdnService)]);
+    return view!;
+  }
+
+  /**
    * Notify the community that a stream just went LIVE. Enriched (host, live
    * count, hasActiveLivestream, startedAt) for the live banner + list badge;
    * additive over the legacy { communityId, streamId, title, hlsUrl } shape. The
@@ -3662,7 +3855,17 @@ export class LivestreamService {
       `🔴 [STREAM:LIVE] publishCommunityStreamStarted → Redis channel=community:${stream.communityId} streamId=${stream.id} title="${stream.title ?? ""}"`
     );
     try {
-      const host = await this.resolveHost(stream.creatorId);
+      const [host, [creator]] = await Promise.all([
+        this.resolveHost(stream.creatorId),
+        this.withCreatorMeta([
+          {
+            communityId: stream.communityId,
+            creatorId: stream.creatorId,
+            creatorRole: null as string | null,
+            creatorName: "",
+          },
+        ]),
+      ]);
       const cappedCount = Math.min(
         liveStreamCount,
         env.STREAM_MAX_CONCURRENT_PER_COMMUNITY
@@ -3677,6 +3880,11 @@ export class LivestreamService {
             livestreamId: stream.id,
             streamId: stream.id, // legacy alias
             host,
+            // Same creator fields as the REST StreamView, so a client can gate
+            // the admin force-end straight off the banner.
+            creatorId: stream.creatorId,
+            creatorRole: creator!.creatorRole,
+            creatorName: creator!.creatorName,
             title: stream.title ?? null,
             sourceType: stream.sourceType,
             sourceUrl: stream.sourceUrl ?? null,

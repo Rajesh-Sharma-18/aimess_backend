@@ -358,6 +358,14 @@ async function flush(key: string): Promise<void> {
       type: "MESSAGE",
       copy,
       actorId: subject.senderId,
+      ...(isCommunity
+        ? {}
+        : {
+            deliveryWake: {
+              conversationId: context.conversationId,
+              messageId: latest.messageId,
+            },
+          }),
       deepLink: context.deepLink,
       // Collapse ONLY the coalesced summary. The historical objection to a
       // collapse key on chat — FCM keeps just the newest message per key while

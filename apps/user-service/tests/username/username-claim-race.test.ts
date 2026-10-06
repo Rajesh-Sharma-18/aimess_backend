@@ -24,6 +24,9 @@ jest.mock("../../src/messaging/publish-profile-updated.js", () => ({
 }));
 jest.mock("../../src/lib/user-cache.js", () => ({
   userCache: {
+    getUsernameHolder: jest.fn(async () => null),
+    claimUsernameHold: jest.fn(async () => true),
+    releaseUsernameHold: jest.fn(async () => undefined),
     // Cold on every read, so the real DB branches run instead of a cached verdict.
     getUsernameTaken: jest.fn(async () => null),
     markUsernameTaken: jest.fn(async () => undefined),
@@ -43,6 +46,7 @@ import type { UserCreatedPayload } from "@aimess/shared-types";
 import { Prisma } from "../../src/generated/prisma/client.js";
 import { userProfileRepository } from "../../src/repositories/user-profile.repository.js";
 import { userProfileService } from "../../src/services/user-profile.service.js";
+import { userCache } from "../../src/lib/user-cache.js";
 
 const repo = userProfileRepository as unknown as Record<string, jest.Mock>;
 
@@ -107,16 +111,16 @@ describe("generated username — concurrent claim", () => {
       userProfileService.createFromUserCreatedEvent(event("user-b"))
     ).resolves.toBeUndefined();
 
-    expect(attempted()).toEqual(["viddhi_vasu", "viddhi_vasu", "viddhi_vasu_2"]);
+    expect(attempted()).toEqual(["viddhi_vasu", "viddhi_vasu", "viddhi_vasu_1"]);
     expect(claimed.get("viddhi_vasu")).toBe("user-a");
-    expect(claimed.get("viddhi_vasu_2")).toBe("user-b");
+    expect(claimed.get("viddhi_vasu_1")).toBe("user-b");
   });
 
   /** The regenerated candidate can lose too. The retry has to survive that, repeatedly. */
   it("survives a second and third consecutive collision", async () => {
     claimed.set("viddhi_vasu", "user-a");
-    claimed.set("viddhi_vasu_2", "user-b");
-    claimed.set("viddhi_vasu_3", "user-c");
+    claimed.set("viddhi_vasu_1", "user-b");
+    claimed.set("viddhi_vasu_2", "user-c");
     // Every candidate reads as free right up to the insert — three losses in a row.
     repo.findByUsername
       .mockImplementationOnce(async () => null)
@@ -127,10 +131,10 @@ describe("generated username — concurrent claim", () => {
       userProfileService.createFromUserCreatedEvent(event("user-d"))
     ).resolves.toBeUndefined();
 
-    expect(claimed.get("viddhi_vasu_4")).toBe("user-d");
+    expect(claimed.get("viddhi_vasu_3")).toBe("user-d");
     expect(claimed.get("viddhi_vasu")).toBe("user-a");
-    expect(claimed.get("viddhi_vasu_2")).toBe("user-b");
-    expect(claimed.get("viddhi_vasu_3")).toBe("user-c");
+    expect(claimed.get("viddhi_vasu_1")).toBe("user-b");
+    expect(claimed.get("viddhi_vasu_2")).toBe("user-c");
   });
 
   /** Never an unbounded retry loop: it gives up, loudly, so the message can be redelivered. */
@@ -155,7 +159,7 @@ describe("generated username — concurrent claim", () => {
     await expect(
       userProfileService.createFromUserCreatedEvent(event("user-a"))
     ).resolves.toBeUndefined();
-    // Only user-a's original handle exists; no `_2` was minted for the duplicate.
+    // Only user-a's original handle exists; no `_1` was minted for the duplicate.
     expect([...claimed.keys()]).toEqual(["viddhi_vasu"]);
   });
 
@@ -173,6 +177,18 @@ describe("generated username — concurrent claim", () => {
     );
 
     expect(claimed.get("viddhi_vasu")).toBe("user-google");
-    expect(claimed.get("viddhi_vasu_2")).toBe("user-apple");
+    expect(claimed.get("viddhi_vasu_1")).toBe("user-apple");
+  });
+
+  /** A handle someone is holding on the profile screen is stepped around, not taken from them. */
+  it("skips a handle another user holds from a fresh suggestion", async () => {
+    (userCache.getUsernameHolder as jest.Mock).mockImplementation(
+      async (u: string) => (u === "viddhi_vasu" ? "user-holding" : null)
+    );
+
+    await userProfileService.createFromUserCreatedEvent(event("user-new"));
+
+    expect(claimed.get("viddhi_vasu_1")).toBe("user-new");
+    (userCache.getUsernameHolder as jest.Mock).mockImplementation(async () => null);
   });
 });

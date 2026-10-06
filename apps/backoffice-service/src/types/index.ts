@@ -9,9 +9,8 @@ export type RequestAdmin = {
   id: string;
   /**
    * AdminUser.name, resolved by `adminAuth` from the row it already loads.
-   * Carried so a moderation action performed platform-side can be attributed by
-   * name in the service that owns the affected data (chat-service cannot read
-   * admin_db), instead of surfacing as an anonymous actor.
+   * Admin-panel records only. Never forwarded to a user-facing service: AIMess
+   * users see a Backoffice actor as "Administrator".
    */
   name: string;
   role: string;

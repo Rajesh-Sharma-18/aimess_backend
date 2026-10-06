@@ -13,6 +13,7 @@ import {
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
+import { bumpSystemParams } from "../../lib/bump-system-params.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import { recalcConvAfterSystemLineRetraction } from "../../events/recalc-conv-after-retraction.js";
@@ -104,6 +105,44 @@ export class GroupMessageController {
     });
 
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true, readToSeq }));
+  });
+
+  /**
+   * `POST /groups/rooms/:roomId/delivered` — delivered receipt over REST, for a
+   * push-woken client with no socket. Same effect and broadcast as the socket
+   * `message:delivered` (room + every other active member's own channel).
+   * A non-member gets updatedCount 0.
+   */
+  markDelivered = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { upToMessageId } = req.body as { upToMessageId: string };
+
+    const { count, messageIds } = await this.messageService.markDelivered({
+      roomId,
+      recipientId: userId,
+      upToMessageId,
+    });
+    if (count > 0) {
+      const payload = JSON.stringify({
+        event: "message:delivered",
+        data: {
+          conversationId: roomId,
+          recipientId: userId,
+          upToMessageId,
+          messageIds,
+        },
+      });
+      await this.redis.publish(`conv:${roomId}`, payload);
+      const others = (
+        await this.messageService.getActiveMemberIds(roomId)
+      ).filter((id) => id !== userId);
+      await Promise.all(
+        others.map((id) => this.redis.publish(`user:${id}`, payload))
+      );
+    }
+
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ updatedCount: count }));
   });
 
   /**
@@ -591,7 +630,11 @@ export class GroupMessageController {
             senderName: recalc.senderName,
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),
-            preview: { contentType: recalc.messageType, text: preview },
+            preview: {
+              contentType: recalc.messageType,
+              text: preview,
+              ...bumpSystemParams(recalc),
+            },
           });
         })
         .catch(() => {
@@ -644,7 +687,11 @@ export class GroupMessageController {
             lastMessageAt: recalc.hasLastMessage
               ? recalc.createdAt.getTime()
               : 0,
-            preview: { contentType: recalc.messageType, text: preview },
+            preview: {
+              contentType: recalc.messageType,
+              text: preview,
+              ...bumpSystemParams(recalc),
+            },
           });
         })
         .catch(() => {});

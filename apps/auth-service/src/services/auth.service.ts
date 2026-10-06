@@ -11,14 +11,14 @@ import type {
   LoginInput,
   RegisterInput,
 } from "../api/validators/auth.validator.js";
-import { AccountStatus, AuthProvider } from "../generated/prisma/client.js";
+import { AccountStatus } from "../generated/prisma/client.js";
 import { env } from "../config/env.js";
 import {
   isEmailLoginIdentifier,
   normalizeLoginIdentifier,
 } from "../lib/login-identifier.js";
 import { assertNotBanned } from "../lib/account-guard.js";
-import { resolveRequiredSocialProvider } from "../lib/sign-in-methods.js";
+import { passwordUnavailableCode } from "../lib/sign-in-methods.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { issueAuthTokens } from "../lib/token.js";
 import { publishUserCreatedSafe } from "../messaging/publish-user-created.js";
@@ -169,18 +169,14 @@ export const authService = {
     // now say WHICH button to press instead of "incorrect account or password",
     // which is simply false for a credential that was never set.
     if (!user.passwordHash) {
-      const provider = resolveRequiredSocialProvider(user);
+      const code = passwordUnavailableCode(user);
       auditFailure(
-        provider ? `PASSWORD_NOT_SET_${provider}` : "PASSWORD_NOT_SET",
+        code === "AUTH_PASSWORD_NOT_SET"
+          ? "PASSWORD_NOT_SET"
+          : `PASSWORD_NOT_SET_${code.split("_")[1]}`,
         user.id
       );
-      if (provider === AuthProvider.GOOGLE) {
-        throw new UnauthorizedError("AUTH_GOOGLE_LOGIN_REQUIRED");
-      }
-      if (provider === AuthProvider.APPLE) {
-        throw new UnauthorizedError("AUTH_APPLE_LOGIN_REQUIRED");
-      }
-      throw new UnauthorizedError("AUTH_PASSWORD_NOT_SET");
+      throw new UnauthorizedError(code);
     }
 
     const passwordValid = await bcrypt.compare(

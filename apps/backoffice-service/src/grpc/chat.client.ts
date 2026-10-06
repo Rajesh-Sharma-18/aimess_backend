@@ -138,12 +138,6 @@ export interface AdminRemoveGroupMemberReq {
   groupId: string;
   userId: string;
   actorAdminId: string;
-  /**
-   * AdminUser.name of the acting admin. chat-service cannot read admin_db, so
-   * this is the ONLY way the removal system message can name who did it; "" (or
-   * omitted) leaves the line actor-less.
-   */
-  actorAdminName?: string;
   // "" is treated as absent by chat-service (`req.reason || undefined`).
   reason: string;
 }
@@ -159,8 +153,6 @@ export interface AdminBanGroupMemberReq {
   groupId: string;
   userId: string;
   actorAdminId: string;
-  /** See {@link AdminRemoveGroupMemberReq.actorAdminName}. */
-  actorAdminName?: string;
   // "" is treated as absent by chat-service (`req.reason || undefined`).
   reason: string;
 }
@@ -169,8 +161,6 @@ export interface AdminUnbanGroupMemberReq {
   groupId: string;
   userId: string;
   actorAdminId: string;
-  /** See {@link AdminRemoveGroupMemberReq.actorAdminName}. */
-  actorAdminName?: string;
 }
 
 // errorCode: "" | CHAT_GROUP_NOT_FOUND | CHAT_GROUP_NOT_ACTIVE | CHAT_NOT_A_MEMBER.

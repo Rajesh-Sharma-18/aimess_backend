@@ -482,6 +482,11 @@ model GroupMember {
   receiptReadMessageId String?   @db.ObjectId
   receiptReadAt        DateTime?
   unreadCount          Int       @default(0)
+  // Set when the member deletes a CLOSED group from their own list — the same
+  // per-user dismiss as CommunityMember.dismissedAt. Membership, role and the
+  // room stay untouched; the inbox (getInboxMemberships) skips the row. Set a
+  // Date, never null; filter with `{ isSet: false }`.
+  dismissedAt          DateTime?
   notificationSettings Json      @default("{\"mute\": false, \"muteUntil\": null}")
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt

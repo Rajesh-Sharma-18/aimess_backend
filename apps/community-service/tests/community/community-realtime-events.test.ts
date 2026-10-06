@@ -26,6 +26,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityMemberRoleChangedSafe: jest.fn(),
   publishCommunityAdminTransferredSafe: jest.fn(),
   publishCommunityDeletedSafe: jest.fn(),
+  publishCommunityClosedSafe: jest.fn(),
   publishCommunityMemberLeftSafe: jest.fn(),
   publishCommunityJoinRequestedSafe: jest.fn(),
   publishCommunityJoinRequestApprovedSafe: jest.fn(),
@@ -53,6 +54,9 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMemberByUserId: jest.fn(),
     findMembersByUserIds: jest.fn(),
     updateMemberStatus: jest.fn(),
+    markActiveMemberLeft: jest.fn(),
+    closeAndLeaveAsLastAdmin: jest.fn(),
+    captureClosureSnapshot: jest.fn(),
     countActiveMembers: jest.fn(),
     setMemberCount: jest.fn(),
     updateLastActivity: jest.fn(),
@@ -356,13 +360,24 @@ describe("leaveCommunity — real-time broadcasts", () => {
     // countActiveMembers, setMemberCount, createAuditLog
     repo.findById.mockResolvedValue(community);
     repo.findMemberByUserId.mockResolvedValue(activeMemberNonAdmin);
-    repo.updateMemberStatus.mockResolvedValue({
+    repo.markActiveMemberLeft.mockResolvedValue({
       ...activeMemberNonAdmin,
       status: "LEFT",
     });
     repo.countActiveMembers.mockResolvedValue(9);
     repo.setMemberCount.mockResolvedValue(undefined);
     repo.createAuditLog.mockResolvedValue(undefined);
+  });
+
+  it("a second (double-submitted) leave that lost the race fires no side effects", async () => {
+    repo.markActiveMemberLeft.mockResolvedValue(null);
+
+    await expect(
+      communityService.leaveCommunity(CID, NON_ADMIN)
+    ).rejects.toMatchObject({ messageKey: "COMMUNITY_MEMBER_NOT_FOUND" });
+    expect(repo.setMemberCount).not.toHaveBeenCalled();
+    expect(pubRoomEvent).not.toHaveBeenCalled();
+    expect(pubMemberLeft).not.toHaveBeenCalled();
   });
 
   it("emits community:member:removed with reason=left", async () => {
@@ -448,32 +463,82 @@ describe("leaveCommunity — real-time broadcasts", () => {
       repo.markAllActiveMembersLeft.mockResolvedValue(undefined);
     });
 
-    it("runs the shared community delete instead of a bare hard delete", async () => {
+    const userEvents = (event: string) =>
+      pubUserEvent.mock.calls.filter(([, , evt]) => evt === event);
+
+    it("ACTIVE: closes the community and leaves in one transaction — never deletes", async () => {
       repo.countActiveMembers.mockResolvedValue(1);
+      repo.closeAndLeaveAsLastAdmin.mockResolvedValue("CLOSED_AND_LEFT");
 
       const member = await communityService.leaveCommunity(CID, ADMIN);
 
       expect(member.status).toBe("LEFT");
+      expect(repo.closeAndLeaveAsLastAdmin).toHaveBeenCalledWith(
+        CID,
+        ADMIN,
+        expect.any(Date)
+      );
       expect(repo.deleteCommunityHard).not.toHaveBeenCalled();
-      expect(repo.updateCommunity).toHaveBeenCalledWith(
+      expect(repo.markAllActiveMembersLeft).not.toHaveBeenCalled();
+      expect(repo.updateCommunity).not.toHaveBeenCalledWith(
         CID,
         expect.objectContaining({ deletedAt: expect.any(Date) })
       );
-      expect(repo.markAllActiveMembersLeft).toHaveBeenCalledWith(CID);
-      expect(repo.setMemberCount).toHaveBeenCalledWith(CID, 0);
-      expect(pubRoomEvent).not.toHaveBeenCalled();
+      // The member write happened inside the transaction, not here.
+      expect(repo.markActiveMemberLeft).not.toHaveBeenCalled();
+      expect(repo.updateMemberStatus).not.toHaveBeenCalled();
+      // Existing close lifecycle: snapshot after the leave → 0 members.
+      expect(repo.captureClosureSnapshot).toHaveBeenCalledWith(
+        CID,
+        expect.any(Date)
+      );
     });
 
-    it("drops the community from the ex-admin's list on every device", async () => {
+    it("ACTIVE: runs the existing close + leave events, once each, close first", async () => {
       repo.countActiveMembers.mockResolvedValue(1);
+      repo.closeAndLeaveAsLastAdmin.mockResolvedValue("CLOSED_AND_LEFT");
 
       await communityService.leaveCommunity(CID, ADMIN);
 
-      expect(pubUserEvent).toHaveBeenCalledWith(
-        expect.anything(),
-        ADMIN,
-        "community:membership:removed",
-        expect.objectContaining({ communityId: CID, reason: "deleted" })
+      const roomEvents = pubRoomEvent.mock.calls.map(([, , evt]) => evt);
+      expect(roomEvents.filter((e) => e === "community:closed")).toHaveLength(1);
+      expect(
+        roomEvents.filter((e) => e === "community:member:removed")
+      ).toHaveLength(1);
+      expect(roomEvents.indexOf("community:closed")).toBeLessThan(
+        roomEvents.indexOf("community:member:removed")
+      );
+      const closed = pubRoomEvent.mock.calls.find(
+        ([, , evt]) => evt === "community:closed"
+      )!;
+      expect(closed[3]).toMatchObject({
+        communityId: CID,
+        status: "CLOSED",
+        reason: "LAST_MEMBER_LEFT",
+      });
+      const stats = pubRoomEvent.mock.calls.find(
+        ([, , evt]) => evt === "community:stats:updated"
+      )!;
+      expect(stats[3]).toMatchObject({ communityId: CID });
+      expect(userEvents("community:closed")).toHaveLength(1);
+      expect(userEvents("community:membership:removed")).toEqual([
+        [
+          expect.anything(),
+          ADMIN,
+          "community:membership:removed",
+          expect.objectContaining({ communityId: CID, reason: "left" }),
+        ],
+      ]);
+      expect(pubMemberLeft).toHaveBeenCalledTimes(1);
+      // No ownership hand-off happened, so nothing may claim one did.
+      expect(repo.createAuditLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "ADMIN_TRANSFERRED" })
+      );
+      expect(repo.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "COMMUNITY_CLOSED",
+          metadata: expect.objectContaining({ reasonCode: "LAST_MEMBER_LEFT" }),
+        })
       );
     });
 
@@ -483,8 +548,113 @@ describe("leaveCommunity — real-time broadcasts", () => {
       await expect(
         communityService.leaveCommunity(CID, ADMIN)
       ).rejects.toMatchObject({ messageKey: "COMMUNITY_ADMIN_CANNOT_LEAVE" });
+      expect(repo.closeAndLeaveAsLastAdmin).not.toHaveBeenCalled();
       expect(repo.updateCommunity).not.toHaveBeenCalled();
       expect(repo.deleteCommunityHard).not.toHaveBeenCalled();
+    });
+
+    it("refuses, with no side effects, when someone joined before the transaction", async () => {
+      repo.countActiveMembers.mockResolvedValue(1);
+      repo.closeAndLeaveAsLastAdmin.mockResolvedValue("OTHERS_REMAIN");
+
+      await expect(
+        communityService.leaveCommunity(CID, ADMIN)
+      ).rejects.toMatchObject({ messageKey: "COMMUNITY_ADMIN_CANNOT_LEAVE" });
+      expect(pubRoomEvent).not.toHaveBeenCalled();
+      expect(pubUserEvent).not.toHaveBeenCalled();
+      expect(repo.createAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("a retry after the close committed gets NOT_FOUND and fires nothing", async () => {
+      repo.countActiveMembers.mockResolvedValue(1);
+      repo.closeAndLeaveAsLastAdmin.mockResolvedValue("NOT_MEMBER");
+
+      await expect(
+        communityService.leaveCommunity(CID, ADMIN)
+      ).rejects.toMatchObject({ messageKey: "COMMUNITY_MEMBER_NOT_FOUND" });
+      expect(pubRoomEvent).not.toHaveBeenCalled();
+      expect(repo.createAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("Super Admin closed it during the leave: falls back to a plain leave, no second close", async () => {
+      repo.countActiveMembers.mockResolvedValue(1);
+      repo.closeAndLeaveAsLastAdmin.mockResolvedValue("NOT_OPEN");
+      repo.findById
+        .mockResolvedValueOnce({ ...community, adminId: ADMIN, memberCount: 1 })
+        .mockResolvedValueOnce({
+          ...community,
+          adminId: ADMIN,
+          memberCount: 1,
+          moderationStatus: "SUSPENDED",
+        });
+      repo.markActiveMemberLeft.mockResolvedValue({
+        ...soleAdminMembership,
+        status: "LEFT",
+      });
+
+      const member = await communityService.leaveCommunity(CID, ADMIN);
+
+      expect(member.status).toBe("LEFT");
+      expect(repo.closeAndLeaveAsLastAdmin).toHaveBeenCalledTimes(1);
+      expect(repo.markActiveMemberLeft).toHaveBeenCalledWith(CID, ADMIN);
+      const roomEvents = pubRoomEvent.mock.calls.map(([, , evt]) => evt);
+      expect(roomEvents).not.toContain("community:closed");
+      expect(roomEvents).toContain("community:member:removed");
+    });
+
+    it("SUSPENDED by Super Admin: the last admin just leaves; it stays closed", async () => {
+      repo.findById.mockResolvedValue({
+        ...community,
+        adminId: ADMIN,
+        memberCount: 1,
+        moderationStatus: "SUSPENDED",
+      });
+      repo.countActiveMembers.mockResolvedValue(1);
+      repo.markActiveMemberLeft.mockResolvedValue({
+        ...soleAdminMembership,
+        status: "LEFT",
+      });
+
+      const member = await communityService.leaveCommunity(CID, ADMIN);
+
+      expect(member.status).toBe("LEFT");
+      expect(repo.closeAndLeaveAsLastAdmin).not.toHaveBeenCalled();
+      expect(repo.updateCommunity).not.toHaveBeenCalled();
+      expect(repo.markAllActiveMembersLeft).not.toHaveBeenCalled();
+      const roomEvents = pubRoomEvent.mock.calls.map(([, , evt]) => evt);
+      expect(roomEvents).not.toContain("community:closed");
+    });
+
+    it("SUSPENDED by Super Admin with others remaining: transfer still required", async () => {
+      repo.findById.mockResolvedValue({
+        ...community,
+        adminId: ADMIN,
+        moderationStatus: "SUSPENDED",
+      });
+      repo.countActiveMembers.mockResolvedValue(3);
+
+      await expect(
+        communityService.leaveCommunity(CID, ADMIN)
+      ).rejects.toMatchObject({ messageKey: "COMMUNITY_ADMIN_CANNOT_LEAVE" });
+      expect(repo.markActiveMemberLeft).not.toHaveBeenCalled();
+    });
+
+    it("owner-CLOSED with others remaining: the admin leaves like a member (unchanged)", async () => {
+      repo.findById.mockResolvedValue({
+        ...community,
+        adminId: ADMIN,
+        status: "CLOSED",
+      });
+      repo.countActiveMembers.mockResolvedValue(3);
+      repo.markActiveMemberLeft.mockResolvedValue({
+        ...soleAdminMembership,
+        status: "LEFT",
+      });
+
+      const member = await communityService.leaveCommunity(CID, ADMIN);
+
+      expect(member.status).toBe("LEFT");
+      expect(repo.closeAndLeaveAsLastAdmin).not.toHaveBeenCalled();
     });
   });
 });
@@ -492,6 +662,70 @@ describe("leaveCommunity — real-time broadcasts", () => {
 // ---------------------------------------------------------------------------
 // Suite 3b — bulkDeleteCommunities
 // ---------------------------------------------------------------------------
+
+describe("bulkLeaveCommunities — admin rows run the single leave", () => {
+  const adminMembership = {
+    communityId: CID,
+    userId: ADMIN,
+    role: "ADMIN",
+    status: "ACTIVE",
+    joinedAt: new Date(),
+    snapshotUsername: "admin_user",
+    snapshotDisplayName: "Admin",
+    snapshotAvatarKey: null,
+  };
+
+  beforeEach(() => {
+    repo.findActiveMembershipsWithRoleByCommunityIds.mockResolvedValue([
+      adminMembership,
+    ]);
+    repo.findCommunitiesByIds.mockResolvedValue([
+      { ...community, adminId: ADMIN },
+    ]);
+    repo.findById.mockResolvedValue({ ...community, adminId: ADMIN });
+    repo.findMemberByUserId.mockResolvedValue(adminMembership);
+    repo.findActiveMemberIds.mockResolvedValue([ADMIN]);
+  });
+
+  it("last admin of an open community: CLOSED + LEFT, reported LEFT (not DELETED)", async () => {
+    repo.countActiveMembers.mockResolvedValue(1);
+    repo.closeAndLeaveAsLastAdmin.mockResolvedValue("CLOSED_AND_LEFT");
+
+    const res = await communityService.bulkLeaveCommunities(ADMIN, [CID]);
+
+    expect(res.results).toEqual([{ communityId: CID, status: "LEFT" }]);
+    expect(res.summary).toEqual({ requested: 1, left: 1, failed: 0 });
+    expect(repo.markAllActiveMembersLeft).not.toHaveBeenCalled();
+  });
+
+  it("admin with others remaining: FAILED / ADMIN_CANNOT_LEAVE (unchanged)", async () => {
+    repo.countActiveMembers.mockResolvedValue(4);
+
+    const res = await communityService.bulkLeaveCommunities(ADMIN, [CID]);
+
+    expect(res.results).toEqual([
+      { communityId: CID, status: "FAILED", errorCode: "ADMIN_CANNOT_LEAVE" },
+    ]);
+    expect(repo.closeAndLeaveAsLastAdmin).not.toHaveBeenCalled();
+  });
+
+  it("last admin of a Super Admin–suspended community: LEFT, no close, no delete", async () => {
+    const suspended = { ...community, adminId: ADMIN, moderationStatus: "SUSPENDED" };
+    repo.findCommunitiesByIds.mockResolvedValue([suspended]);
+    repo.findById.mockResolvedValue(suspended);
+    repo.countActiveMembers.mockResolvedValue(1);
+    repo.markActiveMemberLeft.mockResolvedValue({
+      ...adminMembership,
+      status: "LEFT",
+    });
+
+    const res = await communityService.bulkLeaveCommunities(ADMIN, [CID]);
+
+    expect(res.results).toEqual([{ communityId: CID, status: "LEFT" }]);
+    expect(repo.closeAndLeaveAsLastAdmin).not.toHaveBeenCalled();
+    expect(repo.updateCommunity).not.toHaveBeenCalled();
+  });
+});
 
 describe("bulkDeleteCommunities", () => {
   const CID2 = "d".repeat(24);
@@ -509,6 +743,8 @@ describe("bulkDeleteCommunities", () => {
   };
 
   beforeEach(() => {
+    // Open community: a CLOSED one dismisses instead (closed-community-self-delete.test.ts).
+    repo.findById.mockResolvedValue(community);
     repo.findCommunitiesByIds.mockResolvedValue([{ id: CID }, { id: CID2 }]);
     repo.updateMemberStatus.mockResolvedValue({
       ...activeMemberNonAdmin,

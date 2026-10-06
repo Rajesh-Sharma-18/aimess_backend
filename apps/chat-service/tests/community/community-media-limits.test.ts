@@ -79,20 +79,20 @@ describe("CommunityMessageService.sendMessage — content-type + media-limit gua
     ).rejects.toMatchObject({ messageKey: "CHAT_AUDIO_TOO_LARGE" });
   });
 
-  it("rejects a document attachment over 25 MB as CHAT_DOCUMENT_TOO_LARGE", async () => {
+  it("rejects a document attachment over 50 MB as CHAT_DOCUMENT_TOO_LARGE", async () => {
     const service = buildService();
     await expect(
       service.sendMessage({
         ...baseParams,
         messageType: "document",
-        attachments: [{ size: 30 * MB, mime: "application/pdf" }],
+        attachments: [{ size: 60 * MB, mime: "application/pdf" }],
       })
     ).rejects.toMatchObject({ messageKey: "CHAT_DOCUMENT_TOO_LARGE" });
   });
 
-  it("does not reject a 40 MB video attached under the generic document type (validated by its real VIDEO cap)", async () => {
+  it("does not reject a 60 MB video attached under the generic document type (validated by its real VIDEO cap)", async () => {
     const service = buildService();
-    // 40 MB is over the 25 MB document cap but well under the 100 MB video
+    // 60 MB is over the 50 MB document cap but well under the 100 MB video
     // cap — proves validation is keyed by the file's detected type, not the
     // generic bucket it arrived in via a file picker. Downstream persistence
     // isn't fully mocked, so we only assert the media-limit guard itself
@@ -101,7 +101,7 @@ describe("CommunityMessageService.sendMessage — content-type + media-limit gua
       .sendMessage({
         ...baseParams,
         messageType: "document",
-        attachments: [{ size: 40 * MB, mime: "video/mp4" }],
+        attachments: [{ size: 60 * MB, mime: "video/mp4" }],
       })
       .then(() => undefined)
       .catch((e: unknown) => e as { messageKey?: string });

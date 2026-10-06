@@ -63,6 +63,14 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     validateBody(markGroupReadBodySchema),
     ctrl.markRead
   );
+  // Delivered receipt over REST — for a push-woken client with no socket
+  router.post(
+    "/rooms/:roomId/delivered",
+    authenticate,
+    limits.read,
+    validateBody(markGroupReadBodySchema),
+    ctrl.markDelivered
+  );
   router.get(
     "/rooms/:roomId/messages",
     authenticate,

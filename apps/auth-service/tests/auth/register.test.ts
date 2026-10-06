@@ -77,6 +77,47 @@ describe("POST /api/auth/register", () => {
     expect(repo.createUser).not.toHaveBeenCalled();
   });
 
+  it.each(["Rajesh_Sharma", "RAJESH_SHARMA", "rAjEsH_sHaRmA", "  Rajesh_Sharma  "])(
+    "canonicalizes %j to lowercase before the lookup and the insert",
+    async (account) => {
+      const res = await request(app)
+        .post("/api/auth/register")
+        .send({ account, password: "Correct-Horse-Battery-7", proof: signupProof() });
+
+      expect(res.status).toBe(201);
+      expect(repo.findByAccount).toHaveBeenCalledWith("rajesh_sharma");
+      expect(repo.createUser).toHaveBeenCalledWith(
+        expect.objectContaining({ account: "rajesh_sharma" })
+      );
+    }
+  );
+
+  // The lost race: both requests passed findByAccount, the DB's case-insensitive
+  // unique index rejected the second. Through the pg adapter the violated column
+  // is only on driverAdapterError — it must still read as an ACCOUNT clash.
+  it("maps a unique violation on lower(account) to 409 AUTH_ACCOUNT_TAKEN", async () => {
+    repo.createUser.mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed"), {
+        name: "PrismaClientKnownRequestError",
+        code: "P2002",
+        meta: {
+          modelName: "AuthUser",
+          driverAdapterError: {
+            cause: { constraint: { fields: ["lower(account"] } },
+          },
+        },
+      })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/register")
+      .send({ account: "RAJESH_SHARMA", password: "Correct-Horse-Battery-7", proof: signupProof() });
+
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(res.body)).toContain("AUTH_ACCOUNT_TAKEN");
+    expect(JSON.stringify(res.body)).not.toContain("lower(account");
+  });
+
   it.each([
     ["missing password", { account: "johndoe" }],
     ["password too short", { account: "johndoe", password: "short" }],

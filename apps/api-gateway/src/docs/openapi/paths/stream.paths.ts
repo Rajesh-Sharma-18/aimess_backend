@@ -368,14 +368,24 @@ const deleteStream = {
 };
 
 // ---------------------------------------------------------------------------
-// POST /streams/{id}/stop — Stop a live stream (owner only)
+// POST /streams/{id}/stop — End a livestream (creator, or community admin force-end)
 // ---------------------------------------------------------------------------
 const stopStream = {
   post: {
     tags: ["Streams"],
     operationId: "stopStream",
     summary: "Stop a livestream",
-    description: `Owner-only. Ends the stream, kicks the SRS publisher (best-effort), and broadcasts \`stream:status → ENDED\` to all viewers.
+    description: `Ends the stream for everyone: kicks the SRS/CDN publisher (best-effort), broadcasts \`stream:status → ENDED\` on \`/stream\` and \`community:stream:ended\` on \`/community\`, and emits \`stream.ended\`. No request body.
+
+| Caller | Result |
+|---|---|
+| The stream's creator | \`200\`, \`endedReason: "HOST_ENDED"\` (unchanged) |
+| An ACTIVE community ADMIN of \`communityId\`, when the creator is a MODERATOR (or no longer holds a host role) | \`200\`, \`endedReason: "COMMUNITY_ADMIN_ENDED"\` — the "End for Everyone" force-end |
+| An ADMIN on another ADMIN's stream, a MODERATOR or MEMBER who is not the creator, a non-member, or a community-banned user | \`403 STREAM_NOT_OWNER\`, stream untouched |
+| A platform-banned (Super Admin) non-creator | \`403 ACCOUNT_BANNED\` |
+| Already ENDED (a retry, or the losing side of a host/admin race) | \`200\` with the current view; nothing re-emitted, publisher not kicked again |
+
+Roles are re-read from community-service on every non-creator call; \`creatorRole\` on the view is a display hint and is never trusted. The ACTIVE→ENDED transition is claimed atomically, so a host End Live racing an admin force-end ends the stream exactly once, and both callers get the same final \`endedReason\`.
 
 SRS will also fire \`on_unpublish\`, which is handled idempotently (no-op if already ENDED).`,
     security: streamAuth,

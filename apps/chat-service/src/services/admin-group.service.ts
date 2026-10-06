@@ -356,12 +356,6 @@ export class AdminGroupService {
     groupId: string;
     userId: string;
     actorAdminId: string;
-    /**
-     * AdminUser.name of the acting admin, forwarded from backoffice-service.
-     * chat-service cannot read admin_db, so this is the only thing that lets
-     * the MEMBER_REMOVED line name an actor instead of reading "Someone".
-     */
-    actorAdminName?: string;
     reason?: string;
   }): Promise<{ ok: boolean; found: boolean; errorCode: string }> {
     const row = await this.groupRoomRepo.adminFindByRoomId(params.groupId);
@@ -380,7 +374,6 @@ export class AdminGroupService {
       targetUserId: params.userId,
       kickedBy: params.actorAdminId,
       reason: params.reason,
-      actorDisplayName: params.actorAdminName,
       asPlatformAdmin: true,
     });
     return { ok: true, found: true, errorCode: "" };
@@ -404,8 +397,6 @@ export class AdminGroupService {
     groupId: string;
     userId: string;
     actorAdminId: string;
-    /** See {@link AdminGroupService.removeGroupMember} params. */
-    actorAdminName?: string;
     reason?: string;
   }): Promise<{
     ok: boolean;
@@ -474,7 +465,6 @@ export class AdminGroupService {
       targetUserId: params.userId,
       bannedBy: params.actorAdminId,
       reason: params.reason,
-      actorDisplayName: params.actorAdminName,
       asPlatformAdmin: true,
     });
     return { ok: true, found: true, errorCode: "", closedGroup: false };
@@ -490,8 +480,6 @@ export class AdminGroupService {
     groupId: string;
     userId: string;
     actorAdminId: string;
-    /** See {@link AdminGroupService.removeGroupMember} params. */
-    actorAdminName?: string;
   }): Promise<{ ok: boolean; found: boolean; errorCode: string }> {
     const row = await this.groupRoomRepo.adminFindByRoomId(params.groupId);
     if (!row)
@@ -508,7 +496,6 @@ export class AdminGroupService {
       roomId: params.groupId,
       targetUserId: params.userId,
       unbannedBy: params.actorAdminId,
-      actorDisplayName: params.actorAdminName,
       asPlatformAdmin: true,
     });
     return { ok: true, found: true, errorCode: "" };

@@ -9,7 +9,10 @@
  */
 
 import {
+  SEARCH_ROOM_CHUNK_SIZE,
   buildSearchCursor,
+  chunkRoomIds,
+  mergeSearchDocs,
   newestSearchCursor,
   parseSearchCursor,
 } from "../../src/repositories/message-search.js";
@@ -63,5 +66,35 @@ describe("newestSearchCursor", () => {
     expect(newestSearchCursor([null, undefined, "1782133107521_prv_abc"])).toBe(
       null
     );
+  });
+});
+
+describe("room chunking", () => {
+  it("splits a scope into explode-safe chunks and loses no room", () => {
+    const ids = Array.from({ length: 205 }, (_, i) => `r${i}`);
+    const chunks = chunkRoomIds(ids);
+    expect(chunks.map((c) => c.length)).toEqual([
+      SEARCH_ROOM_CHUNK_SIZE,
+      SEARCH_ROOM_CHUNK_SIZE,
+      205 - 2 * SEARCH_ROOM_CHUNK_SIZE,
+    ]);
+    expect(chunks.flat()).toEqual(ids);
+  });
+
+  it("merges per-chunk pages newest-first and keeps the hasMore row", () => {
+    const doc = (id: string, ms: number) => ({ _id: { $oid: id }, createdAt: { $date: ms } });
+    const merged = mergeSearchDocs(
+      [
+        [doc("aa", 30), doc("ab", 10)],
+        [doc("ba", 20), doc("bb", 20), doc("bc", 5)],
+      ],
+      3
+    );
+    expect(merged.map((d) => (d._id as { $oid: string }).$oid)).toEqual([
+      "aa",
+      "bb",
+      "ba",
+      "ab",
+    ]);
   });
 });

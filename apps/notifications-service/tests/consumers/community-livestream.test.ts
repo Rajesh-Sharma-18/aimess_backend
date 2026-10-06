@@ -165,4 +165,100 @@ describe("LIVESTREAM_ENDED branch", () => {
     expect(input.copy.descriptor.ref).toBe("community.livestreamEndedBySystem");
     expect(input.data).toMatchObject({ endedReason: "SYSTEM", hostUserId: HOST });
   });
+
+  it("community admin End for Everyone names the admin and skips the admin's own push", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      duration: "2m",
+      durationSeconds: 120,
+      endedReason: "USER",
+      endedByUserId: U1,
+      endedByDisplayName: "Admin Person",
+    });
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const [recipients, build] = pushMany.mock.calls[0];
+    expect(recipients).toEqual([U2]);
+    const body = build(U2).copy("en").body;
+    expect(body).toBe("Admin Person ended Jane Doe's livestream in Cool Community after 2m");
+    expect(build(U2).copy("vi").body).toBe(
+      "Admin Person đã kết thúc buổi phát trực tiếp của Jane Doe trong Cool Community sau 2m"
+    );
+  });
+
+  it("host's own End Live never pushes the host", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      recipientIds: [HOST, U1],
+      duration: "4m",
+      durationSeconds: 240,
+      endedReason: "USER",
+    });
+
+    const [recipients, build] = pushMany.mock.calls[0];
+    expect(recipients).toEqual([U1]);
+    expect(build(U1).copy("en").body).toBe(
+      "Jane Doe ended the livestream in Cool Community after 4m"
+    );
+    expect(build(U1).actorId).toBe(HOST);
+  });
+
+  it("community admin End for Everyone pushes the HOST, naming the admin", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      recipientIds: [HOST, U1, U2],
+      duration: "4m",
+      durationSeconds: 240,
+      endedReason: "USER",
+      endedByUserId: U1,
+      endedByDisplayName: "Admin Person",
+    });
+
+    const [recipients, build] = pushMany.mock.calls[0];
+    expect(recipients).toEqual([HOST, U2]);
+    expect(build(HOST).copy("en").body).toBe(
+      "Admin Person ended Jane Doe's livestream in Cool Community after 4m"
+    );
+    // push.service drops recipient === actorId: the actor must be the admin,
+    // or the host's push is silently suppressed.
+    expect(build(HOST).actorId).toBe(U1);
+    expect(JSON.parse(build(HOST).data.actorSnapshot).userId).toBe(U1);
+    expect(build(HOST).data.hostUserId).toBe(HOST);
+  });
+
+  it("Super Admin end (ADMIN) reads 'Administrator ended {host}'s livestream', pushes the host, leaks no identity", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      recipientIds: [HOST, U1, U2],
+      duration: "4m",
+      durationSeconds: 240,
+      endedReason: "ADMIN",
+    });
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const [recipients, build] = pushMany.mock.calls[0];
+    expect(recipients).toEqual([HOST, U1, U2]);
+    // The host reads the host-less form; everyone else is told whose it was.
+    expect(build(HOST).copy("en").body).toBe(
+      "Administrator ended the livestream in Cool Community after 4m"
+    );
+    expect(build(HOST).copy.descriptor.args).not.toContain("Jane Doe");
+    const input = build(U1);
+    expect(input.copy("en").body).toBe(
+      "Administrator ended Jane Doe's livestream in Cool Community after 4m"
+    );
+    expect(input.copy("vi").body).toBe(
+      "Quản trị viên đã kết thúc buổi phát trực tiếp của Jane Doe trong Cool Community sau 4m"
+    );
+    expect(input.copy("th").body).toBe(
+      "ผู้ดูแลระบบจบไลฟ์สตรีมของJane DoeในCool Communityหลังจาก 4m"
+    );
+    for (const locale of ["en", "vi", "th"]) {
+      expect(input.copy(locale).body).not.toMatch(/System|Hệ thống|An administrator/);
+    }
+    expect(input.copy.descriptor.ref).toBe("community.livestreamEndedByAdmin");
+    expect(input.actorId).toBeUndefined();
+    expect(input.data).toMatchObject({ endedReason: "ADMIN", hostUserId: HOST });
+    expect(JSON.stringify(input.data)).not.toMatch(/endedBy(UserId|DisplayName)/);
+  });
 });

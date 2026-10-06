@@ -62,6 +62,53 @@ async function fetchLiveStreamCount(communityId: string): Promise<number> {
   }
 }
 
+/**
+ * Super Admin status for a community row. `status` from community-service is
+ * the platform-moderation axis; a community that closed because its last
+ * member (the admin) left is closed on the owner axis only, so without this it
+ * would list as ACTIVE with 0 members. It is shown CLOSED, and since nobody is
+ * left in it, there is nothing to close or reopen from here.
+ */
+function adminRowStatus(r: {
+  status: string;
+  statusClosedReasonCode?: string;
+}): { status: CommunityModerationStatus; closedByLastMember: boolean } {
+  const closedByLastMember = r.statusClosedReasonCode === "LAST_MEMBER_LEFT";
+  return {
+    status: (closedByLastMember ? "CLOSED" : r.status) as CommunityModerationStatus,
+    closedByLastMember,
+  };
+}
+
+/**
+ * Distinct community ids that currently have a LIVE stream. Fail-closed: an
+ * outage must not silently show "no live communities".
+ */
+// ponytail: one page of up to 1000 LIVE streams; add a dedicated
+// "live community ids" RPC if concurrent streams ever exceed that.
+async function fetchLiveCommunityIds(): Promise<string[]> {
+  const { streams } = await streamClient.adminListStreams({
+    status: "LIVE",
+    page: 1,
+    limit: 1000,
+  });
+  return [...new Set(streams.map((s) => s.communityId))];
+}
+
+function emptyPagination(page: number, limit: number): PaginationMeta {
+  return {
+    mode: "offset",
+    page,
+    limit,
+    total: 0,
+    totalApprox: 0,
+    totalPages: 0,
+    hasNext: false,
+    hasPrev: page > 1,
+    nextCursor: null,
+  };
+}
+
 // Community admin/owner snapshot avatars live in the SHARED avatars bucket
 // (`avatars/<userId>/…`). community-service now resolves these on its admin
 // RPCs; backoffice resolves AGAIN at its own OUTPUT boundary as
@@ -76,7 +123,7 @@ async function rowToListItem(
   /** LIVE stream count from stream-service; the gRPC row's own field is a stub. */
   liveStreamCount: number
 ): Promise<CommunityListItem> {
-  const status = r.status as CommunityModerationStatus;
+  const { status, closedByLastMember } = adminRowStatus(r);
   const [adminAvatar, avatar] = await Promise.all([
     resolveAvatarOrNull(r.adminAvatarUrl),
     resolveCommunityImageOrNull(r.communityAvatarUrl),
@@ -107,7 +154,7 @@ async function rowToListItem(
     actions: {
       canView: true,
       canClose: status === "ACTIVE",
-      canReopen: status === "CLOSED",
+      canReopen: status === "CLOSED" && !closedByLastMember,
     },
   };
 }
@@ -123,6 +170,16 @@ export class GrpcCommunityRepository implements CommunityRepository {
     query: ListCommunitiesQuery
   ): Promise<Paginated<CommunityListItem>> {
     const [sortField, sortDir] = (query.sort ?? "createdAt:desc").split(":");
+    // Live counts are owned by stream-service, so resolve the set of live
+    // communities there and hand it to community-service as an id restriction.
+    // live=true restricts to that set; live=false excludes it.
+    const liveIds =
+      query.live === undefined ? null : await fetchLiveCommunityIds();
+    const liveCommunityIds = query.live === true ? liveIds : null;
+    const excludeCommunityIds = query.live === false ? liveIds : null;
+    if (liveCommunityIds?.length === 0) {
+      return { data: [], pagination: emptyPagination(query.page, query.limit) };
+    }
     const req: AdminListCommunitiesReq = {
       search: query.search ?? "",
       type: query.type ?? "",
@@ -134,6 +191,8 @@ export class GrpcCommunityRepository implements CommunityRepository {
       sortDir: sortDir ?? "desc",
       page: query.page,
       limit: query.limit,
+      communityIds: liveCommunityIds ?? [],
+      excludeCommunityIds: excludeCommunityIds ?? [],
     };
 
     const res = await communityClient.adminListCommunities(req);
@@ -314,7 +373,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
     row: RawAdminCommunityRow,
     moderationHistory: CommunityModerationHistoryItem[]
   ): Promise<CommunityDetail> {
-    const status = row.status as CommunityModerationStatus;
+    const { status } = adminRowStatus(row);
     const type = row.type as CommunityType;
     const category = {
       id: row.categoryId,
