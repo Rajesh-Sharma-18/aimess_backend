@@ -249,7 +249,7 @@ describe("system message text — display names and You personalization", () => 
     ).toBe("System ended the livestream (36m)");
   });
 
-  it('Super Admin end (endedReason ADMIN) reads "Administrator ended {host}\'s livestream" for everyone, host included', () => {
+  it('Super Admin end (endedReason ADMIN) reads "Administrator ended {host}\'s livestream" for everyone but the host', () => {
     // The ADMIN row's actor is the host (the Super Admin is never carried).
     const meta = {
       actorUserId: ACTOR,
@@ -257,7 +257,7 @@ describe("system message text — display names and You personalization", () => 
       durationSeconds: 10,
       endedReason: "ADMIN",
     };
-    for (const viewer of [undefined, ACTOR, "viewer"]) {
+    for (const viewer of [undefined, "viewer"]) {
       const text = buildCommunitySystemFallbackText(
         "LIVE_STREAM_ENDED",
         meta,
@@ -271,6 +271,19 @@ describe("system message text — display names and You personalization", () => 
       buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", "viewer", locale);
     expect(render("vi").startsWith("Quản trị viên đã kết thúc buổi phát trực tiếp của Mind Flayer (")).toBe(true);
     expect(render("th").startsWith("ผู้ดูแลระบบจบไลฟ์สตรีมของMind Flayer (")).toBe(true);
+  });
+
+  it('Super Admin end: the host reads "Administrator ended the livestream", never "You" or "System"', () => {
+    const legacy = { actorUserId: ACTOR, duration: "2m", durationSeconds: 120, endedReason: "ADMIN" };
+    const current = { ...legacy, hostUserId: ACTOR };
+    for (const meta of [legacy, current]) {
+      expect(
+        buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", ACTOR)
+      ).toBe("Administrator ended the livestream (2m)");
+      expect(
+        buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", ACTOR, "vi")
+      ).toMatch(/^Quản trị viên đã kết thúc buổi phát trực tiếp \(/);
+    }
   });
 
   it("Super Admin end with no host name falls back to the host-less line, never a blank", () => {

@@ -145,10 +145,11 @@ export interface LivestreamSystemMetadata {
   durationSeconds?: number;
   /**
    * LIVE_STREAM_ENDED only — who ended it. `USER` = the host or a community
-   * admin (`actorUserId`). `ADMIN` (Super Admin from Backoffice) renders "An
-   * administrator ended the livestream"; `SYSTEM` (moderation, bans, timeouts)
-   * renders "System ended the livestream" — both for every viewer, the host
-   * included, with `actorUserId` left as the host. Absent on legacy rows ⇒ `USER`.
+   * admin (`actorUserId`). `ADMIN` (Super Admin from Backoffice) renders
+   * "Administrator ended {host}'s livestream" ("Administrator ended the
+   * livestream" for the host); `SYSTEM` (moderation, bans, timeouts) renders
+   * "System ended the livestream" for every viewer. Both leave `actorUserId`
+   * as the host. Absent on legacy rows ⇒ `USER`.
    */
   endedReason?: "USER" | "ADMIN" | "SYSTEM";
 }

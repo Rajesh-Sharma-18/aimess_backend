@@ -529,7 +529,8 @@ async function handleCommunityEvent(
             ? communityCopy.livestreamEndedByAdmin(
                 identity.name,
                 p.duration,
-                resolvedHostName
+                // The host reads "Administrator ended the livestream …".
+                userId === p.hostUserId ? undefined : resolvedHostName
               )
             : p.endedReason === "SYSTEM"
             ? communityCopy.livestreamEndedBySystem(identity.name, p.duration)

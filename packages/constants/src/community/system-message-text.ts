@@ -274,7 +274,8 @@ export function buildCommunitySystemFallbackText(
           : ((metadata.duration as string) || "").trim();
       // `endedReason: "ADMIN"` = a Super Admin ended it from Backoffice: every
       // viewer reads "Administrator ended {host}'s livestream", never the
-      // admin's name (that row's actor IS the host). "SYSTEM" = the platform
+      // admin's name (that row's actor IS the host); the host reads
+      // "Administrator ended the livestream". "SYSTEM" = the platform
       // (moderation, account ban, timeouts). A community admin's end names
       // both: "{admin} ended {host}'s livestream", the host being the target.
       // A host's own end, and every legacy row, keeps "{host} ended the
@@ -285,9 +286,12 @@ export function buildCommunitySystemFallbackText(
         (metadata.endedReason === "ADMIN" ? actorName : "") ||
         ""
       ).trim();
+      const viewerIsHost = Boolean(
+        viewer && viewer === ((metadata.hostUserId as string) || actorId)
+      );
       const lead =
         metadata.endedReason === "ADMIN"
-          ? endedHost
+          ? endedHost && !viewerIsHost
             ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST", locale, {
                 host: endedHost,
               })

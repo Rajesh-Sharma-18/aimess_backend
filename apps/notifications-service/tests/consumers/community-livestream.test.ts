@@ -238,7 +238,12 @@ describe("LIVESTREAM_ENDED branch", () => {
     expect(pushMany).toHaveBeenCalledTimes(1);
     const [recipients, build] = pushMany.mock.calls[0];
     expect(recipients).toEqual([HOST, U1, U2]);
-    const input = build(HOST);
+    // The host reads the host-less form; everyone else is told whose it was.
+    expect(build(HOST).copy("en").body).toBe(
+      "Administrator ended the livestream in Cool Community after 4m"
+    );
+    expect(build(HOST).copy.descriptor.args).not.toContain("Jane Doe");
+    const input = build(U1);
     expect(input.copy("en").body).toBe(
       "Administrator ended Jane Doe's livestream in Cool Community after 4m"
     );
