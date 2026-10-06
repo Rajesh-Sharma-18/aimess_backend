@@ -566,6 +566,15 @@ describe("stopStream — idempotency and races", () => {
     });
   });
 
+  it("Backoffice adminForceEnd ends a community ADMIN-hosted stream too", async () => {
+    const t = setup({ members: { [CREATOR]: { role: "ADMIN" } } });
+    const res = await t.service.adminForceEnd("stream-1", "MANUAL_ADMIN");
+    await flush();
+
+    expect(res).toEqual({ success: true, status: "ENDED" });
+    expect(t.endEvents().domainEnded).toBe(1);
+  });
+
   it("host and community-admin ends never carry byPlatformAdmin", async () => {
     for (const requester of [CREATOR, ADMIN]) {
       const t = setup({});

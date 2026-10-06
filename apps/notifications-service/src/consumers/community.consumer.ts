@@ -522,13 +522,19 @@ async function handleCommunityEvent(
         // data/actorSnapshot as the stream owner.
         copy:
           p.endedReason === "ADMIN"
-            ? communityCopy.livestreamEndedByAdmin(identity.name, p.duration)
+            ? communityCopy.livestreamEndedByAdmin(
+                identity.name,
+                p.duration,
+                resolvedHostName
+              )
             : p.endedReason === "SYSTEM"
             ? communityCopy.livestreamEndedBySystem(identity.name, p.duration)
             : communityCopy.livestreamEnded(
                 identity.name,
                 endedByName || resolvedHostName,
-                p.duration
+                p.duration,
+                // "{admin} ended {host}'s livestream" when the admin ended it.
+                endedByName ? resolvedHostName : undefined
               ),
         ...base(
           type,

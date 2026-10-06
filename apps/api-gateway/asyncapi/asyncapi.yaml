@@ -3821,7 +3821,7 @@ components:
               durationSeconds: 5040
               endedReason: USER
         - name: community_system_live_ended_by_admin
-          summary: "Community lifecycle system message — a Super Admin ended the livestream from Backoffice. Reads 'An administrator ended the livestream' for every viewer, the host included; the admin's identity is never sent (actorUserId/actorName stay the host). Render content.text, or 'An administrator …' when composing locally."
+          summary: "Community lifecycle system message — a Super Admin ended the livestream from Backoffice. Reads "Administrator ended {host}'s livestream" for every viewer, the host included; the admin's identity is never sent (actorUserId/actorName stay the host). Render content.text."
           payload:
             id: "684abc123def456789012353"
             messageId: "684abc123def456789012353"
@@ -3832,9 +3832,9 @@ components:
             senderAvatar: ""
             contentType: SYSTEM
             content:
-              text: "An administrator ended the livestream (4m)"
+              text: "Administrator ended Jane Doe's livestream (4m)"
               files: []
-            message: "An administrator ended the livestream (4m)"
+            message: "Administrator ended Jane Doe's livestream (4m)"
             clientMessageId: ""
             reactions: []
             serverTs: 1750008500000

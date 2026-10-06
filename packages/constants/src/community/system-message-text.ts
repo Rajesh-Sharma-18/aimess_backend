@@ -261,17 +261,39 @@ export function buildCommunitySystemFallbackText(
           ? formatStreamDuration(metadata.durationSeconds, locale)
           : ((metadata.duration as string) || "").trim();
       // `endedReason: "ADMIN"` = a Super Admin ended it from Backoffice: every
-      // viewer reads "An administrator", never the admin's name. "SYSTEM" = the
-      // platform (moderation, account ban, timeouts). Neither names the host or
-      // reads "You". Missing on legacy rows ⇒ host-ended.
+      // viewer reads "Administrator ended {host}'s livestream", never the
+      // admin's name (that row's actor IS the host). "SYSTEM" = the platform
+      // (moderation, account ban, timeouts). A community admin's end names
+      // both: "{admin} ended {host}'s livestream", the host being the target.
+      // A host's own end, and every legacy row, keeps "{host} ended the
+      // livestream". No host name ⇒ the host-less form, never a blank.
+      const endedHost = (
+        (metadata.targetName as string) ||
+        targetName ||
+        (metadata.endedReason === "ADMIN" ? actorName : "") ||
+        ""
+      ).trim();
       const lead =
         metadata.endedReason === "ADMIN"
-          ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN", locale)
+          ? endedHost
+            ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST", locale, {
+                host: endedHost,
+              })
+            : t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN", locale)
           : metadata.endedReason === "SYSTEM"
-          ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale)
-          : isActor
-            ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)
-            : t("SYS_COMMUNITY_LIVESTREAM_ENDED", locale, { actor });
+            ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale)
+            : endedHost && targetId && targetId !== actorId
+              ? isActor
+                ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_HOST_SELF", locale, {
+                    host: endedHost,
+                  })
+                : t("SYS_COMMUNITY_LIVESTREAM_ENDED_HOST", locale, {
+                    actor,
+                    host: endedHost,
+                  })
+              : isActor
+                ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)
+                : t("SYS_COMMUNITY_LIVESTREAM_ENDED", locale, { actor });
       return duration
         ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION", locale, {
             lead,

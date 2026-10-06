@@ -106,15 +106,35 @@ export const NOTIFICATION_MESSAGES = {
     en: "System ended the livestream in {{community}} after {{duration}}",
     th: "ระบบจบไลฟ์สตรีมใน{{community}}หลังจาก {{duration}}",
   },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST: {
+    vi: "{{name}} đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}}",
+    en: "{{name}} ended {{host}}'s livestream in {{community}}",
+    th: "{{name}}จบไลฟ์สตรีมของ{{host}}ใน{{community}}แล้ว",
+  },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST_DURATION: {
+    vi: "{{name}} đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}} sau {{duration}}",
+    en: "{{name}} ended {{host}}'s livestream in {{community}} after {{duration}}",
+    th: "{{name}}จบไลฟ์สตรีมของ{{host}}ใน{{community}}หลังจาก {{duration}}",
+  },
   NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN: {
     vi: "Quản trị viên đã kết thúc buổi phát trực tiếp trong {{community}}",
-    en: "An administrator ended the livestream in {{community}}",
+    en: "Administrator ended the livestream in {{community}}",
     th: "ผู้ดูแลระบบจบไลฟ์สตรีมใน{{community}}แล้ว",
   },
   NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_DURATION: {
     vi: "Quản trị viên đã kết thúc buổi phát trực tiếp trong {{community}} sau {{duration}}",
-    en: "An administrator ended the livestream in {{community}} after {{duration}}",
+    en: "Administrator ended the livestream in {{community}} after {{duration}}",
     th: "ผู้ดูแลระบบจบไลฟ์สตรีมใน{{community}}หลังจาก {{duration}}",
+  },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST: {
+    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}}",
+    en: "Administrator ended {{host}}'s livestream in {{community}}",
+    th: "ผู้ดูแลระบบจบไลฟ์สตรีมของ{{host}}ใน{{community}}แล้ว",
+  },
+  NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST_DURATION: {
+    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}} sau {{duration}}",
+    en: "Administrator ended {{host}}'s livestream in {{community}} after {{duration}}",
+    th: "ผู้ดูแลระบบจบไลฟ์สตรีมของ{{host}}ใน{{community}}หลังจาก {{duration}}",
   },
   NOTIF_COMMUNITY_JOIN_REQUEST_APPROVED: {
     vi: "{{name}} đã chấp thuận yêu cầu tham gia {{community}} của bạn",

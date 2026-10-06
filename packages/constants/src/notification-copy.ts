@@ -431,46 +431,70 @@ export const communityCopy = register("community", {
       }),
       inboxTitle: null,
     }),
+  /**
+   * `hostName` is the ACTOR (the host on their own end; the param predates
+   * admin ends). `streamHostName` is set only when someone else ended it:
+   * "{admin} ended {host}'s livestream …".
+   */
   livestreamEnded:
     (
       communityName: string,
       hostName: string,
-      duration?: string | null
+      duration?: string | null,
+      streamHostName?: string | null
     ): LocalizedCopy =>
-    (locale) => ({
-      title: named(communityName, locale),
-      body:
-        duration && !/^0[smh]?$/.test(duration.trim())
-          ? t("NOTIF_COMMUNITY_LIVESTREAM_ENDED_DURATION", locale, {
-              name: person(hostName, locale),
-              community: named(communityName, locale),
-              duration,
-            })
-          : t("NOTIF_COMMUNITY_LIVESTREAM_ENDED", locale, {
-              name: person(hostName, locale),
-              community: named(communityName, locale),
-            }),
-      inboxTitle: null,
-    }),
+    (locale) => {
+      const host = streamHostName?.trim();
+      const withDuration = duration && !/^0[smh]?$/.test(duration.trim());
+      const key = host
+        ? withDuration
+          ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST_DURATION"
+          : "NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST"
+        : withDuration
+          ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_DURATION"
+          : "NOTIF_COMMUNITY_LIVESTREAM_ENDED";
+      return {
+        title: named(communityName, locale),
+        body: t(key, locale, {
+          name: person(hostName, locale),
+          community: named(communityName, locale),
+          duration: duration ?? "",
+          host: host ?? "",
+        }),
+        inboxTitle: null,
+      };
+    },
   /**
-   * Super Admin / Backoffice End Live: "An administrator ended …". The admin's
-   * own name is never sent to community clients (it stays in the audit log).
+   * Super Admin / Backoffice End Live: "Administrator ended {host}'s livestream
+   * …". The admin's own name is never sent to community clients (it stays in
+   * the audit log).
    */
   livestreamEndedByAdmin:
-    (communityName: string, duration?: string | null): LocalizedCopy =>
-    (locale) => ({
-      title: named(communityName, locale),
-      body:
-        duration && !/^0[smh]?$/.test(duration.trim())
-          ? t("NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_DURATION", locale, {
-              community: named(communityName, locale),
-              duration,
-            })
-          : t("NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN", locale, {
-              community: named(communityName, locale),
-            }),
-      inboxTitle: null,
-    }),
+    (
+      communityName: string,
+      duration?: string | null,
+      hostName?: string | null
+    ): LocalizedCopy =>
+    (locale) => {
+      const host = hostName?.trim();
+      const withDuration = duration && !/^0[smh]?$/.test(duration.trim());
+      const key = host
+        ? withDuration
+          ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST_DURATION"
+          : "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST"
+        : withDuration
+          ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_DURATION"
+          : "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN";
+      return {
+        title: named(communityName, locale),
+        body: t(key, locale, {
+          community: named(communityName, locale),
+          duration: duration ?? "",
+          host: host ?? "",
+        }),
+        inboxTitle: null,
+      };
+    },
   /** Platform-ended (moderation, bans, timeouts): never names the host. */
   livestreamEndedBySystem:
     (communityName: string, duration?: string | null): LocalizedCopy =>
@@ -1169,9 +1193,14 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
 
   "community.joinRequested": ["communityName", "requesterName"],
   "community.livestreamStarted": ["communityName", "hostName"],
-  "community.livestreamEnded": ["communityName", "hostName", "duration"],
+  "community.livestreamEnded": [
+    "communityName",
+    "hostName",
+    "duration",
+    "streamHostName",
+  ],
   "community.livestreamEndedBySystem": ["communityName", "duration"],
-  "community.livestreamEndedByAdmin": ["communityName", "duration"],
+  "community.livestreamEndedByAdmin": ["communityName", "duration", "hostName"],
   "community.joinRequestApproved": ["communityName", "decidedByName"],
   "community.joinRequestRejected": ["communityName"],
   "community.memberJoined": ["communityName"],

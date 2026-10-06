@@ -249,36 +249,67 @@ describe("system message text — display names and You personalization", () => 
     ).toBe("System ended the livestream (36m)");
   });
 
-  it('Super Admin end (endedReason ADMIN) reads "An administrator ended…" for everyone, host included', () => {
+  it('Super Admin end (endedReason ADMIN) reads "Administrator ended {host}\'s livestream" for everyone, host included', () => {
+    // The ADMIN row's actor is the host (the Super Admin is never carried).
     const meta = {
       actorUserId: ACTOR,
-      duration: "4m",
-      durationSeconds: 240,
+      duration: "10s",
+      durationSeconds: 10,
       endedReason: "ADMIN",
     };
     for (const viewer of [undefined, ACTOR, "viewer"]) {
       const text = buildCommunitySystemFallbackText(
         "LIVE_STREAM_ENDED",
         meta,
-        "Host Name",
+        "Mind Flayer",
         "",
         viewer
       );
-      expect(text).toBe("An administrator ended the livestream (4m)");
+      expect(text).toBe("Administrator ended Mind Flayer's livestream (10s)");
     }
-    const vi = buildCommunitySystemFallbackText(
-      "LIVE_STREAM_ENDED",
-      meta,
-      "Host Name",
-      "",
-      "viewer",
-      "vi"
-    );
-    expect(vi.startsWith("Quản trị viên đã kết thúc buổi phát trực tiếp (")).toBe(true);
-    expect(vi).not.toContain("Host Name");
+    const render = (locale: "vi" | "th") =>
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", "viewer", locale);
+    expect(render("vi").startsWith("Quản trị viên đã kết thúc buổi phát trực tiếp của Mind Flayer (")).toBe(true);
+    expect(render("th").startsWith("ผู้ดูแลระบบจบไลฟ์สตรีมของMind Flayer (")).toBe(true);
   });
 
-  it("community admin end names the admin (the actor), and the host reads the admin's name", () => {
+  it("Super Admin end with no host name falls back to the host-less line, never a blank", () => {
+    const meta = { actorUserId: ACTOR, duration: "10s", durationSeconds: 10, endedReason: "ADMIN" };
+    const text = buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "", "");
+    expect(text).toBe("Administrator ended the livestream (10s)");
+  });
+
+  it("community admin end reads \"{admin} ended {host}'s livestream\"; the admin reads \"You ended {host}'s…\"", () => {
+    const meta = {
+      actorUserId: "admin-id",
+      targetUserId: ACTOR,
+      targetName: "Mind Flayer",
+      hostUserId: ACTOR,
+      duration: "8s",
+      durationSeconds: 8,
+      endedReason: "USER",
+    };
+    for (const viewer of [undefined, ACTOR, "viewer"]) {
+      expect(
+        buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "", viewer)
+      ).toBe("Smiley Creatures ended Mind Flayer's livestream (8s)");
+    }
+    expect(
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "", "admin-id")
+    ).toBe("You ended Mind Flayer's livestream (8s)");
+    expect(
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "", "x", "vi")
+    ).toBe("Smiley Creatures đã kết thúc buổi phát trực tiếp của Mind Flayer (8 giây)");
+  });
+
+  it("community admin end with no resolvable host name keeps the host-less line", () => {
+    const meta = { actorUserId: "admin-id", targetUserId: ACTOR, duration: "8s", durationSeconds: 8, endedReason: "USER" };
+    expect(
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "")
+    ).toBe("Smiley Creatures ended the livestream (8s)");
+  });
+
+  it("legacy admin-ended row (no target) still renders", () => {
     const meta = { actorUserId: "admin-id", duration: "4m", durationSeconds: 240, endedReason: "USER" };
     expect(
       buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Rajesh Sharma", "", ACTOR)

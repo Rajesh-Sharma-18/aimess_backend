@@ -192,6 +192,8 @@ describe("handleStreamEnded", () => {
       reason: "HOST_ENDED",
     });
     expect(sysMsg.mock.calls[0][0].metadata.endedReason).toBe("USER");
+    // Host's own end keeps "{host} ended the livestream": no target.
+    expect(sysMsg.mock.calls[0][0].metadata.targetUserId).toBeUndefined();
     expect(pushEnded.mock.calls[0][0].endedReason).toBe("USER");
   });
 
@@ -207,6 +209,7 @@ describe("handleStreamEnded", () => {
     });
     const sysArg = sysMsg.mock.calls[0][0];
     expect(sysArg.metadata).toMatchObject({ endedReason: "ADMIN", duration: "36m" });
+    expect(sysArg.metadata.targetUserId).toBeUndefined();
     expect(sysArg.triggeredByUserId).toBe(HOST);
     // The raw reason code never reaches clients.
     expect(JSON.stringify(sysArg.metadata)).not.toContain("MANUAL_ADMIN");
@@ -306,7 +309,13 @@ describe("handleStreamEnded", () => {
 
     const sysArg = sysMsg.mock.calls[0][0];
     expect(sysArg.triggeredByUserId).toBe(U1);
-    expect(sysArg.metadata).toMatchObject({ endedReason: "USER", hostUserId: HOST });
+    // The host rides as the target so chat-service names them:
+    // "{admin} ended {host}'s livestream".
+    expect(sysArg.metadata).toMatchObject({
+      endedReason: "USER",
+      hostUserId: HOST,
+      targetUserId: HOST,
+    });
 
     const pushArg = pushEnded.mock.calls[0][0];
     expect(pushArg).toMatchObject({

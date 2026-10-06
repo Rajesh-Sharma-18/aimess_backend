@@ -168,7 +168,7 @@ export const livestreamService = {
       action: AUDIT_ACTIONS.LIVESTREAM_ENDED,
       targetType: "livestream",
       targetId: livestreamId,
-      // Host + community: community users only read "An administrator ended …",
+      // Host + community: community users only read "Administrator ended {host}'s …",
       // so this row is where the real Super Admin (actorId) is tied to the stream.
       before: {
         status: before?.status ?? null,

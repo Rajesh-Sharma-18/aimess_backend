@@ -11,8 +11,8 @@ When a Super Admin ended a livestream from Backoffice, every surface read "Syste
 | Who pressed End Live | Chat line (`content.text`) | Push / notification body |
 |---|---|---|
 | Host | `{Host} ended the livestream (4m)`, and the host reads `You ended the livestream (4m)` | `{Host} ended the livestream in {Community} after 4m` |
-| Community admin (End for Everyone) | `{Admin} ended the livestream (4m)`, and that admin reads `You ended…` | `{Admin} ended the livestream in {Community} after 4m` |
-| Super Admin (Backoffice) | `An administrator ended the livestream (4m)` for everyone, the host included | `An administrator ended the livestream in {Community} after 4m` |
+| Community admin (End for Everyone) | `{Admin} ended {Host}'s livestream (4m)`, and that admin reads `You ended {Host}'s livestream (4m)` | `{Admin} ended {Host}'s livestream in {Community} after 4m` |
+| Super Admin (Backoffice) | `Administrator ended {Host}'s livestream (4m)` for everyone, the host included | `Administrator ended {Host}'s livestream in {Community} after 4m` |
 | Platform (moderation, ban, timeout) | `System ended the livestream (4m)` (unchanged) | `System ended the livestream in {Community} after 4m` (unchanged) |
 
 The `You ended…` form for the actor's own chat line already existed (`SYS_COMMUNITY_LIVESTREAM_ENDED_SELF`). It was not added by this change.
@@ -21,7 +21,8 @@ The `You ended…` form for the actor's own chat line already existed (`SYS_COMM
 
 - `community:message:new` / history / sync, `systemMessageType = "LIVE_STREAM_ENDED"`:
   - `systemMetadata.endedReason` is one of `"USER"`, `"ADMIN"` (**new**) or `"SYSTEM"`. It is absent on legacy rows, so treat a missing value as `USER`.
-  - `actorUserId` / `actorName` name the person who ended it (the host, or the community admin) for `USER`. For `ADMIN` and `SYSTEM` they stay the host, so **never render them**.
+  - `actorUserId` / `actorName` name the person who ended it (the host, or the community admin) for `USER`. For `ADMIN` and `SYSTEM` they stay the host: `ADMIN` uses `actorName` only as the host in "Administrator ended {host}'s livestream", and `SYSTEM` never renders it.
+  - `targetUserId` / `targetName` are set only when a community admin ended someone else's stream. They are the host.
   - `hostUserId` always identifies the stream owner.
   - The Super Admin's id and name are never sent to apps.
 - Push / inbox `data` for `community.livestream_ended`:
@@ -33,12 +34,13 @@ The `You ended…` form for the actor's own chat line already existed (`SYS_COMM
 
 1. Prefer the server's `content.text` for the chat line and `lastActivity.preview` for the list. Both are already rendered per viewer and per locale.
 2. If you compose the line locally, branch on `endedReason` (decode it as a `String`, not a closed enum):
-   - `ADMIN` → "An administrator ended the livestream".
+   - `ADMIN` → "Administrator ended {actorName}'s livestream" ("Administrator ended the livestream" if the name is empty).
    - `SYSTEM` → "System ended the livestream".
-   - Otherwise: "You ended…" when `actorUserId == me`, else "{actorName} ended…".
+   - `targetName` present → "You ended {targetName}'s livestream" when `actorUserId == me`, else "{actorName} ended {targetName}'s livestream".
+   - Otherwise: "You ended the livestream" when `actorUserId == me`, else "{actorName} ended the livestream".
 3. **Treat an unknown `endedReason` as "render `content.text`"**, never as `USER`. Treating it as `USER` names the host as the actor, which is wrong.
 4. Never derive the actor from `hostUserId` or `hostName`.
-5. Add these strings to `Localizable.strings` for every locale: en "An administrator ended the livestream", vi "Quản trị viên đã kết thúc buổi phát trực tiếp", th "ผู้ดูแลระบบจบไลฟ์สตรีม".
+5. Add these strings to `Localizable.strings` for every locale: en "Administrator ended {host}'s livestream" / "{actor} ended {host}'s livestream", vi "Quản trị viên đã kết thúc buổi phát trực tiếp của {host}" / "{actor} đã kết thúc buổi phát trực tiếp của {host}", th "ผู้ดูแลระบบจบไลฟ์สตรีมของ{host}" / "{actor}จบไลฟ์สตรีมของ{host}".
 
 ## Push rules (server-side, for reference)
 
@@ -56,7 +58,8 @@ Older app builds whose decoder compares only `endedReason == "SYSTEM"` would sho
 | # | Action | Host sees | Admin sees | Other moderator / member sees | Push recipients |
 |---|---|---|---|---|---|
 | 1 | Host ends | You ended… | {Host} ended… | {Host} ended… | everyone except the host |
-| 2 | Community admin ends | {Admin} ended… | You ended… | {Admin} ended… | everyone except that admin, host included |
-| 3 | Super Admin ends | An administrator ended… | An administrator ended… | An administrator ended… | everyone, host included |
+| 2 | Community admin ends | {Admin} ended {Host}'s… | You ended {Host}'s… | {Admin} ended {Host}'s… | everyone except that admin, host included |
+| 3 | Super Admin ends | Administrator ended {Host}'s… | Administrator ended {Host}'s… | Administrator ended {Host}'s… | everyone, host included |
+| 3b | Super Admin ends a community ADMIN's stream | Administrator ended {Admin host}'s… | same | same | everyone, host included |
 | 4 | Reopen the chat or relaunch after 1–3 | same text from history | same | same | |
 | 5 | Stream-muted member, any case | n/a | n/a | n/a | no push for them |
