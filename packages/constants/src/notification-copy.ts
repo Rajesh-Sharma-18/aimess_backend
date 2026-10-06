@@ -452,7 +452,26 @@ export const communityCopy = register("community", {
             }),
       inboxTitle: null,
     }),
-  /** Platform-ended (Super Admin force-end, moderation): never names the host. */
+  /**
+   * Super Admin / Backoffice End Live: "An administrator ended …". The admin's
+   * own name is never sent to community clients (it stays in the audit log).
+   */
+  livestreamEndedByAdmin:
+    (communityName: string, duration?: string | null): LocalizedCopy =>
+    (locale) => ({
+      title: named(communityName, locale),
+      body:
+        duration && !/^0[smh]?$/.test(duration.trim())
+          ? t("NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_DURATION", locale, {
+              community: named(communityName, locale),
+              duration,
+            })
+          : t("NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN", locale, {
+              community: named(communityName, locale),
+            }),
+      inboxTitle: null,
+    }),
+  /** Platform-ended (moderation, bans, timeouts): never names the host. */
   livestreamEndedBySystem:
     (communityName: string, duration?: string | null): LocalizedCopy =>
     (locale) => ({
@@ -1152,6 +1171,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "community.livestreamStarted": ["communityName", "hostName"],
   "community.livestreamEnded": ["communityName", "hostName", "duration"],
   "community.livestreamEndedBySystem": ["communityName", "duration"],
+  "community.livestreamEndedByAdmin": ["communityName", "duration"],
   "community.joinRequestApproved": ["communityName", "decidedByName"],
   "community.joinRequestRejected": ["communityName"],
   "community.memberJoined": ["communityName"],

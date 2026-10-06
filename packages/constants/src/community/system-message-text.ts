@@ -260,11 +260,14 @@ export function buildCommunitySystemFallbackText(
         typeof metadata.durationSeconds === "number"
           ? formatStreamDuration(metadata.durationSeconds, locale)
           : ((metadata.duration as string) || "").trim();
-      // `endedReason: "SYSTEM"` = the platform ended it (Super Admin force-end,
-      // moderation, account ban). The host never did, so nobody — the host
-      // included — reads a name or "You". Missing on legacy rows ⇒ host-ended.
+      // `endedReason: "ADMIN"` = a Super Admin ended it from Backoffice: every
+      // viewer reads "An administrator", never the admin's name. "SYSTEM" = the
+      // platform (moderation, account ban, timeouts). Neither names the host or
+      // reads "You". Missing on legacy rows ⇒ host-ended.
       const lead =
-        metadata.endedReason === "SYSTEM"
+        metadata.endedReason === "ADMIN"
+          ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN", locale)
+          : metadata.endedReason === "SYSTEM"
           ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale)
           : isActor
             ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)

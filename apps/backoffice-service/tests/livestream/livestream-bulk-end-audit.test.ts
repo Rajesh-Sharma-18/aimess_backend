@@ -42,3 +42,33 @@ describe("livestreamService.bulkEnd audit", () => {
     });
   });
 });
+
+describe("livestreamService.endLivestream audit", () => {
+  it("ties the real Super Admin to the stream, host and community", async () => {
+    record.mockClear();
+    stream.adminGetStream.mockResolvedValue({
+      id: "s-9",
+      status: "LIVE",
+      communityId: "c-1",
+      creatorId: "host-1",
+    });
+    stream.adminForceEnd.mockResolvedValue({ success: true, status: "ENDED" });
+
+    await livestreamService.endLivestream(
+      "s-9",
+      { reasonCode: "MANUAL_ADMIN" } as Parameters<typeof livestreamService.endLivestream>[1],
+      actor,
+      ctx
+    );
+
+    const row = record.mock.calls[0][0];
+    expect(row).toMatchObject({
+      actorId: "admin-1",
+      action: AUDIT_ACTIONS.LIVESTREAM_ENDED,
+      targetId: "s-9",
+      before: { status: "LIVE", communityId: "c-1", creatorId: "host-1" },
+      after: { status: "ENDED", reasonCode: "MANUAL_ADMIN" },
+      ip: "127.0.0.1",
+    });
+  });
+});

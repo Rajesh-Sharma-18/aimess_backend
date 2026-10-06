@@ -195,7 +195,7 @@ describe("handleStreamEnded", () => {
     expect(pushEnded.mock.calls[0][0].endedReason).toBe("USER");
   });
 
-  it("Super Admin force-end is endedReason SYSTEM; the host stays the host", async () => {
+  it("Super Admin Backoffice end is endedReason ADMIN; host stays the host and IS pushed", async () => {
     await handleStreamEnded({
       communityId: CID,
       streamId: SID,
@@ -203,17 +203,71 @@ describe("handleStreamEnded", () => {
       endedAt: 1,
       durationSeconds: 2160,
       reason: "MANUAL_ADMIN", // backoffice reasonCode
+      byPlatformAdmin: true,
     });
     const sysArg = sysMsg.mock.calls[0][0];
-    expect(sysArg.metadata).toMatchObject({ endedReason: "SYSTEM", duration: "36m" });
+    expect(sysArg.metadata).toMatchObject({ endedReason: "ADMIN", duration: "36m" });
     expect(sysArg.triggeredByUserId).toBe(HOST);
     // The raw reason code never reaches clients.
     expect(JSON.stringify(sysArg.metadata)).not.toContain("MANUAL_ADMIN");
 
     const pushArg = pushEnded.mock.calls[0][0];
-    expect(pushArg.endedReason).toBe("SYSTEM");
+    expect(pushArg.endedReason).toBe("ADMIN");
     expect(pushArg.hostUserId).toBe(HOST);
-    expect(pushArg.recipientIds).not.toContain(HOST);
+    expect(pushArg.endedByUserId).toBeUndefined();
+    expect(pushArg.recipientIds.sort()).toEqual([HOST, U1, U2].sort());
+  });
+
+  it("platform end (moderation code, no byPlatformAdmin) stays SYSTEM; host not pushed", async () => {
+    await handleStreamEnded({
+      communityId: CID,
+      streamId: SID,
+      creatorId: HOST,
+      endedAt: 1,
+      durationSeconds: 2160,
+      reason: "MEMBER_BANNED",
+    });
+    expect(sysMsg.mock.calls[0][0].metadata.endedReason).toBe("SYSTEM");
+    expect(pushEnded.mock.calls[0][0].recipientIds).not.toContain(HOST);
+  });
+
+  it("host End Live keeps the host out of the push; admin End for Everyone pushes the host, not the admin", async () => {
+    await handleStreamEnded({
+      communityId: CID,
+      streamId: SID,
+      creatorId: HOST,
+      endedAt: 1,
+      durationSeconds: 240,
+      reason: "HOST_ENDED",
+    });
+    expect(pushEnded.mock.calls[0][0].recipientIds.sort()).toEqual([U1, U2].sort());
+
+    jest.clearAllMocks();
+    redisMock.set.mockResolvedValue("OK");
+    await handleStreamEnded({
+      communityId: CID,
+      streamId: SID,
+      creatorId: HOST,
+      endedAt: 2,
+      durationSeconds: 240,
+      reason: "COMMUNITY_ADMIN_ENDED",
+      endedBy: U1,
+    });
+    expect(pushEnded.mock.calls[0][0].recipientIds.sort()).toEqual([HOST, U2].sort());
+  });
+
+  it("stream-muted members stay out of every variant's push", async () => {
+    repo.findStreamMutedMemberIds.mockResolvedValue([U2]);
+    await handleStreamEnded({
+      communityId: CID,
+      streamId: SID,
+      creatorId: HOST,
+      endedAt: 1,
+      durationSeconds: 240,
+      reason: "MANUAL_ADMIN",
+      byPlatformAdmin: true,
+    });
+    expect(pushEnded.mock.calls[0][0].recipientIds.sort()).toEqual([HOST, U1].sort());
   });
 
   it.each([
@@ -227,6 +281,11 @@ describe("handleStreamEnded", () => {
     ["COMMUNITY_ADMIN_ENDED", "USER"],
   ])("reason %s ⇒ %s", (reason, expected) => {
     expect(streamEndedReason(reason)).toBe(expected);
+  });
+
+  it("byPlatformAdmin wins over any reason code ⇒ ADMIN", () => {
+    expect(streamEndedReason("POLICY_VIOLATION", true)).toBe("ADMIN");
+    expect(streamEndedReason(undefined, true)).toBe("ADMIN");
   });
 
   it("community admin End for Everyone names the ADMIN, not System or the host", async () => {

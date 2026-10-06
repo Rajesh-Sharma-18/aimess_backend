@@ -1209,6 +1209,10 @@ export class LivestreamService {
       liveStreamCount,
       reason,
       endedBy,
+      // Only the Backoffice (Super Admin) force-end skips the activity mirror;
+      // community copy then reads "An administrator ended …". The admin's id is
+      // deliberately absent — backoffice-service's audit row holds it.
+      ...(skipAdminActivity ? { byPlatformAdmin: true } : {}),
     });
 
     return updated;

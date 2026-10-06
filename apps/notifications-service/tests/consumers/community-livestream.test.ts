@@ -183,4 +183,72 @@ describe("LIVESTREAM_ENDED branch", () => {
     expect(body).toBe("Admin Person ended the livestream in Cool Community after 2m");
     expect(body).not.toContain("Jane Doe");
   });
+
+  it("host's own End Live never pushes the host", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      recipientIds: [HOST, U1],
+      duration: "4m",
+      durationSeconds: 240,
+      endedReason: "USER",
+    });
+
+    const [recipients, build] = pushMany.mock.calls[0];
+    expect(recipients).toEqual([U1]);
+    expect(build(U1).copy("en").body).toBe(
+      "Jane Doe ended the livestream in Cool Community after 4m"
+    );
+    expect(build(U1).actorId).toBe(HOST);
+  });
+
+  it("community admin End for Everyone pushes the HOST, naming the admin", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      recipientIds: [HOST, U1, U2],
+      duration: "4m",
+      durationSeconds: 240,
+      endedReason: "USER",
+      endedByUserId: U1,
+      endedByDisplayName: "Admin Person",
+    });
+
+    const [recipients, build] = pushMany.mock.calls[0];
+    expect(recipients).toEqual([HOST, U2]);
+    expect(build(HOST).copy("en").body).toBe(
+      "Admin Person ended the livestream in Cool Community after 4m"
+    );
+    // push.service drops recipient === actorId: the actor must be the admin,
+    // or the host's push is silently suppressed.
+    expect(build(HOST).actorId).toBe(U1);
+    expect(JSON.parse(build(HOST).data.actorSnapshot).userId).toBe(U1);
+    expect(build(HOST).data.hostUserId).toBe(HOST);
+  });
+
+  it("Super Admin end (ADMIN) reads 'An administrator', pushes the host, leaks no identity", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      recipientIds: [HOST, U1, U2],
+      duration: "4m",
+      durationSeconds: 240,
+      endedReason: "ADMIN",
+    });
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const [recipients, build] = pushMany.mock.calls[0];
+    expect(recipients).toEqual([HOST, U1, U2]);
+    const input = build(HOST);
+    expect(input.copy("en").body).toBe(
+      "An administrator ended the livestream in Cool Community after 4m"
+    );
+    expect(input.copy("vi").body).toContain("Quản trị viên");
+    expect(input.copy("th").body).toContain("ผู้ดูแลระบบ");
+    for (const locale of ["en", "vi", "th"]) {
+      expect(input.copy(locale).body).not.toContain("Jane Doe");
+      expect(input.copy(locale).body).not.toMatch(/System|Hệ thống/);
+    }
+    expect(input.copy.descriptor.ref).toBe("community.livestreamEndedByAdmin");
+    expect(input.actorId).toBeUndefined();
+    expect(input.data).toMatchObject({ endedReason: "ADMIN", hostUserId: HOST });
+    expect(JSON.stringify(input.data)).not.toMatch(/endedBy(UserId|DisplayName)/);
+  });
 });

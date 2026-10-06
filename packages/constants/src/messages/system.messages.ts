@@ -674,6 +674,11 @@ export const SYSTEM_MESSAGES = {
     en: "System ended the livestream",
     th: "ระบบจบไลฟ์สตรีม",
   },
+  SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN: {
+    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp",
+    en: "An administrator ended the livestream",
+    th: "ผู้ดูแลระบบจบไลฟ์สตรีม",
+  },
   SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION: {
     vi: "{{lead}} ({{duration}})",
     en: "{{lead}} ({{duration}})",

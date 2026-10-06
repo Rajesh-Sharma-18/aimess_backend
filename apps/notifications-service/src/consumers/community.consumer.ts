@@ -483,12 +483,13 @@ async function handleCommunityEvent(
 
     case CommunityEvents.LIVESTREAM_ENDED: {
       const p = data as CommunityLivestreamEndedPayload;
-      // A community admin's End for Everyone: the admin is the actor — named in
-      // the copy and, like the host, never pushed about their own action.
-      const recipients = withoutActor(
-        withoutActor(p.recipientIds, p.hostUserId),
-        p.endedByUserId
-      );
+      // The actor of the End Live — never pushed about their own action: the
+      // community admin on End for Everyone (the host IS told), else the host.
+      // A Super Admin end (ADMIN) has no AIMess actor, so the host is told too.
+      const endActorId =
+        p.endedByUserId ??
+        (p.endedReason === "ADMIN" ? undefined : p.hostUserId);
+      const recipients = withoutActor(p.recipientIds, endActorId);
       if (recipients.length === 0) break;
       const [identity, resolvedHostName, endedByName] = await Promise.all([
         communityIdentityFor(
@@ -502,11 +503,13 @@ async function handleCommunityEvent(
           : Promise.resolve(""),
       ]);
       const hostName = resolvedHostName || "Someone";
-      const actorSnapshot = {
-        userId: p.hostUserId,
-        displayName: resolvedHostName,
-        avatarUrl: p.hostAvatarUrl,
-      };
+      const actorSnapshot = p.endedByUserId
+        ? { userId: p.endedByUserId, displayName: endedByName, avatarUrl: null }
+        : {
+            userId: p.hostUserId,
+            displayName: resolvedHostName,
+            avatarUrl: p.hostAvatarUrl,
+          };
       await pushToUsers(recipients, (userId) => ({
         userId,
         // ponytail: replaces the "started" card only where "ended" is delivered;
@@ -514,10 +517,13 @@ async function handleCommunityEvent(
         // user opens the community (roomTags). Send dismissTrayCards here too if
         // that matters.
         collapseKey: pushTag.live(p.communityId),
-        // A platform end (Super Admin force-end, moderation) never names the
-        // host; the host still rides in data/actorSnapshot as the stream owner.
+        // A Super Admin end reads "An administrator", a platform end (moderation,
+        // bans) "System" — neither names the host; the host still rides in
+        // data/actorSnapshot as the stream owner.
         copy:
-          p.endedReason === "SYSTEM"
+          p.endedReason === "ADMIN"
+            ? communityCopy.livestreamEndedByAdmin(identity.name, p.duration)
+            : p.endedReason === "SYSTEM"
             ? communityCopy.livestreamEndedBySystem(identity.name, p.duration)
             : communityCopy.livestreamEnded(
                 identity.name,
@@ -527,7 +533,9 @@ async function handleCommunityEvent(
         ...base(
           type,
           identity,
-          p.hostUserId,
+          // push.service drops the recipient equal to actorId: this must be the
+          // ending actor, not the host, or the host never hears an admin's end.
+          endActorId,
           {
             livestreamId: p.livestreamId,
             hostUserId: p.hostUserId,

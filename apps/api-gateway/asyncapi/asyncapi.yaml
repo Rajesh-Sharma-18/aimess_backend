@@ -3820,8 +3820,36 @@ components:
               duration: "1h 24m"
               durationSeconds: 5040
               endedReason: USER
+        - name: community_system_live_ended_by_admin
+          summary: "Community lifecycle system message — a Super Admin ended the livestream from Backoffice. Reads 'An administrator ended the livestream' for every viewer, the host included; the admin's identity is never sent (actorUserId/actorName stay the host). Render content.text, or 'An administrator …' when composing locally."
+          payload:
+            id: "684abc123def456789012353"
+            messageId: "684abc123def456789012353"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: ""
+            senderName: ""
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "An administrator ended the livestream (4m)"
+              files: []
+            message: "An administrator ended the livestream (4m)"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750008500000
+            sentAt: 1750008500000
+            systemMessageType: LIVE_STREAM_ENDED
+            isPersonal: false
+            systemMetadata:
+              actorUserId: user_xyz
+              actorName: Jane Doe
+              livestreamId: "684abc123def4567890123ff"
+              duration: "4m"
+              durationSeconds: 240
+              endedReason: ADMIN
         - name: community_system_live_ended_by_system
-          summary: "Community lifecycle system message — livestream force-ended by the platform (Super Admin / moderation). Never host-named, for any viewer; actorUserId stays the host."
+          summary: "Community lifecycle system message — livestream ended by the platform (moderation, bans, timeouts). Never host-named, for any viewer; actorUserId stays the host."
           payload:
             id: "684abc123def456789012352"
             messageId: "684abc123def456789012352"

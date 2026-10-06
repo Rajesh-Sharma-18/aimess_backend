@@ -551,6 +551,34 @@ describe("stopStream — idempotency and races", () => {
     expect(t.endEvents().kicks).toBe(1);
   });
 
+  it("Backoffice adminForceEnd flags stream.ended byPlatformAdmin, with no admin identity", async () => {
+    const t = setup({});
+    await t.service.adminForceEnd("stream-1", "MANUAL_ADMIN");
+    await flush();
+
+    const ended = (t.eventPublisher as jest.Mock).mock.calls.find(
+      ([name]) => name === "stream.ended"
+    )![1];
+    expect(ended).toMatchObject({
+      reason: "MANUAL_ADMIN",
+      endedBy: null,
+      byPlatformAdmin: true,
+    });
+  });
+
+  it("host and community-admin ends never carry byPlatformAdmin", async () => {
+    for (const requester of [CREATOR, ADMIN]) {
+      const t = setup({});
+      await t.service.stopStream("stream-1", requester);
+      await flush();
+      const ended = (t.eventPublisher as jest.Mock).mock.calls.find(
+        ([name]) => name === "stream.ended"
+      )![1];
+      expect(ended.byPlatformAdmin).toBeUndefined();
+      expect(ended.endedBy).toBe(requester);
+    }
+  });
+
   it("community-close bulk end racing a host stop counts only the stream it actually ended", async () => {
     const t = setup({});
     (t.streamRepo as any).findActiveByCommunity = jest.fn(async () => [

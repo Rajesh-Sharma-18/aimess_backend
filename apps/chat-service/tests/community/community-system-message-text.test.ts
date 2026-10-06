@@ -249,6 +249,42 @@ describe("system message text — display names and You personalization", () => 
     ).toBe("System ended the livestream (36m)");
   });
 
+  it('Super Admin end (endedReason ADMIN) reads "An administrator ended…" for everyone, host included', () => {
+    const meta = {
+      actorUserId: ACTOR,
+      duration: "4m",
+      durationSeconds: 240,
+      endedReason: "ADMIN",
+    };
+    for (const viewer of [undefined, ACTOR, "viewer"]) {
+      const text = buildCommunitySystemFallbackText(
+        "LIVE_STREAM_ENDED",
+        meta,
+        "Host Name",
+        "",
+        viewer
+      );
+      expect(text).toBe("An administrator ended the livestream (4m)");
+    }
+    const vi = buildCommunitySystemFallbackText(
+      "LIVE_STREAM_ENDED",
+      meta,
+      "Host Name",
+      "",
+      "viewer",
+      "vi"
+    );
+    expect(vi.startsWith("Quản trị viên đã kết thúc buổi phát trực tiếp (")).toBe(true);
+    expect(vi).not.toContain("Host Name");
+  });
+
+  it("community admin end names the admin (the actor), and the host reads the admin's name", () => {
+    const meta = { actorUserId: "admin-id", duration: "4m", durationSeconds: 240, endedReason: "USER" };
+    expect(
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Rajesh Sharma", "", ACTOR)
+    ).toBe("Rajesh Sharma ended the livestream (4m)");
+  });
+
   it("host end with endedReason USER keeps the host name", () => {
     expect(
       buildCommunitySystemFallbackText(
