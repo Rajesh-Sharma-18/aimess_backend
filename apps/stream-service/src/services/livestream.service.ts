@@ -1136,7 +1136,11 @@ export class LivestreamService {
     kickCdnPublisher = false,
     // The user who ended it: the host on HOST_ENDED, the acting community admin
     // on COMMUNITY_ADMIN_ENDED, null for every system end.
-    endedBy: string | null = reason === "HOST_ENDED" ? stream.creatorId : null
+    endedBy: string | null = reason === "HOST_ENDED" ? stream.creatorId : null,
+    // A Super Admin's Backoffice action caused this end (directly, or as a
+    // side effect of a ban / removal / community close): users read
+    // "Administrator ended …". The direct force-end implies it.
+    byPlatformAdmin = skipAdminActivity
   ): Promise<Livestream | null> {
     const end = {
       endedAt: new Date(),
@@ -1209,10 +1213,10 @@ export class LivestreamService {
       liveStreamCount,
       reason,
       endedBy,
-      // Only the Backoffice (Super Admin) force-end skips the activity mirror;
-      // community copy then reads "Administrator ended {host}'s …". The admin's id is
-      // deliberately absent — backoffice-service's audit row holds it.
-      ...(skipAdminActivity ? { byPlatformAdmin: true } : {}),
+      // Every Backoffice (Super Admin) end; community copy then reads
+      // "Administrator ended {host}'s …". The admin's id is deliberately
+      // absent — backoffice-service's audit row holds it.
+      ...(byPlatformAdmin ? { byPlatformAdmin: true } : {}),
     });
 
     return updated;
@@ -1543,7 +1547,8 @@ export class LivestreamService {
   async forceEndStreamsByCreator(
     creatorId: string,
     communityId: string | undefined,
-    reason: string
+    reason: string,
+    byPlatformAdmin = false
   ): Promise<{ endedCount: number }> {
     let streams: Livestream[];
     try {
@@ -1562,7 +1567,17 @@ export class LivestreamService {
     let endedCount = 0;
     for (const stream of streams) {
       try {
-        if (!(await this.finalizeAsEnded(stream, reason, false, true))) continue;
+        if (
+          !(await this.finalizeAsEnded(
+            stream,
+            reason,
+            false,
+            true,
+            null,
+            byPlatformAdmin
+          ))
+        )
+          continue;
         endedCount++;
         logger.info(
           `forceEndStreamsByCreator: ended stream=${stream.id} creator=${creatorId} community=${stream.communityId} reason=${reason}`
@@ -1585,7 +1600,8 @@ export class LivestreamService {
    */
   async forceEndStreamsByCommunity(
     communityId: string,
-    reason: string
+    reason: string,
+    byPlatformAdmin = false
   ): Promise<{ endedCount: number }> {
     let streams: Livestream[];
     try {
@@ -1601,7 +1617,17 @@ export class LivestreamService {
     let endedCount = 0;
     for (const stream of streams) {
       try {
-        if (!(await this.finalizeAsEnded(stream, reason, false, true))) continue;
+        if (
+          !(await this.finalizeAsEnded(
+            stream,
+            reason,
+            false,
+            true,
+            null,
+            byPlatformAdmin
+          ))
+        )
+          continue;
         endedCount++;
         logger.info(
           `forceEndStreamsByCommunity: ended stream=${stream.id} creator=${stream.creatorId} community=${communityId} reason=${reason}`

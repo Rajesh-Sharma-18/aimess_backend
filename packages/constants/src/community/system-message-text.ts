@@ -1,8 +1,11 @@
 import { t } from "../i18n.js";
 import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
 import {
+  administratorActorLabel,
+  BACKOFFICE_SOURCE,
   entityLabel,
   memberChangeText,
+  PLATFORM_ADMIN_ACTOR_ID,
   SYSTEM_ACTOR_ID,
   systemActorLabel,
 } from "../member-change-text.js";
@@ -160,7 +163,15 @@ export function buildCommunitySystemFallbackText(
   viewerUserId?: string | null,
   locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
-  const actor = actorName || t("SYS_NAME_SOMEONE", locale);
+  // A Super Admin acting from Backoffice (`source: "BO"`, stamped on new and
+  // legacy rows alike) is named "Administrator" for every reader and is never
+  // anybody's "You" — whatever id or name the row also carries.
+  const byBackoffice =
+    metadata.source === BACKOFFICE_SOURCE ||
+    actorUserIdOf(metadata) === PLATFORM_ADMIN_ACTOR_ID;
+  const actor = byBackoffice
+    ? administratorActorLabel(locale)
+    : actorName || t("SYS_NAME_SOMEONE", locale);
   const target =
     (metadata.targetName as string) ||
     targetName ||
@@ -169,22 +180,23 @@ export function buildCommunitySystemFallbackText(
   const actorId = actorUserIdOf(metadata);
   const targetId = targetUserIdOf(metadata);
   const viewer = viewerUserId?.trim() ?? "";
-  const isActor = Boolean(viewer && actorId && viewer === actorId);
+  const isActor = Boolean(
+    !byBackoffice && viewer && actorId && viewer === actorId
+  );
   const isTarget = Boolean(viewer && targetId && viewer === targetId);
   // A moderation line names its actor to the other moderators only when a person
   // acted: the auto-unmute sweeper posts `source: "auto"` with the "system" actor,
   // and legacy rows may carry no actorUserId — both stay passive ("X was unmuted").
-  const namesActor = Boolean(
-    actorId && actorId !== "system" && metadata.source !== "auto"
-  );
+  const namesActor =
+    byBackoffice ||
+    Boolean(actorId && actorId !== "system" && metadata.source !== "auto");
   // Labels for the shared member-change sentence (member-change-text.ts).
   // `communityName` is captured when the line is posted; a row written before
   // that reads "… to the community".
   const memberChangeLabels = () => ({
-    // A platform (Super) Admin acts as SYSTEM_ACTOR_ID → "System".
     actor: isActor
       ? t("SYS_SENDER_YOU", locale)
-      : actorId === SYSTEM_ACTOR_ID
+      : actorId === SYSTEM_ACTOR_ID && !byBackoffice
         ? systemActorLabel(locale)
         : actor,
     // Mid-sentence, so the lower-case "a member" fallback, not the line-initial one.

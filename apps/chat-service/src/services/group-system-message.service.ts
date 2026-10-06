@@ -207,14 +207,9 @@ export class GroupSystemMessageService {
           )
         : new Map<string, Record<string, unknown>>();
 
-      // A caller-supplied `actorName` is the fallback, never an override: a real
-      // chat actor is always named from the live snapshot so the row can't bake
-      // a stale name. It only wins when `actorId` is null — the platform-admin
-      // paths, whose actor lives in admin_db and has no snapshot to resolve. That
-      // gap is what left every backoffice removal reading "Someone removed X".
-      const actorName =
-        this.nameOf(snapshots, actorId) ||
-        String(inData.actorName ?? "").trim();
+      // A Backoffice (platform-admin) line is actor-less with `source: "BO"`:
+      // readers render "Administrator", so no admin name is ever stored.
+      const actorName = this.nameOf(snapshots, actorId);
       const targetName = this.nameOf(snapshots, targetUserId);
       const actorAvatar = actorId
         ? ((snapshots.get(actorId)?.avatar as string) ?? "")

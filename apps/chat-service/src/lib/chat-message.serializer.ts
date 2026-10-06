@@ -12,8 +12,11 @@
  */
 
 import {
+  buildGroupSystemFallbackText,
   currentLocale,
+  isBackofficeGroupSystemLine,
   localizeQuotePreview,
+  scrubBackofficeGroupSystemData,
   STORED_TEXT_LOCALE,
   t,
   type SupportedLocale,
@@ -37,8 +40,47 @@ export function toWireMessage<T extends { messageType?: string | null }>(
   const { messageType, ...rest } = entity;
   return {
     ...rest,
+    ...scrubBackofficeActor(rest),
     contentType: normalizeMessageType(messageType),
   } as Omit<T, "messageType"> & { contentType: string };
+}
+
+/**
+ * Group lines a Super Admin posted from Backoffice before `source: "BO"` existed
+ * stored the admin's real name in `systemData.actorName`, `senderName` and the
+ * baked English text. REST history, sync and inbox reads go through
+ * {@link toWireMessage}, so
+ * this is where that name is dropped and the text re-rendered ("Administrator
+ * removed …"). No-op for every other row.
+ */
+export function scrubBackofficeActor(row: Record<string, unknown>): object {
+  const event = row.systemEvent;
+  const data = row.systemData;
+  if (
+    typeof event !== "string" ||
+    !data ||
+    typeof data !== "object" ||
+    !isBackofficeGroupSystemLine(event, data as Record<string, unknown>)
+  ) {
+    return {};
+  }
+  const systemData = scrubBackofficeGroupSystemData(
+    event,
+    data as Record<string, unknown>
+  );
+  const content = row.content;
+  return {
+    systemData,
+    senderName: "",
+    ...(content && typeof content === "object"
+      ? {
+          content: {
+            ...content,
+            text: buildGroupSystemFallbackText(event, systemData),
+          },
+        }
+      : {}),
+  };
 }
 
 export function safeStringify(value: unknown): string {

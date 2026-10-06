@@ -1,4 +1,4 @@
-import { SYSTEM_ACTOR_ID } from "../src/member-change-text.js";
+import { PLATFORM_ADMIN_ACTOR_ID, SYSTEM_ACTOR_ID } from "../src/member-change-text.js";
 import { buildCommunitySystemFallbackText } from "../src/community/system-message-text.js";
 import {
   communityCopy,
@@ -138,27 +138,32 @@ describe("member-added copy", () => {
   });
 });
 
-describe("platform (Super) Admin actor reads 'System'", () => {
-  it("community removal push/inbox: target reads 'System removed You from …'", () => {
-    const copy = communityCopy.memberKicked(
-      "Mission AIMess",
-      "",
-      "Tom Brown",
-      SYSTEM_ACTOR_ID,
-      TOM
-    );
-    expect(copy("en", TOM).body).toBe("System removed You from Mission AIMess");
-    expect(copy("vi", TOM).body).toBe(
-      "Hệ thống đã xóa Bạn khỏi Mission AIMess"
-    );
-    expect(copy("th", TOM).body).toBe("ระบบนำคุณออกจากMission AIMess");
-    // Replayed from the stored ticket (refresh / history / socket): same text.
-    expect(
-      renderNotificationCopy(ticket(copy), "en", undefined, TOM)?.body
-    ).toBe("System removed You from Mission AIMess");
+describe("Super Admin (Backoffice) actor reads 'Administrator'", () => {
+  it("community removal push/inbox: target reads 'Administrator removed You from …'", () => {
+    for (const actorId of [PLATFORM_ADMIN_ACTOR_ID, SYSTEM_ACTOR_ID /* legacy rows */]) {
+      const copy = communityCopy.memberKicked(
+        "Mission AIMess",
+        "",
+        "Tom Brown",
+        actorId,
+        TOM
+      );
+      expect(copy("en", TOM).body).toBe(
+        "Administrator removed You from Mission AIMess"
+      );
+      expect(copy("vi", TOM).body).toBe(
+        "Quản trị viên đã xóa Bạn khỏi Mission AIMess"
+      );
+      expect(copy("th", TOM).body).toBe("ผู้ดูแลระบบนำคุณออกจากMission AIMess");
+      // Replayed from the stored ticket (refresh / history / socket): same text.
+      expect(
+        renderNotificationCopy(ticket(copy), "en", undefined, TOM)?.body
+      ).toBe("Administrator removed You from Mission AIMess");
+    }
   });
 
-  it("an add by the platform reads 'System added …' on every surface", () => {
+  // No Backoffice path adds members; SYSTEM_ACTOR_ID stays the automated actor.
+  it("an automated (SYSTEM_ACTOR_ID) add still reads 'System added …'", () => {
     const copy = communityCopy.memberAdded(
       "C",
       "",

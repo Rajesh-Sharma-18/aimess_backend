@@ -335,6 +335,9 @@ message ForceEndStreamsByCreatorRequest {
   string creator_id   = 1;
   string community_id = 2; // "" = unscoped (every community)
   string reason       = 3; // free-text, logged only (e.g. "ACCOUNT_BANNED")
+  // A Super Admin's Backoffice action caused this end (account ban, community
+  // ban/removal): users read "Administrator ended …", not "System ended …".
+  bool   by_platform_admin = 4;
 }
 message ForceEndStreamsByCreatorResponse {
   bool  ok          = 1; // always true — best-effort, never fails the caller
@@ -344,6 +347,9 @@ message ForceEndStreamsByCreatorResponse {
 message ForceEndStreamsByCommunityRequest {
   string community_id = 1;
   string reason       = 2; // free-text, logged only (e.g. "COMMUNITY_DELETED")
+  // See ForceEndStreamsByCreatorRequest.by_platform_admin (community suspended
+  // or closed from Backoffice).
+  bool   by_platform_admin = 3;
 }
 message ForceEndStreamsByCommunityResponse {
   bool  ok          = 1; // always true — best-effort, never fails the caller

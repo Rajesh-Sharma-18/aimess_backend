@@ -860,3 +860,56 @@ describe("community moderation lines — manual vs automatic actor", () => {
     ).toBe("Boyd Stevens đã được bỏ cấm nói");
   });
 });
+
+describe("community moderation lines — Backoffice (Super Admin) actor", () => {
+  const ADMIN_USER_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  // What a Backoffice ban persisted before this change: the AdminUser id as
+  // actorUserId and the unresolved "Unknown user" as actorName.
+  const legacyBo = {
+    targetUserId: TARGET,
+    source: "BO",
+    actorUserId: ADMIN_USER_ID,
+    actorName: "Unknown user",
+  };
+  const render = (type: string, metadata: Record<string, unknown>, viewer: string, locale?: "en" | "vi" | "th") =>
+    buildCommunitySystemFallbackText(type as never, metadata, "Unknown user", "Boyd Stevens", viewer, locale);
+
+  it("a Backoffice ban / unban reads 'Administrator' for every moderator", () => {
+    for (const viewer of [BYSTANDER, ""]) {
+      expect(render("MEMBER_BANNED", legacyBo, viewer)).toBe("Administrator banned Boyd Stevens");
+      expect(render("MEMBER_UNBANNED", legacyBo, viewer)).toBe("Administrator unbanned Boyd Stevens");
+    }
+    expect(render("MEMBER_BANNED", legacyBo, BYSTANDER, "vi")).toContain("Quản trị viên");
+    expect(render("MEMBER_BANNED", legacyBo, BYSTANDER, "th")).toContain("ผู้ดูแลระบบ");
+  });
+
+  it("nobody reads a Backoffice line as 'You banned …' — not even a viewer whose id is on the row", () => {
+    expect(render("MEMBER_BANNED", legacyBo, ADMIN_USER_ID)).toBe("Administrator banned Boyd Stevens");
+  });
+
+  it("the target keeps their own wording", () => {
+    expect(render("MEMBER_BANNED", legacyBo, TARGET)).toBe(
+      buildCommunitySystemFallbackText("MEMBER_BANNED" as never, { targetUserId: TARGET }, "", "", TARGET)
+    );
+  });
+
+  it("a community admin's own ban still names that admin", () => {
+    expect(
+      buildCommunitySystemFallbackText("MEMBER_BANNED", { targetUserId: TARGET, actorUserId: ACTOR }, "Julia Doyle", "Boyd Stevens", BYSTANDER)
+    ).toBe("Julia Doyle banned Boyd Stevens");
+    expect(render("MEMBER_BANNED", { targetUserId: TARGET, actorUserId: ACTOR }, ACTOR)).toBe("You banned Boyd Stevens");
+  });
+
+  it("the wire metadata drops the admin's id and name, keeps the target", () => {
+    const wire = sanitizeCommunitySystemMetadata("MEMBER_BANNED", legacyBo);
+    expect(wire).toEqual({ targetUserId: TARGET, source: "BO" });
+    // Re-rendering from the sanitized wire metadata gives the same sentence.
+    expect(render("MEMBER_BANNED", wire, BYSTANDER)).toBe("Administrator banned Boyd Stevens");
+  });
+
+  it("an automated (auto-unmute) line is not relabelled", () => {
+    expect(render("MEMBER_UNMUTED", { targetUserId: TARGET, actorUserId: "system", source: "auto" }, BYSTANDER)).toBe(
+      "Boyd Stevens was unmuted"
+    );
+  });
+});

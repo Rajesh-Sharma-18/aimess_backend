@@ -2,6 +2,8 @@ import { resolvePersonDisplayName } from "../community/system-message-text.js";
 import { t } from "../i18n.js";
 import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
 import {
+  administratorActorLabel,
+  BACKOFFICE_SOURCE,
   entityLabel,
   memberChangeText,
   SYSTEM_ACTOR_ID,
@@ -245,6 +247,45 @@ function groupRoleArticleForm(role: string, locale: SupportedLocale): string {
   return t("SYS_ROLE_MEMBER_ARTICLE", locale);
 }
 
+/** Events a Super Admin can post into a group from Backoffice. */
+const BACKOFFICE_GROUP_EVENTS = new Set([
+  "MEMBER_REMOVED",
+  "MEMBER_BANNED",
+  "MEMBER_UNBANNED",
+]);
+
+/**
+ * True when a group SYSTEM line was posted by a Super Admin from Backoffice.
+ * New rows carry `source: "BO"`. Legacy rows are recognised by shape: those
+ * three events were only ever posted actor-less (`actorId: null`) by the
+ * platform-admin path — every in-group removal/ban names its member actor.
+ */
+export function isBackofficeGroupSystemLine(
+  event: string,
+  data: Record<string, unknown>
+): boolean {
+  if (!BACKOFFICE_GROUP_EVENTS.has(event)) return false;
+  return (
+    data.source === BACKOFFICE_SOURCE || !String(data.actorId ?? "").trim()
+  );
+}
+
+/**
+ * The stored/wire `systemData` of a Backoffice line minus the acting admin's
+ * name. Legacy rows baked the admin's real name into `actorName`; readers render
+ * "Administrator" from the line's shape, so the name has no reader left.
+ */
+export function scrubBackofficeGroupSystemData(
+  event: string,
+  data: Record<string, unknown>
+): Record<string, unknown> {
+  if (!isBackofficeGroupSystemLine(event, data) || !("actorName" in data)) {
+    return data;
+  }
+  const { actorName: _admin, ...rest } = data;
+  return rest;
+}
+
 /**
  * Localized text per group SYSTEM event. When `viewerUserId` matches the actor
  * or subject, names are replaced with first-person "You …" forms.
@@ -271,6 +312,10 @@ export function buildGroupSystemFallbackText(
   const viewer = viewerUserId?.trim() ?? "";
   const isActor = Boolean(viewer && actorId && viewer === actorId);
   const isTarget = Boolean(viewer && targetId && viewer === targetId);
+  // A Super Admin is named "Administrator" for every reader, never by the name
+  // a legacy row may still carry.
+  const byBackoffice = isBackofficeGroupSystemLine(event, data);
+  const lineActor = byBackoffice ? administratorActorLabel(locale) : actor;
 
   switch (event) {
     case "GROUP_CREATED":
@@ -292,14 +337,13 @@ export function buildGroupSystemFallbackText(
       return memberChangeText(
         event === "MEMBER_ADDED" ? "ADDED" : "REMOVED",
         {
-          // A platform (Super) Admin is not a group member and has no AIMess
-          // userId — those lines are posted with `actorId: null` — so they read
-          // "System …" for everyone, whatever admin name the row also carries.
-          actor: isActor
-            ? t("SYS_SENDER_YOU", locale)
-            : actorId && actorId !== SYSTEM_ACTOR_ID
-              ? actor
-              : systemActorLabel(locale),
+          actor: byBackoffice
+            ? lineActor
+            : isActor
+              ? t("SYS_SENDER_YOU", locale)
+              : actorId && actorId !== SYSTEM_ACTOR_ID
+                ? actor
+                : systemActorLabel(locale),
           target: grouped
             ? formatNameList(grouped, locale)
             : isTarget
@@ -323,13 +367,19 @@ export function buildGroupSystemFallbackText(
       if (isTarget) return t("SYS_GROUP_MEMBER_BANNED_SELF", locale);
       if (isActor)
         return t("SYS_GROUP_MEMBER_BANNED_ACTOR", locale, { target });
-      return t("SYS_GROUP_MEMBER_BANNED", locale, { actor, target });
+      return t("SYS_GROUP_MEMBER_BANNED", locale, {
+        actor: lineActor,
+        target,
+      });
 
     case "MEMBER_UNBANNED":
       if (isTarget) return t("SYS_GROUP_MEMBER_UNBANNED_SELF", locale);
       if (isActor)
         return t("SYS_GROUP_MEMBER_UNBANNED_ACTOR", locale, { target });
-      return t("SYS_GROUP_MEMBER_UNBANNED", locale, { actor, target });
+      return t("SYS_GROUP_MEMBER_UNBANNED", locale, {
+        actor: lineActor,
+        target,
+      });
 
     case "ADMIN_ASSIGNED":
       if (isTarget) return t("SYS_GROUP_ADMIN_ASSIGNED_SELF", locale);

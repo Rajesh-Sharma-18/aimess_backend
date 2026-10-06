@@ -1,19 +1,15 @@
 /**
- * Root-cause regression for "Someone removed <member>" in a Group timeline.
+ * A Super Admin acting from Backoffice is named "Administrator" on every group
+ * surface — the stored row, the realtime frame, REST history/sync/catchup — and
+ * the admin's real name never reaches a member.
  *
- * The line is rebuilt from `systemData` on EVERY read (history and socket alike),
- * so it can only be fixed at write time. A backoffice removal used to post
- * `actorId: null` with no name at all — the acting admin lives in admin_db,
- * which chat-service cannot read — and `buildGroupSystemFallbackText` therefore
- * fell through to its neutral "Someone" wording for every member, permanently.
- *
- * backoffice-service now forwards the admin's display name, and
- * `GroupSystemMessageService` accepts it as a FALLBACK ONLY: a real chat actor
- * is still named from the live snapshot, so a caller can never bake a stale name
- * onto a normal member-to-member removal.
+ * New rows are posted actor-less with `source: "BO"` and no admin name. Legacy
+ * rows (an earlier build baked the admin's real name into `systemData.actorName`
+ * and `senderName`) are scrubbed by `toWireMessage` on every read.
  */
 import { GroupSystemMessageService } from "../../src/services/group-system-message.service.js";
 import { GroupMemberService } from "../../src/services/group-member.service.js";
+import { toWireMessage } from "../../src/lib/chat-message.serializer.js";
 
 const CREATED_AT = new Date("2026-09-23T09:00:00.000Z");
 
@@ -70,29 +66,48 @@ const storedRow = (stubs: ReturnType<typeof buildService>["stubs"]) =>
     content: { text: string };
   };
 
-describe("GroupSystemMessageService — platform-admin actor name", () => {
-  it("POSITIVE: an actor-less (platform-admin) removal reads 'System'", async () => {
+describe("GroupSystemMessageService — Backoffice actor", () => {
+  it("POSITIVE: a Backoffice removal is stored as 'Administrator', with no admin name", async () => {
     const { service, stubs } = buildService();
 
     await service.post({
       roomId: "grp-1",
       actorId: null,
       systemEvent: "MEMBER_REMOVED" as never,
-      systemData: { targetUserId: "user-2", actorName: "Super Admin" },
+      systemData: { targetUserId: "user-2", source: "BO" },
+      skipAdminActivity: true,
+    });
+
+    const row = storedRow(stubs) as ReturnType<typeof storedRow> & {
+      senderName: string;
+    };
+    expect(row.content.text).toBe(
+      "Administrator removed Name user-2 from the group"
+    );
+    expect(row.systemData.source).toBe("BO");
+    expect(row.systemData.actorName).toBe("");
+    expect(row.senderName).toBe("");
+    // Nobody's action: no viewer may read this row as "You removed …".
+    expect(row.systemData.actorId).toBeNull();
+  });
+
+  it("NEGATIVE: a caller-supplied actorName is never stored or shown", async () => {
+    const { service, stubs } = buildService();
+
+    await service.post({
+      roomId: "grp-1",
+      actorId: null,
+      systemEvent: "MEMBER_BANNED" as never,
+      systemData: { targetUserId: "user-2", actorName: "Rajesh Sharma" },
       skipAdminActivity: true,
     });
 
     const row = storedRow(stubs);
-    expect(row.content.text).toBe("System removed Name user-2 from the group");
-    // The admin's name is still persisted for audit — it is just never shown
-    // on an add/remove line.
-    expect(row.systemData.actorName).toBe("Super Admin");
-    // Named, but still nobody's action: an AdminUser id is not a chat user, so
-    // no viewer may ever read this row as "You removed …".
-    expect(row.systemData.actorId).toBeNull();
+    expect(row.systemData.actorName).toBe("");
+    expect(row.content.text).toBe("Administrator banned Name user-2");
   });
 
-  it("NEGATIVE: a supplied name never overrides a real chat actor", async () => {
+  it("NEGATIVE: a real chat actor is still named from the live snapshot", async () => {
     const { service, stubs } = buildService();
 
     await service.post({
@@ -104,31 +119,19 @@ describe("GroupSystemMessageService — platform-admin actor name", () => {
 
     const row = storedRow(stubs);
     expect(row.systemData.actorName).toBe("Name user-1");
-    expect(row.content.text).toBe("Name user-1 removed Name user-2 from the group");
+    expect(row.content.text).toBe(
+      "Name user-1 removed Name user-2 from the group"
+    );
   });
 
-  it("POSITIVE: with no admin name at all the row still reads 'System'", async () => {
+  it("POSITIVE: the realtime frame matches the stored row", async () => {
     const { service, stubs } = buildService();
 
     await service.post({
       roomId: "grp-1",
       actorId: null,
-      systemEvent: "MEMBER_REMOVED" as never,
-      systemData: { targetUserId: "user-2" },
-      skipAdminActivity: true,
-    });
-
-    expect(storedRow(stubs).content.text).toBe("System removed Name user-2 from the group");
-  });
-
-  it("POSITIVE: the socket payload carries the same named systemData", async () => {
-    const { service, stubs } = buildService();
-
-    await service.post({
-      roomId: "grp-1",
-      actorId: null,
-      systemEvent: "MEMBER_REMOVED" as never,
-      systemData: { targetUserId: "user-2", actorName: "Super Admin" },
+      systemEvent: "MEMBER_BANNED" as never,
+      systemData: { targetUserId: "user-2", source: "BO" },
       excludeUserId: "user-2",
       skipAdminActivity: true,
     });
@@ -138,11 +141,10 @@ describe("GroupSystemMessageService — platform-admin actor name", () => {
     )!;
     const payload = JSON.parse(published[1] as string);
     expect(payload.event).toBe("message:new");
-    // Realtime and a later history read rebuild from THIS object, so carrying
-    // the name here is what keeps the two surfaces from disagreeing.
-    expect(payload.data.systemData.actorName).toBe("Super Admin");
-    expect(payload.data.content.text).toBe("System removed Name user-2 from the group");
-    // The removed member still never receives their own removal line.
+    expect(payload.data.content.text).toBe("Administrator banned Name user-2");
+    expect(payload.data.systemData.source).toBe("BO");
+    expect(payload.data.senderName).toBe("");
+    // The banned member still never receives their own ban line.
     expect(payload.excludeUserId).toBe("user-2");
   });
 
@@ -153,23 +155,77 @@ describe("GroupSystemMessageService — platform-admin actor name", () => {
       roomId: "grp-1",
       actorId: null,
       systemEvent: "MEMBER_REMOVED" as never,
-      systemData: { targetUserId: "user-2", actorName: "Super Admin" },
+      systemData: { targetUserId: "user-2", source: "BO" },
       skipAdminActivity: true,
     });
 
     expect(stubs.roomRepo.updateLastMessage).not.toHaveBeenCalled();
-    expect(
-      stubs.redis.publish.mock.calls.some((call) =>
-        String(call[1]).includes("conv:updated")
-      )
-    ).toBe(false);
+  });
+});
+
+describe("toWireMessage — legacy Backoffice rows", () => {
+  // Exactly what the retired name-forwarding build persisted.
+  const legacy = {
+    id: "m1",
+    messageType: "SYSTEM",
+    senderId: null,
+    senderName: "Rajesh Sharma",
+    systemEvent: "MEMBER_BANNED",
+    systemData: {
+      actorId: null,
+      actorName: "Rajesh Sharma",
+      targetUserId: "user-2",
+      targetName: "Tom",
+    },
+    content: { text: "Rajesh Sharma banned Tom", urls: [], files: [] },
+  };
+
+  it("POSITIVE: drops the admin name and re-renders 'Administrator'", () => {
+    const wire = toWireMessage(legacy) as unknown as Record<string, unknown>;
+    expect(JSON.stringify(wire)).not.toContain("Rajesh");
+    expect((wire.content as { text: string }).text).toBe(
+      "Administrator banned Tom"
+    );
+    expect(wire.senderName).toBe("");
+    expect((wire.systemData as Record<string, unknown>).targetName).toBe("Tom");
+  });
+
+  it("NEGATIVE: an in-group line passes through untouched", () => {
+    const inGroup = {
+      ...legacy,
+      senderId: "user-1",
+      senderName: "Group Owner",
+      systemData: {
+        ...legacy.systemData,
+        actorId: "user-1",
+        actorName: "Group Owner",
+      },
+      content: { text: "Group Owner banned Tom", urls: [], files: [] },
+    };
+    const wire = toWireMessage(inGroup) as unknown as Record<string, unknown>;
+    expect(wire.senderName).toBe("Group Owner");
+    expect(wire.content).toEqual(inGroup.content);
+  });
+
+  it("NEGATIVE: a non-system row is untouched", () => {
+    const text = {
+      id: "m2",
+      messageType: "TEXT",
+      senderName: "A",
+      content: { text: "hi" },
+    };
+    expect(toWireMessage(text)).toEqual({
+      id: "m2",
+      senderName: "A",
+      content: { text: "hi" },
+      contentType: "TEXT",
+    });
   });
 });
 
 /**
- * The membership layer is what decides whether a name is offered at all: an
- * in-group removal must keep resolving its actor from the snapshot, so the
- * backoffice name is only attached on the `asPlatformAdmin` path.
+ * The membership layer marks a Backoffice action `source: "BO"` on the
+ * `asPlatformAdmin` path only; an in-group action keeps its member actor.
  */
 function buildMemberService() {
   const sysMsg = { post: jest.fn().mockResolvedValue(undefined) };
@@ -192,8 +248,8 @@ function buildMemberService() {
   return { service, sysMsg };
 }
 
-describe("GroupMemberService.kick — who gets named", () => {
-  it("POSITIVE: a backoffice removal forwards the admin's name", async () => {
+describe("GroupMemberService.kick — Backoffice marker", () => {
+  it("POSITIVE: a Backoffice removal is marked source BO, actor-less", async () => {
     const { service, sysMsg } = buildMemberService();
 
     await service.kick({
@@ -201,30 +257,24 @@ describe("GroupMemberService.kick — who gets named", () => {
       targetUserId: "target-1",
       kickedBy: "admin-user-1",
       asPlatformAdmin: true,
-      actorDisplayName: "Super Admin",
     });
 
     expect(sysMsg.post).toHaveBeenCalledWith(
       expect.objectContaining({
         actorId: null,
-        systemData: {
-          targetUserId: "target-1",
-          actorName: "Super Admin",
-        },
+        systemData: { targetUserId: "target-1", source: "BO" },
         excludeUserId: "target-1",
       })
     );
   });
 
-  it("NEGATIVE: an in-group removal attaches no name, so the snapshot wins", async () => {
+  it("NEGATIVE: an in-group removal is not marked Backoffice", async () => {
     const { service, sysMsg } = buildMemberService();
 
     await service.kick({
       roomId: "grp-1",
       targetUserId: "target-1",
       kickedBy: "actor-1",
-      // Ignored: the actor is a real member and must be named live.
-      actorDisplayName: "Super Admin",
     });
 
     expect(sysMsg.post).toHaveBeenCalledWith(
@@ -236,8 +286,8 @@ describe("GroupMemberService.kick — who gets named", () => {
   });
 });
 
-describe("GroupMemberService.ban / unban — who gets named", () => {
-  it("POSITIVE: a backoffice ban forwards the admin's name", async () => {
+describe("GroupMemberService.ban / unban — Backoffice marker", () => {
+  it("POSITIVE: a Backoffice ban is marked source BO, actor-less", async () => {
     const { service, sysMsg } = buildMemberService();
 
     await service.ban({
@@ -245,19 +295,18 @@ describe("GroupMemberService.ban / unban — who gets named", () => {
       targetUserId: "target-1",
       bannedBy: "admin-user-1",
       asPlatformAdmin: true,
-      actorDisplayName: "Super Admin",
     });
 
     expect(sysMsg.post).toHaveBeenCalledWith(
       expect.objectContaining({
         actorId: null,
-        systemData: { targetUserId: "target-1", actorName: "Super Admin" },
+        systemData: { targetUserId: "target-1", source: "BO" },
         excludeUserId: "target-1",
       })
     );
   });
 
-  it("POSITIVE: a backoffice unban forwards the admin's name", async () => {
+  it("POSITIVE: a Backoffice unban is marked source BO, actor-less", async () => {
     const { service, sysMsg } = buildMemberService();
     (
       service as unknown as { memberRepo: { findByRoomAndUser: jest.Mock } }
@@ -270,25 +319,23 @@ describe("GroupMemberService.ban / unban — who gets named", () => {
       targetUserId: "target-1",
       unbannedBy: "admin-user-1",
       asPlatformAdmin: true,
-      actorDisplayName: "Super Admin",
     });
 
     expect(sysMsg.post).toHaveBeenCalledWith(
       expect.objectContaining({
         actorId: null,
-        systemData: { targetUserId: "target-1", actorName: "Super Admin" },
+        systemData: { targetUserId: "target-1", source: "BO" },
       })
     );
   });
 
-  it("NEGATIVE: an in-group ban still resolves its actor from the snapshot", async () => {
+  it("NEGATIVE: an in-group ban is not marked Backoffice", async () => {
     const { service, sysMsg } = buildMemberService();
 
     await service.ban({
       roomId: "grp-1",
       targetUserId: "target-1",
       bannedBy: "actor-1",
-      actorDisplayName: "Super Admin",
     });
 
     expect(sysMsg.post).toHaveBeenCalledWith(

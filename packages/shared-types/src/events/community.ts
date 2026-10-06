@@ -76,7 +76,7 @@ export type CommunityMemberKickedPayload = CommunityEventBase & {
   /**
    * True when a platform (Super) Admin removed the member from the backoffice.
    * `actorId` is then an AdminUser id, not an AIMess user, and the removal reads
-   * "System removed You from …". Absent on in-app removals and older events.
+   * "Administrator removed You from …". Absent on in-app removals and older events.
    */
   byPlatformAdmin?: boolean;
 };

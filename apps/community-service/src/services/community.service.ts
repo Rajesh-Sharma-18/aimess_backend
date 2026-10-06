@@ -4138,7 +4138,7 @@ export const communityService = {
       actorId: actorAdminId,
       targetUserId,
       reason: reason ?? null,
-      // The removed member reads "System removed You from …" — a Super Admin
+      // The removed member reads "Administrator removed You from …" — a Super Admin
       // is not an AIMess user, so no person is named.
       byPlatformAdmin: true,
     });
@@ -4189,7 +4189,9 @@ export const communityService = {
     void getStreamClient().forceEndStreamsByCreator(
       communityId,
       targetUserId,
-      "MEMBER_REMOVED"
+      "MEMBER_REMOVED",
+      // Backoffice (Super Admin) action: "Administrator ended …".
+      true
     );
 
     return {
@@ -4314,7 +4316,9 @@ export const communityService = {
     void getStreamClient().forceEndStreamsByCreator(
       communityId,
       targetUserId,
-      "MEMBER_BANNED"
+      "MEMBER_BANNED",
+      // Backoffice (Super Admin) action: "Administrator ended …".
+      true
     );
 
     // Banning a community's OWN admin leaves it with nobody who can run it —
@@ -7596,7 +7600,9 @@ export const communityService = {
 
     void getStreamClient().forceEndStreamsByCommunity(
       communityId,
-      CLOSE_REASON_ADMIN_BANNED
+      CLOSE_REASON_ADMIN_BANNED,
+      // Backoffice (Super Admin) action: "Administrator ended …".
+      true
     );
 
     return true;
@@ -10481,7 +10487,9 @@ export const communityService = {
       if (target === CommunityModerationStatus.SUSPENDED) {
         void getStreamClient().forceEndStreamsByCommunity(
           communityId,
-          "COMMUNITY_SUSPENDED"
+          "COMMUNITY_SUSPENDED",
+          // Backoffice (Super Admin) action: "Administrator ended …".
+          true
         );
       }
     }

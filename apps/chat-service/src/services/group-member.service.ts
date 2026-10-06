@@ -23,7 +23,7 @@ import {
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import { publishRoomCardsGoneSafe } from "../events/publish-conversation-read.js";
 import { ChatEvents } from "@aimess/shared-types";
-import { effectiveGroupMemberLimit } from "@aimess/constants";
+import { BACKOFFICE_SOURCE, effectiveGroupMemberLimit } from "@aimess/constants";
 import { publishUserReport } from "../lib/report-user.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -615,22 +615,14 @@ export class GroupMemberService {
    * `asPlatformAdmin` (backoffice removal) skips ONLY the in-group actor lookup
    * and role-order check — `kickedBy` is then an AdminUser.id, not a member.
    * The system message is posted actor-less for the same reason: that id would
-   * not resolve to a user snapshot in anyone's client.
+   * not resolve to a user snapshot in anyone's client. It carries
+   * `source: "BO"` instead, which every reader renders as "Administrator".
    */
   async kick(params: {
     roomId: string;
     targetUserId: string;
     kickedBy: string;
     reason?: string;
-    /**
-     * Display name of a platform admin acting from backoffice. Only read when
-     * `asPlatformAdmin` is set: that actor has no chat profile, so its id would
-     * resolve to nothing and the system line would read "Someone removed X" for
-     * every member forever. Stored as `systemData.actorName` WITHOUT an
-     * `actorId`, so the row names who acted but still makes nobody "the actor"
-     * (no "You removed X", no profile link to a non-user).
-     */
-    actorDisplayName?: string;
     asPlatformAdmin?: boolean;
   }): Promise<GroupMember | null> {
     const actor = params.asPlatformAdmin
@@ -684,9 +676,8 @@ export class GroupMemberService {
       systemEvent: SystemEvent.MEMBER_REMOVED,
       systemData: {
         targetUserId: params.targetUserId,
-        ...(params.asPlatformAdmin && params.actorDisplayName
-          ? { actorName: params.actorDisplayName }
-          : {}),
+        // Readers name a Backoffice actor "Administrator", never the admin.
+        ...(params.asPlatformAdmin ? { source: BACKOFFICE_SOURCE } : {}),
       },
       excludeUserId: params.targetUserId,
       // backoffice-service already audited this removal against the admin who
@@ -973,8 +964,6 @@ export class GroupMemberService {
     targetUserId: string;
     bannedBy: string;
     reason?: string;
-    /** See `kick`. */
-    actorDisplayName?: string;
     // Backoffice (platform-admin) ban — same bypass as `kick`: skip the in-group
     // actor lookup and role-order check (`bannedBy` is then an AdminUser.id, not
     // a member), post the system line actor-less, and skip the in-group admin
@@ -1035,9 +1024,8 @@ export class GroupMemberService {
       systemEvent: SystemEvent.MEMBER_BANNED,
       systemData: {
         targetUserId: params.targetUserId,
-        ...(params.asPlatformAdmin && params.actorDisplayName
-          ? { actorName: params.actorDisplayName }
-          : {}),
+        // Readers name a Backoffice actor "Administrator", never the admin.
+        ...(params.asPlatformAdmin ? { source: BACKOFFICE_SOURCE } : {}),
       },
       excludeUserId: params.targetUserId,
       skipAdminActivity: params.asPlatformAdmin,
@@ -1063,8 +1051,6 @@ export class GroupMemberService {
     roomId: string;
     targetUserId: string;
     unbannedBy: string;
-    /** See `kick`. */
-    actorDisplayName?: string;
     // Backoffice (platform-admin) unban — same bypass as `ban`/`kick`.
     asPlatformAdmin?: boolean;
   }): Promise<GroupMember | null> {
@@ -1102,9 +1088,8 @@ export class GroupMemberService {
       systemEvent: SystemEvent.MEMBER_UNBANNED,
       systemData: {
         targetUserId: params.targetUserId,
-        ...(params.asPlatformAdmin && params.actorDisplayName
-          ? { actorName: params.actorDisplayName }
-          : {}),
+        // Readers name a Backoffice actor "Administrator", never the admin.
+        ...(params.asPlatformAdmin ? { source: BACKOFFICE_SOURCE } : {}),
       },
       skipAdminActivity: params.asPlatformAdmin,
     });

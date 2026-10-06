@@ -588,6 +588,49 @@ describe("stopStream — idempotency and races", () => {
     }
   });
 
+  // A ban / removal / community close ordered from Backoffice ends the stream
+  // as a side effect: users must read "Administrator ended …", not "System".
+  it("a Backoffice-caused bulk end (by creator / by community) flags byPlatformAdmin", async () => {
+    for (const run of [
+      (t: ReturnType<typeof setup>) =>
+        t.service.forceEndStreamsByCreator(CREATOR, undefined, "ACCOUNT_BANNED", true),
+      (t: ReturnType<typeof setup>) =>
+        t.service.forceEndStreamsByCommunity("comm-1", "COMMUNITY_SUSPENDED", true),
+    ]) {
+      publishAdminActivitySafe.mockClear();
+      const t = setup({});
+      (t.streamRepo as any).findActiveByCreator = jest.fn(async () => [{ ...t.row() }]);
+      (t.streamRepo as any).findActiveByCommunity = jest.fn(async () => [{ ...t.row() }]);
+      await run(t);
+      await flush();
+      const ended = (t.eventPublisher as jest.Mock).mock.calls.find(
+        ([name]) => name === "stream.ended"
+      )![1];
+      expect(ended).toMatchObject({ endedBy: null, byPlatformAdmin: true });
+      // The activity mirror still records the end (only adminForceEnd skips it).
+      expect(t.endEvents().audits).toBe(1);
+    }
+  });
+
+  it("a platform-caused bulk end (community admin ban, owner close) stays System", async () => {
+    for (const run of [
+      (t: ReturnType<typeof setup>) =>
+        t.service.forceEndStreamsByCreator(CREATOR, "comm-1", "MEMBER_BANNED"),
+      (t: ReturnType<typeof setup>) =>
+        t.service.forceEndStreamsByCommunity("comm-1", "COMMUNITY_CLOSED"),
+    ]) {
+      const t = setup({});
+      (t.streamRepo as any).findActiveByCreator = jest.fn(async () => [{ ...t.row() }]);
+      (t.streamRepo as any).findActiveByCommunity = jest.fn(async () => [{ ...t.row() }]);
+      await run(t);
+      await flush();
+      const ended = (t.eventPublisher as jest.Mock).mock.calls.find(
+        ([name]) => name === "stream.ended"
+      )![1];
+      expect(ended.byPlatformAdmin).toBeUndefined();
+    }
+  });
+
   it("community-close bulk end racing a host stop counts only the stream it actually ended", async () => {
     const t = setup({});
     (t.streamRepo as any).findActiveByCommunity = jest.fn(async () => [

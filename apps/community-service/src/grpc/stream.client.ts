@@ -56,7 +56,9 @@ export interface StreamClient {
   forceEndStreamsByCreator(
     communityId: string,
     userId: string,
-    reason: string
+    reason: string,
+    /** A Super Admin's Backoffice action caused it: users read "Administrator ended …". */
+    byPlatformAdmin?: boolean
   ): Promise<void>;
   /**
    * Best-effort: force-ends every non-terminal stream in a community,
@@ -66,7 +68,9 @@ export interface StreamClient {
    */
   forceEndStreamsByCommunity(
     communityId: string,
-    reason: string
+    reason: string,
+    /** See {@link StreamClient.forceEndStreamsByCreator}. */
+    byPlatformAdmin?: boolean
   ): Promise<void>;
 }
 
@@ -176,7 +180,12 @@ export function createStreamClient(): StreamClient {
 
   const forceEndBreaker = makeBreaker(
     "stream.forceEndStreamsByCreator",
-    (args: { communityId: string; userId: string; reason: string }) =>
+    (args: {
+      communityId: string;
+      userId: string;
+      reason: string;
+      byPlatformAdmin: boolean;
+    }) =>
       makeGrpcCall<unknown, { ok?: boolean; endedCount?: number }>(
         client,
         "forceEndStreamsByCreator",
@@ -184,6 +193,7 @@ export function createStreamClient(): StreamClient {
           creatorId: args.userId,
           communityId: args.communityId,
           reason: args.reason,
+          byPlatformAdmin: args.byPlatformAdmin,
         }
       )
   );
@@ -192,7 +202,7 @@ export function createStreamClient(): StreamClient {
 
   const forceEndByCommunityBreaker = makeBreaker(
     "stream.forceEndStreamsByCommunity",
-    (args: { communityId: string; reason: string }) =>
+    (args: { communityId: string; reason: string; byPlatformAdmin: boolean }) =>
       makeGrpcCall<unknown, { ok?: boolean; endedCount?: number }>(
         client,
         "forceEndStreamsByCommunity",
@@ -297,9 +307,19 @@ export function createStreamClient(): StreamClient {
       }
     },
 
-    forceEndStreamsByCreator: async (communityId, userId, reason) => {
+    forceEndStreamsByCreator: async (
+      communityId,
+      userId,
+      reason,
+      byPlatformAdmin = false
+    ) => {
       try {
-        await forceEndBreaker.fire({ communityId, userId, reason });
+        await forceEndBreaker.fire({
+          communityId,
+          userId,
+          reason,
+          byPlatformAdmin,
+        });
       } catch (err) {
         logger.warn(
           `stream.forceEndStreamsByCreator failed for community=${communityId} user=${userId}: ${String(err)}`
@@ -307,9 +327,17 @@ export function createStreamClient(): StreamClient {
       }
     },
 
-    forceEndStreamsByCommunity: async (communityId, reason) => {
+    forceEndStreamsByCommunity: async (
+      communityId,
+      reason,
+      byPlatformAdmin = false
+    ) => {
       try {
-        await forceEndByCommunityBreaker.fire({ communityId, reason });
+        await forceEndByCommunityBreaker.fire({
+          communityId,
+          reason,
+          byPlatformAdmin,
+        });
       } catch (err) {
         logger.warn(
           `stream.forceEndStreamsByCommunity failed for community=${communityId}: ${String(err)}`

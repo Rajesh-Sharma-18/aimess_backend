@@ -1,13 +1,9 @@
 /**
  * Who a backoffice group removal is attributed to, on the wire.
  *
- * chat-service owns the group timeline but cannot read admin_db, so the acting
- * admin's DISPLAY NAME has to travel with the RPC. Without it the removal line
- * is posted actor-less and every remaining member reads "Someone removed X" —
- * forever, because the sentence is rebuilt from the stored metadata on every
- * read. These cases pin the whole leg: `adminAuth` resolves the name from the
- * row it already loads, the controller hands the admin to the service, and the
- * gRPC repository puts it on the request next to `actorAdminId`.
+ * Members read a Backoffice removal as "Administrator removed X"; the acting
+ * admin's name must never leave admin_db. So the RPC carries the admin's id
+ * (recorded as GroupMember.kickedBy, and in the audit row) and nothing else.
  *
  * Unlike group-management.test.ts this file deliberately does NOT mock
  * `groupService`, so the service and repository run for real up to the client.
@@ -63,7 +59,7 @@ beforeEach(() => {
 });
 
 describe("POST /v1/groups/:groupId/members/:userId/remove — actor attribution", () => {
-  it("POSITIVE: forwards the acting admin's name alongside their id", async () => {
+  it("POSITIVE: forwards the acting admin's id, never their name", async () => {
     const res = await request(app)
       .post(`/v1/groups/${GID}/members/u1/remove`)
       .set(auth())
@@ -74,16 +70,21 @@ describe("POST /v1/groups/:groupId/members/:userId/remove — actor attribution"
       expect.objectContaining({
         groupId: GID,
         userId: "u1",
-        actorAdminName: "Super Admin",
         reason: "harassment",
       })
     );
-    // The id still travels — it is what `GroupMember.kickedBy` records; the
-    // name is additional, not a replacement.
-    const req = adminRemoveGroupMember.mock.calls[0]![0] as {
-      actorAdminId: string;
-    };
+    // The id travels — it is what `GroupMember.kickedBy` records.
+    const req = adminRemoveGroupMember.mock.calls[0]![0] as Record<
+      string,
+      unknown
+    >;
     expect(req.actorAdminId).toBeTruthy();
+    expect(req).not.toHaveProperty("actorAdminName");
+    expect(JSON.stringify(req)).not.toContain("Super Admin");
+    // The audit row keeps the real admin identity.
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({ actorId: req.actorAdminId })
+    );
   });
 
   it("NEGATIVE: an unauthorized caller sends nothing at all", async () => {

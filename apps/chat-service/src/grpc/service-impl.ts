@@ -75,6 +75,7 @@ import {
   groupStoredReactions,
   flattenStoredReactions,
   normalizeMessageType,
+  scrubBackofficeActor,
 } from "../lib/chat-message.serializer.js";
 import {
   resolveMediaUrl,
@@ -2440,7 +2441,12 @@ export function createMessagingImpl(
                   limit,
                 });
 
-          const events = result.events.map((e) => {
+          const events = result.events.map((raw) => {
+            // Same legacy Backoffice-actor scrub as every REST read.
+            const e = {
+              ...raw,
+              ...scrubBackofficeActor(raw as Record<string, unknown>),
+            } as typeof raw;
             const content = (e as { content?: unknown }).content;
             const deletedType = (e as { deletedType?: string | null })
               .deletedType;
@@ -2737,14 +2743,12 @@ export function createMessagingImpl(
             groupId?: string;
             userId?: string;
             actorAdminId?: string;
-            actorAdminName?: string;
             reason?: string;
           };
           const result = await deps.adminGroupService.removeGroupMember({
             groupId: req.groupId ?? "",
             userId: req.userId ?? "",
             actorAdminId: req.actorAdminId ?? "",
-            actorAdminName: req.actorAdminName ?? "",
             reason: req.reason || undefined,
           });
           callback(null, result);
@@ -2767,14 +2771,12 @@ export function createMessagingImpl(
             groupId?: string;
             userId?: string;
             actorAdminId?: string;
-            actorAdminName?: string;
             reason?: string;
           };
           const result = await deps.adminGroupService.banGroupMember({
             groupId: req.groupId ?? "",
             userId: req.userId ?? "",
             actorAdminId: req.actorAdminId ?? "",
-            actorAdminName: req.actorAdminName ?? "",
             reason: req.reason || undefined,
           });
           callback(null, result);
@@ -2796,13 +2798,11 @@ export function createMessagingImpl(
             groupId?: string;
             userId?: string;
             actorAdminId?: string;
-            actorAdminName?: string;
           };
           const result = await deps.adminGroupService.unbanGroupMember({
             groupId: req.groupId ?? "",
             userId: req.userId ?? "",
             actorAdminId: req.actorAdminId ?? "",
-            actorAdminName: req.actorAdminName ?? "",
           });
           callback(null, result);
         } catch (err) {
@@ -5459,15 +5459,22 @@ export function createNotificationImpl(
             const nextBody =
               req.body?.trim() || existingPayload.body?.trim() || "";
 
+            // A community membership card (added → removed → added …) names
+            // only the newest event's actor. A Backoffice removal carries none
+            // ("Administrator removed You"), so it must not inherit the previous
+            // add's actor, or the admin id an older build stored there.
+            const inheritActor = !groupKey?.endsWith(":membership");
             const updated = await deps.notificationRepo.applyStateTransition(
               existing.id,
               {
                 type: req.type,
-                actorId: rowActorId || existing.actorId,
+                actorId: rowActorId || (inheritActor ? existing.actorId : ""),
                 actorSnapshot:
                   Object.keys(rowActorSnapshot).length > 0
                     ? rowActorSnapshot
-                    : ((existing.actorSnapshot as object) ?? {}),
+                    : inheritActor
+                      ? ((existing.actorSnapshot as object) ?? {})
+                      : {},
                 entity: entityId
                   ? { id: entityId }
                   : ((existing.entity as object) ?? {}),

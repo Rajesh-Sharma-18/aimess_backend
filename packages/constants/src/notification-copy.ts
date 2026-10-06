@@ -24,6 +24,8 @@ import { t } from "./i18n.js";
 import {
   memberChangeText,
   personLabel,
+  PLATFORM_ADMIN_ACTOR_ID,
+  SYSTEM_ACTOR_ID,
   type MemberChange,
 } from "./member-change-text.js";
 import { localizeMessagePreview } from "./message-preview.js";
@@ -630,7 +632,13 @@ export const communityCopy = register("community", {
         ? memberChange(
             "REMOVED",
             named(communityName, locale),
-            { id: actorId, name: actorName },
+            {
+              // Inbox rows written before PLATFORM_ADMIN_ACTOR_ID carry
+              // SYSTEM_ACTOR_ID, which only the Backoffice removal ever stored.
+              id:
+                actorId === SYSTEM_ACTOR_ID ? PLATFORM_ADMIN_ACTOR_ID : actorId,
+              name: actorName,
+            },
             { id: targetUserId, name: targetName },
             viewerId,
             locale

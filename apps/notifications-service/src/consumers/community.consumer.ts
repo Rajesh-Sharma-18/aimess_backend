@@ -1,5 +1,9 @@
 import { logger } from "@aimess/logger";
-import { SYSTEM_ACTOR_ID, t, type SupportedLocale } from "@aimess/constants";
+import {
+  PLATFORM_ADMIN_ACTOR_ID,
+  t,
+  type SupportedLocale,
+} from "@aimess/constants";
 import { publishUserSocketEvent } from "@aimess/redis";
 import amqp from "amqplib";
 import {
@@ -847,8 +851,9 @@ async function handleCommunityEvent(
     case CommunityEvents.MEMBER_KICKED: {
       const p = data as CommunityMemberKickedPayload;
       // "{actor} removed You from {community}" — same sentence and name
-      // sources as the add. A platform (Super) Admin is not an AIMess user:
-      // the copy carries SYSTEM_ACTOR_ID and reads "System removed You …".
+      // sources as the add. A Super Admin is not an AIMess user: the copy
+      // carries PLATFORM_ADMIN_ACTOR_ID and reads "Administrator removed You …",
+      // and the admin's own id never reaches the row.
       const [identity, actorName, targetName] = await Promise.all([
         communityIdentityFor(p.communityId),
         p.byPlatformAdmin ? "" : actorNameFor(p.actorId),
@@ -860,14 +865,14 @@ async function handleCommunityEvent(
           identity.name,
           actorName,
           targetName,
-          p.byPlatformAdmin ? SYSTEM_ACTOR_ID : p.actorId,
+          p.byPlatformAdmin ? PLATFORM_ADMIN_ACTOR_ID : p.actorId,
           p.targetUserId
         ),
         bypassSettings: true,
         ...base(
           type,
           identity,
-          p.actorId,
+          p.byPlatformAdmin ? undefined : p.actorId,
           {
             reason: p.reason ?? "",
           },

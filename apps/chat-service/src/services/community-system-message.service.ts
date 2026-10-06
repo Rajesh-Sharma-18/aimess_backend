@@ -10,6 +10,7 @@ import {
   isActorLessSystemMessage,
   isPersonalJoinSessionType,
   sanitizeCommunitySystemMetadata,
+  BACKOFFICE_SOURCE,
   buildCommunitySystemFallbackText,
   buildCommunitySystemSelfPreview,
   resolveCommunitySystemSubjectUserId,
@@ -167,7 +168,12 @@ export class CommunitySystemMessageService {
           )
         : new Map<string, Record<string, unknown>>();
 
-      const actorName = this.nameOf(snapshots, triggeredByUserId);
+      // A Backoffice line's actor is a Super Admin, not an AIMess user: no name
+      // is stored or sent — every reader renders "Administrator" from `source`.
+      const actorName =
+        metadata.source === BACKOFFICE_SOURCE
+          ? ""
+          : this.nameOf(snapshots, triggeredByUserId);
       const targetName = this.nameOf(snapshots, targetUserId);
 
       // actorUserId is the single consistent key across all subtypes so the

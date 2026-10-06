@@ -257,12 +257,7 @@ export const groupService = {
     actor: RequestAdmin,
     ctx: RequestCtx
   ): Promise<{ groupId: string; userId: string; auditLogId: string }> {
-    await groupRepository.removeMember(
-      groupId,
-      userId,
-      { id: actor.id, name: actor.name },
-      reason
-    );
+    await groupRepository.removeMember(groupId, userId, actor.id, reason);
 
     // Blocking, unlike the reads above — an unaudited moderation action is not OK.
     const auditLog = await auditService.record({

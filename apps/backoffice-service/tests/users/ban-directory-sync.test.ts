@@ -186,6 +186,21 @@ beforeEach(() => {
 });
 
 describe("ban", () => {
+  // A revoked session ends its stream as an anonymous "System" end; the ban
+  // must end it first so viewers read "Administrator ended …".
+  it("ends the user's streams BEFORE auth-service revokes their sessions", async () => {
+    const { streamClient } = jest.requireMock("../../src/grpc/stream.client.js");
+    const forceEnd = streamClient.forceEndStreamsByCreator as jest.Mock;
+    forceEnd.mockClear();
+    mockAdminSetAccountStatus.mockClear();
+    await userManagementService.banUser(USER_ID, banInput(), ACTOR, CTX);
+    expect(forceEnd).toHaveBeenCalledWith(USER_ID, "ACCOUNT_BANNED");
+    expect(forceEnd.mock.invocationCallOrder[0]).toBeLessThan(
+      (mockAdminSetAccountStatus.mock as jest.MockContext<unknown, unknown[]>)
+        .invocationCallOrder[0]!
+    );
+  });
+
   it("bumps the admin panel, the website and the stat-card cache", async () => {
     await userManagementService.banUser(USER_ID, banInput(), ACTOR, CTX);
 

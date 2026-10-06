@@ -656,6 +656,7 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             creatorId?: string;
             communityId?: string;
             reason?: string;
+            byPlatformAdmin?: boolean;
           };
           const creatorId = req.creatorId ?? "";
           if (!creatorId) {
@@ -666,7 +667,8 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             await deps.livestreamService.forceEndStreamsByCreator(
               creatorId,
               req.communityId || undefined,
-              req.reason ?? ""
+              req.reason ?? "",
+              req.byPlatformAdmin === true
             );
           callback(null, { ok: true, endedCount });
         } catch (err) {
@@ -688,6 +690,7 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
           const req = call.request as {
             communityId?: string;
             reason?: string;
+            byPlatformAdmin?: boolean;
           };
           const communityId = req.communityId ?? "";
           if (!communityId) {
@@ -697,7 +700,8 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
           const { endedCount } =
             await deps.livestreamService.forceEndStreamsByCommunity(
               communityId,
-              req.reason ?? ""
+              req.reason ?? "",
+              req.byPlatformAdmin === true
             );
           callback(null, { ok: true, endedCount });
         } catch (err) {

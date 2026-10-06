@@ -720,6 +720,15 @@ export const userManagementService = {
       throw new ConflictError("USER_ALREADY_BANNED");
     }
 
+    // End the user's broadcasts BEFORE their sessions are revoked. A revoked
+    // session ends the stream it started too, but as an anonymous platform end
+    // ("System ended the livestream"); ending it here first is what makes
+    // viewers read "Administrator ended …". Fail-open, never blocks the ban.
+    await streamClient.forceEndStreamsByCreator(
+      userId,
+      timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
+    );
+
     // FIRST, and awaited: auth-service owns AuthUser.status, and until this
     // write lands the ban does not exist — the account still logs in on every
     // client. If it fails we abort rather than writing a mirror row that
@@ -821,12 +830,6 @@ export const userManagementService = {
         permanent: true,
       });
     }
-    // Best-effort: an account ban/suspend must not leave an existing
-    // broadcast running on a still-valid access token until it expires.
-    void streamClient.forceEndStreamsByCreator(
-      userId,
-      timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
-    );
     // Same split the status above already made: a `durationDays` ban is a
     // suspension, and only the permanent one removes the user from discovery.
     mirrorProfileStatus(userId, timeBoxed ? "SUSPENDED" : "BANNED");
@@ -879,6 +882,8 @@ export const userManagementService = {
       userAgent: ctx.userAgent,
     });
 
+    // Before the event that revokes sessions — see banUser.
+    await streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
     publishUserSuspendedSafe({
       userId,
       reason: input.reason,
@@ -888,8 +893,6 @@ export const userManagementService = {
       actorId: ref.actorId,
       at: toIso(ref.at),
     });
-    // Best-effort — see banUser's identical call for why.
-    void streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
     mirrorProfileStatus(userId, "SUSPENDED");
     announceUserDirectoryChange();
 
@@ -1188,6 +1191,11 @@ export const userManagementService = {
         ip: ctx.ip,
         userAgent: ctx.userAgent,
       });
+      // Before the event that revokes sessions — see banUser.
+      await streamClient.forceEndStreamsByCreator(
+        item.userId,
+        timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
+      );
       if (timeBoxed) {
         publishUserSuspendedSafe({
           userId: item.userId,
@@ -1207,11 +1215,6 @@ export const userManagementService = {
           at: toIso(ref.at),
         });
       }
-      // Best-effort — see banUser's identical call for why.
-      void streamClient.forceEndStreamsByCreator(
-        item.userId,
-        timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
-      );
       mirrorProfileStatus(item.userId, timeBoxed ? "SUSPENDED" : "BANNED");
     }
     announceUserDirectoryChange();
@@ -1519,8 +1522,6 @@ async function banFromGroup(
     groupId,
     userId,
     actorAdminId: actor.id,
-    // Names the ban line in the group timeline; see the proto comment.
-    actorAdminName: actor.name,
     reason: input.reason,
   });
   if (!result.ok) {
@@ -1570,7 +1571,6 @@ async function unbanFromGroup(
     groupId,
     userId,
     actorAdminId: actor.id,
-    actorAdminName: actor.name,
   });
   if (!result.ok) {
     throw mapGroupScopeError(result.errorCode);

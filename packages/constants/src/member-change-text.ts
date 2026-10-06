@@ -22,9 +22,8 @@ export type MemberChange = "ADDED" | "REMOVED";
 export type EntityKind = "GROUP" | "COMMUNITY";
 
 /**
- * Actor id for an action no AIMess user performed — a platform (Super) Admin
- * adding or removing a member. Renders as "System" for every reader. The same
- * sentinel community lines already use for the auto-unmute sweeper.
+ * Actor id for an automated action no person performed (the auto-unmute
+ * sweeper). Renders as "System" for every reader.
  */
 export const SYSTEM_ACTOR_ID = "system";
 
@@ -33,8 +32,27 @@ export const systemActorLabel = (locale: SupportedLocale): string =>
   t("SYS_NAME_SYSTEM", locale);
 
 /**
+ * Actor id for an action a Super Admin performed from Backoffice. The admin is
+ * not an AIMess user, so their name and admin id never reach a client: every
+ * reader sees "Administrator", and nobody reads it as "You". Their real identity
+ * lives in the Backoffice audit log only.
+ */
+export const PLATFORM_ADMIN_ACTOR_ID = "platform_admin";
+
+/**
+ * `source` value marking a system line / event as Backoffice-originated. Already
+ * stamped on community ban/unban lines, so legacy rows carry it too.
+ */
+export const BACKOFFICE_SOURCE = "BO";
+
+/** "Administrator" — see {@link PLATFORM_ADMIN_ACTOR_ID}. */
+export const administratorActorLabel = (locale: SupportedLocale): string =>
+  t("SYS_NAME_ADMINISTRATOR", locale);
+
+/**
  * One side of the sentence from the reader's point of view: the reader's own
- * userId renders as "You", {@link SYSTEM_ACTOR_ID} as "System", anyone else by
+ * userId renders as "You", {@link SYSTEM_ACTOR_ID} as "System",
+ * {@link PLATFORM_ADMIN_ACTOR_ID} as "Administrator", anyone else by
  * the name captured at event time, and an unresolved name by the caller's
  * existing fallback ("Someone" / "A member"). Compared on the canonical AIMess
  * userId — never a device or session — so every device of one account reads
@@ -48,6 +66,7 @@ export function personLabel(
   fallback: MessageKey = "SYS_NAME_SOMEONE"
 ): string {
   if (userId === SYSTEM_ACTOR_ID) return systemActorLabel(locale);
+  if (userId === PLATFORM_ADMIN_ACTOR_ID) return administratorActorLabel(locale);
   const viewer = viewerId?.trim();
   if (userId && viewer && userId === viewer) return t("SYS_SENDER_YOU", locale);
   return name?.trim() || t(fallback, locale);

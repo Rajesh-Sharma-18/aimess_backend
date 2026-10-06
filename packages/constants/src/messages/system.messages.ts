@@ -19,12 +19,18 @@ import type { MessageCatalog } from "./types.js";
  */
 export const SYSTEM_MESSAGES = {
   // ── Shared name / role fallbacks ────────────────────────────────────────
-  /** The actor of an action a platform (Super) Admin performed — they are not
-   *  an AIMess user, so no person is named ("System removed Tom from …"). */
+  /** The actor of an automated platform action no person performed. */
   SYS_NAME_SYSTEM: {
     vi: "Hệ thống",
     en: "System",
     th: "ระบบ",
+  },
+  /** The actor of an action a Super Admin performed from Backoffice — they are
+   *  not an AIMess user, so no person is named ("Administrator removed Tom …"). */
+  SYS_NAME_ADMINISTRATOR: {
+    vi: "Quản trị viên",
+    en: "Administrator",
+    th: "ผู้ดูแลระบบ",
   },
   SYS_NAME_SOMEONE: {
     vi: "Ai đó",
