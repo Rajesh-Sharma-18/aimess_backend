@@ -2474,12 +2474,23 @@ export const communityRepository = {
     limit: number;
     /** AND-restrict to these ids (admin "Livestreaming" filter). */
     communityIds?: string[];
+    /** AND-exclude these ids (admin "Not live" filter). */
+    excludeCommunityIds?: string[];
   }) {
     const dir: Prisma.SortOrder = params.sortDir === "asc" ? "asc" : "desc";
 
     const where: Prisma.CommunityWhereInput = {
       deletedAt: { isSet: false },
-      ...(params.communityIds ? { id: { in: params.communityIds } } : {}),
+      ...(params.communityIds || params.excludeCommunityIds
+        ? {
+            id: {
+              ...(params.communityIds ? { in: params.communityIds } : {}),
+              ...(params.excludeCommunityIds
+                ? { notIn: params.excludeCommunityIds }
+                : {}),
+            },
+          }
+        : {}),
     };
 
     if (params.type) {

@@ -439,7 +439,7 @@ export type ListCommunitiesQuery = {
   type?: CommunityType;
   category?: string;
   status?: CommunityModerationStatus;
-  /** Only communities with at least one LIVE stream. */
+  /** true = only communities with a LIVE stream; false = only those without; undefined = all. */
   live?: boolean;
   /** Canonical `<field>:<dir>` token the repo consumes (e.g. `categoryName:asc`). */
   sort: string;

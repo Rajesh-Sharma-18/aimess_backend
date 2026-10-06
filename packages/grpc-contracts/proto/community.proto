@@ -347,6 +347,9 @@ message AdminListCommunitiesRequest {
   // AND-restrict to these community ids (drives the admin "Livestreaming" filter,
   // resolved from stream-service). Empty = no restriction.
   repeated string community_ids = 11;
+  // AND-exclude these community ids (drives the admin "Not live" filter).
+  // Empty = no exclusion.
+  repeated string exclude_community_ids = 12;
 }
 
 // One community row, shared by the list + the detail core. Admin identity is

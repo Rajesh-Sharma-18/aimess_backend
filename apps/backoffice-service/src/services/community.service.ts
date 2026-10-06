@@ -87,7 +87,7 @@ export const communityService = {
             status: query.status ?? null,
             createdFrom: query.createdFrom ?? null,
             createdTo: query.createdTo ?? null,
-            live: query.live ?? false,
+            live: query.live ?? null,
           },
         },
         ip: ctx.ip,
