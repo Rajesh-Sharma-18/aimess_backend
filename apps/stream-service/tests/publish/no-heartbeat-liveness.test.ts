@@ -25,6 +25,7 @@ function makeService(rows: Row[], publishers: unknown[]) {
     ),
     findLiveBySourceType: jest.fn().mockResolvedValue([]),
     countLiveByCommunity: jest.fn().mockResolvedValue(0),
+    claimEnded: jest.fn().mockResolvedValue(true),
     updateById: jest.fn(async (id: string, data: Row) => ({
       ...rows.find((r) => r.id === id),
       ...data,

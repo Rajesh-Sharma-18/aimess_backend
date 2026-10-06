@@ -6,6 +6,7 @@
 jest.mock("../../src/repositories/auth.repository.js", () => ({
   authRepository: {
     findByAccount: jest.fn(),
+    findByAccountForLogin: jest.fn(),
   },
 }));
 
@@ -14,7 +15,10 @@ import request from "supertest";
 import app from "../../src/app.js";
 import { authRepository } from "../../src/repositories/auth.repository.js";
 
-const repo = authRepository as unknown as { findByAccount: jest.Mock };
+const repo = authRepository as unknown as {
+  findByAccount: jest.Mock;
+  findByAccountForLogin: jest.Mock;
+};
 
 describe("POST /api/auth/accounts/validate", () => {
   beforeEach(() => {
@@ -130,5 +134,118 @@ describe("POST /api/auth/accounts/validate", () => {
 
       expect(repo.findByAccount).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+/**
+ * Login step 1 (`purpose: "login"`): an existing account that cannot use a
+ * password answers its provider code instead of AUTH_ACCOUNT_TAKEN, so the
+ * client never shows a password field that can never succeed. Still 409 — the
+ * account exists — so a client that only reads the status behaves as before.
+ */
+describe("POST /api/auth/accounts/validate — purpose: login", () => {
+  const loginUser = (overrides: Record<string, unknown> = {}) => ({
+    id: "u1",
+    passwordHash: "$2a$hash",
+    deletedAt: null,
+    emailVerified: true,
+    lockedUntil: null,
+    status: "ACTIVE",
+    linkedAccounts: [],
+    ...overrides,
+  });
+  const probe = (body: Record<string, unknown>) =>
+    request(app).post("/api/auth/accounts/validate").send(body);
+
+  beforeEach(() => {
+    repo.findByAccount.mockResolvedValue({ id: "u1" });
+    repo.findByAccountForLogin.mockReset();
+  });
+
+  it.each([
+    ["Google-only", [{ provider: "GOOGLE" }], "AUTH_GOOGLE_LOGIN_REQUIRED"],
+    ["Apple-only", [{ provider: "APPLE" }], "AUTH_APPLE_LOGIN_REQUIRED"],
+    [
+      "Google + Apple",
+      [{ provider: "GOOGLE" }, { provider: "APPLE" }],
+      "AUTH_SOCIAL_LOGIN_REQUIRED",
+    ],
+  ])("%s, no password -> 409 %s", async (_label, linkedAccounts, code) => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      loginUser({ passwordHash: null, linkedAccounts })
+    );
+
+    const res = await probe({ account: "social_user_123", purpose: "login" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe(code);
+    // Nothing beyond the code: no provider ids, email or credential detail.
+    expect(JSON.stringify(res.body)).not.toMatch(/passwordHash|providerUserId|u1/);
+  });
+
+  it.each([
+    ["password only", []],
+    ["Google + password", [{ provider: "GOOGLE" }]],
+    ["Apple + password", [{ provider: "APPLE" }]],
+    ["Google + Apple + password", [{ provider: "GOOGLE" }, { provider: "APPLE" }]],
+  ])("%s -> plain AUTH_ACCOUNT_TAKEN (password step)", async (_label, linkedAccounts) => {
+    repo.findByAccountForLogin.mockResolvedValue(loginUser({ linkedAccounts }));
+
+    const res = await probe({ account: "tom", purpose: "login" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("AUTH_ACCOUNT_TAKEN");
+  });
+
+  // Login's precedence decides these; step 1 must not pre-empt it with "use Google".
+  it.each([
+    ["banned", { status: "BANNED" }],
+    ["suspended/inactive", { status: "SUSPENDED" }],
+    ["deleted", { deletedAt: new Date() }],
+    ["locked", { lockedUntil: new Date(Date.now() + 60_000) }],
+  ])("%s Google-only account -> plain AUTH_ACCOUNT_TAKEN", async (_label, overrides) => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      loginUser({ passwordHash: null, linkedAccounts: [{ provider: "GOOGLE" }], ...overrides })
+    );
+
+    const res = await probe({ account: "social_user_123", purpose: "login" });
+
+    expect(res.body.error.code).toBe("AUTH_ACCOUNT_TAKEN");
+  });
+
+  it("without purpose, a Google-only account keeps AUTH_ACCOUNT_TAKEN (signup / old clients)", async () => {
+    const res = await probe({ account: "social_user_123" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("AUTH_ACCOUNT_TAKEN");
+    expect(repo.findByAccountForLogin).not.toHaveBeenCalled();
+  });
+
+  it("resolves a mixed-case handle through the shared lookup before deciding", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      loginUser({ passwordHash: null, linkedAccounts: [{ provider: "GOOGLE" }] })
+    );
+
+    const res = await probe({ account: "Rajesh_Sharma", purpose: "login" });
+
+    expect(res.body.error.code).toBe("AUTH_GOOGLE_LOGIN_REQUIRED");
+    expect(repo.findByAccountForLogin).toHaveBeenCalledWith(
+      repo.findByAccount.mock.calls[0][0]
+    );
+  });
+
+  it("an unknown account stays 200 available", async () => {
+    repo.findByAccount.mockResolvedValue(null);
+
+    const res = await probe({ account: "ghostuser", purpose: "login" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ account: "ghostuser", available: true });
+  });
+
+  it("rejects an unknown purpose value", async () => {
+    const res = await probe({ account: "tom", purpose: "signup" });
+
+    expect(res.status).toBe(400);
   });
 });

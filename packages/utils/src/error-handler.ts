@@ -114,12 +114,25 @@ function mapPrismaError(
 
   const prismaError = error as Error & {
     code?: string;
-    meta?: { target?: unknown };
+    meta?: {
+      target?: unknown;
+      driverAdapterError?: {
+        cause?: { constraint?: { fields?: unknown; index?: unknown } };
+      };
+    };
   };
 
   switch (prismaError.code) {
     case "P2002": {
-      const target = String(prismaError.meta?.target ?? "");
+      // Through the pg driver adapter `meta.target` is absent and the violated
+      // columns (or the index name, for an expression index such as
+      // `lower(account)`) are only on `driverAdapterError`. Reading `target`
+      // alone gave "" — and auth-service mapped every account clash to
+      // AUTH_EMAIL_EXISTS.
+      const constraint = prismaError.meta?.driverAdapterError?.cause?.constraint;
+      const target = String(
+        prismaError.meta?.target ?? constraint?.fields ?? constraint?.index ?? ""
+      );
       return {
         statusCode: 409,
         messageKey: uniqueConstraintKey?.(target) ?? "RESOURCE_CONFLICT",

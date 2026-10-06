@@ -249,8 +249,8 @@ export const userPaths = {
       deprecated: true,
       description:
         "**Do not use to fill the onboarding Username field.** The user types their handle; clients check it with `GET /users/usernames/validate` (debounced) and save it with `PATCH /users/profiles/me`, which answers `409 USER_USERNAME_TAKEN` on a taken handle and never substitutes another. The website no longer calls this endpoint; it stays only for older mobile builds.\n\n" +
-        "Requires access token. Call with the same `account` from auth (uniqueness already enforced at registration). Derives a unique username (normalized, numeric suffix if taken).\n\n" +
-        "**Example:** `account=John_Doe` → `username=john_doe` or `john_doe_2` if taken.",
+        "Requires access token. Call with the same `account` from auth (uniqueness already enforced at registration). Derives a unique username (normalized; `_1`, `_2`, … only when the bare handle is held by ANOTHER user — the caller's own handle counts as free). The suggestion is held for the caller for 5 minutes, so other users are suggested the next free handle meanwhile; it is not owned until the profile is saved.\n\n" +
+        "**Example:** `account=John_Doe` → `username=john_doe` or `john_doe_1` if taken by someone else.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {

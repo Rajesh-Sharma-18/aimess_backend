@@ -141,6 +141,7 @@ export const AUDIT_ACTIONS = {
   CUSTOM_CREDENTIAL_CREATED: "custom_credential.created",
   CUSTOM_CREDENTIAL_UPDATED: "custom_credential.updated",
   CUSTOM_CREDENTIAL_DELETED: "custom_credential.deleted",
+  CUSTOM_CREDENTIAL_VIEWED: "custom_credential.viewed",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

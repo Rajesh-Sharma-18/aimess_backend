@@ -11,6 +11,7 @@ import {
   type CommunityMember,
   type Prisma,
 } from "../generated/prisma/index.js";
+import { ForbiddenError } from "@aimess/errors";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
 import type { CommunityMemberUnmutedSocketPayload } from "@aimess/shared-types";
 
@@ -26,12 +27,40 @@ import {
   buildCommunitySearchFilter,
   normalizeForSearch,
 } from "../lib/community-search.util.js";
-import { CLOSE_REASON_ADMIN_BANNED } from "../constants/index.js";
+import {
+  CLOSE_REASON_ADMIN_BANNED,
+  CLOSE_REASON_LAST_MEMBER_LEFT,
+} from "../constants/index.js";
 import { isEffectivelyClosed } from "../lib/community-access-policy.js";
 import { MemberAlreadyActiveError } from "../lib/member-already-active-error.js";
 
 /** Internal: aborts the auto-resolve transaction when the requester is banned. */
 class BannedMemberAbort extends Error {}
+
+/** Internal: rolls back closeAndLeaveAsLastAdmin and carries the reason out. */
+class LastAdminLeaveAbort extends Error {
+  constructor(readonly outcome: "OTHERS_REMAIN" | "NOT_MEMBER") {
+    super(outcome);
+  }
+}
+
+/** Columns a member status change hands back to its caller. */
+const MEMBER_STATUS_SELECT = {
+  id: true,
+  userId: true,
+  role: true,
+  status: true,
+  joinedAt: true,
+  snapshotUsername: true,
+  snapshotDisplayName: true,
+  snapshotAvatarKey: true,
+  bannedAt: true,
+  bannedBy: true,
+  banReason: true,
+  removedAt: true,
+  removedBy: true,
+  removedReason: true,
+} as const satisfies Prisma.CommunityMemberSelect;
 
 function isRecordNotFoundError(err: unknown): boolean {
   return (err as { code?: string } | null)?.code === "P2025";
@@ -55,6 +84,56 @@ function openCommunityWhere(communityId: string): Prisma.CommunityWhereInput {
     status: { not: CommunityStatus.CLOSED },
     moderationStatus: { not: CommunityModerationStatus.SUSPENDED },
   };
+}
+
+/**
+ * First op of every membership-activation transaction (createMember,
+ * createManyMembers, reactivateMemberWithSnapshot): writes the community
+ * document only while it is still open, so an activation can never land in a
+ * community that closed after the caller's `assertWritable` read — no match
+ * throws P2025 and rolls the whole unit back. Because it WRITES that document,
+ * it also conflicts with a concurrent close (owner close, Super Admin
+ * suspension, the last admin's leave-and-close), so the two serialize instead
+ * of interleaving: either the join commits first and the admin is no longer the
+ * last member, or the close commits first and the join is refused.
+ */
+function touchOpenCommunityOp(communityId: string) {
+  return prisma.community.update({
+    where: {
+      id: communityId,
+      deletedAt: { isSet: false },
+      status: { not: CommunityStatus.CLOSED },
+      moderationStatus: { not: CommunityModerationStatus.SUSPENDED },
+    },
+    data: { updatedAt: new Date() },
+    select: { id: true },
+  });
+}
+
+/** P2025 raised by touchOpenCommunityOp (the community), not by a member write. */
+function isCommunityNotOpenError(err: unknown): boolean {
+  const e = err as { code?: string; meta?: { modelName?: string } } | null;
+  return e?.code === "P2025" && e.meta?.modelName === "Community";
+}
+
+/**
+ * Runs a guarded activation transaction: the community stopped being open →
+ * COMMUNITY_IS_CLOSED (what the caller's own assertWritable would have said a
+ * moment later); a Mongo write conflict with a concurrent community write is
+ * retried, since the guard deliberately writes a busy document.
+ */
+async function runActivationTx<T>(attempt: () => Promise<T>): Promise<T> {
+  for (let tries = 1; ; tries++) {
+    try {
+      return await attempt();
+    } catch (err: unknown) {
+      if (isCommunityNotOpenError(err)) {
+        throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+      }
+      // ponytail: 3 immediate retries, same as settleJoinRequestToMember.
+      if (!isTransactionConflict(err) || tries >= 3) throw err;
+    }
+  }
 }
 
 /** Columns every membership (re)activation hands back to its caller. */
@@ -752,6 +831,17 @@ export const communityRepository = {
       where: { communityId, closureRosterAt: { not: null } },
       data: { closureRosterAt: null },
     });
+    // Members who deleted the CLOSED community from their list are members of
+    // a live one again: put it back. BANNED dismissals belong to the ban and
+    // stay.
+    await prisma.communityMember.updateMany({
+      where: {
+        communityId,
+        status: CommunityMemberStatus.ACTIVE,
+        dismissedAt: { isSet: true },
+      },
+      data: { dismissedAt: { unset: true } },
+    });
     await prisma.community.update({
       where: { id: communityId },
       data: { memberCountAtClosure: null },
@@ -801,14 +891,17 @@ export const communityRepository = {
      *  Defaults to the member themself (self-join / invite-link redeem). */
     resolvedBy?: string
   ) {
-    const [row] = await prisma.$transaction([
-      prisma.communityMember.create({ data }),
-      resolvePendingJoinRequestsOp(
-        data.communityId,
-        [data.userId],
-        resolvedBy ?? data.userId
-      ),
-    ]);
+    const [, row] = await runActivationTx(() =>
+      prisma.$transaction([
+        touchOpenCommunityOp(data.communityId),
+        prisma.communityMember.create({ data }),
+        resolvePendingJoinRequestsOp(
+          data.communityId,
+          [data.userId],
+          resolvedBy ?? data.userId
+        ),
+      ])
+    );
     publishCommunityMemberSyncedForChatSafe({
       communityId: data.communityId,
       userId: data.userId,
@@ -832,12 +925,15 @@ export const communityRepository = {
     resolvedBy?: string
   ) {
     const userIds = members.map((m) => m.userId);
-    const [result] = await prisma.$transaction([
-      prisma.communityMember.createMany({
-        data: members.map((m) => ({ communityId, ...m })),
-      }),
-      resolvePendingJoinRequestsOp(communityId, userIds, resolvedBy ?? ""),
-    ]);
+    const [, result] = await runActivationTx(() =>
+      prisma.$transaction([
+        touchOpenCommunityOp(communityId),
+        prisma.communityMember.createMany({
+          data: members.map((m) => ({ communityId, ...m })),
+        }),
+        resolvePendingJoinRequestsOp(communityId, userIds, resolvedBy ?? ""),
+      ])
+    );
     for (const m of members) {
       publishCommunityMemberSyncedForChatSafe({
         communityId,
@@ -1019,36 +1115,41 @@ export const communityRepository = {
     }>;
     let clearedMutes: { count: number };
     try {
-      [row, clearedMutes] = await prisma.$transaction([
-        prisma.communityMember.update({
-          // Never re-activate a row that is ALREADY ACTIVE: a concurrent path
-          // (approve vs. privacy-change auto-resolve vs. Add Member) may have
-          // won. Rewriting it would reset joinedAt and let the loser announce a
-          // second join. No match throws P2025 and rolls the whole unit back.
-          where: {
-            communityId_userId: { communityId, userId },
-            status: { not: CommunityMemberStatus.ACTIVE },
-          },
-          data: memberReactivationData(snapshot, joinedViaInviteCode),
-          select: REACTIVATED_MEMBER_SELECT,
-        }),
-        // A fresh membership cycle also drops any leftover mute/warning rows from
-        // the OLD cycle — otherwise a rejoining member is still muted, or still
-        // carries warnings issued to a membership that no longer exists.
-        prisma.communityMemberMute.deleteMany({
-          where: { communityId, userId },
-        }),
-        prisma.communityMemberWarning.deleteMany({
-          where: { communityId, userId },
-        }),
-        // Same transaction as the membership write — see resolvePendingJoinRequestsOp.
-        resolvePendingJoinRequestsOp(
-          communityId,
-          [userId],
-          resolvedBy ?? userId
-        ),
-      ]);
+      [, row, clearedMutes] = await runActivationTx(() =>
+        prisma.$transaction([
+          touchOpenCommunityOp(communityId),
+          prisma.communityMember.update({
+            // Never re-activate a row that is ALREADY ACTIVE: a concurrent path
+            // (approve vs. privacy-change auto-resolve vs. Add Member) may have
+            // won. Rewriting it would reset joinedAt and let the loser announce a
+            // second join. No match throws P2025 and rolls the whole unit back.
+            where: {
+              communityId_userId: { communityId, userId },
+              status: { not: CommunityMemberStatus.ACTIVE },
+            },
+            data: memberReactivationData(snapshot, joinedViaInviteCode),
+            select: REACTIVATED_MEMBER_SELECT,
+          }),
+          // A fresh membership cycle also drops any leftover mute/warning rows from
+          // the OLD cycle — otherwise a rejoining member is still muted, or still
+          // carries warnings issued to a membership that no longer exists.
+          prisma.communityMemberMute.deleteMany({
+            where: { communityId, userId },
+          }),
+          prisma.communityMemberWarning.deleteMany({
+            where: { communityId, userId },
+          }),
+          // Same transaction as the membership write — see resolvePendingJoinRequestsOp.
+          resolvePendingJoinRequestsOp(
+            communityId,
+            [userId],
+            resolvedBy ?? userId
+          ),
+        ])
+      );
     } catch (err) {
+      // P2025 from the guarded member update only — a closed community already
+      // surfaced as COMMUNITY_IS_CLOSED inside runActivationTx.
       if (isRecordNotFoundError(err)) throw new MemberAlreadyActiveError();
       throw err;
     }
@@ -1234,33 +1335,120 @@ export const communityRepository = {
             }
           : {}),
       },
-      select: {
-        id: true,
-        userId: true,
-        role: true,
-        status: true,
-        joinedAt: true,
-        snapshotUsername: true,
-        snapshotDisplayName: true,
-        snapshotAvatarKey: true,
-        bannedAt: true,
-        bannedBy: true,
-        banReason: true,
-        removedAt: true,
-        removedBy: true,
-        removedReason: true,
-      },
+      select: MEMBER_STATUS_SELECT,
     });
     publishCommunityMemberSyncedForChatSafe({ communityId, userId, status });
     return row;
+  },
+
+  /**
+   * ACTIVE → LEFT, but only while the row is still ACTIVE. Returns null when a
+   * concurrent leave/kick/ban got there first, so a double-submitted or retried
+   * leave fires its side effects (audit, events, memberCount) exactly once.
+   */
+  async markActiveMemberLeft(communityId: string, userId: string) {
+    try {
+      const row = await prisma.communityMember.update({
+        where: {
+          communityId_userId: { communityId, userId },
+          status: CommunityMemberStatus.ACTIVE,
+        },
+        data: { status: CommunityMemberStatus.LEFT },
+        select: MEMBER_STATUS_SELECT,
+      });
+      publishCommunityMemberSyncedForChatSafe({
+        communityId,
+        userId,
+        status: CommunityMemberStatus.LEFT,
+      });
+      return row;
+    } catch (err: unknown) {
+      if (isRecordNotFoundError(err)) return null;
+      throw err;
+    }
+  },
+
+  /**
+   * The last ACTIVE member, who is the ADMIN, leaves an open community: close it
+   * (owner axis, reason LAST_MEMBER_LEFT) and end their membership in ONE
+   * transaction, so no reader ever sees an open community without its admin or
+   * a closed one still holding them.
+   *
+   * The first write touches the community document under `openCommunityWhere`,
+   * the same guard `settleJoinRequestToMember` takes, so a concurrent approve or
+   * a concurrent owner/Super Admin close conflicts with this transaction instead
+   * of interleaving with it. Outcomes:
+   *  - CLOSED_AND_LEFT — both writes committed
+   *  - NOT_OPEN        — closed/suspended/deleted first; nothing written
+   *  - OTHERS_REMAIN   — someone else is ACTIVE now; rolled back (transfer still required)
+   *  - NOT_MEMBER      — the caller is no longer ACTIVE (a retry); rolled back
+   */
+  async closeAndLeaveAsLastAdmin(
+    communityId: string,
+    userId: string,
+    closedAt: Date
+  ): Promise<"CLOSED_AND_LEFT" | "NOT_OPEN" | "OTHERS_REMAIN" | "NOT_MEMBER"> {
+    const attempt = () =>
+      prisma.$transaction(async (tx) => {
+        const closed = await tx.community.updateMany({
+          where: openCommunityWhere(communityId),
+          data: {
+            status: CommunityStatus.CLOSED,
+            statusClosedAt: closedAt,
+            statusClosedBy: userId,
+            statusClosedReason: null,
+            statusClosedReasonCode: CLOSE_REASON_LAST_MEMBER_LEFT,
+          },
+        });
+        if (closed.count === 0) return "NOT_OPEN" as const;
+
+        const others = await tx.communityMember.count({
+          where: {
+            communityId,
+            status: CommunityMemberStatus.ACTIVE,
+            userId: { not: userId },
+          },
+        });
+        if (others > 0) throw new LastAdminLeaveAbort("OTHERS_REMAIN");
+
+        const left = await tx.communityMember.updateMany({
+          where: { communityId, userId, status: CommunityMemberStatus.ACTIVE },
+          data: { status: CommunityMemberStatus.LEFT },
+        });
+        if (left.count === 0) throw new LastAdminLeaveAbort("NOT_MEMBER");
+
+        await tx.community.update({
+          where: { id: communityId },
+          data: { memberCount: 0 },
+        });
+        return "CLOSED_AND_LEFT" as const;
+      });
+
+    for (let tries = 1; ; tries++) {
+      try {
+        const outcome = await attempt();
+        if (outcome === "CLOSED_AND_LEFT") {
+          publishCommunityMemberSyncedForChatSafe({
+            communityId,
+            userId,
+            status: CommunityMemberStatus.LEFT,
+          });
+        }
+        return outcome;
+      } catch (err: unknown) {
+        if (err instanceof LastAdminLeaveAbort) return err.outcome;
+        // ponytail: 3 immediate retries, same as settleJoinRequestToMember.
+        if (!isTransactionConflict(err) || tries >= 3) throw err;
+      }
+    }
   },
 
   // ponytail: markRemovedFromList removed — removedAt not in generated client.
   // Re-add after `prisma generate` includes the field.
 
   /**
-   * Hide a BANNED community from the member's own list (self-dismiss). Writes
-   * ONLY `dismissedAt` — status stays BANNED and the ban metadata survives
+   * Hide a BANNED (or CLOSED) community from the member's own list
+   * (self-dismiss). Writes ONLY `dismissedAt` — status stays BANNED and the ban metadata survives
    * (business rule: dismissing never lifts a ban; only an admin unban does).
    * No chat-sync publish: nothing membership-relevant changed for chat-service.
    */
@@ -1529,7 +1717,9 @@ export const communityRepository = {
     // non-member preview + join flow with no special visibility carry-over.
     const memberVisibilityFilter = {
       OR: [
-        { status: CommunityMemberStatus.ACTIVE },
+        // dismissedAt on an ACTIVE row = a CLOSED community the member
+        // deleted from their list (see resolveSelfRemoval).
+        { status: CommunityMemberStatus.ACTIVE, dismissedAt: { isSet: false } },
         {
           status: CommunityMemberStatus.BANNED,
           dismissedAt: { isSet: false },
@@ -1592,7 +1782,9 @@ export const communityRepository = {
     // comment there for why).
     const memberVisibilityFilter = {
       OR: [
-        { status: CommunityMemberStatus.ACTIVE },
+        // dismissedAt on an ACTIVE row = a CLOSED community the member
+        // deleted from their list (see resolveSelfRemoval).
+        { status: CommunityMemberStatus.ACTIVE, dismissedAt: { isSet: false } },
         {
           status: CommunityMemberStatus.BANNED,
           dismissedAt: { isSet: false },
@@ -2279,16 +2471,29 @@ export const communityRepository = {
           OR: [
             { statusClosedReasonCode: { isSet: false } },
             { statusClosedReasonCode: null },
-            { statusClosedReasonCode: { not: CLOSE_REASON_ADMIN_BANNED } },
+            {
+              statusClosedReasonCode: {
+                notIn: [
+                  CLOSE_REASON_ADMIN_BANNED,
+                  CLOSE_REASON_LAST_MEMBER_LEFT,
+                ],
+              },
+            },
           ],
         },
       ];
     } else if (params.status === "CLOSED") {
+      // LAST_MEMBER_LEFT: closed when its last member (the admin) left —
+      // listed as closed in Super Admin too (see backoffice adminRowStatus).
       where.AND = [
         {
           OR: [
             { moderationStatus: CommunityModerationStatus.SUSPENDED },
-            { statusClosedReasonCode: CLOSE_REASON_ADMIN_BANNED },
+            {
+              statusClosedReasonCode: {
+                in: [CLOSE_REASON_ADMIN_BANNED, CLOSE_REASON_LAST_MEMBER_LEFT],
+              },
+            },
           ],
         },
       ];

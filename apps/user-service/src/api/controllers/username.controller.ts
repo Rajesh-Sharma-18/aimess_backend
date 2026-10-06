@@ -13,7 +13,10 @@ import { usernameService } from "../../services/username.service.js";
 export const generateUsername = asyncHandler(
   async (req: Request, res: Response) => {
     const { account } = req.body as GenerateUsernameInput;
-    const result = await usernameService.generateFromAccount(account);
+    const result = await usernameService.generateFromAccount(
+      account,
+      req.auth.userId
+    );
 
     return res
       .status(HTTP_STATUS.OK)

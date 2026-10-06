@@ -9,6 +9,7 @@ import {
   type PeerRelationship,
   type RelationshipStatus,
 } from "../lib/relationship-lookup.js";
+import { allocatedUsername } from "../lib/username.util.js";
 import {
   canSendFriendRequest,
   visibleIdentity,
@@ -196,7 +197,7 @@ async function toUserItem(
   return {
     type: "USER",
     userId: profile.userId,
-    username: profile.username,
+    username: allocatedUsername(profile),
     firstName: identity.firstName,
     lastName: identity.lastName,
     fullName: identity.fullName,

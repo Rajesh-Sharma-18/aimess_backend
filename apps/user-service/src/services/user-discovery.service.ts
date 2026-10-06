@@ -9,6 +9,7 @@ import {
   visibleIdentity,
   visibleIsOnline,
 } from "../lib/privacy-scope.js";
+import { allocatedUsername } from "../lib/username.util.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { splitBlocks } from "../lib/block-visibility.js";
 import { messagingGrpcClient } from "../grpc/messaging.client.js";
@@ -199,7 +200,7 @@ export const userDiscoveryService = {
         const avatar = await resolveAvatarMedia(storedAvatar);
         const base = {
           userId: p.userId,
-          username: p.username,
+          username: allocatedUsername(p),
           firstName: identity.firstName,
           lastName: identity.lastName,
           bio: canViewProfile(p, relation) ? p.bio : null,
@@ -294,7 +295,7 @@ export const userDiscoveryService = {
         const avatar = await resolveAvatarMedia(storedAvatar);
         return {
           userId: p.userId,
-          username: p.username,
+          username: allocatedUsername(p),
           firstName: identity.firstName,
           lastName: identity.lastName,
           bio: canViewProfile(p, { isFriend: true }) ? p.bio : null,
@@ -386,7 +387,7 @@ export const userDiscoveryService = {
         const avatar = await resolveAvatarMedia(storedAvatar);
         return {
           userId: p.userId,
-          username: p.username,
+          username: allocatedUsername(p),
           firstName: identity.firstName,
           lastName: identity.lastName,
           bio: canViewProfile(p, relation) ? p.bio : null,
@@ -461,7 +462,7 @@ export const userDiscoveryService = {
         const avatar = await resolveAvatarMedia(storedAvatar);
         return {
           userId: p.userId,
-          username: p.username,
+          username: allocatedUsername(p),
           firstName: identity.firstName,
           lastName: identity.lastName,
           bio: canViewProfile(p, relation) ? p.bio : null,

@@ -42,7 +42,7 @@ import {
   scopeAdmits,
   visibleIdentity,
 } from "../lib/privacy-scope.js";
-import { normalizeUsername } from "../lib/username.util.js";
+import { allocatedUsername, normalizeUsername } from "../lib/username.util.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import type {
   PublicUserProfileData,
@@ -431,7 +431,7 @@ export const userProfileService = {
 
     return {
       userId: profile.userId,
-      username: profile.username,
+      username: allocatedUsername(profile),
       displayName: identity.fullName
         ? buildDisplayName(profile.firstName, profile.lastName)
         : null,
@@ -897,6 +897,8 @@ async function writeProfileUpdate(
   if (updateData.username && updateData.username !== previousUsername) {
     await userCache.onUsernameReleased(previousUsername);
     await userCache.onUsernameClaimed(updateData.username);
+    // Owned now — the suggestion hold has done its job.
+    await userCache.releaseUsernameHold(updateData.username, userId);
   }
 
   const comparable = (value: unknown) =>

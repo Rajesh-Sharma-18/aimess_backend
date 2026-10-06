@@ -112,6 +112,11 @@ export const bulkLeaveConversationsSchema = withSnakeAliases(
      *    ACTIVE still gets their conversation cleared, and emits no second
      *    MEMBER_LEFT.
      *
+     * A CLOSED group (owner banned by Super Admin) ignores it too: every action
+     * removes the row from the caller's list only (`dismissedAt`), reported as
+     * DELETED — no leave, no owner rule, nothing changes for the room or anyone
+     * else.
+     *
      * PRIVATE rows ignore this: a 1-to-1 room has no membership to leave, so the
      * only self-removal it has is delete-for-me (`DELETE /chat/private/rooms/{roomId}`),
      * which is what they always run.

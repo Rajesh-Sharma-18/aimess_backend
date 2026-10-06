@@ -4,6 +4,7 @@ import { PERMISSIONS } from "../../constants/index.js";
 import {
   createCustomCredential,
   deleteCustomCredential,
+  getCustomCredential,
   listCustomCredentials,
   updateCustomCredential,
 } from "../controllers/index.js";
@@ -16,7 +17,6 @@ import {
 import {
   createCustomCredentialSchema,
   customCredentialIdParamSchema,
-  deleteCustomCredentialSchema,
   updateCustomCredentialSchema,
 } from "../validators/index.js";
 
@@ -37,6 +37,13 @@ customCredentialRoutes.post(
   createCustomCredential
 );
 
+customCredentialRoutes.get(
+  "/custom-credentials/:credentialId",
+  requirePermission(PERMISSIONS.SETTINGS_MANAGE),
+  validateParams(customCredentialIdParamSchema),
+  getCustomCredential
+);
+
 customCredentialRoutes.patch(
   "/custom-credentials/:credentialId",
   requirePermission(PERMISSIONS.SETTINGS_MANAGE),
@@ -49,6 +56,5 @@ customCredentialRoutes.delete(
   "/custom-credentials/:credentialId",
   requirePermission(PERMISSIONS.SETTINGS_MANAGE),
   validateParams(customCredentialIdParamSchema),
-  validateBody(deleteCustomCredentialSchema),
   deleteCustomCredential
 );

@@ -107,6 +107,10 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     settlePendingJoinRequest: jest.fn(),
     updateMember: jest.fn(),
     updateMemberStatus: jest.fn(),
+    // Plain leave: conditional ACTIVE → LEFT. Suites that leave set the row.
+    markActiveMemberLeft: jest.fn(),
+    // Last-admin leave-and-close transaction. Suites that need it set the outcome.
+    closeAndLeaveAsLastAdmin: jest.fn(),
     setMemberDismissed: jest.fn(),
     deleteMember: jest.fn(),
     findActiveMembers: jest.fn().mockResolvedValue([]),

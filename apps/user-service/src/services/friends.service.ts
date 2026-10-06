@@ -6,6 +6,7 @@ import {
 } from "../repositories/friends.repository.js";
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { bannedAmong } from "../lib/banned-users.js";
+import { allocatedUsername } from "../lib/username.util.js";
 import type {
   FriendListItem,
   FriendsListResult,
@@ -35,7 +36,7 @@ async function toFriendListItem(
 
   return {
     userId: row.userId,
-    username: row.username,
+    username: allocatedUsername(row),
     firstName: row.firstName,
     lastName: row.lastName,
     avatarUrl: avatarView?.url ?? null,

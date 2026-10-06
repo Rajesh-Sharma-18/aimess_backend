@@ -169,6 +169,7 @@ export class GroupMemberRepository {
       notificationSettings: GroupMember["notificationSettings"];
       clearedAt: Date | null;
       clearChatAt: Date | null;
+      dismissedAt: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -181,8 +182,29 @@ export class GroupMemberRepository {
         notificationSettings: true,
         clearedAt: true,
         clearChatAt: true,
+        dismissedAt: true,
       },
     });
+  }
+
+  /**
+   * Hide a CLOSED group from the member's own list (per-user Delete
+   * Conversation). Writes ONLY `dismissedAt` + a zeroed unread counter on the
+   * caller's ACTIVE row: no status, role or memberCount change, so the room,
+   * its roster and every other member stay exactly as they were. False when
+   * there was nothing to write (not ACTIVE, or already dismissed).
+   */
+  async setDismissed(roomId: string, userId: string): Promise<boolean> {
+    const { count } = await this.prisma.groupMember.updateMany({
+      where: {
+        roomId,
+        userId,
+        status: "ACTIVE",
+        dismissedAt: { isSet: false },
+      },
+      data: { dismissedAt: new Date(), unreadCount: 0 },
+    });
+    return count > 0;
   }
 
   /**
@@ -202,7 +224,7 @@ export class GroupMemberRepository {
     }>
   > {
     return this.prisma.groupMember.findMany({
-      where: { userId, status: "ACTIVE" },
+      where: { userId, status: "ACTIVE", dismissedAt: { isSet: false } },
       select: {
         roomId: true,
         clearedAt: true,
@@ -247,7 +269,8 @@ export class GroupMemberRepository {
     }>
   > {
     return this.prisma.groupMember.findMany({
-      where: { userId, status: "ACTIVE" },
+      // A dismissed row is a CLOSED group the member deleted from their list.
+      where: { userId, status: "ACTIVE", dismissedAt: { isSet: false } },
       select: {
         roomId: true,
         role: true,
@@ -317,6 +340,27 @@ export class GroupMemberRepository {
         typeof this.prisma.groupMember.update
       >[0]["data"],
     });
+  }
+
+  /**
+   * ACTIVE → LEFT only while the row is still ACTIVE. Null when a concurrent
+   * leave/kick/ban got there first, so a double-submitted leave decrements
+   * memberCount and posts its system line exactly once.
+   */
+  async leaveIfActive(
+    roomId: string,
+    userId: string,
+    leftAt: Date
+  ): Promise<GroupMember | null> {
+    const { count } = await this.prisma.groupMember.updateMany({
+      where: { roomId, userId, status: "ACTIVE" },
+      // unreadCount zeroed on the SAME write that ends the membership: the
+      // group leaves this user's list, so a leftover counter could only come
+      // back as a phantom badge if they are ever added again.
+      data: { status: "LEFT", leftAt, unreadCount: 0 },
+    });
+    if (count === 0) return null;
+    return this.findByRoomAndUser(roomId, userId);
   }
 
   async updateRole(

@@ -119,11 +119,21 @@ export class LivestreamRepository {
     return this.prisma.livestream.update({ where: { id }, data: data as any });
   }
 
-  async claimEnded(id: string): Promise<boolean> {
+  /**
+   * The single atomic ACTIVE -> ENDED transition. Exactly one concurrent caller
+   * gets `true`; every other end path (a host stop racing an admin force-end, a
+   * client retry, the sweeper) gets `false` and must not finalize again. The
+   * reason and actor ride on the same write, so a loser re-reading the row never
+   * sees ENDED without them.
+   */
+  async claimEnded(
+    id: string,
+    end: { endedAt?: Date; endedReason?: string; endedBy?: string | null } = {}
+  ): Promise<boolean> {
     if (!/^[0-9a-f]{24}$/i.test(id)) throw new Error(`Invalid ObjectId: ${id}`);
     const { count } = await this.prisma.livestream.updateMany({
       where: { id, status: { in: [...ACTIVE_STATUSES] } },
-      data: { status: "ENDED", endedAt: new Date() },
+      data: { status: "ENDED", endedAt: new Date(), ...end },
     });
     return count === 1;
   }

@@ -227,9 +227,14 @@ export const userProfileRepository = {
     });
   },
 
-  /** Case-insensitive — canonical storage is lowercase; legacy rows may differ in casing. */
+  /**
+   * Case-insensitive — canonical storage is lowercase; legacy rows may differ in
+   * casing. Prisma's `mode: "insensitive"` is an ILIKE, where `_` (legal in
+   * every username) is a wildcard, so it is escaped: unescaped, "test_c" found
+   * "testxc" and was reported taken.
+   */
   findByUsername(username: string) {
-    const normalized = normalizeUsername(username);
+    const normalized = normalizeUsername(username).replace(/[\\%_]/g, "\\$&");
     return prisma.userProfile.findFirst({
       where: {
         username: { equals: normalized, mode: "insensitive" },

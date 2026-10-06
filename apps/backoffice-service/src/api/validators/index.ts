@@ -257,11 +257,9 @@ export {
 export {
   createCustomCredentialSchema,
   customCredentialIdParamSchema,
-  deleteCustomCredentialSchema,
   updateCustomCredentialSchema,
   type CreateCustomCredentialBody,
   type CustomCredentialIdParam,
-  type DeleteCustomCredentialBody,
   type UpdateCustomCredentialBody,
 } from "./custom-credential.validator.js";
 

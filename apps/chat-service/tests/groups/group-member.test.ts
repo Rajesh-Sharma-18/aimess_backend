@@ -9,6 +9,7 @@
  */
 import request from "supertest";
 
+import { GroupNotSoleMemberError } from "../../src/repositories/group-room.repository.js";
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 
@@ -280,13 +281,108 @@ describe("POST /api/chat/group-members/:roomId/leave", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
+    // Last-member disband: ACTIVE rooms only, roster re-checked in the TX.
     expect(mocks.groupRoomRepo.disband).toHaveBeenCalledWith(
       ROOM,
       TEST_USER_ID,
-      expect.any(Map)
+      expect.any(Map),
+      { asLastMember: true }
     );
     expect(mocks.groupMemberRepo.updateStatus).not.toHaveBeenCalled();
     expect(mocks.redis.publish).toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining('"event":"group:removed"')
+    );
+  });
+
+  it("NEGATIVE: someone joined before the disband transaction → 400, nothing torn down", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(1);
+    mocks.groupMemberRepo.findActiveMembers.mockResolvedValue([
+      { userId: TEST_USER_ID },
+    ]);
+    mocks.groupRoomRepo.disband.mockRejectedValue(new GroupNotSoleMemberError());
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/leave`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("CHAT_OWNER_CANNOT_LEAVE");
+    expect(mocks.groupInviteLinkRepo.revokeAllForRoom).not.toHaveBeenCalled();
+    expect(mocks.redis.publish).not.toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining('"event":"group:removed"')
+    );
+  });
+
+  it("POSITIVE: last ADMIN of a Super-Admin-CLOSED group just leaves — no second close", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(1);
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      status: "CLOSED",
+      memberCount: 1,
+    });
+    mocks.groupMemberRepo.updateStatus.mockResolvedValue({ status: "LEFT" });
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/leave`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.groupRoomRepo.disband).not.toHaveBeenCalled();
+    expect(mocks.groupInviteLinkRepo.revokeAllForRoom).not.toHaveBeenCalled();
+    expect(mocks.groupMemberRepo.leaveIfActive).toHaveBeenCalledWith(
+      ROOM,
+      TEST_USER_ID,
+      expect.any(Date)
+    );
+    expect(mocks.redis.publish).toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining('"event":"group:removed"')
+    );
+    expect(mocks.redis.publish).not.toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining('"event":"group:disbanded"')
+    );
+  });
+
+  it("NEGATIVE: ADMIN of a CLOSED group with others remaining → 400 (transfer rule unchanged)", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(3);
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      status: "CLOSED",
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/leave`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(400);
+    expect(mocks.groupMemberRepo.leaveIfActive).not.toHaveBeenCalled();
+  });
+
+  it("NEGATIVE: a double-submitted leave that lost the race → 404, count untouched", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+    mocks.groupMemberRepo.leaveIfActive.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/leave`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(404);
+    expect(mocks.groupRoomRepo.incMemberCount).not.toHaveBeenCalled();
+    expect(mocks.redis.publish).not.toHaveBeenCalledWith(
       `user:${TEST_USER_ID}`,
       expect.stringContaining('"event":"group:removed"')
     );

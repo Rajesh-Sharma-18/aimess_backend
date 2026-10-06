@@ -1,5 +1,4 @@
 import {
-  BadRequestError,
   ConflictError,
   NotFoundError,
   ServiceUnavailableError,
@@ -9,13 +8,12 @@ import { logger } from "@aimess/logger";
 import { env } from "../config/env.js";
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import type { CustomCredential } from "../generated/prisma/client.js";
-import { verifyPassword } from "../lib/password.js";
 import { openSecret, sealSecret } from "../lib/secret-box.js";
-import { adminUserRepository } from "../repositories/admin-user.repository.js";
 import { customCredentialRepository } from "../repositories/custom-credential.repository.js";
 import {
   CUSTOM_CREDENTIAL_PLATFORMS,
   type CreateCustomCredentialInput,
+  type CustomCredentialDetail,
   type CustomCredentialPlatform,
   type CustomCredentialView,
   type ResolvedCustomCredential,
@@ -57,13 +55,6 @@ async function assertSlotFree(
   }
 }
 
-async function assertActorPassword(actorId: string, password: string): Promise<void> {
-  const admin = await adminUserRepository.findById(actorId);
-  if (!admin || !(await verifyPassword(password, admin.passwordHash))) {
-    throw new BadRequestError("AUTH_CURRENT_PASSWORD_INVALID");
-  }
-}
-
 function isPlatform(platform: string): platform is CustomCredentialPlatform {
   return (CUSTOM_CREDENTIAL_PLATFORMS as readonly string[]).includes(platform);
 }
@@ -72,6 +63,29 @@ export const customCredentialService = {
   async list(): Promise<CustomCredentialView[]> {
     const rows = await customCredentialRepository.list();
     return rows.map(toView);
+  },
+
+  async reveal(id: string, actorId: string, ctx: RequestCtx): Promise<CustomCredentialDetail> {
+    const key = env.CUSTOM_CREDENTIALS_ENCRYPTION_KEY;
+    if (!key) {
+      throw new ServiceUnavailableError("CUSTOM_CREDENTIAL_ENCRYPTION_UNAVAILABLE");
+    }
+    const row = await customCredentialRepository.findById(id);
+    if (!row) throw new NotFoundError("CUSTOM_CREDENTIAL_NOT_FOUND");
+
+    const value = openSecret(row.encryptedValue, key);
+
+    await auditService.record({
+      actorId,
+      action: AUDIT_ACTIONS.CUSTOM_CREDENTIAL_VIEWED,
+      targetType: "custom_credential",
+      targetId: row.id,
+      after: { name: row.name, platform: row.platform },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+
+    return { ...toView(row), value };
   },
 
   async create(
@@ -105,12 +119,9 @@ export const customCredentialService = {
   async update(
     id: string,
     input: UpdateCustomCredentialInput,
-    password: string,
     actorId: string,
     ctx: RequestCtx
   ): Promise<CustomCredentialView> {
-    await assertActorPassword(actorId, password);
-
     const existing = await customCredentialRepository.findById(id);
     if (!existing) throw new NotFoundError("CUSTOM_CREDENTIAL_NOT_FOUND");
 
@@ -146,14 +157,7 @@ export const customCredentialService = {
     return toView(row);
   },
 
-  async remove(
-    id: string,
-    password: string,
-    actorId: string,
-    ctx: RequestCtx
-  ): Promise<void> {
-    await assertActorPassword(actorId, password);
-
+  async remove(id: string, actorId: string, ctx: RequestCtx): Promise<void> {
     const existing = await customCredentialRepository.findById(id);
     if (!existing) throw new NotFoundError("CUSTOM_CREDENTIAL_NOT_FOUND");
 

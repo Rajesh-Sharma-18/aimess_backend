@@ -3921,12 +3921,39 @@ export const adminPaths = {
     },
   },
   "/admin/v1/custom-credentials/{credentialId}": {
+    get: {
+      tags: [adminTags.customCredentials],
+      operationId: "adminGetCustomCredential",
+      summary: "Read one credential with its value",
+      description:
+        "Returns the decrypted value, used to pre-fill the Edit dialog. Audited as custom_credential.viewed. Requires settings.manage (SUPER_ADMIN).",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "credentialId",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": okRes(
+          "Credential",
+          "#/components/schemas/AdminCustomCredentialDetail"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing settings.manage"),
+        "404": errRes("CUSTOM_CREDENTIAL_NOT_FOUND"),
+        "503": errRes("CUSTOM_CREDENTIAL_ENCRYPTION_UNAVAILABLE"),
+      },
+      "x-implementation-status": "implemented",
+    },
     patch: {
       tags: [adminTags.customCredentials],
       operationId: "adminUpdateCustomCredential",
       summary: "Edit a credential",
       description:
-        "Requires the acting admin's own password, plus any subset of `name`, `platform`, `value`. Omitting `value` keeps the stored secret. A wrong password is 400 AUTH_CURRENT_PASSWORD_INVALID. Audited as custom_credential.updated without the value. Requires settings.manage (SUPER_ADMIN).",
+        "Any subset of `name`, `platform`, `value`. Omitting `value` keeps the stored secret. Audited as custom_credential.updated without the value. Requires settings.manage (SUPER_ADMIN).",
       security: adminSecurity,
       parameters: [
         {
@@ -3958,7 +3985,7 @@ export const adminPaths = {
       operationId: "adminDeleteCustomCredential",
       summary: "Delete a credential",
       description:
-        "Requires the acting admin's own password in the body. Audited as custom_credential.deleted. Requires settings.manage (SUPER_ADMIN).",
+        "Audited as custom_credential.deleted. Requires settings.manage (SUPER_ADMIN).",
       security: adminSecurity,
       parameters: [
         {
@@ -3968,9 +3995,6 @@ export const adminPaths = {
           schema: { type: "string", format: "uuid" },
         },
       ],
-      requestBody: jsonBody(
-        "#/components/schemas/AdminCustomCredentialDeleteRequest"
-      ),
       responses: {
         "200": {
           description: "Credential deleted",
@@ -3987,7 +4011,6 @@ export const adminPaths = {
             },
           },
         },
-        "400": errRes("Validation failed or AUTH_CURRENT_PASSWORD_INVALID"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing settings.manage"),
         "404": errRes("CUSTOM_CREDENTIAL_NOT_FOUND"),

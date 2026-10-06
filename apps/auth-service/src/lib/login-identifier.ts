@@ -12,9 +12,10 @@ export function isEmailLoginIdentifier(value: string): boolean {
  * this, a user who linked name@example.com and then typed Name@Example.com was
  * told their credentials were invalid.
  *
- * Account names are NOT lowercased. They are stored with the case the user
- * chose (see `accountSchema`, whose `.toLowerCase()` is commented out), so
- * folding them here would break username login for every mixed-case handle.
+ * Account names are NOT lowercased here. New ones are stored lowercase, but
+ * legacy ones keep their original case, and a few legacy pairs differ ONLY by
+ * case — the repository matches exact-case first, then case-insensitively
+ * (`findByAccountForLogin`), which needs the spelling as typed.
  */
 export function normalizeLoginIdentifier(value: string): string {
   const trimmed = value.trim();

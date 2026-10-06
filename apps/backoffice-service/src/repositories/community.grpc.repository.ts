@@ -62,6 +62,24 @@ async function fetchLiveStreamCount(communityId: string): Promise<number> {
   }
 }
 
+/**
+ * Super Admin status for a community row. `status` from community-service is
+ * the platform-moderation axis; a community that closed because its last
+ * member (the admin) left is closed on the owner axis only, so without this it
+ * would list as ACTIVE with 0 members. It is shown CLOSED, and since nobody is
+ * left in it, there is nothing to close or reopen from here.
+ */
+function adminRowStatus(r: {
+  status: string;
+  statusClosedReasonCode?: string;
+}): { status: CommunityModerationStatus; closedByLastMember: boolean } {
+  const closedByLastMember = r.statusClosedReasonCode === "LAST_MEMBER_LEFT";
+  return {
+    status: (closedByLastMember ? "CLOSED" : r.status) as CommunityModerationStatus,
+    closedByLastMember,
+  };
+}
+
 // Community admin/owner snapshot avatars live in the SHARED avatars bucket
 // (`avatars/<userId>/…`). community-service now resolves these on its admin
 // RPCs; backoffice resolves AGAIN at its own OUTPUT boundary as
@@ -76,7 +94,7 @@ async function rowToListItem(
   /** LIVE stream count from stream-service; the gRPC row's own field is a stub. */
   liveStreamCount: number
 ): Promise<CommunityListItem> {
-  const status = r.status as CommunityModerationStatus;
+  const { status, closedByLastMember } = adminRowStatus(r);
   const [adminAvatar, avatar] = await Promise.all([
     resolveAvatarOrNull(r.adminAvatarUrl),
     resolveCommunityImageOrNull(r.communityAvatarUrl),
@@ -107,7 +125,7 @@ async function rowToListItem(
     actions: {
       canView: true,
       canClose: status === "ACTIVE",
-      canReopen: status === "CLOSED",
+      canReopen: status === "CLOSED" && !closedByLastMember,
     },
   };
 }
@@ -314,7 +332,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
     row: RawAdminCommunityRow,
     moderationHistory: CommunityModerationHistoryItem[]
   ): Promise<CommunityDetail> {
-    const status = row.status as CommunityModerationStatus;
+    const { status } = adminRowStatus(row);
     const type = row.type as CommunityType;
     const category = {
       id: row.categoryId,

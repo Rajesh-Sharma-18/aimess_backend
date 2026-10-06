@@ -18,8 +18,6 @@ const valueSchema = z
 
 const platformSchema = z.enum(CUSTOM_CREDENTIAL_PLATFORMS);
 
-const passwordSchema = z.string().min(1).max(256);
-
 export const customCredentialIdParamSchema = z.object({
   credentialId: z.string().uuid(),
 });
@@ -39,7 +37,6 @@ export const updateCustomCredentialSchema = z
     name: nameSchema.optional(),
     platform: platformSchema.optional(),
     value: valueSchema.optional(),
-    password: passwordSchema,
   })
   .strict()
   .refine(
@@ -47,10 +44,3 @@ export const updateCustomCredentialSchema = z
     { message: "At least one of name, platform or value must be provided" }
   );
 export type UpdateCustomCredentialBody = z.infer<typeof updateCustomCredentialSchema>;
-
-export const deleteCustomCredentialSchema = z
-  .object({
-    password: passwordSchema,
-  })
-  .strict();
-export type DeleteCustomCredentialBody = z.infer<typeof deleteCustomCredentialSchema>;

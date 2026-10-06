@@ -125,6 +125,8 @@ describe("UserSnapshotService — failed lookup vs missing user", () => {
 
     expect(isUnresolvedSnapshot(map.get(PEER_1))).toBe(false);
     expect(resolveDisplayName(map.get(PEER_1))).toBe("neelsheth");
+    // ...but the account never becomes the "@handle" (memberId).
+    expect(map.get(PEER_1)?.memberId).toBe("");
   });
 
   it("a snapshot-cache failure is a MISS: user-service still resolves every peer", async () => {

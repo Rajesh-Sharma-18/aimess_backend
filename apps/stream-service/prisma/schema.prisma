@@ -84,6 +84,12 @@ model Livestream {
   totalComments Int       @default(0)
   livedAt          DateTime?
   endedAt          DateTime?
+  // Why and by whom the stream ended, written atomically by claimEnded. The
+  // reason is the raw finalizeAsEnded code (HOST_ENDED, COMMUNITY_ADMIN_ENDED,
+  // ...); endedBy is the acting user (the host, or the community admin who
+  // forced the end), null for system ends. Nullable: older rows carry neither.
+  endedReason      String?
+  endedBy          String?
   // Stamped when a LIVE stream enters RECONNECTING (on_unpublish); cleared on
   // resume. Drives the grace-window cutoff — distinct from lastHeartbeatAt,
   // which tracks the separate "owner's client is alive" signal.

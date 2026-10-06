@@ -773,6 +773,11 @@ export const ADMIN_MESSAGES = {
     en: "Custom credentials fetched",
     th: "ดึงข้อมูลข้อมูลรับรองแล้ว",
   },
+  ADMIN_CUSTOM_CREDENTIAL_FETCHED: {
+    vi: "Đã tải thông tin xác thực",
+    en: "Credential fetched",
+    th: "ดึงข้อมูลข้อมูลรับรองแล้ว",
+  },
   ADMIN_CUSTOM_CREDENTIAL_CREATED: {
     vi: "Đã thêm thông tin xác thực",
     en: "Credential added",

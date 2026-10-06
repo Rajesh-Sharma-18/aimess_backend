@@ -21,6 +21,10 @@
 // in order, mirroring Prisma's own sequential-array semantics.
 jest.mock("../../src/config/prisma.js", () => ({
   prisma: {
+    // The open-community guard every activation transaction starts with.
+    community: {
+      update: jest.fn(async () => ({ id: "c" })),
+    },
     communityMember: {
       update: jest.fn(),
     },

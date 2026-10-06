@@ -2787,6 +2787,27 @@ export const openApiSchemas = {
       totalComments: { type: "integer", example: 203 },
       livedAt: { type: "string", format: "date-time", nullable: true },
       endedAt: { type: "string", format: "date-time", nullable: true },
+      endedReason: {
+        type: "string",
+        nullable: true,
+        example: "COMMUNITY_ADMIN_ENDED",
+        description:
+          "Why the stream ended; null while it runs and on streams ended before this was recorded. `HOST_ENDED` = the creator's End Live; `COMMUNITY_ADMIN_ENDED` = a community ADMIN's End for Everyone on a moderator-hosted stream. Other values are system/moderation ends (e.g. `ADMIN_FORCE_ENDED`, `COMMUNITY_CLOSED`, `ROLE_UPDATED`, `SESSION_ENDED`) — treat any unknown value as a generic end.",
+      },
+      creatorRole: {
+        type: "string",
+        nullable: true,
+        enum: ["ADMIN", "MODERATOR", null],
+        example: "MODERATOR",
+        description:
+          "The creator's CURRENT community role, null when unknown or no longer a host role. UI hint only — show End for Everyone when the viewer is an ADMIN, not the creator, and this is `MODERATOR`. The server re-checks roles on every stop.",
+      },
+      creatorName: {
+        type: "string",
+        example: "Priya Sharma",
+        description:
+          "Creator display name, username fallback, `\"\"` when unresolved.",
+      },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
@@ -3598,23 +3619,23 @@ export const openApiSchemas = {
   },
   AdminCustomCredentialUpdateRequest: {
     type: "object",
-    description: "`password` plus at least one of `name`, `platform`, `value`.",
-    required: ["password"],
+    description: "At least one of `name`, `platform`, `value`.",
     additionalProperties: false,
     properties: {
-      password: { type: "string", description: "The acting admin's own password." },
       name: { type: "string", minLength: 2, maxLength: 64, pattern: "^[A-Z][A-Z0-9_]*$" },
       platform: { type: "string", enum: ["ALL", "ANDROID", "IOS", "WEB"] },
       value: { type: "string", minLength: 8, maxLength: 512 },
     },
   },
-  AdminCustomCredentialDeleteRequest: {
-    type: "object",
-    required: ["password"],
-    additionalProperties: false,
-    properties: {
-      password: { type: "string", description: "The acting admin's own password." },
-    },
+  AdminCustomCredentialDetail: {
+    allOf: [
+      { $ref: "#/components/schemas/AdminCustomCredential" },
+      {
+        type: "object",
+        properties: { value: { type: "string", description: "The decrypted value." } },
+        required: ["value"],
+      },
+    ],
   },
 
   // ---- Categories ----
@@ -4345,6 +4366,12 @@ export const openApiSchemas = {
         maxLength: 32,
         pattern: "^[a-z0-9_]+$",
         example: "johndoe",
+      },
+      purpose: {
+        type: "string",
+        enum: ["login"],
+        description:
+          "Login step 1: on 409, name AUTH_GOOGLE_LOGIN_REQUIRED / AUTH_APPLE_LOGIN_REQUIRED / AUTH_SOCIAL_LOGIN_REQUIRED / AUTH_PASSWORD_NOT_SET instead of AUTH_ACCOUNT_TAKEN when the account has no password.",
       },
     },
     required: ["account"],

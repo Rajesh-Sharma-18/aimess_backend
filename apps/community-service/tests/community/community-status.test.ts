@@ -284,6 +284,19 @@ describe("reopenCommunity", () => {
     expect(repo.updateCommunity).not.toHaveBeenCalled();
   });
 
+  it("refuses to reopen a community that closed when its last member (the admin) left", async () => {
+    repo.findById.mockResolvedValue({
+      ...closedCommunity,
+      statusClosedReasonCode: "LAST_MEMBER_LEFT",
+    });
+
+    await expect(
+      communityService.reopenCommunity(CID, ADMIN)
+    ).rejects.toMatchObject({ messageKey: "COMMUNITY_FORBIDDEN" });
+    expect(repo.updateCommunity).not.toHaveBeenCalled();
+    expect(pubRoom).not.toHaveBeenCalled();
+  });
+
   it("is idempotent — reopening an already-open community does not re-write", async () => {
     repo.findById.mockResolvedValue({ ...activeCommunity, status: "ACTIVE" });
     repo.findMembership.mockResolvedValue({ role: "ADMIN", status: "ACTIVE" });

@@ -891,7 +891,8 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
         status,
         // u.createdAt arrives as an ISO string from auth-service — coerce to epoch ms.
         joinedAt: Date.parse(u.createdAt),
-        username: profile?.username ?? u.account,
+        // `account` is its own field below — never a stand-in username.
+        username: profile?.username ?? "",
         fullName: buildFullName(profile?.firstName, profile?.lastName),
         account: orNull(u.account),
         avatarUrl: profile?.avatarUrl || null,
@@ -962,7 +963,7 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
 
     return {
       userId: record.id,
-      username: profile?.username || record.account,
+      username: profile?.username ?? "",
       fullName: buildFullName(profile?.firstName, profile?.lastName),
       email: orNull(record.email),
       avatarUrl: profile?.avatarUrl || null,

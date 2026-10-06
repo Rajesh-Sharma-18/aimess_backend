@@ -100,6 +100,7 @@ export {
 export {
   createCustomCredential,
   deleteCustomCredential,
+  getCustomCredential,
   listCustomCredentials,
   updateCustomCredential,
 } from "./custom-credential.controller.js";
