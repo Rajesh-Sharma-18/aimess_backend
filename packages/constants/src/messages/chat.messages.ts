@@ -667,9 +667,19 @@ export const CHAT_MESSAGES = {
     th: "ไฟล์เสียงมีขนาดเกิน 25 MB",
   },
   CHAT_DOCUMENT_TOO_LARGE: {
-    vi: "Tài liệu vượt quá dung lượng cho phép (25 MB)",
-    en: "Document exceeds 25 MB",
-    th: "เอกสารมีขนาดเกิน 25 MB",
+    vi: "Tài liệu vượt quá dung lượng cho phép (50 MB)",
+    en: "Document exceeds 50 MB",
+    th: "เอกสารมีขนาดเกิน 50 MB",
+  },
+  CHAT_VIDEO_TOO_LONG: {
+    vi: "Video dài quá 3 phút",
+    en: "Video is longer than 3 minutes",
+    th: "วิดีโอยาวเกิน 3 นาที",
+  },
+  CHAT_VOICE_TOO_LONG: {
+    vi: "Tin nhắn thoại dài quá 5 phút",
+    en: "Voice message is longer than 5 minutes",
+    th: "ข้อความเสียงยาวเกิน 5 นาที",
   },
   CHAT_FILE_TOO_LARGE: {
     vi: "Tệp vượt quá dung lượng cho phép",

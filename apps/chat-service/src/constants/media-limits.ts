@@ -10,7 +10,7 @@ import { env } from "../config/env.js";
  * single source of truth consumed by the send validators (Zod superRefine) and
  * the defensive service-layer guard `assertAttachmentsValid`.
  *
- * The byte VALUES themselves (25 MB image/audio/document, 100 MB video) are
+ * The byte VALUES themselves (25 MB image/audio, 50 MB document, 100 MB video) are
  * shared with media-service's presigned-upload-time guard via matching env
  * var names/defaults (`CHAT_IMAGE_MAX_BYTES`, `CHAT_AUDIO_MAX_BYTES`,
  * `CHAT_DOCUMENT_MAX_BYTES`, `CHAT_VIDEO_MAX_BYTES` — see
@@ -85,7 +85,7 @@ const GENERIC_MAX_BYTES = env.CHAT_UPLOAD_MAX_BYTES; // ~50 MB generic cap (GIF/
 const VIDEO_MAX_BYTES = env.CHAT_VIDEO_MAX_BYTES; // 100 MB video cap
 const IMAGE_MAX_BYTES = env.CHAT_IMAGE_MAX_BYTES; // 25 MB image cap
 const AUDIO_MAX_BYTES = env.CHAT_AUDIO_MAX_BYTES; // 25 MB audio cap
-const DOCUMENT_MAX_BYTES = env.CHAT_DOCUMENT_MAX_BYTES; // 25 MB document cap
+const DOCUMENT_MAX_BYTES = env.CHAT_DOCUMENT_MAX_BYTES; // 50 MB document cap
 
 /**
  * Telegram-like cap on gallery items per message (album send). The same number
@@ -94,6 +94,10 @@ const DOCUMENT_MAX_BYTES = env.CHAT_DOCUMENT_MAX_BYTES; // 25 MB document cap
  * existed on IMAGE was simply absent for an all-video album.
  */
 const MAX_IMAGES_PER_MESSAGE = 10;
+
+/** Product caps on the client-declared `durationMs` (absent = not checked here). */
+export const VIDEO_MAX_DURATION_MS = 3 * 60 * 1000;
+export const VOICE_MAX_DURATION_MS = 5 * 60 * 1000;
 
 /**
  * Upper bound for a reaction's `mediaIndex` (0-based attachment position). The
@@ -182,7 +186,7 @@ function resolveFileLimit(
  * (DOCUMENT / CUSTOM message types). A generic "attach a file" picker lets a
  * user pick an image/video/audio file just as easily as an actual document —
  * validating every file in that bucket against the flat document cap would
- * wrongly reject e.g. a 40 MB video (under the 100 MB video cap) at the 25 MB
+ * wrongly reject e.g. a 60 MB video (under the 100 MB video cap) at the 50 MB
  * document cap. So each file here is reclassified by its OWN detected MIME
  * (never by "came from the file picker") and checked against ITS type's real
  * limit; only a file whose MIME doesn't resolve to image/video/audio falls
@@ -200,6 +204,15 @@ const TOO_LARGE_MESSAGE: Record<string, string> = {
   CHAT_AUDIO_TOO_LARGE: "Audio exceeds the maximum allowed size",
   CHAT_DOCUMENT_TOO_LARGE: "Document exceeds the maximum allowed size",
   CHAT_FILE_TOO_LARGE: "File exceeds the maximum allowed size",
+};
+
+function videoTooLong(f: AttachmentFile, isVideo: boolean): boolean {
+  return isVideo && (f.durationMs ?? 0) > VIDEO_MAX_DURATION_MS;
+}
+
+const VIDEO_TOO_LONG: MediaLimitViolation = {
+  code: "CHAT_VIDEO_TOO_LONG",
+  message: "Video exceeds the maximum allowed duration",
 };
 
 /**
@@ -246,6 +259,7 @@ function findMediaLimitViolations(
             message: TOO_LARGE_MESSAGE[tooLargeCode]!,
           });
         }
+        if (videoTooLong(f, tooLargeCode === "CHAT_VIDEO_TOO_LARGE")) violations.push(VIDEO_TOO_LONG);
       }
       break;
     }
@@ -269,6 +283,7 @@ function findMediaLimitViolations(
             message: TOO_LARGE_MESSAGE[tooLargeCode]!,
           });
         }
+        if (videoTooLong(f, tooLargeCode === "CHAT_VIDEO_TOO_LARGE")) violations.push(VIDEO_TOO_LONG);
       }
       break;
     }
@@ -281,6 +296,12 @@ function findMediaLimitViolations(
           violations.push({
             code: "CHAT_FILE_TOO_LARGE",
             message: "Voice note exceeds the maximum allowed size",
+          });
+        }
+        if ((f.durationMs ?? 0) > VOICE_MAX_DURATION_MS) {
+          violations.push({
+            code: "CHAT_VOICE_TOO_LONG",
+            message: "Voice note exceeds the maximum allowed duration",
           });
         }
       }
