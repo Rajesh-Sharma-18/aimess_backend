@@ -119,11 +119,12 @@ export const listCommunitiesQuerySchema = z
     // Accepts a category slug OR id (resolved in the repo).
     category: z.string().trim().min(1).optional(),
     status: communityStatusEnum.optional(),
-    // `live=true` keeps only communities with at least one LIVE stream.
+    // `live=true` keeps only communities with at least one LIVE stream;
+    // `live=false` keeps only communities with none. Omitted = no filter.
     live: z
       .enum(["true", "false"])
       .optional()
-      .transform((v) => v === "true"),
+      .transform((v) => (v === undefined ? undefined : v === "true")),
     // `sortBy` / `sortOrder` are the admin panel's column-sort controls and take
     // precedence over the legacy `sort` token (kept for old callers).
     sortBy: sortByFilter,

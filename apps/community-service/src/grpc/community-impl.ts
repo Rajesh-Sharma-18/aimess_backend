@@ -1236,6 +1236,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           page?: number;
           limit?: number;
           communityIds?: string[];
+          excludeCommunityIds?: string[];
         };
 
         const type =
@@ -1263,6 +1264,9 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           page: coercePage(req.page),
           limit: coerceLimit(req.limit),
           communityIds: req.communityIds?.length ? req.communityIds : undefined,
+          excludeCommunityIds: req.excludeCommunityIds?.length
+            ? req.excludeCommunityIds
+            : undefined,
         });
 
         // Resolve each admin's snapshot avatar key → presigned download URL

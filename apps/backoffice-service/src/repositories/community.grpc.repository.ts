@@ -154,7 +154,11 @@ export class GrpcCommunityRepository implements CommunityRepository {
     const [sortField, sortDir] = (query.sort ?? "createdAt:desc").split(":");
     // Live counts are owned by stream-service, so resolve the set of live
     // communities there and hand it to community-service as an id restriction.
-    const liveCommunityIds = query.live ? await fetchLiveCommunityIds() : null;
+    // live=true restricts to that set; live=false excludes it.
+    const liveIds =
+      query.live === undefined ? null : await fetchLiveCommunityIds();
+    const liveCommunityIds = query.live === true ? liveIds : null;
+    const excludeCommunityIds = query.live === false ? liveIds : null;
     if (liveCommunityIds?.length === 0) {
       return { data: [], pagination: emptyPagination(query.page, query.limit) };
     }
@@ -170,6 +174,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
       page: query.page,
       limit: query.limit,
       communityIds: liveCommunityIds ?? [],
+      excludeCommunityIds: excludeCommunityIds ?? [],
     };
 
     const res = await communityClient.adminListCommunities(req);
