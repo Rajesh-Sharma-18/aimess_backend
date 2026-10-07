@@ -44,6 +44,24 @@ export function logDevOtp(email: string, code: string, context = "OTP"): void {
 }
 
 /**
+ * The latest unconsumed OTP for an identifier/purpose, or null when there is
+ * none (or it belongs to another user). An expired code fails with
+ * AUTH_OTP_EXPIRED so the client can say so instead of "invalid".
+ */
+export async function loadLiveOtp(
+  identifier: string,
+  purpose: OtpPurpose,
+  userId?: string
+) {
+  const otp = await otpRepository.findLatestUnconsumed(identifier, purpose);
+  if (!otp || (userId && otp.userId !== userId)) return null;
+  if (otp.expiresAt.getTime() <= Date.now()) {
+    throw new BadRequestError("AUTH_OTP_EXPIRED");
+  }
+  return otp;
+}
+
+/**
  * Verifies an OTP belonging to a known user and consumes it on success.
  *
  * Reproduces the shared verify-and-consume sequence used by the
@@ -69,9 +87,9 @@ export async function verifyAndConsumeOtp(params: {
     maxAttemptsErrorKey = "AUTH_OTP_MAX_ATTEMPTS",
   } = params;
 
-  const otp = await otpRepository.findLatestActive(identifier, purpose);
+  const otp = await loadLiveOtp(identifier, purpose, userId);
 
-  if (!otp || otp.userId !== userId) {
+  if (!otp) {
     throw new UnauthorizedError(invalidErrorKey);
   }
 

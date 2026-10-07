@@ -14,7 +14,6 @@ export async function sendEmailOtp(
     identifier: string;
     purpose: OtpPurpose;
     logContext: string;
-    ttlSeconds?: number;
   }
 ): Promise<{ code: string }> {
   const session = buildSessionContext(req);
@@ -23,9 +22,7 @@ export async function sendEmailOtp(
 
   const plainCode = generateOtpCode();
   const codeHash = await hashOtpCode(plainCode);
-  const expiresAt = new Date(
-    Date.now() + (params.ttlSeconds ?? env.OTP_TTL_SECONDS) * 1000
-  );
+  const expiresAt = new Date(Date.now() + env.OTP_TTL_SECONDS * 1000);
 
   await otpRepository.consumeActiveForIdentifier(
     params.identifier,

@@ -22,6 +22,7 @@ jest.mock("../../src/lib/send-email-otp.js", () => ({
   sendEmailOtp: jest.fn(async () => ({ code: "123456" })),
 }));
 jest.mock("../../src/lib/otp.js", () => ({
+  loadLiveOtp: jest.requireActual("../../src/lib/otp.js").loadLiveOtp,
   normalizeEmail: (e: string) => e.trim().toLowerCase(),
   verifyOtpCode: jest.fn(async () => true),
 }));

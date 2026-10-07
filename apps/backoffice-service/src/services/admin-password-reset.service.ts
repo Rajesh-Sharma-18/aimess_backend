@@ -83,7 +83,7 @@ export const adminPasswordResetService = {
 
     const plainCode = generateOtpCode();
     const codeHash = await hashOtpCode(plainCode);
-    const expiresAt = new Date(Date.now() + env.ADMIN_OTP_TTL_SECONDS * 1000); // 60 seconds * 1000 ms/sec = 60000 ms = 1 minute
+    const expiresAt = new Date(Date.now() + env.ADMIN_OTP_TTL_SECONDS * 1000);
 
     await adminOtpRepository.consumeActiveForIdentifier(
       email,
@@ -131,12 +131,16 @@ export const adminPasswordResetService = {
   async verifyOtp(input: VerifyOtpInput): Promise<VerifyOtpResult> {
     const email = normalizeEmail(input.email);
 
-    const otp = await adminOtpRepository.findLatestActive(
+    const otp = await adminOtpRepository.findLatestUnconsumed(
       email,
       AdminOtpPurpose.PASSWORD_RESET
     );
     if (!otp) {
       throw new BadRequestError("OTP_INVALID");
+    }
+
+    if (otp.expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestError("OTP_EXPIRED");
     }
 
     if (otp.attempts >= otp.maxAttempts) {
