@@ -31,6 +31,9 @@ import { NotificationCategoryRepository } from "./repositories/notification-cate
 import { CacheRepository } from "./repositories/cache.repository.js";
 import { CallRepository } from "./repositories/call.repository.js";
 import { PrivateMessageReportRepository } from "./repositories/private-message-report.repository.js";
+import { ForwardedMediaGrantRepository } from "./repositories/forwarded-media-grant.repository.js";
+import { ForwardService } from "./services/forward.service.js";
+import { ForwardController } from "./api/controllers/forward.controller.js";
 
 // -- Services --
 import { PrivateRoomService } from "./services/private-room.service.js";
@@ -533,6 +536,7 @@ const startServer = async () => {
     const notificationCategoryRepo = new NotificationCategoryRepository(prisma);
     const callRepo = new CallRepository(prisma);
     const privateMessageReportRepo = new PrivateMessageReportRepository(prisma);
+    const forwardedMediaGrantRepo = new ForwardedMediaGrantRepository(prisma);
     // Whole-account message-body search. Separate from the three per-room
     // search paths, which stay exactly as they are.
     const messageSearchRepo = new MessageSearchRepository(prisma);
@@ -983,6 +987,7 @@ const startServer = async () => {
       notificationRepo,
       chatMessageOrchestrator,
       privateRoomService,
+      forwardedMediaGrantRepo,
     });
 
     // 4. Instantiate controllers
@@ -1047,6 +1052,17 @@ const startServer = async () => {
         privateMessageService,
         groupMessageService,
         communityMessageService
+      ),
+      forwardCtrl: new ForwardController(
+        new ForwardService(
+          privateMessageService,
+          groupMessageService,
+          communityMessageService,
+          chatMessageOrchestrator,
+          userSnapshotService,
+          cacheRepo,
+          forwardedMediaGrantRepo
+        )
       ),
     };
 

@@ -1,6 +1,8 @@
 import type { Request, Response } from "express";
 import type { Redis, Cluster } from "ioredis";
+import { publishMessageEdited } from "../../lib/publish-message-edited.js";
 
+import { isIdempotentReplay } from "../../lib/idempotency.js";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 import { NotFoundError } from "@aimess/errors";
@@ -797,34 +799,38 @@ export class PrivateMessageController {
       content: result.content ?? null,
       reactions: [],
       isForwarded: true,
+      forwardData: full.forwardData,
       serverTs: result.createdAt?.getTime() ?? Date.now(),
       sequenceNumber: (full.sequenceNumber as number) ?? 0,
       ...autoDeleteWireFields(result),
     });
-    await this.redis.publish(
-      `conv:${targetRoomId}`,
-      JSON.stringify({ event: "message:new", data: forwardedEvent })
-    );
-    // Fire-and-forget bump — must never delay the HTTP response.
-    publishConvUpdatedSafe({
-      redis: this.redis,
-      type: "PRIVATE",
-      roomId: targetRoomId,
-      recipientIds: [userId, receiverId],
-      senderId: userId,
-      // PRIVATE rows carry no sender prefix — see the delete-recalc bumps above.
-      senderName: "",
-      lastMessageId: result.id,
-      lastMessageAt: result.createdAt?.getTime() ?? Date.now(),
-      preview: {
-        contentType: result.messageType,
-        text: buildMessagePreview(result.messageType, result.content),
-        clientMessageId: result.clientMessageId ?? null,
-        seq: result.sequenceNumber ?? 0,
-        revision: result.revision ?? 0,
-        createdAt: result.createdAt?.getTime() ?? Date.now(),
-      },
-    });
+    // A replay already broadcast on its first send.
+    if (!isIdempotentReplay(result)) {
+      await this.redis.publish(
+        `conv:${targetRoomId}`,
+        JSON.stringify({ event: "message:new", data: forwardedEvent })
+      );
+      // Fire-and-forget bump — must never delay the HTTP response.
+      publishConvUpdatedSafe({
+        redis: this.redis,
+        type: "PRIVATE",
+        roomId: targetRoomId,
+        recipientIds: [userId, receiverId],
+        senderId: userId,
+        // PRIVATE rows carry no sender prefix — see the delete-recalc bumps above.
+        senderName: "",
+        lastMessageId: result.id,
+        lastMessageAt: result.createdAt?.getTime() ?? Date.now(),
+        preview: {
+          contentType: result.messageType,
+          text: buildMessagePreview(result.messageType, result.content),
+          clientMessageId: result.clientMessageId ?? null,
+          seq: result.sequenceNumber ?? 0,
+          revision: result.revision ?? 0,
+          createdAt: result.createdAt?.getTime() ?? Date.now(),
+        },
+      });
+    }
     res
       .status(HTTP_STATUS.CREATED)
       .json(
@@ -969,15 +975,16 @@ export class PrivateMessageController {
           ? result.createdAt.getTime()
           : Date.now(),
       sequenceNumber: (full.sequenceNumber as number) ?? 0,
+      revision: (full.revision as number) ?? 0,
       // §4 — an edit does not restart the timer; the deadline rides along so an
       // edited bubble keeps showing the same countdown instead of losing it.
       ...autoDeleteWireFields(result),
     });
     if (result.roomId) {
-      await this.redis.publish(
-        `conv:${result.roomId}`,
-        JSON.stringify({ event: "message:edited", data: editedEvent })
-      );
+      await publishMessageEdited(this.redis, result.roomId, editedEvent, [
+        (full.senderId as string) ?? "",
+        (full.receiverId as string) ?? "",
+      ]);
     }
     res
       .status(HTTP_STATUS.OK)

@@ -1047,3 +1047,17 @@ model MessageReaction {
   @@index([messageId, conversationType, emoji, createdAt, userId])
   @@map("message_reactions")
 }
+
+/// Download access for a forwarded attachment: the object stays filed under its
+/// original upload room, so `checkMediaAccess` falls back to these per-target grants.
+model ForwardedMediaGrant {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  objectKey String
+  roomId    String
+  /// PRIVATE_CHAT | GROUP_CHAT | COMMUNITY_CHAT
+  scope     String
+  createdAt DateTime @default(now())
+
+  @@index([objectKey])
+  @@map("forwarded_media_grants")
+}

@@ -354,6 +354,11 @@ export const CHAT_MESSAGES = {
     en: "You can only edit your own messages",
     th: "คุณแก้ไขได้เฉพาะข้อความของตัวเองเท่านั้น",
   },
+  CHAT_TEXT_REQUIRED: {
+    vi: "Tin nhắn không được để trống",
+    en: "Message text cannot be empty",
+    th: "ข้อความต้องไม่ว่างเปล่า",
+  },
   CHAT_EDIT_TEXT_ONLY: {
     vi: "Chỉ có thể chỉnh sửa tin nhắn văn bản",
     en: "Only text messages can be edited",
@@ -373,6 +378,11 @@ export const CHAT_MESSAGES = {
     vi: "Tin nhắn đã bị xóa",
     en: "Message already deleted",
     th: "ข้อความนี้ถูกลบไปแล้ว",
+  },
+  CHAT_FORWARD_NOT_ALLOWED: {
+    vi: "Không thể chuyển tiếp tin nhắn này",
+    en: "This message can't be forwarded",
+    th: "ไม่สามารถส่งต่อข้อความนี้ได้",
   },
   CHAT_SYSTEM_MESSAGE_IMMUTABLE: {
     vi: "Không thể xóa tin nhắn hệ thống",

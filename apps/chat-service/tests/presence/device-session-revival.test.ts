@@ -20,6 +20,8 @@ function makeFakeRedis() {
         hashes.set(key, { ...(hashes.get(key) ?? {}), ...values });
         return "OK";
       },
+      hget: async (key: string, field: string) =>
+        hashes.get(key)?.[field] ?? null,
       hset: async (key: string, field: string, value: string) => {
         hashes.set(key, { ...(hashes.get(key) ?? {}), [field]: value });
         return 1;

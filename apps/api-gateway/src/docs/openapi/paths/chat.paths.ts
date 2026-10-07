@@ -3420,6 +3420,127 @@ const privateMessageForward = {
   },
 };
 
+const enumKind = {
+  type: "string" as const,
+  enum: ["PRIVATE", "GROUP", "COMMUNITY"],
+};
+
+const unifiedForward = {
+  post: {
+    tags: ["Chat — Messages"],
+    operationId: "forwardMessages",
+    summary: "Forward messages (any kind → any kind)",
+    description:
+      "Copies 1..50 source messages (kept in the given order) into 1..20 distinct target rooms. " +
+      "Each copy is a normal send in the target room (sequence, unread, push, broadcast) stamped " +
+      "`isForwarded: true` + `forwardData` (a forward of a forward keeps the FIRST origin). " +
+      "`clientMessageIds[i]` is the idempotency key for `sources[i]` in that target, so a retry with " +
+      "the same ids creates and broadcasts nothing new.\n\n" +
+      "Whole-request errors (nothing is sent): `400 VALIDATION_FAILED`, `404 CHAT_MESSAGE_NOT_FOUND` " +
+      "(missing, wrong `conversationType`, or not readable by the caller), `400 CHAT_MESSAGE_ALREADY_DELETED`, " +
+      "`400 CHAT_FORWARD_NOT_ALLOWED` (system, call, invite, view-once). A target that cannot be sent to " +
+      "is reported in its own `results[].error` (normal send-path code); other targets still succeed. " +
+      "`messages` holds the copies sent before a target failed.",
+    security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            required: ["sources", "targets"],
+            properties: {
+              sources: {
+                type: "array" as const,
+                minItems: 1,
+                maxItems: 50,
+                items: {
+                  type: "object" as const,
+                  required: ["messageId", "conversationType"],
+                  properties: {
+                    messageId: { type: "string" as const },
+                    conversationType: enumKind,
+                  },
+                },
+              },
+              targets: {
+                type: "array" as const,
+                minItems: 1,
+                maxItems: 20,
+                items: {
+                  type: "object" as const,
+                  required: ["conversationType", "roomId", "clientMessageIds"],
+                  properties: {
+                    conversationType: enumKind,
+                    roomId: {
+                      type: "string" as const,
+                      description: "COMMUNITY: the community id.",
+                    },
+                    clientMessageIds: {
+                      type: "array" as const,
+                      description: "One UUID per source, same order.",
+                      items: { type: "string" as const, format: "uuid" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      "200": {
+        description: "Per-target results",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const },
+                data: {
+                  type: "object" as const,
+                  properties: {
+                    results: {
+                      type: "array" as const,
+                      items: {
+                        type: "object" as const,
+                        properties: {
+                          roomId: { type: "string" as const },
+                          conversationType: enumKind,
+                          ok: { type: "boolean" as const },
+                          messages: {
+                            type: "array" as const,
+                            description:
+                              "ChatWireMessage (PRIVATE/GROUP) or ChatCommunityWireMessage (COMMUNITY), per source.",
+                            items: { type: "object" as const },
+                          },
+                          error: {
+                            type: "object" as const,
+                            nullable: true,
+                            properties: {
+                              code: { type: "string" as const },
+                              message: { type: "string" as const },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "400": badRequest,
+      "401": unauthorized,
+      "404": notFound,
+      "429": tooManyRequests,
+    },
+  },
+};
+
 const communityMessageForward = {
   post: {
     tags: ["Chat — Community"],
@@ -4525,6 +4646,8 @@ export const chatPaths = {
     groupMessageReactions,
   "/chat/groups/rooms/{roomId}/messages/{messageId}/reactions/{emoji}":
     groupMessageRemoveReaction,
+
+  "/chat/forward": unifiedForward,
 
   // Unified cross-conversation-type message navigation
   "/chat/messages/{messageId}/context": unifiedMessageContext,

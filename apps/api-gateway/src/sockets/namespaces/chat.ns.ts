@@ -811,11 +811,17 @@ export function registerChatNamespace(
         // it discloses strictly LESS than the presence they already subscribed
         // to. It is what stops those peers rendering the old profile picture
         // until their next fetch.
+        // `user:custom_status_updated` follows the same audience rule, but
+        // user-service only attaches the status itself when the subject's
+        // `whoCanViewProfile` is EVERYONE; otherwise it is `{ userId,
+        // updatedAt, serverNow }` and watchers refetch `GET /users/:id`, which
+        // applies the profile gate. So it never discloses beyond that gate.
         if (
           pattern === "user:*" &&
           (parsed.event === "presence:status" ||
             parsed.event === "user:account_deleted" ||
-            parsed.event === "user:profile_updated")
+            parsed.event === "user:profile_updated" ||
+            parsed.event === "user:custom_status_updated")
         ) {
           chat
             .to(`presence:${channel.slice("user:".length)}`)

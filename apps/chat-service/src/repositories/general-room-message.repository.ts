@@ -364,6 +364,21 @@ export class GeneralRoomMessageRepository {
     return row?.id ?? null;
   }
 
+  /** The room's newest message everyone sees — what the community list row previews. */
+  async findNewestSharedMessageId(roomId: string): Promise<string | null> {
+    const row = await this.prisma.generalRoomMessage.findFirst({
+      // Mongo: shared rows usually lack the field entirely, which `null` alone doesn't match.
+      where: {
+        roomId,
+        deletedForAll: false,
+        OR: [{ visibleToUserId: null }, { visibleToUserId: { isSet: false } }],
+      },
+      orderBy: { sequenceNumber: "desc" },
+      select: { id: true },
+    });
+    return row?.id ?? null;
+  }
+
   async findOne(
     filter: Record<string, unknown>
   ): Promise<GeneralRoomMessage | null> {

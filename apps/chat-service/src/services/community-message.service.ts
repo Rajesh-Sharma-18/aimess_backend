@@ -120,6 +120,12 @@ import {
   isAlbumRowId,
 } from "../lib/album-messages.js";
 import { splitCommunityMediaAlbum } from "../lib/split-media-album.js";
+import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
+import {
+  assertForwardable,
+  communityForwardContent,
+  type ForwardSource,
+} from "../lib/forward-source.js";
 import {
   resolveMediaUrlMap,
   urlFromMap,
@@ -373,11 +379,13 @@ export class CommunityMessageService {
     assertAttachmentsValid(params.messageType, params.attachments);
     // See private-message.service.ts — this verifies the OBJECT (scan verdict,
     // uploader, room scope), not just the client-declared size/duration.
-    await assertAttachmentsVerified({
-      resourceId: params.roomId,
-      senderId: params.sentBy,
-      files: params.attachments,
-    });
+    // A forward re-posts another user's object from another room by design.
+    if (!params.forwardData)
+      await assertAttachmentsVerified({
+        resourceId: params.roomId,
+        senderId: params.sentBy,
+        files: params.attachments,
+      });
 
     // Guard: block sends to suspended or deactivated rooms. "suspended" means
     // the community was closed (owner status=CLOSED or platform SUSPENDED);
@@ -874,6 +882,22 @@ export class CommunityMessageService {
    * Active member userIds for a community room — the recipient list for the
    * community list "bump-to-top" (`community:updated`) fan-out.
    */
+  /** Members whose list row must follow an edit — everyone when it was the room's newest message, else none. */
+  async previewRecipientsAfterEdit(updated: {
+    id: string;
+    roomId: string;
+    message: string | null;
+  }): Promise<string[]> {
+    const newestId = await this.messageRepo.findNewestSharedMessageId(updated.roomId);
+    if (newestId !== updated.id) return [];
+    await this.roomRepo.setLastMessageContentIfCurrent(
+      updated.roomId,
+      updated.id,
+      updated.message ?? ""
+    );
+    return this.getActiveMemberIds(updated.roomId);
+  }
+
   async getActiveMemberIds(roomId: string): Promise<string[]> {
     const members = await this.memberRepo.findActiveByRoom(roomId);
     return members.map((m) => m.userId);
@@ -2766,6 +2790,8 @@ export class CommunityMessageService {
     // also tolerates any legacy lower-case rows. Mirrors private/group (!== "TEXT").
     if (normalizeMessageType(message.messageType) !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
+    if (!params.content?.text?.trim())
+      throw new BadRequestError("CHAT_TEXT_REQUIRED");
     if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
@@ -3836,6 +3862,46 @@ export class CommunityMessageService {
    * delegates to `sendMessage` so all live effects (broadcast, push, bump-to-top)
    * run automatically via the existing send path.
    */
+  /** Source of a unified forward: same read rules as the history timeline. */
+  async loadForwardSource(
+    messageId: string,
+    userId: string
+  ): Promise<ForwardSource> {
+    const message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const access = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      message.roomId,
+      userId,
+      { allowBannedReadCutoff: true }
+    ).catch(() => null);
+    if (
+      !access ||
+      (access.bannedAtCutoff && message.createdAt > access.bannedAtCutoff) ||
+      (message.visibleToUserId && message.visibleToUserId !== userId) ||
+      isHiddenForUser(message, userId)
+    ) {
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    }
+    if (message.deletedForAll)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    assertForwardable(message);
+    return {
+      messageId: message.id,
+      roomId: message.roomId,
+      conversationType: "COMMUNITY",
+      senderId: message.sentBy ?? "",
+      senderName: message.senderName ?? "",
+      createdAtMs: message.createdAt.getTime(),
+      contentType: normalizeMessageType(message.messageType),
+      content: communityForwardContent(message.message, message.attachments),
+      forwardData: message.isForwarded
+        ? ((message.forwardData as Record<string, unknown> | null) ?? null)
+        : null,
+    };
+  }
+
   async forwardMessage(params: {
     sourceMessageId: string;
     sourceCommunityId: string;

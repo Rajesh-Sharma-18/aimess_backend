@@ -73,6 +73,8 @@ import { PresenceController } from "../../src/api/controllers/presence.controlle
 import { MessageContextController } from "../../src/api/controllers/message-context.controller.js";
 import { MessageSearchController } from "../../src/api/controllers/message-search.controller.js";
 import { MessageSearchService } from "../../src/services/message-search.service.js";
+import { ForwardService } from "../../src/services/forward.service.js";
+import { ForwardController } from "../../src/api/controllers/forward.controller.js";
 
 /**
  * A Proxy whose every property is a fresh jest.fn() (memoized per key). Lets a
@@ -161,6 +163,7 @@ export interface BuiltMocks {
   notificationCategoryRepo: any;
   callRepo: any;
   messageSearchRepo: any;
+  forwardedMediaGrantRepo: any;
   cacheRepo: any;
   // peers / infra
   userServiceClient: any;
@@ -417,6 +420,7 @@ export function buildApp(): BuiltApp {
   });
   const callRepo = repoMock();
   const messageSearchRepo = repoMock();
+  const forwardedMediaGrantRepo = repoMock();
 
   // -- Peers / collaborators --
   // UserSnapshotService is real (it calls the mocked user-service-client lib +
@@ -745,6 +749,17 @@ export function buildApp(): BuiltApp {
         cacheRepo
       )
     ),
+    forwardCtrl: new ForwardController(
+      new ForwardService(
+        privateMessageService,
+        groupMessageService,
+        communityMessageService,
+        chatMessageOrchestrator,
+        userSnapshotService,
+        cacheRepo,
+        forwardedMediaGrantRepo
+      )
+    ),
   };
 
   const app = createApp(controllers);
@@ -769,6 +784,7 @@ export function buildApp(): BuiltApp {
       notificationCategoryRepo,
       callRepo,
       messageSearchRepo,
+      forwardedMediaGrantRepo,
       cacheRepo,
       userServiceClient,
       friendshipGrpcClient,

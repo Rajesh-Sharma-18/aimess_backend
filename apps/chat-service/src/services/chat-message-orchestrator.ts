@@ -122,6 +122,8 @@ export interface SendDirectParams {
   clientMessageId?: string | null;
   /** Client compose time (epoch ms) — display only; never overwrites serverTs. */
   clientTs?: number | null;
+  /** Forward provenance (ForwardService only) — also skips the uploader/room media check. */
+  forwardData?: Record<string, unknown> | null;
 }
 
 export interface SendDirectResult {
@@ -153,6 +155,8 @@ export interface SendCommunityParams {
   /** Idempotency key; defaulted to a fresh UUID when omitted. */
   clientMessageId?: string | null;
   attachments?: Array<Record<string, unknown>>;
+  /** Forward provenance (ForwardService only) — also skips the uploader/room media check. */
+  forwardData?: Record<string, unknown> | null;
 }
 
 export interface SendCommunityResult {
@@ -371,6 +375,7 @@ export class ChatMessageOrchestrator {
         clientMessageId,
         dedupeKey,
         clientTs,
+        forwardData: params.forwardData,
       });
     } else {
       msg = await this.privateMessageService.sendMessage({
@@ -382,6 +387,7 @@ export class ChatMessageOrchestrator {
         clientMessageId,
         dedupeKey,
         clientTs,
+        forwardData: params.forwardData,
       });
     }
 
@@ -439,6 +445,8 @@ export class ChatMessageOrchestrator {
       parentMessageId: (full.parentMessageId as string) || "",
       quoteData: bcastQuote,
       reactions: [],
+      isForwarded: full.isForwarded === true,
+      forwardData: full.forwardData,
       clientTs,
       serverTs,
       sequenceNumber: msg.sequenceNumber,
@@ -475,6 +483,8 @@ export class ChatMessageOrchestrator {
           parentMessageId: (rowFull.parentMessageId as string) || "",
           quoteData: rowBcastQuote,
           reactions: [],
+          isForwarded: rowFull.isForwarded === true,
+          forwardData: rowFull.forwardData,
           clientTs,
           serverTs: rowServerTs,
           sequenceNumber: row.sequenceNumber,
@@ -649,6 +659,7 @@ export class ChatMessageOrchestrator {
       parentMessageId: params.parentMessageId ?? null,
       clientMessageId,
       attachments: params.attachments,
+      forwardData: params.forwardData,
     });
 
     const sentAt =
@@ -706,6 +717,8 @@ export class ChatMessageOrchestrator {
         (saved as unknown as { countInUnread?: boolean | null })
           .countInUnread ?? true,
       clientMessageId,
+      isForwarded: saved.isForwarded === true,
+      forwardData: saved.isForwarded ? (saved.forwardData ?? null) : null,
       serverTs: sentAt,
       sentAt,
       // The community gRPC handler predates per-room sequencing; the field now
@@ -763,6 +776,8 @@ export class ChatMessageOrchestrator {
           message: row.message ?? "",
           contentType: normalizeMessageType(row.messageType),
           clientMessageId,
+          isForwarded: row.isForwarded === true,
+          forwardData: row.isForwarded ? (row.forwardData ?? null) : null,
           serverTs: rowSentAt,
           sentAt: rowSentAt,
           sequenceNumber: row.sequenceNumber,
@@ -952,6 +967,7 @@ export class ChatMessageOrchestrator {
           .countInUnread ?? true,
       clientMessageId,
       isForwarded: true,
+      forwardData: saved.forwardData ?? null,
       serverTs: sentAt,
       sentAt,
       sequenceNumber: saved.sequenceNumber,
