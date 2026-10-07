@@ -508,17 +508,24 @@ export const userSearchService = {
     // "@Smiley_Creatures", "smiley creatures" and "smileycreatures" are one
     // lookup against one indexed field.
     const normalizedQ = q ? normalizeForSearch(q) : "";
+    // An existing DM keeps the peer findable whatever their `whoCanFindMe` says.
+    const roomPeerIds = [...peerRoomByUserId.keys()];
     const [exactHandleHit, chatUserProfiles, chatGroupSummaries] =
       await Promise.all([
         normalizedQ
           ? userProfileRepository.findDiscoverableByNormalizedUsername(
               normalizedQ,
               viewerGraph,
-              [...peerRoomByUserId.keys()]
+              roomPeerIds
             )
           : Promise.resolve(null),
         !cursor && friendIds.length
-          ? userProfileRepository.findUsersInList(friendIds, q, 0, CHAT_LIMIT)
+          ? userProfileRepository.findUsersInList(
+              friendIds,
+              q,
+              0,
+              CHAT_LIMIT
+            )
           : Promise.resolve([]),
         cursor
           ? Promise.resolve([])
@@ -609,12 +616,7 @@ export const userSearchService = {
         otherTake + 1,
         viewerGraph,
         cursor,
-        // Same carve-out `hiddenWithoutRoom` makes for blocks, applied to
-        // `whoCanFindMe`: a peer the viewer already has a private conversation
-        // with is in their inbox anyway, so hiding the row here only made the
-        // two doors disagree about the same pair. It widens the ROW alone —
-        // presence and the friend-request action keep their own scopes.
-        [...peerRoomByUserId.keys()]
+        roomPeerIds
       ),
       cursor
         ? Promise.resolve([])

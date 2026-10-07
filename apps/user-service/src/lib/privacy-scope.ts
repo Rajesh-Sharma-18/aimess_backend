@@ -80,8 +80,7 @@ export function scopeAdmits(
  *
  *   where: { ...searchFilter, ...discoverableWhere(viewerFriendIds) }
  *
- * `NO_ONE` rows are excluded for everyone (including friends), matching the
- * "should not appear in search results for anyone" rule. Rows with no
+ * `NO_ONE` rows are excluded for everyone except accepted friends. Rows with no
  * `privacySettings` row yet are treated as `EVERYONE` (the schema default), so
  * this never hides users who have simply never opened Settings.
  *
@@ -107,14 +106,11 @@ export function discoverableWhere(
     OR: [
       { privacySettings: { is: null } },
       { privacySettings: { whoCanFindMe: "EVERYONE" } },
-      {
-        privacySettings: { whoCanFindMe: "FRIENDS" },
-        userId: { in: viewer.friendIds },
-      },
+      // Accepted friends can always find each other, whatever the scope (incl. NO_ONE).
+      { userId: { in: viewer.friendIds } },
       {
         privacySettings: { whoCanFindMe: "FRIENDS_OF_FRIENDS" },
-        // Direct friends qualify too — FoF widens FRIENDS, never narrows it.
-        userId: { in: [...viewer.friendIds, ...viewer.friendOfFriendIds] },
+        userId: { in: viewer.friendOfFriendIds },
       },
     ],
   };

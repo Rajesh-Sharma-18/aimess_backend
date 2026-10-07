@@ -111,6 +111,19 @@ describe("GET /api/v1/users/search?q= — whoCanFindMe vs. an existing DM", () =
     expect(row.isOnline).toBe(false);
   });
 
+  it("keeps the friends bucket ungated", async () => {
+    friendRepo.findAllForUser.mockResolvedValue([
+      { id: "f1", requesterId: TEST_USER_ID, addresseeId: PEER, status: "ACCEPTED" },
+    ]);
+    friendRepo.resolveViewerGraph.mockResolvedValue({ friendIds: [PEER], friendOfFriendIds: [] });
+
+    await search();
+
+    const friendWhere = findMany.mock.calls[0]![0].where;
+    expect(friendWhere.userId).toEqual({ in: [PEER] });
+    expect(JSON.stringify(friendWhere)).not.toContain("whoCanFindMe");
+  });
+
   it("leaves the gate closed for a peer with no conversation", async () => {
     await search();
 

@@ -81,42 +81,26 @@ describe("discoverableWhere", () => {
     );
   });
 
-  it("restricts FRIENDS rows to direct friends only", () => {
+  it("admits accepted friends under every scope, NO_ONE included", () => {
     expect(where.OR).toEqual(
-      expect.arrayContaining([
-        {
-          privacySettings: { whoCanFindMe: "FRIENDS" },
-          userId: { in: [FRIEND] },
-        },
-      ])
+      expect.arrayContaining([{ userId: { in: [FRIEND] } }])
     );
   });
 
-  it("widens FRIENDS_OF_FRIENDS rows to friends AND their one-hop expansion", () => {
+  it("admits FRIENDS_OF_FRIENDS rows for the one-hop expansion", () => {
     expect(where.OR).toEqual(
       expect.arrayContaining([
         {
           privacySettings: { whoCanFindMe: "FRIENDS_OF_FRIENDS" },
-          userId: { in: [FRIEND, FOF] },
+          userId: { in: [FOF] },
         },
       ])
     );
   });
 
-  it("never puts a friend-of-friend into the FRIENDS branch", () => {
-    const friendsBranch = where.OR?.find(
-      (b) =>
-        typeof b === "object" &&
-        b !== null &&
-        "privacySettings" in b &&
-        (b as { privacySettings?: { whoCanFindMe?: string } }).privacySettings
-          ?.whoCanFindMe === "FRIENDS"
-    ) as { userId?: { in?: string[] } } | undefined;
-    expect(friendsBranch?.userId?.in).not.toContain(FOF);
-  });
-
-  it("has no branch that can match NO_ONE — it is unsearchable by anyone", () => {
+  it("hides NO_ONE from non-friends: no scope branch names it", () => {
     expect(JSON.stringify(where)).not.toContain("NO_ONE");
+    expect(JSON.stringify(where)).not.toContain(`"in":["${'${FOF}'}"]},{`);
   });
 });
 
