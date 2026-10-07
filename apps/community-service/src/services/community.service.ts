@@ -16,6 +16,7 @@ import {
   currentLocale,
   isHiddenSystemMessage,
   localizeMessagePreview,
+  localizeCategoryName,
   buildCommunitySystemFallbackText,
   STORED_TEXT_LOCALE,
   t,
@@ -1105,7 +1106,10 @@ async function toCommunityData(
     handle: community.handle,
     description: community.description,
     type: community.type,
-    category: { id: community.category.id, name: community.category.name },
+    category: {
+      id: community.category.id,
+      name: localizeCategoryName(community.category.name),
+    },
     creatorId: community.creatorId,
     adminId: community.adminId,
     memberCount: community.memberCount,
@@ -1292,7 +1296,10 @@ async function toDiscoverItem(
     handle: community.handle,
     description: community.description,
     type: community.type,
-    category: { id: community.category.id, name: community.category.name },
+    category: {
+      id: community.category.id,
+      name: localizeCategoryName(community.category.name),
+    },
     memberCount: community.memberCount,
     memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
@@ -2139,7 +2146,8 @@ async function enrichMineCommunities(
 
 export const communityService = {
   async listCategories(): Promise<CommunityCategoryData[]> {
-    return communityRepository.listActiveCategories();
+    const categories = await communityRepository.listActiveCategories();
+    return categories.map((c) => ({ ...c, name: localizeCategoryName(c.name) }));
   },
 
   async listCategoriesAdmin(query: {
