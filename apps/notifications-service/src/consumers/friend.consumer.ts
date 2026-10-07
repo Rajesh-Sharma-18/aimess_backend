@@ -152,11 +152,13 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
     case FriendshipEvents.FRIEND_REJECTED: {
       const p = data as FriendRejectedPayload;
       const deepLink = buildDeepLink("user", p.addresseeId);
-      // Notify the requester that their request was declined.
+      // The requester's inbox row records the decline, but a declined request
+      // never wakes their devices.
       await pushToUser({
         userId: p.requesterId,
         category: "friendRequestEnabled",
         type,
+        skipPush: true,
         actorId: p.addresseeId,
         copy: friendCopy.rejected(p.addresseeName),
         localizedData: resolutionCopy.friendDeclined(),
@@ -217,9 +219,10 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         type,
         actorId: p.requesterId,
         copy: friendCopy.cancelled(p.requesterName),
-        // Silent: this event REMOVES the request row, so a visible push
-        // announcing a cancellation would contradict the row disappearing.
-        dataOnly: true,
+        // Inbox only: a withdrawn request must never reach the addressee's
+        // devices as a card, a silent render or an update. The tray card they
+        // already have is closed by dismissFriendRequestCard below.
+        skipPush: true,
         deepLink,
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
