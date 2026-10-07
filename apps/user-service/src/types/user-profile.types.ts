@@ -1,3 +1,4 @@
+import type { CustomStatus } from "../services/custom-status.service.js";
 import type { MediaObject } from "@aimess/shared-types";
 
 import type { ProfileGenderValue } from "../lib/profile-fields.util.js";
@@ -91,6 +92,9 @@ export type PublicUserProfileData = {
   firstName: string | null;
   lastName: string | null;
   bio: string | null;
+  /** Same gate as `bio`; null when none, expired, or hidden. */
+  customStatus: CustomStatus | null;
+  serverNow: number;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   avatar: MediaObject;

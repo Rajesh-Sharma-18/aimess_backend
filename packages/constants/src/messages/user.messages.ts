@@ -271,6 +271,41 @@ export const USER_MESSAGES = {
     en: "Recent search history cleared.",
     th: "ล้างประวัติการค้นหาล่าสุดแล้ว",
   },
+  USER_CUSTOM_STATUS_UPDATED: {
+    vi: "Đã cập nhật trạng thái",
+    en: "Status updated.",
+    th: "อัปเดตสถานะแล้ว",
+  },
+  USER_CUSTOM_STATUS_CLEARED: {
+    vi: "Đã xóa trạng thái",
+    en: "Status cleared.",
+    th: "ล้างสถานะแล้ว",
+  },
+  USER_CUSTOM_STATUS_EMPTY: {
+    vi: "Vui lòng nhập biểu tượng cảm xúc hoặc nội dung trạng thái",
+    en: "Add an emoji or some text for your status.",
+    th: "โปรดเพิ่มอีโมจิหรือข้อความสำหรับสถานะของคุณ",
+  },
+  USER_CUSTOM_STATUS_TEXT_TOO_LONG: {
+    vi: "Trạng thái tối đa 60 ký tự",
+    en: "Status must be at most 60 characters.",
+    th: "สถานะต้องมีความยาวไม่เกิน 60 ตัวอักษร",
+  },
+  USER_CUSTOM_STATUS_TEXT_INVALID: {
+    vi: "Trạng thái không được chứa xuống dòng hoặc ký tự điều khiển",
+    en: "Status can't contain line breaks or control characters.",
+    th: "สถานะต้องไม่มีการขึ้นบรรทัดใหม่หรืออักขระควบคุม",
+  },
+  USER_CUSTOM_STATUS_EMOJI_INVALID: {
+    vi: "Vui lòng chọn đúng một biểu tượng cảm xúc",
+    en: "Choose a single emoji.",
+    th: "โปรดเลือกอีโมจิเพียงหนึ่งตัว",
+  },
+  USER_CUSTOM_STATUS_DURATION_INVALID: {
+    vi: "Thời lượng trạng thái phải từ 1 phút đến 30 ngày",
+    en: "Status duration must be between 1 minute and 30 days.",
+    th: "ระยะเวลาสถานะต้องอยู่ระหว่าง 1 นาทีถึง 30 วัน",
+  },
 } as const satisfies MessageCatalog;
 
 export type UserMessageKey = keyof typeof USER_MESSAGES;

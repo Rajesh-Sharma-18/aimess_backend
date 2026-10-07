@@ -64,6 +64,7 @@ import { avatarService } from "./avatar.service.js";
 import { usernameService } from "./username.service.js";
 import { publishProfileUpdatedSafe } from "../messaging/publish-profile-updated.js";
 import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
+import { activeCustomStatus } from "./custom-status.service.js";
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -438,6 +439,8 @@ export const userProfileService = {
       firstName: identity.firstName,
       lastName: identity.lastName,
       bio: canViewProfile ? profile.bio : null,
+      customStatus: canViewProfile ? activeCustomStatus(profile) : null,
+      serverNow: Date.now(),
       avatarUrl: avatarView?.url ?? null,
       avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
       avatar,
