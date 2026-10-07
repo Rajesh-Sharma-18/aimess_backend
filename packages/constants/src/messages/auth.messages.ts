@@ -291,6 +291,11 @@ export const AUTH_MESSAGES = {
     en: "Invalid or expired verification code.",
     th: "รหัสยืนยันไม่ถูกต้องหรือหมดอายุแล้ว",
   },
+  AUTH_OTP_EXPIRED: {
+    vi: "Mã xác minh đã hết hạn, vui lòng yêu cầu mã mới",
+    en: "This verification code has expired. Please request a new one.",
+    th: "รหัสยืนยันหมดอายุแล้ว กรุณาขอรหัสใหม่",
+  },
   AUTH_OTP_MAX_ATTEMPTS: {
     vi: "Đã vượt quá số lần nhập mã, vui lòng yêu cầu mã mới",
     en: "Too many failed attempts. Please request a new verification code.",

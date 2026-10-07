@@ -99,6 +99,7 @@ const envSchema = z.object({
 
   OTP_LENGTH: z.coerce.number().int().min(4).max(8).default(6),
   OTP_TTL_SECONDS: z.coerce.number().positive().default(600),
+  EMAIL_CHANGE_OTP_TTL_SECONDS: z.coerce.number().positive().default(60),
   OTP_MAX_ATTEMPTS: z.coerce.number().positive().default(5),
   PASSWORD_RESET_TOKEN_TTL_SECONDS: z.coerce.number().positive().default(900),
 

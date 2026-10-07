@@ -52,6 +52,14 @@ export const otpRepository = {
     });
   },
 
+  // No expiry filter, so the caller can tell an expired code from a wrong one.
+  findLatestUnconsumed(identifier: string, purpose: OtpPurpose) {
+    return prisma.otpCode.findFirst({
+      where: { identifier, purpose, consumedAt: null },
+      orderBy: { createdAt: "desc" },
+    });
+  },
+
   incrementAttempts(id: string) {
     return prisma.otpCode.update({
       where: { id },

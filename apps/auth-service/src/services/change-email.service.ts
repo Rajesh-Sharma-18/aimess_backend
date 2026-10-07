@@ -57,11 +57,12 @@ export const changeEmailService = {
       identifier: newEmail,
       purpose: OtpPurpose.EMAIL_CHANGE,
       logContext: "Change email OTP",
+      ttlSeconds: env.EMAIL_CHANGE_OTP_TTL_SECONDS,
     });
     publishChangeEmailOtpSafe({
       email: newEmail,
       code,
-      ttlSeconds: env.OTP_TTL_SECONDS,
+      ttlSeconds: env.EMAIL_CHANGE_OTP_TTL_SECONDS,
       requestedAt: new Date().toISOString(),
     });
 
@@ -97,13 +98,17 @@ export const changeEmailService = {
 
     await assertEmailAvailable(newEmail, userId);
 
-    const otp = await otpRepository.findLatestActive(
+    const otp = await otpRepository.findLatestUnconsumed(
       newEmail,
       OtpPurpose.EMAIL_CHANGE
     );
 
     if (!otp || otp.userId !== userId) {
       throw new BadRequestError("AUTH_OTP_INVALID");
+    }
+
+    if (otp.expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestError("AUTH_OTP_EXPIRED");
     }
 
     if (otp.attempts >= otp.maxAttempts) {
