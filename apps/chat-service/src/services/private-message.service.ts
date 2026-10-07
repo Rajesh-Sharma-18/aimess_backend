@@ -140,6 +140,7 @@ import {
   inviteContentType,
   isPersonalizableSystemContentType,
   personalizePrivateSystemMessageForViewer,
+  withinMessageTextLimit,
 } from "@aimess/constants";
 import { chatOpenRoomKey, filterBannedUserIds } from "@aimess/redis";
 import { allocateRoomSlot } from "../lib/room-lock.js";
@@ -227,7 +228,7 @@ export class PrivateMessageService {
     dedupeKey?: string | null;
   }): Promise<PrivateMessage> {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
-    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
+    if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS)) {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     }
     assertAttachmentsValid(params.messageType, params.content?.files);
@@ -1611,7 +1612,7 @@ export class PrivateMessageService {
       throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
     if (message.messageType !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
-    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
+    if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS))
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");

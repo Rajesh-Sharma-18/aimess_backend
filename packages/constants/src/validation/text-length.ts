@@ -70,3 +70,17 @@ export function withinTextNameLimit(
     value.length <= TEXT_NAME_MAX_RAW_LENGTH && countCharacters(value) <= max
   );
 }
+
+/**
+ * Message text and captions, counted the same way as the name fields: a 4,000
+ * limit is 4,000 characters as the person sees them, matching the website's
+ * composer, so an emoji or a Thai syllable no longer costs two or three. The
+ * raw UTF-16 ceiling (4x the limit) bounds what the segmenter has to walk.
+ */
+export function withinMessageTextLimit(
+  value: string | null | undefined,
+  max: number
+): boolean {
+  if (!value || value.length <= max) return true;
+  return value.length <= max * 4 && countCharacters(value) <= max;
+}

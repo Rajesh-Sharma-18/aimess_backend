@@ -37,6 +37,7 @@ import {
   isCommunityContentType,
   sanitizeCommunitySystemMetadata,
   type CommunitySystemMessageType,
+  withinMessageTextLimit,
 } from "@aimess/constants";
 import {
   anonymizeSystemData,
@@ -364,7 +365,7 @@ export class CommunityMessageService {
     // including the `.refine(isCommunityContentType)` the REST schema carries
     // — mirror it here so an unrecognized type is rejected the same way on
     // every send path, not just REST).
-    if ((params.message?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
+    if (!withinMessageTextLimit(params.message, CHAT_TEXT_MAX_CHARS)) {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     }
     if (!isCommunityContentType(params.messageType || "")) {
@@ -2766,7 +2767,7 @@ export class CommunityMessageService {
     // also tolerates any legacy lower-case rows. Mirrors private/group (!== "TEXT").
     if (normalizeMessageType(message.messageType) !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
-    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
+    if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS))
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
