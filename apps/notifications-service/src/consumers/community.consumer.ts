@@ -508,6 +508,8 @@ async function handleCommunityEvent(
             hostAvatarUrl: p.hostAvatarUrl ?? "",
             communityHandle: p.communityHandle ?? "",
             actorSnapshot: JSON.stringify(actorSnapshot),
+            // Client push dedup: one start per stream, never one per community.
+            idempotencyKey: `live:${p.livestreamId}:started`,
           },
           // The community, not the stream: `aimess://stream/<id>` carries no community
           // context, so any client falling back to the deep link (web did) had nothing to
@@ -604,6 +606,7 @@ async function handleCommunityEvent(
             actorSnapshot: JSON.stringify(actorSnapshot),
             // Rewrites the "is live" row in place without re-badging it.
             resurface: "false",
+            idempotencyKey: `live:${p.livestreamId}:ended`,
           },
           buildDeepLink("community", p.communityId),
           "liveStreamEnabled",

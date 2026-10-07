@@ -124,7 +124,9 @@ describe("LIVESTREAM_STARTED branch", () => {
 
   it("tags the card per stream session, so only its own end replaces it", async () => {
     await deliver(CommunityEvents.LIVESTREAM_STARTED, startedPayload);
-    expect(pushMany.mock.calls[0][1](U1).collapseKey).toBe(`live:${SID}`);
+    const input = pushMany.mock.calls[0][1](U1);
+    expect(input.collapseKey).toBe(`live:${SID}`);
+    expect(input.data.idempotencyKey).toBe(`live:${SID}:started`);
   });
 
   it("a start delivered after its stream already ended draws nothing", async () => {
@@ -152,7 +154,11 @@ describe("LIVESTREAM_ENDED branch", () => {
     });
     const input = pushMany.mock.calls[0][1](U1);
     expect(input.collapseKey).toBe(`live:${SID}`);
-    expect(input.data).toMatchObject({ livestreamId: SID, resurface: "false" });
+    expect(input.data).toMatchObject({
+      livestreamId: SID,
+      resurface: "false",
+      idempotencyKey: `live:${SID}:ended`,
+    });
     const nav = JSON.parse(input.data.navigation);
     expect(nav.screen).toBe("COMMUNITY_CHAT");
     expect(nav.livestreamId).toBeUndefined();
