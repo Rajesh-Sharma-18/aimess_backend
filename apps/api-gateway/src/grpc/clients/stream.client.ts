@@ -97,10 +97,15 @@ export interface DeleteCommentResult {
 export interface RecordViewerJoinParams {
   streamId: string;
   userId: string;
+  /** The socket's auth session — one per device login. */
+  authSessionId: string;
 }
 export interface RecordViewerLeaveParams {
   streamId: string;
   userId: string;
+  authSessionId: string;
+  /** REMOVED ends every device of the user (ban-kick). */
+  reason: "LEFT" | "DISCONNECTED" | "REMOVED";
 }
 
 export interface StreamClient {
@@ -195,6 +200,7 @@ export function createStreamClient(): StreamClient {
       call<unknown, { sessionId: string }>("recordViewerJoin", {
         streamId: p.streamId,
         userId: p.userId,
+        authSessionId: p.authSessionId,
       })
   );
 
@@ -204,6 +210,8 @@ export function createStreamClient(): StreamClient {
       call<unknown, { success: boolean }>("recordViewerLeave", {
         streamId: p.streamId,
         userId: p.userId,
+        authSessionId: p.authSessionId,
+        reason: p.reason,
       })
   );
 

@@ -85,7 +85,10 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     recordJoin: jest.fn().mockResolvedValue("sess-1"),
     recordLeave: jest.fn().mockResolvedValue(true),
     closeAllOpenForStream: jest.fn().mockResolvedValue(0),
-    listByStream: jest.fn().mockResolvedValue({ rows: [], total: 0 }),
+    closeAllOpenForUser: jest.fn().mockResolvedValue(0),
+    listByStream: jest
+      .fn()
+      .mockResolvedValue({ rows: [], total: 0 }),
     countDistinctUsers: jest.fn().mockResolvedValue(0),
     countDistinctUsersByStreamIds: jest.fn().mockResolvedValue(new Map()),
     ...(overrides.viewerSessionRepo as object),
@@ -148,30 +151,81 @@ function makeStream(overrides: Record<string, unknown> = {}) {
 }
 
 describe("LivestreamService.recordViewerJoin / recordViewerLeave", () => {
-  it("delegates join to the viewer-session repo", async () => {
-    const { service, viewerSessionRepo } = makeDeps();
+  it("records a viewer's join against their device session", async () => {
+    const { service, viewerSessionRepo } = makeDeps({
+      streamRepo: { findById: jest.fn().mockResolvedValue(makeStream()) },
+    });
 
-    await service.recordViewerJoin("stream-1", "user-1");
+    await service.recordViewerJoin("stream-1", "user-1", "auth-1");
+
+    expect(viewerSessionRepo.recordJoin).toHaveBeenCalledWith({
+      livestreamId: "stream-1",
+      userId: "user-1",
+      authSessionId: "auth-1",
+      isHost: false,
+    });
+  });
+
+  it("records the creator's join as the host session", async () => {
+    const { service, viewerSessionRepo } = makeDeps({
+      streamRepo: { findById: jest.fn().mockResolvedValue(makeStream()) },
+    });
+
+    await service.recordViewerJoin("stream-1", "creator-1", "auth-9");
 
     expect(viewerSessionRepo.recordJoin).toHaveBeenCalledWith(
-      "stream-1",
-      "user-1"
+      expect.objectContaining({ userId: "creator-1", isHost: true })
     );
   });
 
-  it("delegates leave to the viewer-session repo", async () => {
+  it("opens no session on a stream that has already ended", async () => {
+    const { service, viewerSessionRepo } = makeDeps({
+      streamRepo: {
+        findById: jest
+          .fn()
+          .mockResolvedValue(makeStream({ status: "ENDED" })),
+      },
+    });
+
+    await service.recordViewerJoin("stream-1", "user-1", "auth-1");
+
+    expect(viewerSessionRepo.recordJoin).not.toHaveBeenCalled();
+  });
+
+  it("closes the device session with the reason the gateway observed", async () => {
     const { service, viewerSessionRepo } = makeDeps();
 
-    await service.recordViewerLeave("stream-1", "user-1");
+    await service.recordViewerLeave("stream-1", "user-1", "auth-1", "LEFT");
+    await service.recordViewerLeave("stream-1", "user-1", "auth-1", "");
 
-    expect(viewerSessionRepo.recordLeave).toHaveBeenCalledWith(
-      "stream-1",
-      "user-1"
+    expect(viewerSessionRepo.recordLeave).toHaveBeenNthCalledWith(1, {
+      livestreamId: "stream-1",
+      userId: "user-1",
+      authSessionId: "auth-1",
+      reason: "LEFT",
+    });
+    expect(viewerSessionRepo.recordLeave).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ reason: "DISCONNECTED" })
     );
   });
 
-  it("swallows repo failures â€” never throws into the caller (gateway fire-and-forget)", async () => {
+  it("a ban-kick (REMOVED) closes every device session of the user", async () => {
+    const { service, viewerSessionRepo } = makeDeps();
+
+    await service.recordViewerLeave("stream-1", "user-1", "", "REMOVED");
+
+    expect(viewerSessionRepo.closeAllOpenForUser).toHaveBeenCalledWith(
+      "stream-1",
+      "user-1",
+      expect.any(Date)
+    );
+    expect(viewerSessionRepo.recordLeave).not.toHaveBeenCalled();
+  });
+
+  it("swallows repo failures — never throws into the caller (gateway fire-and-forget)", async () => {
     const { service, viewerSessionRepo } = makeDeps({
+      streamRepo: { findById: jest.fn().mockResolvedValue(makeStream()) },
       viewerSessionRepo: {
         recordJoin: jest.fn().mockRejectedValue(new Error("db down")),
         recordLeave: jest.fn().mockRejectedValue(new Error("db down")),
@@ -179,10 +233,10 @@ describe("LivestreamService.recordViewerJoin / recordViewerLeave", () => {
     });
 
     await expect(
-      service.recordViewerJoin("stream-1", "user-1")
+      service.recordViewerJoin("stream-1", "user-1", "auth-1")
     ).resolves.toBeUndefined();
     await expect(
-      service.recordViewerLeave("stream-1", "user-1")
+      service.recordViewerLeave("stream-1", "user-1", "auth-1", "LEFT")
     ).resolves.toBeUndefined();
     expect(viewerSessionRepo.recordJoin).toHaveBeenCalled();
   });
@@ -427,10 +481,12 @@ describe("LivestreamService â€” host viewer session on go-live", () => {
     await flushMicrotasks();
 
     expect(allowed).toBe(true);
-    expect(viewerSessionRepo.recordJoin).toHaveBeenCalledWith(
-      "stream-1",
-      "creator-1"
-    );
+    expect(viewerSessionRepo.recordJoin).toHaveBeenCalledWith({
+      livestreamId: "stream-1",
+      userId: "creator-1",
+      authSessionId: "",
+      isHost: true,
+    });
   });
 
   it("markLive opens a viewer session for the host on a fresh PENDINGâ†’LIVE transition", async () => {
@@ -446,13 +502,16 @@ describe("LivestreamService â€” host viewer session on go-live", () => {
       },
     });
 
-    await service.markLive("stream-1", "creator-1");
+    await service.markLive("stream-1", "creator-1", "auth-host");
     await flushMicrotasks();
 
-    expect(viewerSessionRepo.recordJoin).toHaveBeenCalledWith(
-      "stream-1",
-      "creator-1"
-    );
+    // The go-live request's login is the device the host broadcasts from.
+    expect(viewerSessionRepo.recordJoin).toHaveBeenCalledWith({
+      livestreamId: "stream-1",
+      userId: "creator-1",
+      authSessionId: "auth-host",
+      isHost: true,
+    });
   });
 
   it("handlePublish on RESUME (RECONNECTINGâ†’LIVE) does NOT re-record the host â€” the original open session is preserved", async () => {
@@ -1212,25 +1271,28 @@ describe("LivestreamService â€” admin viewerCount overlay (fixes the stale-
 });
 
 describe("LivestreamService.adminListViewerSessions", () => {
-  it("returns per-user aggregated sessions with live-computed duration top-up for still-watching viewers", async () => {
-    const openJoinedAt = new Date(Date.now() - 10_000);
+  it("returns one row per user; an active user's duration includes the running stretch", async () => {
     const { service, viewerSessionRepo } = makeDeps({
       viewerSessionRepo: {
         listByStream: jest.fn().mockResolvedValue({
           rows: [
             {
+              id: "v-1",
               userId: "user-1",
-              joinedAt: openJoinedAt,
+              joinedAt: new Date(Date.now() - 120_000),
               leftAt: null,
-              watchDurationSeconds: 0, // no prior CLOSED sessions to sum
-              openSessionJoinedAt: openJoinedAt,
+              endReason: null,
+              watchDurationSeconds: 50, // earlier stretches
+              lastJoinedAt: new Date(Date.now() - 10_000),
             },
             {
+              id: "v-2",
               userId: "user-2",
               joinedAt: new Date(Date.now() - 60_000),
               leftAt: new Date(Date.now() - 30_000),
-              watchDurationSeconds: 30, // aggregated total across all closed sessions
-              openSessionJoinedAt: null,
+              endReason: "ENDED",
+              watchDurationSeconds: 30,
+              lastJoinedAt: null,
             },
           ],
           total: 2,
@@ -1238,52 +1300,25 @@ describe("LivestreamService.adminListViewerSessions", () => {
       },
     });
 
-    const { sessions, total } = await service.adminListViewerSessions(
-      "stream-1",
-      { page: 1, limit: 20, sortField: "joinedAt", sortDir: "desc" }
-    );
-
-    expect(total).toBe(2);
-    expect(sessions[0].leftAt).toBeNull();
-    expect(sessions[0].watchDurationSeconds).toBeGreaterThanOrEqual(10);
-    expect(sessions[1].leftAt).not.toBeNull();
-    expect(sessions[1].watchDurationSeconds).toBe(30); // stored aggregate, no open session to top up
-    expect(viewerSessionRepo.listByStream).toHaveBeenCalledWith("stream-1", {
-      skip: 0,
-      take: 20,
-      sortField: "joinedAt",
-      sortDir: "desc",
-    });
-  });
-
-  it("REGRESSION: tops up ONLY the open session's live elapsed time, on top of the already-aggregated total from closed sessions", async () => {
-    const openJoinedAt = new Date(Date.now() - 20_000); // open 20s ago
-    const { service } = makeDeps({
-      viewerSessionRepo: {
-        listByStream: jest.fn().mockResolvedValue({
-          rows: [
-            {
-              userId: "user-1",
-              joinedAt: new Date(Date.now() - 100_000),
-              leftAt: null,
-              watchDurationSeconds: 50, // sum of prior CLOSED sessions
-              openSessionJoinedAt: openJoinedAt,
-            },
-          ],
-          total: 1,
-        }),
-      },
-    });
-
-    const { sessions } = await service.adminListViewerSessions("stream-1", {
-      page: 1,
+    const result = await service.adminListViewerSessions("stream-1", {
+      page: 2,
       limit: 20,
       sortField: "joinedAt",
       sortDir: "desc",
+      status: "ALL",
     });
 
-    // 50s from closed sessions + ~20s live elapsed on the open one.
-    expect(sessions[0].watchDurationSeconds).toBeGreaterThanOrEqual(69);
-    expect(sessions[0].watchDurationSeconds).toBeLessThanOrEqual(71);
+    expect(result.total).toBe(2);
+    expect(result.sessions[0].watchDurationSeconds).toBeGreaterThanOrEqual(60);
+    expect(result.sessions[0].watchDurationSeconds).toBeLessThanOrEqual(61);
+    expect(result.sessions[1]).toMatchObject({ watchDurationSeconds: 30, endReason: "ENDED" });
+    expect(result.sessions[0]).not.toHaveProperty("lastJoinedAt");
+    expect(viewerSessionRepo.listByStream).toHaveBeenCalledWith("stream-1", {
+      skip: 20,
+      take: 20,
+      sortField: "joinedAt",
+      sortDir: "desc",
+      status: "ALL",
+    });
   });
 });

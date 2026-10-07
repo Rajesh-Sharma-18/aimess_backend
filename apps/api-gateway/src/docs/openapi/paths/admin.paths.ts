@@ -2727,17 +2727,19 @@ export const adminPaths = {
       operationId: "adminListLivestreamUsers",
       summary: "List livestream viewer sessions",
       description:
-        "Paginated VIEWER-SESSION HISTORY for this stream (who watched, when they " +
-        "joined/left, how long) — read from stream-service's durable " +
+        "Paginated VIEWER HISTORY for this stream (who watched, when they " +
+        "joined/left, how long) — exactly ONE row per user, aggregating every " +
+        "device session and rejoin: ACTIVE while any session is open. " +
+        "Read from stream-service's durable " +
         "LivestreamViewerSession records via streamClient.adminListViewerSessions, " +
         "enriched per row with `fullName` (same format as the detail's `creator.displayName` — firstName + lastName, trimmed, username fallback) and " +
         "`type` (`Host` for the stream creator — always surfaced since the host publishes via SRS/RTMP and never emits `stream:join`; " +
         "otherwise the viewer's CURRENT community role — Admin|Moderator|Member, " +
         "via a single batched communityClient.adminGetMemberRoles call keyed by " +
         "the page's userIds; defaults to Member if they've since left the " +
-        "community). This is NOT the community roster — there is no `search` " +
-        "or role/`type` filter on the query; sort only via sortField/sortDir. " +
-        "Requires `livestreams.read`.",
+        "community). This is NOT the community roster. `search` matches " +
+        "username / name / user id; `status` narrows to ACTIVE, LEFT or ENDED " +
+        "viewers. Requires `livestreams.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -2772,6 +2774,18 @@ export const adminPaths = {
           in: "query",
           required: false,
           schema: { type: "string", enum: ["asc", "desc"] },
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string", maxLength: 100 },
+        },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["ACTIVE", "LEFT", "ENDED"] },
         },
       ],
       responses: {

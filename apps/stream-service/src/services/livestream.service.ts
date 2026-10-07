@@ -30,7 +30,10 @@ import type {
 } from "../repositories/livestream.repository.js";
 import { LIVE_STATUSES } from "../repositories/livestream.repository.js";
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
-import type { LivestreamViewerSessionRepository } from "../repositories/livestream-viewer-session.repository.js";
+import type {
+  LivestreamViewerSessionRepository,
+  ViewerStatusFilter,
+} from "../repositories/livestream-viewer-session.repository.js";
 import { buildHlsQualityUrls, buildFlvQualityUrls } from "./srs.service.js";
 import type {
   SrsService,
@@ -1173,15 +1176,17 @@ export class LivestreamService {
     const liveStreamCount = await this.streamRepo.countLiveByCommunity(
       updated.communityId
     );
+    // Closed BEFORE the ENDED broadcast, so every listener that refetches the
+    // viewer list on it (the admin monitor) already reads the final sessions.
+    await this.closeOpenViewerSessions(
+      updated.id,
+      updated.endedAt ?? new Date()
+    );
     await this.publishStatus(updated.id, "ENDED", updated.communityId, {
       creatorId: stream.creatorId,
       endedReason: reason,
     });
     void this.publishCommunityStreamEnded(updated, liveStreamCount, reason);
-    void this.closeOpenViewerSessions(
-      updated.id,
-      updated.endedAt ?? new Date()
-    );
     // Attributed to the user who ended it: the broadcaster on HOST_ENDED, the
     // acting admin on COMMUNITY_ADMIN_ENDED. A heartbeat or reconnect timeout is
     // the platform's doing, and attributing it to the broadcaster misreads the
@@ -1339,7 +1344,11 @@ export class LivestreamService {
    * `community:stream:started` are not re-emitted, since this is a mixed
    * webhook/manual environment resuming the same session, not a fresh go-live.
    */
-  async markLive(id: string, requesterId: string): Promise<StreamView> {
+  async markLive(
+    id: string,
+    requesterId: string,
+    sessionId = ""
+  ): Promise<StreamView> {
     await assertNotSystemBanned(this.redis, requesterId);
 
     const stream = await this.streamRepo.findById(id);
@@ -1396,7 +1405,7 @@ export class LivestreamService {
       );
     } else {
       // Host viewer session — see handlePublish for the rationale.
-      void this.recordHostViewerJoin(updated.id, updated.creatorId);
+      void this.recordHostViewerJoin(updated.id, updated.creatorId, sessionId);
       const startedAt = updated.livedAt?.getTime() ?? Date.now();
       const liveStreamCount = await this.streamRepo.countLiveByCommunity(
         updated.communityId
@@ -2763,10 +2772,16 @@ export class LivestreamService {
 
   private async recordHostViewerJoin(
     streamId: string,
-    creatorId: string
+    creatorId: string,
+    authSessionId = ""
   ): Promise<void> {
     try {
-      await this.viewerSessionRepo.recordJoin(streamId, creatorId);
+      await this.viewerSessionRepo.recordJoin({
+        livestreamId: streamId,
+        userId: creatorId,
+        authSessionId,
+        isHost: true,
+      });
     } catch (error) {
       logger.warn(
         `recordHostViewerJoin failed for stream=${streamId}: ${String(error)}`
@@ -2775,15 +2790,33 @@ export class LivestreamService {
   }
 
   /**
-   * Durable join record (called by the gateway, fire-and-forget, right after
-   * the Redis `SADD` on `stream:join`). Redis stays the source of truth for
-   * CURRENT live presence/count; this is the persisted history the admin panel
-   * reads. Idempotent — a rejoin while already open reuses the open session
-   * (see {@link LivestreamViewerSessionRepository.recordJoin}).
+   * Durable join record for one socket (called by the gateway, fire-and-forget,
+   * on `stream:join`). Redis stays the source of truth for CURRENT live
+   * presence/count; this is the persisted per-device history the admin panel
+   * reads (see {@link LivestreamViewerSessionRepository.recordJoin}). Only a
+   * stream that can still be watched opens a session — a late join racing the
+   * end must not leave a session open after the end closed them all.
    */
-  async recordViewerJoin(streamId: string, userId: string): Promise<void> {
+  async recordViewerJoin(
+    streamId: string,
+    userId: string,
+    authSessionId: string
+  ): Promise<void> {
     try {
-      await this.viewerSessionRepo.recordJoin(streamId, userId);
+      const stream = await this.streamRepo.findById(streamId);
+      if (
+        stream &&
+        (stream.status === "PENDING" ||
+          stream.status === "LIVE" ||
+          stream.status === "RECONNECTING")
+      ) {
+        await this.viewerSessionRepo.recordJoin({
+          livestreamId: streamId,
+          userId,
+          authSessionId,
+          isHost: stream.creatorId === userId,
+        });
+      }
     } catch (error) {
       logger.warn(
         `recordViewerJoin failed for stream=${streamId} user=${userId}: ${String(error)}`
@@ -2815,14 +2848,33 @@ export class LivestreamService {
   }
 
   /**
-   * Close the durable viewer session (called by the gateway, fire-and-forget,
-   * from `stream:leave`, socket `disconnect`, and ban-kick). No-op when there
-   * is no open session for this user (duplicate leave, or a leave for a stream
-   * the socket never actually joined).
+   * Durable leave for one socket (called by the gateway, fire-and-forget, from
+   * `stream:leave` → LEFT, a dropped socket → DISCONNECTED, and ban-kick →
+   * REMOVED, which ends every device of the user at once). No-op without an
+   * open session, and for the host — see
+   * {@link LivestreamViewerSessionRepository.recordLeave}.
    */
-  async recordViewerLeave(streamId: string, userId: string): Promise<void> {
+  async recordViewerLeave(
+    streamId: string,
+    userId: string,
+    authSessionId: string,
+    reason: string
+  ): Promise<void> {
     try {
-      await this.viewerSessionRepo.recordLeave(streamId, userId);
+      if (reason === "REMOVED") {
+        await this.viewerSessionRepo.closeAllOpenForUser(
+          streamId,
+          userId,
+          new Date()
+        );
+      } else {
+        await this.viewerSessionRepo.recordLeave({
+          livestreamId: streamId,
+          userId,
+          authSessionId,
+          reason: reason === "LEFT" ? "LEFT" : "DISCONNECTED",
+        });
+      }
     } catch (error) {
       logger.warn(
         `recordViewerLeave failed for stream=${streamId} user=${userId}: ${String(error)}`
@@ -2851,10 +2903,9 @@ export class LivestreamService {
   }
 
   /**
-   * Admin: paginated, PER-USER viewer history for a stream (the "Livestream
-   * User List" screen). A rejoin/reconnect produces multiple underlying
-   * session rows, but this returns exactly one aggregated entry per unique
-   * user — see {@link LivestreamViewerSessionRepository.listByStream}.
+   * Admin: paginated viewer list for a stream — one row per user, aggregating
+   * all of that user's sessions (see
+   * {@link LivestreamViewerSessionRepository.listByStream}).
    */
   async adminListViewerSessions(
     streamId: string,
@@ -2863,42 +2914,38 @@ export class LivestreamService {
       limit: number;
       sortField: "joinedAt" | "watchDurationSeconds";
       sortDir: "asc" | "desc";
+      status: ViewerStatusFilter;
     }
   ): Promise<{
     sessions: Array<{
+      id: string;
       userId: string;
       joinedAt: Date;
       leftAt: Date | null;
+      endReason: string | null;
       watchDurationSeconds: number;
     }>;
     total: number;
   }> {
-    const skip = (params.page - 1) * params.limit;
     const { rows, total } = await this.viewerSessionRepo.listByStream(
       streamId,
       {
-        skip,
+        skip: (params.page - 1) * params.limit,
         take: params.limit,
         sortField: params.sortField,
         sortDir: params.sortDir,
+        status: params.status,
       }
     );
     const now = Date.now();
     return {
-      sessions: rows.map((r) => ({
-        userId: r.userId,
-        joinedAt: r.joinedAt,
-        leftAt: r.leftAt,
-        // Aggregated total already sums every CLOSED session for this user;
-        // top up with the currently-open session's live elapsed time (if
-        // any), same as the pre-aggregation per-row live-compute.
+      // Closed stretches plus, while active, the one still running.
+      sessions: rows.map(({ lastJoinedAt, ...r }) => ({
+        ...r,
         watchDurationSeconds:
           r.watchDurationSeconds +
-          (r.openSessionJoinedAt
-            ? Math.max(
-                0,
-                Math.round((now - r.openSessionJoinedAt.getTime()) / 1000)
-              )
+          (lastJoinedAt
+            ? Math.max(0, Math.round((now - lastJoinedAt.getTime()) / 1000))
             : 0),
       })),
       total,

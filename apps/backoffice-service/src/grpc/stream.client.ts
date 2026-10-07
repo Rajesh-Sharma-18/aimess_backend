@@ -36,12 +36,16 @@ export interface ForceEndStreamsByCreatorResult {
 }
 
 /** One viewer session row from AdminListViewerSessions. */
+/** One user's participation row from AdminListViewerSessions. */
 export interface AdminViewerSessionRow {
+  id: string;
   userId: string;
-  /** epoch ms. */
+  /** epoch ms — first join. */
   joinedAt: number;
   /** epoch ms; 0 = still watching. */
   leftAt: number;
+  /** LEFT | ENDED; "" while active. */
+  endReason: string;
   watchDurationSeconds: number;
 }
 
@@ -69,6 +73,8 @@ export interface AdminListViewerSessionsArgs {
   limit: number;
   sortField?: "joinedAt" | "watchDurationSeconds";
   sortDir?: "asc" | "desc";
+  /** Absent = every viewer. */
+  status?: "ACTIVE" | "LEFT" | "ENDED";
 }
 
 /** Filters forwarded to stream-service AdminListStreams (all optional). */
@@ -165,9 +171,11 @@ interface RawAdminGetStreamRes {
 }
 
 interface RawAdminViewerSessionRow {
+  id: string;
   userId: string;
   joinedAt: string | number;
   leftAt: string | number;
+  endReason: string;
   watchDurationSeconds: string | number;
 }
 interface RawAdminListViewerSessionsRes {
@@ -179,9 +187,11 @@ function toAdminViewerSessionRow(
   r: RawAdminViewerSessionRow
 ): AdminViewerSessionRow {
   return {
+    id: r.id ?? "",
     userId: r.userId,
     joinedAt: Number(r.joinedAt ?? 0),
     leftAt: Number(r.leftAt ?? 0),
+    endReason: r.endReason ?? "",
     watchDurationSeconds: Number(r.watchDurationSeconds ?? 0),
   };
 }
@@ -339,6 +349,7 @@ const adminListViewerSessionsBreaker = makeBreaker(
         limit: args.limit,
         sortField: args.sortField ?? "joinedAt",
         sortDir: args.sortDir ?? "desc",
+        status: args.status ?? "",
       }
     ).then((r) => ({
       sessions: (r.sessions ?? []).map(toAdminViewerSessionRow),
