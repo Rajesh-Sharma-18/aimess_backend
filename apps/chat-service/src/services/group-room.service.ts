@@ -1035,7 +1035,9 @@ export class GroupRoomService {
         const payload = {
           roomId,
           type: "GROUP" as const,
-          disbandedBy: userId,
+          // A Super Admin's id never reaches apps; null = Backoffice, like
+          // the group remove/ban/unban lines.
+          disbandedBy: opts?.asPlatformAdmin ? null : userId,
           disbandedAt: Date.now(),
         };
         const pipeline = this.redis.pipeline();

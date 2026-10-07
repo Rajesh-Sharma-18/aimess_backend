@@ -122,7 +122,6 @@ function notify(type: string, data: AdminUserEventPayload): void {
     title: copy.title,
     body: copy.body,
     data: {
-      actorId: data.actorId,
       ...(data.reason ? { reason: data.reason } : {}),
       ...(data.suspendedUntil ? { suspendedUntil: data.suspendedUntil } : {}),
     },

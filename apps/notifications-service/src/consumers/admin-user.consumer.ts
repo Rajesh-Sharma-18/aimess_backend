@@ -50,19 +50,19 @@ async function handleAdminUserNotify(
     return;
   }
 
-  const actorId =
-    typeof p.data?.actorId === "string" ? p.data.actorId : undefined;
+  // A Super Admin is not an AIMess user: no actor on the row, and their id
+  // (sent by older publishers as data.actorId) never reaches the inbox or FCM.
+  const { actorId: _adminId, ...rest } = p.data ?? {};
 
   await pushToUser({
     userId: p.userId,
     category: "systemEnabled",
     type,
-    actorId,
     copy: NOTIFY_COPY_BUILDER[type]?.(),
     title: p.title,
     body: p.body,
     data: {
-      ...p.data,
+      ...rest,
       navigation: JSON.stringify({
         screen: "ACCOUNT_STATUS",
       } satisfies NotificationNavigation),
