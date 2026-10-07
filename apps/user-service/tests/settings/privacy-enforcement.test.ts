@@ -103,6 +103,18 @@ describe("discoverableWhere", () => {
   });
 });
 
+describe("discoverableWhere — blocks", () => {
+  it("excludes users who blocked the viewer, even friends and chat peers", () => {
+    const where = discoverableWhere(
+      { friendIds: ["b"], friendOfFriendIds: [], blockerIds: ["b"] },
+      ["b"]
+    );
+    expect(where).toEqual({
+      AND: [expect.anything(), { userId: { notIn: ["b"] } }],
+    });
+  });
+});
+
 describe("presence + profile masking on list surfaces", () => {
   const online = (scope: string | null) => ({
     isOnline: true,

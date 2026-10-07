@@ -137,14 +137,7 @@ function buildDiscoveryWhere(
       // has already authorized — never `discoverableWhere` itself, which three
       // other queries share. Every other clause (text, deletedAt, excludeIds,
       // keyset) still applies to those rows.
-      alwaysVisibleIds?.length
-        ? {
-            OR: [
-              discoverableWhere(viewer),
-              { userId: { in: alwaysVisibleIds } },
-            ],
-          }
-        : discoverableWhere(viewer),
+      discoverableWhere(viewer, alwaysVisibleIds),
       // Keyset "after" for orderBy [firstName asc, userId asc]. Same collation
       // drives both the sort and this comparison, so the two agree by
       // construction — which is the whole reason skip is droppable.
@@ -298,14 +291,7 @@ export const userProfileRepository = {
         normalizedUsername,
         deletedAt: null,
         ...DISCOVERABLE_PROFILE_WHERE,
-        ...(alwaysVisibleIds?.length
-          ? {
-              OR: [
-                discoverableWhere(viewer),
-                { userId: { in: alwaysVisibleIds } },
-              ],
-            }
-          : discoverableWhere(viewer)),
+        ...discoverableWhere(viewer, alwaysVisibleIds),
       },
       select: DISCOVERY_SELECT,
     });

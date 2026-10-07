@@ -359,11 +359,8 @@ export const userSearchService = {
           peerRoomByUserId.get(profile.userId) ??
           null;
         // A user the viewer blocked stays in their own Recent list (they can
-        // still open and unblock them). A user who blocked the VIEWER normally
-        // drops out — unless the pair already has a conversation, which the
-        // viewer can open from their inbox anyway; dropping the row there is
-        // what made Recent and the chat list disagree about the same pair.
-        if (hiddenIds.has(profile.userId) && !roomId) continue;
+        // still open and unblock them); a user who blocked the VIEWER drops out.
+        if (hiddenIds.has(profile.userId)) continue;
         recent.push(
           await toUserItem(
             profile,
@@ -463,13 +460,9 @@ export const userSearchService = {
       peers.map((p) => [p.peerUserId, p.roomId])
     );
     const roomOrderIndex = new Map(peers.map((p, idx) => [p.peerUserId, idx]));
-    // Users who blocked the viewer are subtracted from discovery EXCEPT where
-    // the pair already has a private room — see `isBlockedByPeer`. A block
-    // unfriends, so in practice this set is only non-empty for a stale replica;
-    // computing it once keeps the two buckets on one rule.
-    const hiddenWithoutRoom = new Set(
-      [...hiddenIds].filter((id) => !peerRoomByUserId.has(id))
-    );
+    // Users who blocked the viewer never surface in discovery, existing chat or
+    // not; the conversation itself stays reachable from the inbox.
+    const hiddenWithoutRoom = hiddenIds;
     const friendIds = getFriendPeerIds(viewerId, relationships).filter(
       (id) => !hiddenWithoutRoom.has(id)
     );

@@ -96,12 +96,16 @@ export type ViewerGraph = {
   friendIds: string[];
   /** One-hop expansion of `friendIds`, excluding self and direct friends. */
   friendOfFriendIds: string[];
+  /** Users who blocked the viewer — never discoverable, room or friendship notwithstanding. */
+  blockerIds?: string[];
 };
 
 export function discoverableWhere(
-  viewer: ViewerGraph
+  viewer: ViewerGraph,
+  // Ids the caller already authorized past `whoCanFindMe` (existing live chats).
+  alwaysVisibleIds?: string[]
 ): Prisma.UserProfileWhereInput {
-  return {
+  const scope: Prisma.UserProfileWhereInput = {
     OR: [
       { privacySettings: { is: null } },
       { privacySettings: { whoCanFindMe: "EVERYONE" } },
@@ -111,8 +115,15 @@ export function discoverableWhere(
         privacySettings: { whoCanFindMe: "FRIENDS_OF_FRIENDS" },
         userId: { in: viewer.friendOfFriendIds },
       },
+      ...(alwaysVisibleIds?.length
+        ? [{ userId: { in: alwaysVisibleIds } }]
+        : []),
     ],
   };
+  // A block beats every widening above: friendship and an existing chat included.
+  return viewer.blockerIds?.length
+    ? { AND: [scope, { userId: { notIn: viewer.blockerIds } }] }
+    : scope;
 }
 
 /** Prisma select fragment pulling the scopes list surfaces need to mask by. */

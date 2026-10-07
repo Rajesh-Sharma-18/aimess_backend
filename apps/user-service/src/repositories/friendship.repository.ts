@@ -537,7 +537,11 @@ export const friendshipRepository = {
   async resolveViewerGraph(
     viewerId: string,
     knownFriendIds?: string[]
-  ): Promise<{ friendIds: string[]; friendOfFriendIds: string[] }> {
+  ): Promise<{
+    friendIds: string[];
+    friendOfFriendIds: string[];
+    blockerIds: string[];
+  }> {
     let friendIds = knownFriendIds;
     if (!friendIds) {
       const rows = await this.findAcceptedFriends(viewerId);
@@ -545,11 +549,18 @@ export const friendshipRepository = {
         f.requesterId === viewerId ? f.addresseeId : f.requesterId
       );
     }
-    const friendOfFriendIds = await this.findFriendsOfFriendIds(
-      viewerId,
-      friendIds
-    );
-    return { friendIds, friendOfFriendIds };
+    const [friendOfFriendIds, blockers] = await Promise.all([
+      this.findFriendsOfFriendIds(viewerId, friendIds),
+      prisma.block.findMany({
+        where: { blockedId: viewerId },
+        select: { blockerId: true },
+      }),
+    ]);
+    return {
+      friendIds,
+      friendOfFriendIds,
+      blockerIds: blockers.map((b) => b.blockerId),
+    };
   },
 
   /** Pending requests for a user, paginated, newest first. */
