@@ -825,7 +825,8 @@ export class LivestreamService {
     const isResume = stream.status === "RECONNECTING";
 
     const playback = this.playbackUrlsFor(stream);
-    const updated = await this.streamRepo.updateById(stream.id, {
+    // Conditional, like handleUnpublish: an end claimed since the read wins.
+    const updated = await this.streamRepo.updateIfStatus(stream.id, [stream.status], {
       status: "LIVE",
       disconnectedAt: null,
       publisherClientId: clientId ?? null,
@@ -836,6 +837,9 @@ export class LivestreamService {
       flvUrl: playback.flvUrl,
       dashUrl: playback.dashUrl,
     });
+    if (!updated) {
+      return (await this.streamRepo.findById(stream.id))?.status === "LIVE";
+    }
 
     await this.publishStatus(updated.id, "LIVE", updated.communityId, {
       creatorId: updated.creatorId,
@@ -943,10 +947,15 @@ export class LivestreamService {
     }
 
     if (stream.status === "LIVE") {
-      const updated = await this.streamRepo.updateById(stream.id, {
-        status: "RECONNECTING",
-        disconnectedAt: new Date(),
-      });
+      // Conditional: an End Live (host, community admin, Super Admin) that
+      // lands between the read above and this write has already ENDED the row,
+      // and the publisher dropping is just its kick arriving.
+      const updated = await this.streamRepo.updateIfStatus(
+        stream.id,
+        ["LIVE"],
+        { status: "RECONNECTING", disconnectedAt: new Date() }
+      );
+      if (!updated) return;
       await this.publishStatus(updated.id, "RECONNECTING", updated.communityId);
       logger.info(
         `on_unpublish: stream id=${stream.id} entering RECONNECTING grace window (source=${stream.sourceType})`
@@ -1173,11 +1182,28 @@ export class LivestreamService {
     const liveStreamCount = await this.streamRepo.countLiveByCommunity(
       updated.communityId
     );
+    // Who ended it, for clients. The host stays `creatorId`/`hostUserId`
+    // whoever pressed End Live; a Super Admin is only ever "SUPER_ADMIN".
+    const endedByType = byPlatformAdmin
+      ? "SUPER_ADMIN"
+      : reason === "HOST_ENDED"
+        ? "HOST"
+        : reason === "COMMUNITY_ADMIN_ENDED"
+          ? "COMMUNITY_ADMIN"
+          : "SYSTEM";
     await this.publishStatus(updated.id, "ENDED", updated.communityId, {
       creatorId: stream.creatorId,
       endedReason: reason,
+      endedByType,
+      startedAt: updated.livedAt?.getTime(),
+      endedAt: updated.endedAt?.getTime() ?? Date.now(),
     });
-    void this.publishCommunityStreamEnded(updated, liveStreamCount, reason);
+    void this.publishCommunityStreamEnded(
+      updated,
+      liveStreamCount,
+      reason,
+      endedByType
+    );
     void this.closeOpenViewerSessions(
       updated.id,
       updated.endedAt ?? new Date()
@@ -1373,7 +1399,7 @@ export class LivestreamService {
     }
 
     const playback = this.playbackUrlsFor(stream);
-    const updated = await this.streamRepo.updateById(id, {
+    const updated = await this.streamRepo.updateIfStatus(id, [stream.status], {
       status: "LIVE",
       disconnectedAt: null,
       ...(isResume ? {} : { livedAt: new Date() }),
@@ -1381,6 +1407,12 @@ export class LivestreamService {
       flvUrl: playback.flvUrl,
       dashUrl: playback.dashUrl,
     });
+    if (!updated) {
+      // Ended (or gone LIVE through the SRS hook) since the read above.
+      const current = await this.streamRepo.findById(id);
+      if (current?.status === "LIVE") return this.viewOf(current);
+      throw new BadRequestError("STREAM_ALREADY_ENDED");
+    }
 
     await this.publishStatus(updated.id, "LIVE", updated.communityId, {
       creatorId: updated.creatorId,
@@ -1446,11 +1478,15 @@ export class LivestreamService {
       return { success: false, status: stream.status };
     }
 
-    // The reason was accepted and then dropped, so a force-end was indistinguishable
-    // from the host ending their own broadcast in every downstream event.
+    // Every client (REST endedReason, stream:status, community:stream:ended)
+    // reads the generic ADMIN_FORCE_ENDED: the Backoffice reason code (SPAM,
+    // NUDITY, …) is moderation detail, kept on backoffice-service's audit row.
+    logger.info(
+      `adminForceEnd stream=${streamId} reasonCode=${reason || "-"}`
+    );
     const ended = await this.finalizeAsEnded(
       stream,
-      reason || "ADMIN_FORCE_ENDED",
+      "ADMIN_FORCE_ENDED",
       true,
       true
     );
@@ -2504,8 +2540,18 @@ export class LivestreamService {
         const liveStreamCount = await this.streamRepo.countLiveByCommunity(
           updated.communityId
         );
-        await this.publishStatus(updated.id, "ENDED", updated.communityId);
-        void this.publishCommunityStreamEnded(updated, liveStreamCount);
+        await this.publishStatus(updated.id, "ENDED", updated.communityId, {
+          creatorId: updated.creatorId,
+          endedReason: "PENDING_TIMEOUT",
+          endedByType: "SYSTEM",
+          endedAt: end.endedAt.getTime(),
+        });
+        void this.publishCommunityStreamEnded(
+          updated,
+          liveStreamCount,
+          "PENDING_TIMEOUT",
+          "SYSTEM"
+        );
         // The sweeper is the one end path that bypasses finalizeAsEnded, so it also
         // bypassed the audit row. It never went live — record it as SYSTEM.
         publishAdminActivitySafe({
@@ -3663,6 +3709,9 @@ export class LivestreamService {
       startedAt?: number;
       /** ENDED only — lets the host tell "an admin ended it" from their own end. */
       endedReason?: string;
+      /** ENDED only — HOST | COMMUNITY_ADMIN | SUPER_ADMIN | SYSTEM. */
+      endedByType?: string;
+      endedAt?: number;
     }
   ): Promise<void> {
     try {
@@ -3920,7 +3969,8 @@ export class LivestreamService {
   private async publishCommunityStreamEnded(
     stream: Livestream,
     liveStreamCount: number,
-    reason = "HOST_ENDED"
+    reason = "HOST_ENDED",
+    endedByType = "HOST"
   ): Promise<void> {
     try {
       const host = await this.resolveHost(stream.creatorId);
@@ -3938,7 +3988,12 @@ export class LivestreamService {
             livestreamId: stream.id,
             streamId: stream.id, // legacy alias
             host,
+            // The stream's owner, never the ender — clients key the end off
+            // streamId and only display endedByType.
+            hostUserId: stream.creatorId,
+            endedByType,
             status: "ENDED",
+            startedAt: stream.livedAt?.getTime() ?? null,
             endedAt: stream.endedAt?.getTime() ?? Date.now(),
             duration: formatStreamDuration(durationSeconds),
             durationSeconds,

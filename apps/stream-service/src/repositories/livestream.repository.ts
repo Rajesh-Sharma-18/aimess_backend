@@ -138,6 +138,27 @@ export class LivestreamRepository {
     return count === 1;
   }
 
+  /**
+   * A status change that applies only while the row is still in one of `from`
+   * — the non-terminal counterpart of {@link claimEnded}. Returns the updated
+   * row, or null when another path moved it first (an End Live landing between
+   * an SRS hook's read and its write must not be resurrected as RECONNECTING
+   * or LIVE).
+   */
+  async updateIfStatus(
+    id: string,
+    from: readonly string[],
+    data: Prisma.LivestreamUpdateManyMutationInput & Record<string, unknown>
+  ): Promise<Livestream | null> {
+    if (!/^[0-9a-f]{24}$/i.test(id)) throw new Error(`Invalid ObjectId: ${id}`);
+    const { count } = await this.prisma.livestream.updateMany({
+      where: { id, status: { in: [...from] } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: data as any,
+    });
+    return count === 1 ? this.findById(id) : null;
+  }
+
   async deleteById(id: string): Promise<void> {
     if (!/^[0-9a-f]{24}$/i.test(id)) throw new Error(`Invalid ObjectId: ${id}`);
     await this.prisma.livestream.delete({ where: { id } });

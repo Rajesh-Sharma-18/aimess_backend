@@ -28,6 +28,10 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     // returned: the drift-repair leg was silently untested.
     findBySrsNames: jest.fn().mockResolvedValue([]),
     updateById: jest.fn(),
+    // The conditional transition behaves like updateById in these single-path tests.
+    updateIfStatus: jest.fn(function (this: { updateById: (id: string, d: unknown) => unknown }, id: string, _from: unknown, data: unknown) {
+      return this.updateById(id, data);
+    }),
     claimEnded: jest.fn().mockResolvedValue(true),
     findStaleReconnectingStreams: jest.fn().mockResolvedValue([]),
     countActiveByCommunityAndCreator: jest.fn().mockResolvedValue(0),

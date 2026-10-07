@@ -411,7 +411,21 @@ export function registerStreamNamespace(
             flvUrl?: string;
             startedAt?: number;
             endedReason?: string;
+            endedByType?: string;
+            endedAt?: number;
           };
+          // ENDED only: whose stream ended (the host, never the ender), who
+          // kind of actor ended it, and when. Absent on other statuses.
+          const endedFields =
+            d.status === "ENDED"
+              ? {
+                  ...(d.endedReason ? { endedReason: d.endedReason } : {}),
+                  ...(d.creatorId ? { hostUserId: d.creatorId } : {}),
+                  ...(d.endedByType ? { endedByType: d.endedByType } : {}),
+                  ...(d.startedAt ? { startedAt: d.startedAt } : {}),
+                  ...(d.endedAt ? { endedAt: d.endedAt } : {}),
+                }
+              : {};
           // Broadcast the clean status event to all viewers in the room.
           // communityId is included so FE on the stream viewer screen can update
           // the community isLive badge without a separate /community room subscription.
@@ -419,9 +433,9 @@ export function registerStreamNamespace(
             streamId: d.streamId,
             status: d.status,
             communityId: d.communityId,
-            // ENDED only (absent otherwise): HOST_ENDED, COMMUNITY_ADMIN_ENDED, ...
+            // endedReason: HOST_ENDED, COMMUNITY_ADMIN_ENDED, ADMIN_FORCE_ENDED, ...
             // so the host can tell an admin force-end from their own End Live.
-            ...(d.endedReason ? { endedReason: d.endedReason } : {}),
+            ...endedFields,
           });
           // If this is a LIVE transition, find the broadcaster's socket and send them
           // a targeted confirmation so their UI can switch to "You are live!".
@@ -461,7 +475,7 @@ export function registerStreamNamespace(
                     streamId: d.streamId,
                     status: "ENDED",
                     communityId: d.communityId,
-                    ...(d.endedReason ? { endedReason: d.endedReason } : {}),
+                    ...endedFields,
                   });
                 }
               } catch (err) {

@@ -177,6 +177,10 @@ function makeService(stream: Record<string, unknown> | null) {
       ...stream,
       ...data,
     })),
+    // The conditional transition behaves like updateById in these single-path tests.
+    updateIfStatus: jest.fn(function (this: { updateById: (id: string, d: unknown) => unknown }, id: string, _from: unknown, data: unknown) {
+      return this.updateById(id, data);
+    }),
     countActiveByCommunityAndCreator: jest.fn().mockResolvedValue(0),
     countLiveByCommunity: jest.fn().mockResolvedValue(0),
     countLiveByCreator: jest.fn().mockResolvedValue(0),
