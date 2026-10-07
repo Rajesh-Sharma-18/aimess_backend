@@ -3276,6 +3276,12 @@ export const openApiSchemas = {
     description:
       "A viewer-session row for this stream (who watched, not the community roster — see the endpoint description).",
     properties: {
+      status: {
+        type: "string",
+        enum: ["ACTIVE", "LEFT", "ENDED"],
+        description:
+          "ACTIVE while the user has any session open. LEFT = they stopped watching while the stream was still running; ENDED = the stream ended while they were watching.",
+      },
       userId: { type: "string" },
       username: { type: "string", example: "john_doe" },
       fullName: {
@@ -3306,6 +3312,7 @@ export const openApiSchemas = {
       },
     },
     required: [
+      "status",
       "userId",
       "username",
       "fullName",

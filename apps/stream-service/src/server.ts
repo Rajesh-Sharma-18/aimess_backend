@@ -72,6 +72,50 @@ async function start() {
       logger.warn(indexErr);
     }
 
+    // One OPEN viewer session per device: `openKey` exists only while a
+    // session is open, so the closed history is never indexed. Same sparse
+    // approach as playbackId above, for the same Prisma limitation.
+    try {
+      await prisma.$runCommandRaw({
+        createIndexes: "livestream_viewer_sessions",
+        indexes: [
+          {
+            key: { openKey: 1 },
+            name: "livestream_viewer_sessions_openKey_unique_sparse",
+            unique: true,
+            sparse: true,
+          },
+        ],
+      });
+      logger.info("Index ready: livestream_viewer_sessions.openKey (sparse unique)");
+    } catch (indexErr) {
+      logger.warn(
+        "Could not create openKey sparse index — a device may open duplicate viewer sessions"
+      );
+      logger.warn(indexErr);
+    }
+
+    // One participation record per livestream + user — what keeps a rejoin or
+    // a second device from adding another row to the admin viewer list.
+    try {
+      await prisma.$runCommandRaw({
+        createIndexes: "livestream_viewers",
+        indexes: [
+          {
+            key: { livestreamId: 1, userId: 1 },
+            name: "livestream_viewers_livestreamId_userId_key",
+            unique: true,
+          },
+        ],
+      });
+      logger.info("Index ready: livestream_viewers (livestreamId, userId) unique");
+    } catch (indexErr) {
+      logger.warn(
+        "Could not create livestream_viewers unique index — a user may get duplicate viewer rows"
+      );
+      logger.warn(indexErr);
+    }
+
     if (env.REDIS_CACHE_ENABLED) {
       try {
         await connectStreamRedis();

@@ -1,6 +1,7 @@
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
+import { withinMessageTextLimit } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { bindSocketAuditContext } from "../audit-context.js";
@@ -48,6 +49,8 @@ import { presentReaders } from "../present-readers.js";
 // §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
 // socket frame or fan an oversized payload out to a whole community room.
 const MAX_TEXT_LEN = 4000; // message body / caption (matches chat-service CHAT_TEXT_MAX_CHARS)
+const TEXT_TOO_LONG = `Message can be at most ${MAX_TEXT_LEN} characters`;
+const withinTextLimit = (v: string) => withinMessageTextLimit(v, MAX_TEXT_LEN);
 const MAX_FILES = 30; // attachments per message (gallery)
 const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 
@@ -89,9 +92,9 @@ const CommunityMsgSendSchema = z.object({
   communityId: z.string().min(1),
   roomId: z.string().min(1).optional(),
   clientMessageId: z.string().optional(),
-  message: z.string().max(MAX_TEXT_LEN).default(""),
+  message: z.string().refine(withinTextLimit, TEXT_TOO_LONG).default(""),
   // Cross-namespace parity alias: `contentText` is accepted as an alias for `message`.
-  contentText: z.string().max(MAX_TEXT_LEN).optional(),
+  contentText: z.string().refine(withinTextLimit, TEXT_TOO_LONG).optional(),
   contentType: z
     .string()
     .min(1)
@@ -187,10 +190,10 @@ const CommunityMsgEditSchema = z
     messageId: z.string().min(1),
     communityId: z.string().min(1),
     roomId: z.string().min(1).optional(),
-    content: z.object({ text: z.string().min(1).max(MAX_TEXT_LEN) }).optional(),
+    content: z.object({ text: z.string().min(1).refine(withinTextLimit, TEXT_TOO_LONG) }).optional(),
     // Cross-namespace parity alias: /chat's message:edit sends a flat
     // `contentText`. Exactly one of content.text / contentText is required.
-    contentText: z.string().min(1).max(MAX_TEXT_LEN).optional(),
+    contentText: z.string().min(1).refine(withinTextLimit, TEXT_TOO_LONG).optional(),
   })
   .refine((v) => v.content !== undefined || v.contentText !== undefined, {
     message: "content.text or contentText is required",

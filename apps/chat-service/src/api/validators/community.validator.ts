@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isCommunityContentType } from "@aimess/constants";
+import { isCommunityContentType, withinMessageTextLimit } from "@aimess/constants";
 
 import {
   locationSchema,
@@ -12,10 +12,13 @@ import {
   CHAT_MEDIA_INDEX_MAX,
 } from "../../constants/media-limits.js";
 
+const TEXT_TOO_LONG = `Message can be at most ${CHAT_TEXT_MAX_CHARS} characters`;
+const withinTextLimit = (v: string) => withinMessageTextLimit(v, CHAT_TEXT_MAX_CHARS);
+
 export const sendCommunityMessageSchema = z
   .object({
     roomId: z.string().min(5).max(50),
-    message: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+    message: z.string().refine(withinTextLimit, TEXT_TOO_LONG).default(""),
     // Single source of truth: derived from @aimess/constants CONTENT_TYPES. The
     // community path uses the lower-case spelling (+ "custom"); accept
     // case-insensitively and normalize to lower-case for storage parity with
@@ -73,7 +76,7 @@ export const sendCommunityMessageBodySchema = z
     communityId: z.string().min(1),
     /** Display name of the community — forwarded to the push notification title. */
     communityName: z.string().max(150).optional(),
-    message: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+    message: z.string().refine(withinTextLimit, TEXT_TOO_LONG).default(""),
     messageType: z
       .string()
       .min(1)
@@ -130,7 +133,7 @@ export const editCommunityMessageSchema = z.object({
   // room (clients join community:<communityId>, mirroring the send path).
   communityId: z.string().min(1),
   content: z.object({
-    text: z.string().min(1).max(CHAT_TEXT_MAX_CHARS),
+    text: z.string().min(1).refine(withinTextLimit, TEXT_TOO_LONG),
   }),
 });
 

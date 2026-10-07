@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CONTENT_TYPES } from "@aimess/constants";
+import { CONTENT_TYPES, withinMessageTextLimit } from "@aimess/constants";
 import { isHttpUrl } from "@aimess/utils";
 
 import {
@@ -14,6 +14,9 @@ import {
   enforceMediaLimits,
 } from "../../constants/media-limits.js";
 import { reportUserReasonSchema } from "../../lib/report-user.js";
+
+const TEXT_TOO_LONG = `Message can be at most ${CHAT_TEXT_MAX_CHARS} characters`;
+const withinTextLimit = (v: string) => withinMessageTextLimit(v, CHAT_TEXT_MAX_CHARS);
 
 const messageFileSchema = z.object({
   mediaId: z.string().min(1).max(100).optional(),
@@ -58,7 +61,7 @@ export const sendPrivateMessageSchema = z
     /** @deprecated Accepted but IGNORED — the peer is resolved from the room. */
     receiverId: z.string().min(5).max(100).optional(),
     content: z.object({
-      text: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+      text: z.string().refine(withinTextLimit, TEXT_TOO_LONG).default(""),
       urls: z.array(z.string().url()).default([]),
       files: z.array(messageFileSchema).default([]),
       location: locationSchema.optional(),
@@ -86,7 +89,7 @@ export const sendPrivateMessageBodySchema = z
     /** @deprecated Accepted but IGNORED — the peer is resolved from the room. */
     receiverId: z.string().min(5).max(100).optional(),
     content: z.object({
-      text: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+      text: z.string().refine(withinTextLimit, TEXT_TOO_LONG).default(""),
       urls: z.array(z.string().url()).default([]),
       files: z.array(messageFileSchema).default([]),
       location: locationSchema.optional(),
@@ -214,7 +217,7 @@ export const forwardMessageSchema = z.object({
  */
 export const editMessageSchema = z.object({
   content: z.object({
-    text: z.string().min(1).max(CHAT_TEXT_MAX_CHARS),
+    text: z.string().min(1).refine(withinTextLimit, TEXT_TOO_LONG),
     urls: z.array(httpUrlSchema).default([]),
   }),
 });

@@ -168,7 +168,11 @@ export class StreamController {
     const id = typeof req.params.id === "string" ? req.params.id : "";
     if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
 
-    const result = await this.livestreamService.markLive(id, req.auth.userId);
+    const result = await this.livestreamService.markLive(
+      id,
+      req.auth.userId,
+      req.auth.sessionId
+    );
     void this.livestreamService.rememberHostSession(id, req.auth.sessionId);
     res
       .status(HTTP_STATUS.OK)

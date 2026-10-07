@@ -329,7 +329,16 @@ export type ListLivestreamReportsQuery = {
  */
 export type LivestreamViewerType = "Host" | "Admin" | "Moderator" | "Member";
 
+/**
+ * ACTIVE while the user has any session open in the stream; LEFT when they
+ * stopped watching while the stream was still running; ENDED when the stream
+ * ended while they were watching.
+ */
+export type LivestreamViewerStatus = "ACTIVE" | "LEFT" | "ENDED";
+
+/** One user's participation in a stream — exactly one per user. */
 export type LivestreamUserItem = {
+  status: LivestreamViewerStatus;
   /** Banned from this stream's community — the viewer list shows Unban instead of Ban. */
   isBanned: boolean;
   userId: string;
@@ -343,11 +352,11 @@ export type LivestreamUserItem = {
   // Standard avatar object (see @aimess/shared-types MediaObject); null when
   // no avatar is set. Replaces the legacy bare avatarUrl string.
   avatar: MediaObject | null;
-  /** epoch ms — when this viewing session started. */
+  /** epoch ms — the user's first join. */
   joinedAt: number;
-  /** epoch ms; null = still watching. */
+  /** epoch ms; null = still watching (any session open). */
   leftAt: number | null;
-  /** Computed live (now - joinedAt) while still watching. */
+  /** Time with at least one session open, across rejoins; running while active. */
   watchDurationSeconds: number;
   /**
    * "Host" for the stream creator; otherwise the viewer's current community
@@ -372,6 +381,8 @@ export type ListLivestreamUsersQuery = {
   search?: string;
   /** Community-role filter (Admin|Moderator|Member) — the only implemented viewer role. */
   role?: string;
+  /** Absent = all. */
+  status?: LivestreamViewerStatus;
 };
 
 /** Normalized per-stream comments query (post-validation/coercion). */

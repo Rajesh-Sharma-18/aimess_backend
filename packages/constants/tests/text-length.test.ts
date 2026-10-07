@@ -3,6 +3,7 @@ import {
   countCharacters,
   TEXT_NAME_MAX_LENGTH,
   TEXT_NAME_MAX_RAW_LENGTH,
+  withinMessageTextLimit,
   withinTextNameLimit,
 } from "../src/validation/text-length.js";
 
@@ -77,5 +78,24 @@ describe("withinTextNameLimit", () => {
     const bomb = `a${"\u0301".repeat(TEXT_NAME_MAX_RAW_LENGTH)}`;
     expect(countCharacters(bomb)).toBe(1);
     expect(withinTextNameLimit(bomb)).toBe(false);
+  });
+});
+
+describe("withinMessageTextLimit", () => {
+  it("counts emoji and Thai as one character each, like the website", () => {
+    expect(withinMessageTextLimit("😀".repeat(4000), 4000)).toBe(true);
+    expect(withinMessageTextLimit("ที่".repeat(4000), 4000)).toBe(true);
+    expect(withinMessageTextLimit("a".repeat(4000), 4000)).toBe(true);
+    expect(withinMessageTextLimit("a".repeat(4001), 4000)).toBe(false);
+    expect(withinMessageTextLimit("😀".repeat(4001), 4000)).toBe(false);
+  });
+
+  it("treats a missing or empty value as within the limit", () => {
+    expect(withinMessageTextLimit(undefined, 4000)).toBe(true);
+    expect(withinMessageTextLimit("", 4000)).toBe(true);
+  });
+
+  it("refuses past the raw UTF-16 ceiling without segmenting", () => {
+    expect(withinMessageTextLimit(`a${"́".repeat(16000)}`, 4000)).toBe(false);
   });
 });

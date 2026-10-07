@@ -476,3 +476,61 @@ describe("admin livestream viewer list — candidate-set search/filter/sort", ()
     expect(page.pagination.total).toBe(3);
   });
 });
+
+describe("admin livestream viewer list — one row per user", () => {
+  beforeEach(() => {
+    adminGetStream.mockReset();
+    adminListViewerSessions.mockReset();
+    adminGetProfilesByIds.mockReset();
+    adminGetMemberRoles.mockReset();
+    adminGetStream.mockResolvedValue(baseStream());
+    adminGetProfilesByIds.mockResolvedValue([
+      { userId: "U-1", username: "host", avatarUrl: "" },
+      { userId: "u-a", username: "alice", avatarUrl: "" },
+      { userId: "u-b", username: "bob", avatarUrl: "" },
+    ]);
+    adminGetMemberRoles.mockResolvedValue(new Map());
+  });
+
+  it("maps each user's participation to Active / Left / Ended", async () => {
+    adminListViewerSessions.mockResolvedValueOnce({
+      sessions: [
+        { id: "p-host", userId: "U-1", joinedAt: 1000, leftAt: 0, endReason: "", watchDurationSeconds: 90 },
+        { id: "p-a", userId: "u-a", joinedAt: 2000, leftAt: 5000, endReason: "LEFT", watchDurationSeconds: 3 },
+        { id: "p-b", userId: "u-b", joinedAt: 3000, leftAt: 6000, endReason: "ENDED", watchDurationSeconds: 3 },
+      ],
+      total: 3,
+    });
+
+    const page = await livestreamRepository.listUsers("LS-1", { page: 1, limit: 10 });
+
+    expect(page.data.map((v) => [v.userId, v.type, v.status, v.leftAt])).toEqual([
+      ["U-1", "Host", "ACTIVE", null],
+      ["u-a", "Member", "LEFT", 5000],
+      ["u-b", "Member", "ENDED", 6000],
+    ]);
+  });
+
+  it("passes the status filter down and searches by @handle", async () => {
+    adminListViewerSessions.mockResolvedValueOnce({
+      sessions: [
+        { id: "p-a", userId: "u-a", joinedAt: 2000, leftAt: 5000, endReason: "LEFT", watchDurationSeconds: 3 },
+        { id: "p-b", userId: "u-b", joinedAt: 3000, leftAt: 6000, endReason: "ENDED", watchDurationSeconds: 3 },
+      ],
+      total: 2,
+    });
+
+    const page = await livestreamRepository.listUsers("LS-1", {
+      page: 1,
+      limit: 10,
+      status: "ENDED",
+      search: "@ALI",
+    });
+
+    expect(adminListViewerSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "ENDED" })
+    );
+    expect(page.data.map((v) => v.userId)).toEqual(["u-a"]);
+    expect(page.pagination.total).toBe(1);
+  });
+});

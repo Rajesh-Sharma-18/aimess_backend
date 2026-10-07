@@ -1,6 +1,7 @@
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
+import { withinMessageTextLimit } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 import {
   chatOpenRoomKey,
@@ -50,6 +51,8 @@ import { presentReaders } from "../present-readers.js";
 // whole room. These are coarse gateway guards; chat-service enforces the
 // authoritative per-attachment media limits.
 const MAX_TEXT_LEN = 4000; // message body / caption (matches chat-service CHAT_TEXT_MAX_CHARS)
+const TEXT_TOO_LONG = `Message can be at most ${MAX_TEXT_LEN} characters`;
+const withinTextLimit = (v: string) => withinMessageTextLimit(v, MAX_TEXT_LEN);
 const MAX_JSON_LEN = 16384; // pre-encoded contentJson on edits
 const MAX_FILES = 30; // attachments per message (gallery)
 const MAX_URLS = 20; // link previews per message
@@ -240,7 +243,7 @@ const MessageSendSchemaBase = z.object({
     .string()
     .min(1)
     .transform((v) => v.toUpperCase()),
-  contentText: z.string().max(MAX_TEXT_LEN).optional(),
+  contentText: z.string().refine(withinTextLimit, TEXT_TOO_LONG).optional(),
   // Deprecated single object-key shorthand — prefer files[] (a single file is an
   // array of one). Kept for back-compat; the gateway folds it into files[].
   mediaKey: z.string().max(MAX_URL_LEN).optional(),
@@ -1156,7 +1159,7 @@ export function registerChatNamespace(
   const MessageEditSchemaBase = z.object({
     messageId: z.string().min(1),
     conversationId: z.string().min(1),
-    contentText: z.string().max(MAX_TEXT_LEN).optional(),
+    contentText: z.string().refine(withinTextLimit, TEXT_TOO_LONG).optional(),
     contentJson: z.string().max(MAX_JSON_LEN).optional(),
     conversationType: z.preprocess(
       (v) => (typeof v === "string" ? v.toLowerCase() : v),

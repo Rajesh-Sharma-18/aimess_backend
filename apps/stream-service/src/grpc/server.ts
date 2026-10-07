@@ -427,10 +427,15 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
     ) => {
       void (async () => {
         try {
-          const req = call.request as { streamId: string; userId: string };
+          const req = call.request as {
+            streamId: string;
+            userId: string;
+            authSessionId?: string;
+          };
           await deps.livestreamService.recordViewerJoin(
             req.streamId,
-            req.userId
+            req.userId,
+            req.authSessionId ?? ""
           );
           callback(null, { sessionId: "" });
         } catch (err) {
@@ -447,10 +452,17 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
     ) => {
       void (async () => {
         try {
-          const req = call.request as { streamId: string; userId: string };
+          const req = call.request as {
+            streamId: string;
+            userId: string;
+            authSessionId?: string;
+            reason?: string;
+          };
           await deps.livestreamService.recordViewerLeave(
             req.streamId,
-            req.userId
+            req.userId,
+            req.authSessionId ?? "",
+            req.reason ?? ""
           );
           callback(null, { success: true });
         } catch (err) {
@@ -508,6 +520,7 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             limit?: number;
             sortField?: string;
             sortDir?: string;
+            status?: string;
           };
           const sortField: "joinedAt" | "watchDurationSeconds" =
             req.sortField === "watchDurationSeconds"
@@ -519,12 +532,20 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
               limit: req.limit && req.limit > 0 ? req.limit : 20,
               sortField,
               sortDir: req.sortDir === "asc" ? "asc" : "desc",
+              status:
+                req.status === "ACTIVE" ||
+                req.status === "LEFT" ||
+                req.status === "ENDED"
+                  ? req.status
+                  : "ALL",
             });
           callback(null, {
             sessions: sessions.map((s) => ({
+              id: s.id,
               userId: s.userId,
               joinedAt: s.joinedAt.getTime(),
               leftAt: s.leftAt ? s.leftAt.getTime() : 0,
+              endReason: s.endReason ?? "",
               watchDurationSeconds: s.watchDurationSeconds,
             })),
             total,
