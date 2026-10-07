@@ -3421,7 +3421,7 @@ export function createMessagingImpl(
             callback(null, { rooms: [] });
             return;
           }
-          const peers = await deps.privateRoomRepo.findPeersForUser(
+          const peers = await deps.privateRoomRepo.findVisiblePeersForUser(
             viewerId,
             limit
           );

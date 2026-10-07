@@ -207,6 +207,38 @@ export class PrivateRoomRepository {
   }
 
   /**
+   * Peers whose conversation is live in `userId`'s inbox: not deleted-for-them
+   * (same rule as the list) and with a message newer than their Clear Chat.
+   */
+  async findVisiblePeersForUser(
+    userId: string,
+    limit: number
+  ): Promise<Array<{ peerId: string; roomId: string }>> {
+    const rooms = await this.prisma.privateRoom.findMany({
+      where: { participants: { has: userId }, lastMessageAt: { not: null } },
+      select: {
+        roomId: true,
+        participants: true,
+        lastMessageAt: true,
+        deletedFor: true,
+        clearFor: true,
+      },
+      orderBy: { lastMessageAt: "desc" },
+      // ponytail: hidden rooms still use up the cap; page if a viewer exceeds it.
+      take: limit,
+    });
+    return rooms.flatMap((r) => {
+      const peerId = r.participants.find((p) => p !== userId);
+      const clearedAt = (r.clearFor as Record<string, string> | null)?.[userId];
+      const live =
+        isVisibleAfterDelete(r, userId) &&
+        (!clearedAt ||
+          (r.lastMessageAt?.getTime() ?? 0) > new Date(clearedAt).getTime());
+      return peerId && live ? [{ peerId, roomId: r.roomId }] : [];
+    });
+  }
+
+  /**
    * Cheapest possible list of a user's rooms + their last message id — used by
    * the presence-connect delivered backfill. No participant list, no preview,
    * no ordering — just enough to walk and call markDeliveredUpTo per room.
