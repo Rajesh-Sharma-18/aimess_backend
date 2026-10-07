@@ -121,6 +121,7 @@ import {
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import { isBlockedRoom } from "../lib/blocked-room.js";
 import type { PrivateMessageReportRepository } from "../repositories/private-message-report.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CommunityReconcileClient } from "../grpc/community.client.js";
@@ -702,6 +703,7 @@ export class PrivateMessageService {
       roomId: string;
       lastMessageId: string | null;
       participants: string[];
+      blockedBy?: unknown;
     }>;
     try {
       rooms = await this.roomRepo.findParticipatingRoomHeads(userId);
@@ -712,7 +714,7 @@ export class PrivateMessageService {
       return;
     }
     for (const room of rooms) {
-      if (!room.lastMessageId) continue;
+      if (!room.lastMessageId || isBlockedRoom(room.blockedBy)) continue;
       try {
         const { count, messageIds } = await this.messageRepo.markDeliveredUpTo(
           room.roomId,
@@ -1752,6 +1754,9 @@ export class PrivateMessageService {
     recipientId: string;
     upToMessageId: string;
   }): Promise<{ count: number; messageIds: string[] }> {
+    // Blocked either way: nothing is marked, so the backfill delivers after unblock.
+    const room = await this.roomRepo.findByRoomId(params.roomId);
+    if (isBlockedRoom(room?.blockedBy)) return { count: 0, messageIds: [] };
     return this.messageRepo.markDeliveredUpTo(
       params.roomId,
       params.recipientId,

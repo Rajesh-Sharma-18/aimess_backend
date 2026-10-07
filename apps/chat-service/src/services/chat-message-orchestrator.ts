@@ -51,6 +51,7 @@ import {
   mentionedUserIdsOf,
 } from "../lib/group-mentions.js";
 import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
+import { isBlockedRoom } from "../lib/blocked-room.js";
 
 import type { PrivateMessageService } from "./private-message.service.js";
 import type { GroupMessageService } from "./group-message.service.js";
@@ -1531,6 +1532,7 @@ export class ChatMessageOrchestrator {
     // Assigned in both branches below before read — no initializer needed.
     let lastMessageSeq: number;
     let otherUserIds: string[];
+    let blockedPair = false;
     // Started BEFORE the mark-read write — see the identical comment in the
     // gRPC `markMessagesRead` handler.
     const mayBroadcastPromise = mayBroadcastReadReceipts(params.readerId);
@@ -1569,11 +1571,13 @@ export class ChatMessageOrchestrator {
         lastMessageId?: string | null;
         lastMessageSeq?: number | null;
         lastReadMessageIdByUser?: Record<string, string>;
+        blockedBy?: unknown;
       } | null;
       // A target that is malformed, or belongs to another room, is REJECTED —
       // null result. Returning here is what makes "zero unread mutation, zero
       // socket fan-out" true: everything below this point publishes.
       if (!room) return { readToSeq: 0 };
+      blockedPair = isBlockedRoom(room.blockedBy);
       unreadCount = room?.unreadCountByUser?.[params.readerId] ?? 0;
       otherUserIds = (room?.participants ?? []).filter(
         (id) => id !== params.readerId
@@ -1634,7 +1638,8 @@ export class ChatMessageOrchestrator {
     // Settings → Chat → Read Receipt, off: the read still happens (the reader's
     // own unread badge and `read_sync` below are unaffected) — only the OUTBOUND
     // receipt is withheld, so nobody learns this user read them.
-    const mayBroadcast = await mayBroadcastPromise;
+    // A block either way withholds the receipt from the peer too.
+    const mayBroadcast = (await mayBroadcastPromise) && !blockedPair;
 
     // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at or
     // below the boundary to READ (watermark), not just the boundary message.

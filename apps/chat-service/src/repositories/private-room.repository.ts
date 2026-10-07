@@ -3,6 +3,7 @@
   PrivateRoom,
   Prisma,
 } from "../generated/prisma/index.js";
+import { isBlockedRoom } from "../lib/blocked-room.js";
 import { logger } from "@aimess/logger";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 import {
@@ -249,11 +250,17 @@ export class PrivateRoomRepository {
       roomId: string;
       lastMessageId: string | null;
       participants: string[];
+      blockedBy?: unknown;
     }>
   > {
     return this.prisma.privateRoom.findMany({
       where: { participants: { has: userId } },
-      select: { roomId: true, lastMessageId: true, participants: true },
+      select: {
+        roomId: true,
+        lastMessageId: true,
+        participants: true,
+        blockedBy: true,
+      },
       take: 500,
     });
   }
@@ -816,13 +823,16 @@ export class PrivateRoomRepository {
     upToMessageId: string;
     givesReceipts: boolean;
   }): Promise<PrivateRoom | null> {
-    const { roomId, userId, upToMessageId, givesReceipts } = params;
+    const { roomId, userId, upToMessageId } = params;
     const now = new Date();
 
     const existing = await this.prisma.privateRoom.findUnique({
       where: { roomId },
     });
     if (!existing) return null;
+    // A block either way freezes the peer-visible pointer like receipts-off.
+    const givesReceipts =
+      params.givesReceipts && !isBlockedRoom(existing.blockedBy);
 
     // Guard against optimistic client ids ("tmp-…") — Prisma throws on non-ObjectId lookups and
     // writing a temp id into the read pointer would break subsequent reads for the same user.
