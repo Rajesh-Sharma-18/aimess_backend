@@ -2,11 +2,9 @@ import { NotFoundError } from "@aimess/errors";
 
 import type { SetCustomStatusInput } from "../api/validators/profile.validator.js";
 import { emitCustomStatusUpdatedSafe } from "../lib/profile-socket.js";
-import { SCHEMA_DEFAULT_SCOPE } from "../lib/privacy-scope.js";
 import {
   userProfileRepository,
   type CustomStatusColumns,
-  type CustomStatusWriteRow,
 } from "../repositories/user-profile.repository.js";
 
 export type CustomStatus = {
@@ -36,10 +34,6 @@ export function activeCustomStatus(
   };
 }
 
-function publicToWatchers(row: CustomStatusWriteRow): boolean {
-  return (row.whoCanViewProfile ?? SCHEMA_DEFAULT_SCOPE.whoCanViewProfile) === "EVERYONE";
-}
-
 export const customStatusService = {
   async getOwn(userId: string): Promise<CustomStatusResult> {
     const now = Date.now();
@@ -58,14 +52,14 @@ export const customStatusService = {
     };
     const row = await userProfileRepository.setCustomStatus(userId, status);
     if (!row) throw new NotFoundError("USER_PROFILE_NOT_FOUND");
-    emitCustomStatusUpdatedSafe(userId, startedAt, status, publicToWatchers(row));
+    emitCustomStatusUpdatedSafe(userId, startedAt, status);
     return { customStatus: status, serverNow: startedAt.getTime() };
   },
 
   async clear(userId: string): Promise<CustomStatusResult> {
     const now = new Date();
     const row = await userProfileRepository.clearCustomStatus(userId, now);
-    if (row) emitCustomStatusUpdatedSafe(userId, now, null, publicToWatchers(row));
+    if (row) emitCustomStatusUpdatedSafe(userId, now, null);
     return { customStatus: null, serverNow: now.getTime() };
   },
 
@@ -74,7 +68,7 @@ export const customStatusService = {
     const now = new Date();
     const rows = await userProfileRepository.claimExpiredCustomStatuses(now, limit);
     for (const row of rows) {
-      emitCustomStatusUpdatedSafe(row.userId, now, null, publicToWatchers(row));
+      emitCustomStatusUpdatedSafe(row.userId, now, null);
     }
     return rows.length;
   },

@@ -365,19 +365,12 @@ export const userProfileService = {
     const isFriend = view.status === "ACCEPTED";
     const isDeletedUser = profile.status === ProfileStatus.DELETED;
 
-    const viewProfileScope =
-      profile.privacySettings?.whoCanViewProfile ??
-      SCHEMA_DEFAULT_SCOPE.whoCanViewProfile;
     const friendRequestScope =
       profile.privacySettings?.whoCanSendFriendRequests ??
       SCHEMA_DEFAULT_SCOPE.whoCanSendFriendRequests;
-    // `whoCanViewProfile` and `whoCanSendFriendRequests` both offer
-    // FRIENDS_OF_FRIENDS, and the lookup is two indexed queries — so resolve
-    // the mutual-friend edge once, only when EITHER scope actually depends on
-    // it and the cheaper isSelf/isFriend answers do not settle it.
-    const needsMutualFriend =
-      viewProfileScope === "FRIENDS_OF_FRIENDS" ||
-      friendRequestScope === "FRIENDS_OF_FRIENDS";
+    // The mutual-friend lookup is two indexed queries — only run it when the
+    // friend-request scope depends on it.
+    const needsMutualFriend = friendRequestScope === "FRIENDS_OF_FRIENDS";
     const isFriendOfFriend =
       needsMutualFriend && !isSelf && !isFriend
         ? await friendshipRepository.hasMutualFriend(viewerId, targetUserId)
@@ -388,10 +381,7 @@ export const userProfileService = {
     // when the card itself is now reachable: the exception above exists to keep
     // the conversation openable, not to hand back a profile the block took
     // away.
-    const canViewProfile =
-      !isDeletedUser &&
-      !blockedByTarget &&
-      scopeAdmits(viewProfileScope, relation);
+    const canViewProfile = !isDeletedUser && !blockedByTarget;
 
     // Name + avatar are NOT gated by `whoCanViewProfile` — a profile card has
     // to stay recognizable for the strangers who are allowed to find it. Only a

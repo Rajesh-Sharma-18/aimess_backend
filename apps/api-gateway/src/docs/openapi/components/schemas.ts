@@ -5252,7 +5252,6 @@ export const openApiSchemas = {
       whoCanFindMe: { $ref: "#/components/schemas/PrivacyScope" },
       whoCanSendFriendRequests: { $ref: "#/components/schemas/PrivacyScope" },
       whoCanSeeOnlineStatus: { $ref: "#/components/schemas/PrivacyScope" },
-      whoCanViewProfile: { $ref: "#/components/schemas/PrivacyScope" },
       whoCanCallMe: { $ref: "#/components/schemas/CallPrivacyScope" },
       callAllowedFriendIds: {
         type: "array",
@@ -5265,7 +5264,6 @@ export const openApiSchemas = {
       "whoCanFindMe",
       "whoCanSendFriendRequests",
       "whoCanSeeOnlineStatus",
-      "whoCanViewProfile",
       "whoCanCallMe",
       "callAllowedFriendIds",
     ],
@@ -5407,7 +5405,6 @@ export const openApiSchemas = {
         $ref: "#/components/schemas/FriendRequestScope",
       },
       whoCanSeeOnlineStatus: { $ref: "#/components/schemas/OnlineStatusScope" },
-      whoCanViewProfile: { $ref: "#/components/schemas/PrivacyScope" },
       whoCanCallMe: { $ref: "#/components/schemas/CallPrivacyScope" },
       callAllowedFriendIds: {
         type: "array",
@@ -12850,7 +12847,7 @@ export const openApiSchemas = {
         nullable: true,
         minimum: 0,
         description:
-          "Active friends: accepted friendships minus platform-banned friends — the same set, and the same number, as GET /users/friends `totalCount`. Computed live, so a Super Admin ban drops the banned friend from every friend's count immediately and an unban restores it (a ban hides the friendship, it does not delete it). Null when `whoCanViewProfile` hides counts from this viewer.",
+          "Active friends: accepted friendships minus platform-banned friends — the same set, and the same number, as GET /users/friends `totalCount`. Computed live, so a Super Admin ban drops the banned friend from every friend's count immediately and an unban restores it (a ban hides the friendship, it does not delete it). Null when a block hides counts from this viewer.",
       },
       groupsCount: { type: "integer", nullable: true },
       communitiesCount: { type: "integer", nullable: true },

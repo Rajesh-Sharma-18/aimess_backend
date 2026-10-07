@@ -6,7 +6,6 @@
  */
 import {
   SCHEMA_DEFAULT_SCOPE,
-  canViewProfile,
   discoverableWhere,
   scopeAdmits,
   visibleIdentity,
@@ -130,21 +129,8 @@ describe("presence + profile masking on list surfaces", () => {
     expect(visibleIsOnline(online(null), stranger)).toBe(false);
   });
 
-  it("still falls back to EVERYONE for profile visibility", () => {
-    expect(SCHEMA_DEFAULT_SCOPE.whoCanViewProfile).toBe("EVERYONE");
-    expect(canViewProfile({}, stranger)).toBe(true);
-  });
-
-  it("gates profile fields on whoCanViewProfile independently of presence", () => {
-    const p = { privacySettings: { whoCanViewProfile: "FRIENDS" } };
-    expect(canViewProfile(p, friend)).toBe(true);
-    expect(canViewProfile(p, stranger)).toBe(false);
-  });
-
-  it("admits a friend-of-friend to a FRIENDS_OF_FRIENDS profile", () => {
-    const p = { privacySettings: { whoCanViewProfile: "FRIENDS_OF_FRIENDS" } };
-    expect(canViewProfile(p, friendOfFriend)).toBe(true);
-    expect(canViewProfile(p, stranger)).toBe(false);
+  it("has no whoCanViewProfile scope any more", () => {
+    expect(SCHEMA_DEFAULT_SCOPE).not.toHaveProperty("whoCanViewProfile");
   });
 });
 
@@ -175,7 +161,6 @@ describe("visibleIdentity — name + avatar on profile-card surfaces", () => {
       lastName: "Lovelace",
       fullName: "Ada Lovelace",
     });
-    expect(canViewProfile(scoped("NO_ONE"), stranger)).toBe(false);
   });
 
   it("renders identically for a friend and for a stranger", () => {

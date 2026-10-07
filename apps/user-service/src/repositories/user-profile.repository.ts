@@ -34,12 +34,10 @@ export type CustomStatusColumns = {
   customStatusUpdatedAt: Date | null;
 };
 
-export type CustomStatusWriteRow = { userId: string; whoCanViewProfile: string | null };
+export type CustomStatusWriteRow = { userId: string };
 
 const CLEAR_CUSTOM_STATUS_SQL = Prisma.sql`"customStatusEmoji" = NULL, "customStatusText" = NULL,
   "customStatusStartedAt" = NULL, "customStatusExpiresAt" = NULL`;
-const WHO_CAN_VIEW_PROFILE_SQL = Prisma.sql`(SELECT s."whoCanViewProfile"::text FROM "privacy_settings" s
-  WHERE s."userId" = p."userId") AS "whoCanViewProfile"`;
 
 /** Maximum users returned by findAllActiveExcept — prevents full-table scans on large deployments. */
 const AUTO_CONNECT_USER_LIMIT = 10_000;
@@ -213,7 +211,7 @@ export const userProfileRepository = {
         "customStatusStartedAt" = ${s.startedAt}, "customStatusExpiresAt" = ${s.expiresAt},
         "customStatusUpdatedAt" = ${s.startedAt}
       WHERE p."userId" = ${userId}::uuid AND p."deletedAt" IS NULL
-      RETURNING p."userId", ${WHO_CAN_VIEW_PROFILE_SQL}`;
+      RETURNING p."userId"`;
     return rows[0] ?? null;
   },
 
@@ -222,7 +220,7 @@ export const userProfileRepository = {
     const rows = await prisma.$queryRaw<CustomStatusWriteRow[]>`
       UPDATE "user_profiles" p SET ${CLEAR_CUSTOM_STATUS_SQL}, "customStatusUpdatedAt" = ${now}
       WHERE p."userId" = ${userId}::uuid AND p."customStatusExpiresAt" IS NOT NULL
-      RETURNING p."userId", ${WHO_CAN_VIEW_PROFILE_SQL}`;
+      RETURNING p."userId"`;
     return rows[0] ?? null;
   },
 
@@ -235,7 +233,7 @@ export const userProfileRepository = {
         WHERE "customStatusExpiresAt" <= ${now}
         LIMIT ${limit} FOR UPDATE SKIP LOCKED
       ) AND p."customStatusExpiresAt" <= ${now}
-      RETURNING p."userId", ${WHO_CAN_VIEW_PROFILE_SQL}`;
+      RETURNING p."userId"`;
   },
 
   findByUserId(userId: string) {

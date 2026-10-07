@@ -13,7 +13,6 @@ export type SettingsBundle = {
     whoCanFindMe: PrivacyScope;
     whoCanSendFriendRequests: PrivacyScope;
     whoCanSeeOnlineStatus: PrivacyScope;
-    whoCanViewProfile: PrivacyScope;
     whoCanCallMe: CallPrivacyScope;
     updatedAt: Date;
   } | null;
@@ -58,7 +57,6 @@ export type PrivacySettingsUpdate = {
   whoCanFindMe?: PrivacyScope;
   whoCanSendFriendRequests?: PrivacyScope;
   whoCanSeeOnlineStatus?: PrivacyScope;
-  whoCanViewProfile?: PrivacyScope;
   whoCanCallMe?: CallPrivacyScope;
 };
 
@@ -297,7 +295,6 @@ export const userSettingsRepository = {
             whoCanFindMe: true,
             whoCanSendFriendRequests: true,
             whoCanSeeOnlineStatus: true,
-            whoCanViewProfile: true,
             whoCanCallMe: true,
             updatedAt: true,
           },

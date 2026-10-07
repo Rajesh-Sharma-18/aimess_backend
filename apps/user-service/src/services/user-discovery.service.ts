@@ -5,7 +5,6 @@ import { avatarService } from "./avatar.service.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import {
   canSendFriendRequest,
-  canViewProfile,
   visibleIdentity,
   visibleIsOnline,
 } from "../lib/privacy-scope.js";
@@ -203,7 +202,7 @@ export const userDiscoveryService = {
           username: allocatedUsername(p),
           firstName: identity.firstName,
           lastName: identity.lastName,
-          bio: canViewProfile(p, relation) ? p.bio : null,
+          bio: p.bio,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,
@@ -298,7 +297,7 @@ export const userDiscoveryService = {
           username: allocatedUsername(p),
           firstName: identity.firstName,
           lastName: identity.lastName,
-          bio: canViewProfile(p, { isFriend: true }) ? p.bio : null,
+          bio: p.bio,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,
@@ -390,7 +389,7 @@ export const userDiscoveryService = {
           username: allocatedUsername(p),
           firstName: identity.firstName,
           lastName: identity.lastName,
-          bio: canViewProfile(p, relation) ? p.bio : null,
+          bio: p.bio,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,
@@ -465,7 +464,7 @@ export const userDiscoveryService = {
           username: allocatedUsername(p),
           firstName: identity.firstName,
           lastName: identity.lastName,
-          bio: canViewProfile(p, relation) ? p.bio : null,
+          bio: p.bio,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,

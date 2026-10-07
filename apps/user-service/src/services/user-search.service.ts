@@ -151,7 +151,6 @@ type BasicProfile = {
   isOnline: boolean;
   privacySettings?: {
     whoCanSeeOnlineStatus?: string | null;
-    whoCanViewProfile?: string | null;
     whoCanSendFriendRequests?: string | null;
   } | null;
 };

@@ -103,7 +103,6 @@ function mapSettingsBundle(bundle: SettingsBundle): UserSettingsResponse {
       whoCanFindMe: privacy.whoCanFindMe,
       whoCanSendFriendRequests: privacy.whoCanSendFriendRequests,
       whoCanSeeOnlineStatus: privacy.whoCanSeeOnlineStatus,
-      whoCanViewProfile: privacy.whoCanViewProfile,
       whoCanCallMe: privacy.whoCanCallMe,
       callAllowedFriendIds: bundle.callPrivacyAllowList.map(
         (row) => row.allowedUserId
@@ -319,7 +318,11 @@ export const userSettingsService = {
 
     let privacyFields: PrivacySettingsUpdate | undefined;
     if (privacyUpdate) {
-      const { callAllowedFriendIds: _ignored, ...rest } = privacyUpdate;
+      const {
+        callAllowedFriendIds: _ignored,
+        whoCanViewProfile: _retired,
+        ...rest
+      } = privacyUpdate;
       if (Object.keys(rest).length > 0) {
         privacyFields = rest;
       }

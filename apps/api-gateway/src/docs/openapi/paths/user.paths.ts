@@ -1622,7 +1622,6 @@ export const userPaths = {
                     whoCanFindMe: "EVERYONE",
                     whoCanSendFriendRequests: "EVERYONE",
                     whoCanSeeOnlineStatus: "EVERYONE",
-                    whoCanViewProfile: "EVERYONE",
                     whoCanCallMe: "EVERYONE",
                     callAllowedFriendIds: [],
                   },
@@ -1752,7 +1751,6 @@ export const userPaths = {
                     whoCanFindMe: "FRIENDS_OF_FRIENDS",
                     whoCanSendFriendRequests: "EVERYONE",
                     whoCanSeeOnlineStatus: "FRIENDS",
-                    whoCanViewProfile: "EVERYONE",
                     whoCanCallMe: "EVERYONE",
                     callAllowedFriendIds: [],
                   },
@@ -2189,7 +2187,7 @@ export const userPaths = {
       summary: "Set my custom status",
       operationId: "setMyCustomStatus",
       description:
-        "Creates or replaces the caller's single custom status. At least one of `emoji` (exactly one emoji) / `text` (trimmed, ≤ 60 characters, no line breaks) is required. `durationSeconds` is an integer in [60, 2592000]; `expiresAt = startedAt = now + durationSeconds`, computed on the server. Visible to whoever passes the `whoCanViewProfile` gate (same as `bio`). Emits `user:custom_status_updated` on /chat (`user:<id>`, mirrored to `presence:<id>`; the `customStatus` key is present only when `whoCanViewProfile` is EVERYONE) and, when not EVERYONE, the full form on /notify to the owner's devices.\n\n" +
+        "Creates or replaces the caller's single custom status. At least one of `emoji` (exactly one emoji) / `text` (trimmed, ≤ 60 characters, no line breaks) is required. `durationSeconds` is an integer in [60, 2592000]; `expiresAt = startedAt = now + durationSeconds`, computed on the server. Visible to everyone except a peer the subject blocked (same as `bio`). Emits `user:custom_status_updated` with the full status on /chat (`user:<id>`, mirrored to `presence:<id>`).\n\n" +
         "Validation errors are `400 VALIDATION_FAILED` with messages `USER_CUSTOM_STATUS_EMPTY`, `USER_CUSTOM_STATUS_TEXT_TOO_LONG`, `USER_CUSTOM_STATUS_TEXT_INVALID`, `USER_CUSTOM_STATUS_EMOJI_INVALID`, `USER_CUSTOM_STATUS_DURATION_INVALID` (localized).",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],

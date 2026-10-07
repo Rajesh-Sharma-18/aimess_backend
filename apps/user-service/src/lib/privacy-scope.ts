@@ -28,7 +28,6 @@ export const SCHEMA_DEFAULT_SCOPE = {
   whoCanFindMe: "EVERYONE",
   whoCanSendFriendRequests: "EVERYONE",
   whoCanSeeOnlineStatus: "FRIENDS",
-  whoCanViewProfile: "EVERYONE",
 } as const;
 
 /**
@@ -52,8 +51,8 @@ export type ViewerRelation = {
  *
  * An absent scope falls through to `EVERYONE`. Callers whose field defaults to
  * something stricter MUST pass the fallback explicitly — use
- * `SCHEMA_DEFAULT_SCOPE`, or the `visibleIsOnline` / `canViewProfile` helpers
- * below, which already do.
+ * `SCHEMA_DEFAULT_SCOPE`, or the `visibleIsOnline` helper
+ * below, which already does.
  */
 export function scopeAdmits(
   scope: string | null | undefined,
@@ -120,7 +119,6 @@ export function discoverableWhere(
 export const PRIVACY_SCOPE_SELECT = {
   select: {
     whoCanSeeOnlineStatus: true,
-    whoCanViewProfile: true,
     // Not a masking scope — it decides whether the row may offer an "Add
     // Friend" action at all (see `canSendFriendRequest`). Carried on the same
     // select so no list surface needs a second query to answer that.
@@ -131,7 +129,6 @@ export const PRIVACY_SCOPE_SELECT = {
 type ScopeCarrier = {
   privacySettings?: {
     whoCanSeeOnlineStatus?: string | null;
-    whoCanViewProfile?: string | null;
     whoCanSendFriendRequests?: string | null;
   } | null;
 };
@@ -205,17 +202,6 @@ export function visibleIsOnline(
     : false;
 }
 
-/** Does this viewer get the gated profile fields (bio, cover, counts)? */
-export function canViewProfile(
-  profile: ScopeCarrier,
-  relation: ViewerRelation
-): boolean {
-  return scopeAdmits(
-    profile.privacySettings?.whoCanViewProfile ??
-      SCHEMA_DEFAULT_SCOPE.whoCanViewProfile,
-    relation
-  );
-}
 
 /**
  * Real name + avatar for a PROFILE-CARD surface: the profile endpoint, search

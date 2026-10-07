@@ -102,7 +102,7 @@ export type PublicUserProfileData = {
   /** Null when the target's `whoCanSeeOnlineStatus` excludes this viewer. */
   isOnline: boolean | null;
   lastSeenAt: string | null;
-  /** Null when the target's `whoCanViewProfile` excludes this viewer. */
+  /** Null when the target blocked this viewer. */
   friendsCount: number | null;
   groupsCount: number | null;
   communitiesCount: number | null;

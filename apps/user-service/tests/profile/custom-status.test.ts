@@ -196,21 +196,13 @@ describe("PUT /profiles/me/custom-status", () => {
     expect(notifyPub).not.toHaveBeenCalled();
   });
 
-  it("publishes a signal-only copy on user:<id> and the full form on notify:<id> otherwise", async () => {
-    repo.setCustomStatus.mockResolvedValue({ userId: TEST_USER_ID, whoCanViewProfile: "FRIENDS" });
+  it("always publishes the full form on user:<id> and nothing on notify:<id>", async () => {
     await put({ emoji: "✈️", durationSeconds: 60 });
 
-    const chatPayload = chatPub.mock.calls[0][3];
-    expect(chatPayload).not.toHaveProperty("customStatus");
-    expect(chatPayload).toEqual(
-      expect.objectContaining({ userId: TEST_USER_ID, updatedAt: expect.any(Number) })
-    );
-    expect(notifyPub).toHaveBeenCalledWith(
-      redis,
-      TEST_USER_ID,
-      EVENT,
+    expect(chatPub.mock.calls[0][3]).toEqual(
       expect.objectContaining({ customStatus: expect.objectContaining({ emoji: "✈️" }) })
     );
+    expect(notifyPub).not.toHaveBeenCalled();
   });
 
   it("404s when the profile row is missing", async () => {
@@ -299,7 +291,7 @@ describe("read paths", () => {
     expect(typeof res.body.data.serverNow).toBe("number");
   });
 
-  it("GET /users/:id hides it behind whoCanViewProfile (same gate as bio)", async () => {
+  it("GET /users/:id shows bio and status to a stranger (no profile-view scope)", async () => {
     repo.findPublicProfileByUserId.mockResolvedValue(
       peerProfile({ privacySettings: { whoCanViewProfile: "FRIENDS" } })
     );
@@ -307,8 +299,7 @@ describe("read paths", () => {
     const res = await request(app).get(`/api/v1/users/${PEER_ID}`).set(auth());
 
     expect(res.status).toBe(200);
-    expect(res.body.data.bio).toBeNull();
-    expect(res.body.data.customStatus).toBeNull();
+    expect(res.body.data.customStatus).toMatchObject({ emoji: "✈️" });
   });
 
   it("GET /users/:id hides it when the peer blocked the viewer (conversation kept)", async () => {
@@ -341,8 +332,8 @@ describe("expiry sweeper", () => {
     (redis as unknown as { set: jest.Mock; del: jest.Mock }).del = jest.fn(async () => 1);
     repo.claimExpiredCustomStatuses
       .mockResolvedValueOnce([
-        { userId: TEST_USER_ID, whoCanViewProfile: null },
-        { userId: PEER_ID, whoCanViewProfile: "FRIENDS" },
+        { userId: TEST_USER_ID },
+        { userId: PEER_ID },
       ])
       .mockResolvedValue([]);
 
@@ -356,15 +347,10 @@ describe("expiry sweeper", () => {
       EVENT,
       expect.objectContaining({ customStatus: null })
     );
-    expect(chatPub.mock.calls.find((c) => c[1] === PEER_ID)?.[3]).not.toHaveProperty(
-      "customStatus"
-    );
-    expect(notifyPub).toHaveBeenCalledWith(
-      redis,
-      PEER_ID,
-      EVENT,
+    expect(chatPub.mock.calls.find((c) => c[1] === PEER_ID)?.[3]).toEqual(
       expect.objectContaining({ customStatus: null })
     );
+    expect(notifyPub).not.toHaveBeenCalled();
   });
 
   it("skips the tick when another instance holds the lock", async () => {

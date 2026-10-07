@@ -58,8 +58,7 @@ const CUSTOM_STATUS_EVENT = "user:custom_status_updated";
 export function emitCustomStatusUpdatedSafe(
   userId: string,
   updatedAt: Date,
-  customStatus: CustomStatus | null,
-  publicToWatchers: boolean
+  customStatus: CustomStatus | null
 ): void {
   const signal = { userId, updatedAt: updatedAt.getTime(), serverNow: Date.now() };
   const full = {
@@ -80,11 +79,6 @@ export function emitCustomStatusUpdatedSafe(
     redis,
     userId,
     CUSTOM_STATUS_EVENT,
-    publicToWatchers ? full : signal
+    full
   ).catch(warn("user"));
-  if (!publicToWatchers) {
-    void publishUserSocketEvent(redis, userId, CUSTOM_STATUS_EVENT, full).catch(
-      warn("notify")
-    );
-  }
 }

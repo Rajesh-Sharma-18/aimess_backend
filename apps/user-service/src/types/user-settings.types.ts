@@ -25,7 +25,6 @@ export type UserPrivacySettings = {
   whoCanFindMe: PrivacyScopeValue;
   whoCanSendFriendRequests: PrivacyScopeValue;
   whoCanSeeOnlineStatus: PrivacyScopeValue;
-  whoCanViewProfile: PrivacyScopeValue;
   whoCanCallMe: CallPrivacyScopeValue;
   /** User IDs allowed to call when `whoCanCallMe` is `SELECTED_FRIENDS`. */
   callAllowedFriendIds: string[];
