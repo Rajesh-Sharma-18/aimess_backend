@@ -337,6 +337,7 @@ export async function publishCommunitySystemMessageForChatAwaited(
 export function publishCommunityMemberMuteRetractedForChatSafe(data: {
   communityId: string;
   userId: string;
+  keepEventAt?: string;
 }): void {
   publishSafe(
     "community.member.mute_msg_retracted",

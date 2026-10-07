@@ -136,6 +136,8 @@ interface CommunityRoomSyncEvent {
     // member.mute_synced — moderation mute mirror (orthogonal to status/role)
     isMuted?: boolean;
     mutedUntil?: string | null;
+    /** mute_msg_retracted: the new mute's eventAt, whose own lines survive. */
+    keepEventAt?: string;
     // community.status.changed
     communityStatus?: string;
     // community.invite_link_shared
@@ -450,14 +452,14 @@ export class CommunityRoomSyncConsumer {
         }
 
         case "community.member.mute_msg_retracted": {
-          // Telegram parity: on unmute, retract the CURRENT mute session's
-          // "You are muted until …" PERSONAL line so it never sits alongside
-          // the fresh unmute line in the affected member's history.
+          // Unmute / expiry / re-mute: the ended mute's lines leave every
+          // timeline that showed them (member + moderators).
           const userId = event.data.userId;
           if (!userId) break;
-          await this.communitySystemMessageService.retractPersonalMuteMessage({
+          await this.communitySystemMessageService.retractMuteLines({
             communityId,
-            userId,
+            targetUserId: userId,
+            keepEventAt: event.data.keepEventAt || undefined,
           });
           break;
         }

@@ -340,28 +340,46 @@ export class GeneralRoomMessageRepository {
     );
   }
 
-  /**
-   * The most recent still-visible PERSONAL MEMBER_MUTED line for one user in
-   * one room, if any — the "You are muted until …" line from the CURRENT mute
-   * session. Retracted (soft-deleted) when that session ends via unmute, so
-   * the mute + unmute lines never stack together in the affected member's
-   * history (Telegram parity: only the current state is shown).
-   */
-  async findLatestActiveMutedMessageId(params: {
+  // Every live MEMBER_MUTED line about one member: their personal notice and the
+  // moderators' audit line. The dedupe key (`sys:MEMBER_MUTED:<eventAt>:<target>…`)
+  // links each line to its mute; `keepEventAt` spares the mute being posted now.
+  async findLiveMuteLines(params: {
     roomId: string;
-    userId: string;
-  }): Promise<string | null> {
-    const row = await this.prisma.generalRoomMessage.findFirst({
+    targetUserId: string;
+    keepEventAt?: string;
+  }): Promise<{ id: string; visibleToUserId: string | null }[]> {
+    const rows = await this.prisma.generalRoomMessage.findMany({
       where: {
         roomId: params.roomId,
-        visibleToUserId: params.userId,
         systemMessageType: "MEMBER_MUTED",
         deletedForAll: false,
+        OR: [
+          {
+            clientMessageId: {
+              startsWith: "sys:MEMBER_MUTED:",
+              contains: `:${params.targetUserId}`,
+            },
+          },
+          { visibleToUserId: params.targetUserId },
+        ],
       },
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
+      select: { id: true, visibleToUserId: true, clientMessageId: true },
     });
-    return row?.id ?? null;
+    const keep = params.keepEventAt
+      ? `sys:MEMBER_MUTED:${params.keepEventAt}:`
+      : null;
+    return rows
+      .filter((r) => !keep || !r.clientMessageId?.startsWith(keep))
+      .map((r) => ({ id: r.id, visibleToUserId: r.visibleToUserId ?? null }));
+  }
+
+  /** Hides a system line once; false when it was already hidden (no duplicate tombstone). */
+  async retractIfLive(id: string, revision: number): Promise<boolean> {
+    const { count } = await this.prisma.generalRoomMessage.updateMany({
+      where: { id, deletedForAll: false },
+      data: { deletedForAll: true, revision },
+    });
+    return count === 1;
   }
 
   /** The room's newest message everyone sees — what the community list row previews. */
