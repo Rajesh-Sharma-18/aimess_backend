@@ -103,6 +103,8 @@ function mapSettingsBundle(bundle: SettingsBundle): UserSettingsResponse {
       whoCanFindMe: privacy.whoCanFindMe,
       whoCanSendFriendRequests: privacy.whoCanSendFriendRequests,
       whoCanSeeOnlineStatus: privacy.whoCanSeeOnlineStatus,
+      // Retired; constant so shipped clients that decode it as required keep working.
+      whoCanViewProfile: "EVERYONE",
       whoCanCallMe: privacy.whoCanCallMe,
       callAllowedFriendIds: bundle.callPrivacyAllowList.map(
         (row) => row.allowedUserId

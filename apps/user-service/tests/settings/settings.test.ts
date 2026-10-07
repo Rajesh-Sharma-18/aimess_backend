@@ -147,7 +147,7 @@ describe("PATCH /api/v1/users/settings/me", () => {
       .send({ privacy: { whoCanViewProfile: "FRIENDS" } });
 
     expect(res.status).toBe(200);
-    expect(res.body.data.privacy).not.toHaveProperty("whoCanViewProfile");
+    expect(res.body.data.privacy.whoCanViewProfile).toBe("EVERYONE");
     expect(JSON.stringify(repo.updateSettings.mock.calls)).not.toContain(
       "whoCanViewProfile"
     );
