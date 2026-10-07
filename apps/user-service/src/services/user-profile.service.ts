@@ -388,13 +388,14 @@ export const userProfileService = {
     // DELETED account is blanked, and resolving its avatar key as null yields
     // the same "no avatar" shape as a user who never set one.
     const identity = visibleIdentity(profile, { anonymize: isDeletedUser });
+    // A blocker's photo is hidden from the person they blocked; the name stays.
+    const avatarKey =
+      identity.avatarAllowed && !blockedByTarget ? profile.avatarUrl : null;
     const [avatarView, avatar] = await Promise.all([
-      avatarService.resolveViewUrlForClient(
-        identity.avatarAllowed ? profile.avatarUrl : null
-      ),
+      avatarService.resolveViewUrlForClient(avatarKey),
       toMediaObject({
         bucket: env.MINIO_BUCKET_AVATARS,
-        stored: identity.avatarAllowed ? profile.avatarUrl : null,
+        stored: avatarKey,
         prefixes: MEDIA_PREFIXES.userAvatars,
         strategy: mediaUrlStrategy,
       }),

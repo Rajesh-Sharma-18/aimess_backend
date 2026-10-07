@@ -51,6 +51,7 @@ import { recentUserSearchRepository } from "../../src/repositories/recent-user-s
 import { userProfileRepository } from "../../src/repositories/user-profile.repository.js";
 import { friendshipRepository } from "../../src/repositories/friendship.repository.js";
 import { messagingGrpcClient } from "../../src/grpc/messaging.client.js";
+import { avatarService } from "../../src/services/avatar.service.js";
 import { TEST_USER_ID, bearer, makeAccessToken } from "../helpers/auth.js";
 
 const recentRepo = recentUserSearchRepository as unknown as Record<
@@ -166,6 +167,7 @@ describe("GET /api/v1/users/search?q= — the same rule on the query path", () =
 describe("GET /api/v1/users/:userId — the profile door", () => {
   const publicProfile = {
     ...profile(BLOCKER),
+    avatarUrl: "avatars/blocker.jpg",
     bio: "hi",
     coverImageUrl: null,
     lastSeenAt: null,
@@ -198,6 +200,11 @@ describe("GET /api/v1/users/:userId — the profile door", () => {
     expect(res.body.data.bio).toBeNull();
     expect(res.body.data.friendsCount).toBeNull();
     expect(res.body.data.isOnline).toBeNull();
+    expect(res.body.data.customStatus).toBeNull();
+    // Photo hidden too; the name stays.
+    expect(res.body.data.avatar.objectKey).toBeNull();
+    expect(avatarService.resolveViewUrlForClient).toHaveBeenLastCalledWith(null);
+    expect(res.body.data.firstName).toBe(publicProfile.firstName);
   });
 
   it("still 404s when there is no conversation", async () => {
