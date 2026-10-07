@@ -5423,6 +5423,11 @@ export function createNotificationImpl(
             ? resolveTransition(existing.type, req.type, data)
             : null;
 
+          if (existing && plan?.action === "NOOP") {
+            callback(null, { id: existing.id });
+            return;
+          }
+
           if (existing && plan && plan.action !== "CREATE") {
             const existingPayload = (existing.payload ?? {}) as {
               title?: string;

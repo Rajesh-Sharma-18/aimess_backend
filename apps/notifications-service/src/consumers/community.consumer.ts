@@ -161,6 +161,40 @@ async function dismissRoomCards(
   );
 }
 
+const LIVESTREAM_RETRACTED = "community.livestream_retracted";
+
+const liveEndedKey = (livestreamId: string) =>
+  `notif:livestream:ended:${livestreamId}`;
+
+/**
+ * The end actor gets no "ended" card about their own action, so the "is live"
+ * card they were shown is taken back instead: the inbox row (every session, via
+ * `notification:deleted`) and the tray card on every device.
+ */
+async function retractLiveCard(
+  userId: string,
+  communityId: string,
+  livestreamId: string
+): Promise<void> {
+  await pushToUser({
+    userId,
+    category: "liveStreamEnabled",
+    type: LIVESTREAM_RETRACTED,
+    skipPush: true,
+    bypassSettings: true,
+    data: { groupKey: `livestream:${livestreamId}`, communityId, livestreamId },
+  }).catch((error: unknown) => {
+    logger.warn(`[livestream] retract live row failed user=${userId}`);
+    logger.warn(error);
+  });
+  await dismissTrayCards({
+    userId,
+    tags: [pushTag.live(livestreamId)],
+    reason: "LIVESTREAM_ENDED",
+    data: { communityId, livestreamId },
+  });
+}
+
 /** Name + avatar of ONE community, resolved together from ONE record. */
 interface CommunityIdentity {
   communityId: string;
@@ -438,6 +472,11 @@ async function handleCommunityEvent(
       const p = data as CommunityLivestreamStartedPayload;
       const recipients = withoutActor(p.recipientIds, p.hostUserId);
       if (recipients.length === 0) break;
+      // A start that lands after its own end must not draw an "is live" card.
+      if (await redis.get(liveEndedKey(p.livestreamId)).catch(() => null)) {
+        logger.info(`[livestream] start after end skipped stream=${p.livestreamId}`);
+        break;
+      }
       const [identity, resolvedHostName] = await Promise.all([
         communityIdentityFor(
           p.communityId,
@@ -457,7 +496,7 @@ async function handleCommunityEvent(
         copy: communityCopy.livestreamStarted(identity.name, resolvedHostName),
         // Shared with LIVESTREAM_ENDED, so "ended" REPLACES the "Watch now" card
         // instead of leaving a tappable card for a stream that is over.
-        collapseKey: pushTag.live(p.communityId),
+        collapseKey: pushTag.live(p.livestreamId),
         ...base(
           type,
           identity,
@@ -493,6 +532,12 @@ async function handleCommunityEvent(
       const endActorId =
         p.endedByUserId ??
         (p.endedReason === "ADMIN" ? undefined : p.hostUserId);
+      await redis
+        .set(liveEndedKey(p.livestreamId), "1", "EX", 86_400)
+        .catch(() => undefined);
+      if (p.endedByUserId && p.endedByUserId !== p.hostUserId) {
+        await retractLiveCard(p.endedByUserId, p.communityId, p.livestreamId);
+      }
       const recipients = withoutActor(p.recipientIds, endActorId);
       if (recipients.length === 0) break;
       const [identity, resolvedHostName, endedByName] = await Promise.all([
@@ -517,10 +562,10 @@ async function handleCommunityEvent(
       await pushToUsers(recipients, (userId) => ({
         userId,
         // ponytail: replaces the "started" card only where "ended" is delivered;
-        // quiet hours or a toggle flipped mid-stream leaves "started" until the
-        // user opens the community (roomTags). Send dismissTrayCards here too if
-        // that matters.
-        collapseKey: pushTag.live(p.communityId),
+        // quiet hours or a toggle flipped mid-stream leaves "started" in the tray,
+        // and the clients' tap-time stream check keeps it from opening an ended
+        // stream. Send dismissTrayCards here too if that matters.
+        collapseKey: pushTag.live(p.livestreamId),
         // A Super Admin end reads "An administrator", a platform end (moderation,
         // bans) "System" — neither names the host; the host still rides in
         // data/actorSnapshot as the stream owner.
@@ -557,13 +602,13 @@ async function handleCommunityEvent(
             endedReason: p.endedReason ?? "USER",
             communityHandle: p.communityHandle ?? "",
             actorSnapshot: JSON.stringify(actorSnapshot),
+            // Rewrites the "is live" row in place without re-badging it.
+            resurface: "false",
           },
           buildDeepLink("community", p.communityId),
           "liveStreamEnabled",
-          {
-            screen: "COMMUNITY_LIVESTREAM",
-            livestreamId: p.livestreamId,
-          },
+          // An ended stream has nothing to watch: the row opens the community.
+          { screen: "COMMUNITY_CHAT" },
           generateEventThreadId(type)
         ),
       }));

@@ -9,7 +9,13 @@ const DELETE_ON_ARRIVAL = new Set<string>([
   // action item, so it goes away with the action rather than being rewritten
   // into an outcome nobody needs to read.
   "community.join_request_retracted",
+  // The end actor's own "is live" card: they get no ended card (no self-notify),
+  // and a live card for a stream that is over must not survive either.
+  "community.livestream_retracted",
 ]);
+
+const LIVESTREAM_STARTED = "community.livestream_started";
+const LIVESTREAM_ENDED = "community.livestream_ended";
 
 const FRIEND_TYPES = new Set<string>([
   "friend.requested",
@@ -31,7 +37,7 @@ const RESOLVED_FRIEND_TYPES = new Set<string>([
   "friend.rejected",
 ]);
 
-export type NotificationAction = "CREATE" | "UPDATE" | "DELETE";
+export type NotificationAction = "CREATE" | "UPDATE" | "DELETE" | "NOOP";
 
 export interface TransitionPlan {
   action: NotificationAction;
@@ -69,13 +75,11 @@ export function resolveGroupKey(
     return sessionId ? `auth:login:${sessionId}` : null;
   }
 
-  // One card per stream per event, wherever the stream runs. Without this a
-  // community stream fell into `community:<id>:<type>` below, so the NEXT
-  // stream in the same community rewrote the previous card in place
-  // (`notification:updated`, not resurfaced) instead of arriving as new.
+  // One card per stream SESSION: "ended" rewrites that stream's "is live" card
+  // in place, and the next stream in the same community gets its own card.
   const livestreamId = nonEmpty(data.livestreamId);
   if (livestreamId && isLiveType(type)) {
-    return `livestream:${livestreamId}:${type}`;
+    return `livestream:${livestreamId}`;
   }
 
   const communityId = nonEmpty(data.communityId);
@@ -108,6 +112,10 @@ export function resolveTransition(
 ): TransitionPlan {
   if (DELETE_ON_ARRIVAL.has(incomingType)) {
     return { action: "DELETE", resurface: false };
+  }
+  // A start delivered after its end never turns an ended card back into "is live".
+  if (existingType === LIVESTREAM_ENDED && incomingType === LIVESTREAM_STARTED) {
+    return { action: "NOOP", resurface: false };
   }
   // A NEW request against an already-resolved card is a new friendship cycle on
   // a recycled friendship id — it gets its OWN card (and therefore a real

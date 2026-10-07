@@ -10,7 +10,8 @@
  * Verifies:
  *   - host-named copy ("{host} is live in {community}" / "ended … after 1h 24m")
  *   - title = community name; category = liveStreamEnabled (dedicated toggle)
- *   - navigation screen COMMUNITY_LIVESTREAM carries the livestreamId
+ *   - started: navigation COMMUNITY_LIVESTREAM carries the livestreamId; ended
+ *     routes to the community chat and shares the started card's per-stream tag
  *   - empty recipient list → no push
  */
 
@@ -39,12 +40,22 @@ jest.mock("@aimess/redis", () => ({
   publishUserSocketEvent: jest.fn(async () => 1),
 }));
 
+jest.mock("../../src/services/push-dismiss.js", () => ({
+  dismissTrayCards: jest.fn(async () => undefined),
+}));
+
 import { CommunityEvents } from "@aimess/shared-types";
 
 import { startCommunityConsumer } from "../../src/consumers/community.consumer.js";
-import { pushToUsers } from "../../src/services/push.service.js";
+import { redis } from "../../src/config/redis.js";
+import { dismissTrayCards } from "../../src/services/push-dismiss.js";
+import { pushToUser, pushToUsers } from "../../src/services/push.service.js";
 
 const pushMany = pushToUsers as jest.Mock;
+const pushOne = pushToUser as jest.Mock;
+const dismiss = dismissTrayCards as jest.Mock;
+const redisGet = redis.get as jest.Mock;
+const redisSet = redis.set as jest.Mock;
 
 const CID = "c".repeat(24);
 const SID = "5".repeat(24);
@@ -65,6 +76,10 @@ async function deliver(type: string, data: unknown): Promise<void> {
 
 beforeEach(() => {
   pushMany.mockClear();
+  pushOne.mockClear();
+  dismiss.mockClear();
+  redisGet.mockReset().mockResolvedValue(null);
+  redisSet.mockClear();
 });
 
 const startedPayload = {
@@ -107,6 +122,18 @@ describe("LIVESTREAM_STARTED branch", () => {
     });
   });
 
+  it("tags the card per stream session, so only its own end replaces it", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_STARTED, startedPayload);
+    expect(pushMany.mock.calls[0][1](U1).collapseKey).toBe(`live:${SID}`);
+  });
+
+  it("a start delivered after its stream already ended draws nothing", async () => {
+    redisGet.mockResolvedValueOnce("1");
+    await deliver(CommunityEvents.LIVESTREAM_STARTED, startedPayload);
+    expect(redisGet).toHaveBeenCalledWith(`notif:livestream:ended:${SID}`);
+    expect(pushMany).not.toHaveBeenCalled();
+  });
+
   it("does not push when the recipient list is empty", async () => {
     await deliver(CommunityEvents.LIVESTREAM_STARTED, {
       ...startedPayload,
@@ -117,6 +144,53 @@ describe("LIVESTREAM_STARTED branch", () => {
 });
 
 describe("LIVESTREAM_ENDED branch", () => {
+  it("replaces the started card in place and no longer routes to the stream", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      duration: "1m",
+      durationSeconds: 60,
+    });
+    const input = pushMany.mock.calls[0][1](U1);
+    expect(input.collapseKey).toBe(`live:${SID}`);
+    expect(input.data).toMatchObject({ livestreamId: SID, resurface: "false" });
+    const nav = JSON.parse(input.data.navigation);
+    expect(nav.screen).toBe("COMMUNITY_CHAT");
+    expect(nav.livestreamId).toBeUndefined();
+    expect(redisSet).toHaveBeenCalledWith(
+      `notif:livestream:ended:${SID}`,
+      "1",
+      "EX",
+      86_400
+    );
+    // The host ended it and never had a live card: nothing to retract.
+    expect(pushOne).not.toHaveBeenCalled();
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it("community admin's own live card is retracted, never rewritten into an ended card", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      recipientIds: [HOST, U2],
+      duration: "2m",
+      durationSeconds: 120,
+      endedReason: "USER",
+      endedByUserId: U1,
+      endedByDisplayName: "Admin Person",
+    });
+    expect(pushOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: U1,
+        type: "community.livestream_retracted",
+        skipPush: true,
+        data: expect.objectContaining({ groupKey: `livestream:${SID}` }),
+      })
+    );
+    expect(dismiss).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: U1, tags: [`live:${SID}`] })
+    );
+    expect(pushMany.mock.calls[0][0]).toEqual([HOST, U2]);
+  });
+
   it("fans out an 'ended the livestream' push with the duration", async () => {
     await deliver(CommunityEvents.LIVESTREAM_ENDED, {
       ...startedPayload,
