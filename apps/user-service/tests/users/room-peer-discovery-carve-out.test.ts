@@ -100,15 +100,26 @@ describe("GET /api/v1/users/search?q= — whoCanFindMe vs. an existing DM", () =
 
     expect(res.status).toBe(200);
     // The gate is the `where`: with the peer ORed in, a `NO_ONE` row matches.
-    expect(discoveryClause()).toEqual({
-      OR: [discoverableWhere(GRAPH), { userId: { in: [PEER] } }],
-    });
+    expect(discoveryClause()).toEqual(discoverableWhere(GRAPH, [PEER]));
     const row = res.body.data.other[0];
     expect(row.userId).toBe(PEER);
     expect(row.roomId).toBe(ROOM);
     // A room makes the ROW findable — never the actions, never the presence.
     expect(row.canSendRequest).toBe(false);
     expect(row.isOnline).toBe(false);
+  });
+
+  it("keeps the friends bucket ungated", async () => {
+    friendRepo.findAllForUser.mockResolvedValue([
+      { id: "f1", requesterId: TEST_USER_ID, addresseeId: PEER, status: "ACCEPTED" },
+    ]);
+    friendRepo.resolveViewerGraph.mockResolvedValue({ friendIds: [PEER], friendOfFriendIds: [] });
+
+    await search();
+
+    const friendWhere = findMany.mock.calls[0]![0].where;
+    expect(friendWhere.userId).toEqual({ in: [PEER] });
+    expect(JSON.stringify(friendWhere)).not.toContain("whoCanFindMe");
   });
 
   it("leaves the gate closed for a peer with no conversation", async () => {
@@ -129,22 +140,24 @@ describe("GET /api/v1/users/search?q= — whoCanFindMe vs. an existing DM", () =
     expect(discoveryClause()).toEqual(discoverableWhere(GRAPH));
   });
 
-  it("leaves a blocker with a conversation on today's flags", async () => {
+  it("excludes a blocker even with a conversation, in the query itself", async () => {
+    const graph = { ...GRAPH, blockerIds: [BLOCKER] };
     friendRepo.findAllBlocks.mockResolvedValue([
       { blockerId: BLOCKER, blockedId: TEST_USER_ID },
     ]);
+    friendRepo.resolveViewerGraph.mockResolvedValue(graph);
     grpc.listPrivateRoomPeers.mockResolvedValue([
       { peerUserId: BLOCKER, roomId: ROOM },
     ]);
-    findMany.mockResolvedValue([hiddenProfile(BLOCKER)]);
 
-    const res = await search();
+    await search();
 
-    expect(searchWhere().userId.notIn).not.toContain(BLOCKER);
-    const row = res.body.data.other[0];
-    expect(row.isBlockedByPeer).toBe(true);
-    expect(row.isBlockedByMe).toBe(false);
-    expect(row.isOnline).toBe(false);
-    expect(row.canSendRequest).toBe(false);
+    expect(searchWhere().userId.notIn).toContain(BLOCKER);
+    expect(discoveryClause()).toEqual({
+      AND: [
+        discoverableWhere({ ...GRAPH }, [BLOCKER]),
+        { userId: { notIn: [BLOCKER] } },
+      ],
+    });
   });
 });

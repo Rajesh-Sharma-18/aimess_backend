@@ -321,6 +321,7 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
       privateMessageService: {
         editMessage: jest.fn(async () => ({
           id: "m4",
+          roomId: "conv1",
           senderId: "u1",
           messageType: "IMAGE",
           content: {
@@ -358,6 +359,7 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
       privateMessageService: {
         editMessage: jest.fn(async () => ({
           id: "m5",
+          roomId: "conv1",
           senderId: "u1",
           messageType: "TEXT",
           content: { text: "edited", files: [] },
@@ -1341,5 +1343,99 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
       communityId: "c1",
       communityName: "Tech",
     });
+  });
+});
+
+describe("createMessagingImpl — editMessage contract", () => {
+  beforeEach(() => publishMock.mockClear());
+
+  const row = {
+    id: "m9",
+    roomId: "conv1",
+    senderId: "u1",
+    receiverId: "u2",
+    messageType: "TEXT",
+    content: { text: "fixed", files: [] },
+    createdAt: new Date(),
+    editedAt: new Date(1_700_000_000_000),
+    sequenceNumber: 7,
+    revision: 42,
+    reactions: {},
+  };
+
+  it("binds the edit to the named room, strips attachments, and fans out with revision to every participant", async () => {
+    const editMessage = jest.fn(async () => row);
+    await invoke(
+      createMessagingImpl(makeDeps({ privateMessageService: { editMessage } }))
+        .editMessage as Handler,
+      {
+        messageId: "m9",
+        conversationId: "conv1",
+        editorId: "u1",
+        contentText: "fixed",
+        contentJson: JSON.stringify({ text: "fixed", files: [{ objectKey: "x" }] }),
+        conversationType: "PRIVATE",
+      }
+    );
+    const arg = (editMessage.mock.calls[0] as unknown[])[0] as {
+      roomId: string;
+      content: Record<string, unknown>;
+    };
+    expect(arg.roomId).toBe("conv1");
+    expect(arg.content.files).toBeUndefined();
+
+    const channels = (publishMock.mock.calls as Array<[string, string]>)
+      .filter(([, json]) => JSON.parse(json).event === "message:edited")
+      .map(([channel]) => channel)
+      .sort();
+    expect(channels).toEqual(["conv:conv1", "user:u1", "user:u2"]);
+    const { data } = published("message:edited");
+    expect(data.revision).toBe(42);
+    expect(data.editedAt).toBe(1_700_000_000_000);
+    expect(data.isEdited).toBe(true);
+  });
+
+  it("publishes on the message's OWN room, never a caller-supplied one", async () => {
+    const editMessage = jest.fn(async () => row);
+    await invoke(
+      createMessagingImpl(makeDeps({ privateMessageService: { editMessage } }))
+        .editMessage as Handler,
+      {
+        messageId: "m9",
+        conversationId: "conv1",
+        editorId: "u1",
+        contentText: "fixed",
+        conversationType: "PRIVATE",
+      }
+    );
+    const channels = (publishMock.mock.calls as Array<[string, string]>).map(
+      ([channel]) => channel
+    );
+    expect(channels.every((c) => c === "conv:conv1" || c.startsWith("user:"))).toBe(true);
+  });
+
+  it("service rejections keep their status + key (not a generic INTERNAL)", async () => {
+    const { BadRequestError } = await import("@aimess/errors");
+    const editMessage = jest.fn(async () => {
+      throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
+    });
+    const err = await new Promise<{ code: number; message: string }>((resolve) =>
+      (createMessagingImpl(makeDeps({ privateMessageService: { editMessage } }))
+        .editMessage as Handler)(
+        {
+          request: {
+            messageId: "m9",
+            conversationId: "conv1",
+            editorId: "intruder",
+            contentText: "x",
+            conversationType: "PRIVATE",
+          },
+        },
+        (e) => resolve(e as { code: number; message: string })
+      )
+    );
+    expect(err.message).toBe("CHAT_EDIT_OWN_MESSAGES_ONLY");
+    expect(err.code).not.toBe(13); // grpc INTERNAL
+    expect(publishMock).not.toHaveBeenCalled();
   });
 });

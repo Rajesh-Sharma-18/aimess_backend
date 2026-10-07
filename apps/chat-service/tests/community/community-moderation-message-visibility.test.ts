@@ -811,8 +811,8 @@ describe("socket fan-out for a moderation system line", () => {
     const text = createSystemMessage.mock.calls.map(
       (c: unknown[]) => (c[0] as { fallbackText: string }).fallbackText
     );
-    expect(text[0]).toBe("You are muted indefinitely");
-    expect(text[1]).toBe("Ann Admin muted Bob Member indefinitely");
+    expect(text[0]).toBe("You are muted");
+    expect(text[1]).toBe("Ann Admin muted Bob Member");
   });
 
   it("an auto-unmute (sweeper, no human actor) stores the actor-less audit line", async () => {

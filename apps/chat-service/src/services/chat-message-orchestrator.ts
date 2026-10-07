@@ -51,6 +51,7 @@ import {
   mentionedUserIdsOf,
 } from "../lib/group-mentions.js";
 import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
+import { isBlockedRoom } from "../lib/blocked-room.js";
 
 import type { PrivateMessageService } from "./private-message.service.js";
 import type { GroupMessageService } from "./group-message.service.js";
@@ -122,6 +123,8 @@ export interface SendDirectParams {
   clientMessageId?: string | null;
   /** Client compose time (epoch ms) — display only; never overwrites serverTs. */
   clientTs?: number | null;
+  /** Forward provenance (ForwardService only) — also skips the uploader/room media check. */
+  forwardData?: Record<string, unknown> | null;
 }
 
 export interface SendDirectResult {
@@ -153,6 +156,8 @@ export interface SendCommunityParams {
   /** Idempotency key; defaulted to a fresh UUID when omitted. */
   clientMessageId?: string | null;
   attachments?: Array<Record<string, unknown>>;
+  /** Forward provenance (ForwardService only) — also skips the uploader/room media check. */
+  forwardData?: Record<string, unknown> | null;
 }
 
 export interface SendCommunityResult {
@@ -371,6 +376,7 @@ export class ChatMessageOrchestrator {
         clientMessageId,
         dedupeKey,
         clientTs,
+        forwardData: params.forwardData,
       });
     } else {
       msg = await this.privateMessageService.sendMessage({
@@ -382,6 +388,7 @@ export class ChatMessageOrchestrator {
         clientMessageId,
         dedupeKey,
         clientTs,
+        forwardData: params.forwardData,
       });
     }
 
@@ -439,6 +446,8 @@ export class ChatMessageOrchestrator {
       parentMessageId: (full.parentMessageId as string) || "",
       quoteData: bcastQuote,
       reactions: [],
+      isForwarded: full.isForwarded === true,
+      forwardData: full.forwardData,
       clientTs,
       serverTs,
       sequenceNumber: msg.sequenceNumber,
@@ -475,6 +484,8 @@ export class ChatMessageOrchestrator {
           parentMessageId: (rowFull.parentMessageId as string) || "",
           quoteData: rowBcastQuote,
           reactions: [],
+          isForwarded: rowFull.isForwarded === true,
+          forwardData: rowFull.forwardData,
           clientTs,
           serverTs: rowServerTs,
           sequenceNumber: row.sequenceNumber,
@@ -649,6 +660,7 @@ export class ChatMessageOrchestrator {
       parentMessageId: params.parentMessageId ?? null,
       clientMessageId,
       attachments: params.attachments,
+      forwardData: params.forwardData,
     });
 
     const sentAt =
@@ -706,6 +718,8 @@ export class ChatMessageOrchestrator {
         (saved as unknown as { countInUnread?: boolean | null })
           .countInUnread ?? true,
       clientMessageId,
+      isForwarded: saved.isForwarded === true,
+      forwardData: saved.isForwarded ? (saved.forwardData ?? null) : null,
       serverTs: sentAt,
       sentAt,
       // The community gRPC handler predates per-room sequencing; the field now
@@ -763,6 +777,8 @@ export class ChatMessageOrchestrator {
           message: row.message ?? "",
           contentType: normalizeMessageType(row.messageType),
           clientMessageId,
+          isForwarded: row.isForwarded === true,
+          forwardData: row.isForwarded ? (row.forwardData ?? null) : null,
           serverTs: rowSentAt,
           sentAt: rowSentAt,
           sequenceNumber: row.sequenceNumber,
@@ -952,6 +968,7 @@ export class ChatMessageOrchestrator {
           .countInUnread ?? true,
       clientMessageId,
       isForwarded: true,
+      forwardData: saved.forwardData ?? null,
       serverTs: sentAt,
       sentAt,
       sequenceNumber: saved.sequenceNumber,
@@ -1515,6 +1532,7 @@ export class ChatMessageOrchestrator {
     // Assigned in both branches below before read — no initializer needed.
     let lastMessageSeq: number;
     let otherUserIds: string[];
+    let blockedPair = false;
     // Started BEFORE the mark-read write — see the identical comment in the
     // gRPC `markMessagesRead` handler.
     const mayBroadcastPromise = mayBroadcastReadReceipts(params.readerId);
@@ -1553,11 +1571,13 @@ export class ChatMessageOrchestrator {
         lastMessageId?: string | null;
         lastMessageSeq?: number | null;
         lastReadMessageIdByUser?: Record<string, string>;
+        blockedBy?: unknown;
       } | null;
       // A target that is malformed, or belongs to another room, is REJECTED —
       // null result. Returning here is what makes "zero unread mutation, zero
       // socket fan-out" true: everything below this point publishes.
       if (!room) return { readToSeq: 0 };
+      blockedPair = isBlockedRoom(room.blockedBy);
       unreadCount = room?.unreadCountByUser?.[params.readerId] ?? 0;
       otherUserIds = (room?.participants ?? []).filter(
         (id) => id !== params.readerId
@@ -1618,7 +1638,8 @@ export class ChatMessageOrchestrator {
     // Settings → Chat → Read Receipt, off: the read still happens (the reader's
     // own unread badge and `read_sync` below are unaffected) — only the OUTBOUND
     // receipt is withheld, so nobody learns this user read them.
-    const mayBroadcast = await mayBroadcastPromise;
+    // A block either way withholds the receipt from the peer too.
+    const mayBroadcast = (await mayBroadcastPromise) && !blockedPair;
 
     // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at or
     // below the boundary to READ (watermark), not just the boundary message.

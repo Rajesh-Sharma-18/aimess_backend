@@ -9,11 +9,7 @@ import { changePasswordService } from "../../services/change-password.service.js
 export const changePassword = asyncHandler(
   async (req: Request, res: Response) => {
     const body = req.body as ChangePasswordInput;
-    await changePasswordService.change(
-      req.auth.userId,
-      body,
-      req.auth.sessionId
-    );
+    await changePasswordService.change(req.auth.userId, body);
 
     return res
       .status(HTTP_STATUS.OK)

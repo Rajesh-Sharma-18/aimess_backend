@@ -68,7 +68,7 @@ export const recentSearchService = {
     const viewerGraph =
       userIds.length > 0
         ? await friendshipRepository.resolveViewerGraph(userId)
-        : { friendIds: [], friendOfFriendIds: [] };
+        : { friendIds: [] as string[], friendOfFriendIds: [] as string[] };
     if (userIds.length > 0) {
       const profiles = await userProfileRepository.findDiscoverableByUserIds(
         userIds,

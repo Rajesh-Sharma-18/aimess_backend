@@ -875,6 +875,7 @@ export interface ChatMessageEventInput {
   quoteData?: unknown;
   reactions?: unknown[];
   isForwarded?: boolean;
+  forwardData?: unknown;
   isDeleted?: boolean;
   deletedType?: string;
   /** epoch ms, 0 = never edited */
@@ -1068,7 +1069,8 @@ export function buildChatMessageEvent(
     parentMessageId: input.parentMessageId ?? "",
     quoteData: buildCanonicalQuote(input.quoteData),
     reactions: input.reactions ?? [],
-    ...(input.isForwarded ? { isForwarded: true } : {}),
+    isForwarded: input.isForwarded === true,
+    forwardData: input.isForwarded ? (input.forwardData ?? null) : null,
     isDeleted: input.isDeleted ?? false,
     deletedType: input.deletedType ?? "",
     isEdited: (input.editedAt ?? 0) > 0,

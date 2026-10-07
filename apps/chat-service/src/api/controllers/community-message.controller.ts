@@ -37,6 +37,7 @@ import { getCommunityReconcileClient } from "../../grpc/community.client.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 import type { CommunityPinService } from "../../services/community-pin.service.js";
 import type { ChatMessageOrchestrator } from "../../services/chat-message-orchestrator.js";
+import { publishCommunityMessageEdited } from "../../lib/publish-community-message-edited.js";
 
 export class CommunityMessageController {
   constructor(
@@ -442,9 +443,14 @@ export class CommunityMessageController {
       // Zero-loss CHANGE cursor for live gap detection.
       revision: (result as unknown as { revision?: number }).revision ?? 0,
     };
-    await this.redis.publish(
-      `community:${result.roomId}`,
-      JSON.stringify({ event: "community:message:edited", data: editedPayload })
+    const previewRecipients = await this.service
+      .previewRecipientsAfterEdit(result)
+      .catch(() => [] as string[]);
+    await publishCommunityMessageEdited(
+      this.redis,
+      result.roomId,
+      editedPayload,
+      previewRecipients
     );
     res
       .status(HTTP_STATUS.OK)

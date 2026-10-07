@@ -22,6 +22,10 @@ export const TEXT_NAME_MAX_LENGTH = 30;
  */
 export const TEXT_NAME_MAX_RAW_LENGTH = 200;
 
+/** Custom status text, in characters (graphemes); raw cap = `user_profiles.customStatusText` VarChar(200). */
+export const TEXT_CUSTOM_STATUS_MAX_LENGTH = 60;
+export const TEXT_CUSTOM_STATUS_MAX_RAW_LENGTH = 200;
+
 const segmenter =
   typeof Intl !== "undefined" && "Segmenter" in Intl
     ? new Intl.Segmenter(undefined, { granularity: "grapheme" })

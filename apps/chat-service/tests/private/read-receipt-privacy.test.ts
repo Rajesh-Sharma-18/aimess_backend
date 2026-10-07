@@ -102,3 +102,40 @@ describe("read receipts disabled", () => {
     expect(published().some((p) => p.event === "message:read")).toBe(true);
   });
 });
+
+describe("block either way", () => {
+  it("withholds message:read but still syncs the reader's devices", async () => {
+    mocks.privateRoomRepo.markReadUpTo.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer-1"],
+      unreadCountByUser: { [TEST_USER_ID]: 0 },
+      lastMessageId: "msg_hw_1",
+      blockedBy: ["peer-1"],
+    });
+    const res = await markRead();
+
+    expect(res.status).toBe(200);
+    expect(published().some((p) => p.event === "message:read")).toBe(false);
+    expect(
+      published().some(
+        (p) => p.event === "read_sync" && p.channel === `user:${TEST_USER_ID}`
+      )
+    ).toBe(true);
+  });
+
+  it("marks nothing delivered and publishes no message:delivered", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer-1"],
+      blockedBy: [TEST_USER_ID],
+    });
+    const res = await request(app)
+      .post(`/api/chat/private/rooms/${ROOM}/delivered`)
+      .set(bearer(makeAccessToken()))
+      .send({ upToMessageId: "msg_hw_1" });
+
+    expect(res.status).toBe(200);
+    expect(mocks.privateMessageRepo.markDeliveredUpTo).not.toHaveBeenCalled();
+    expect(published().some((p) => p.event === "message:delivered")).toBe(false);
+  });
+});

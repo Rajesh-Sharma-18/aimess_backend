@@ -786,14 +786,14 @@ export const SYSTEM_MESSAGES = {
     th: "คุณถูกปิดสิทธิ์พูดจนถึง {{until}}",
   },
   SYS_COMMUNITY_MEMBER_MUTED: {
-    vi: "{{target}} bị cấm nói vô thời hạn",
-    en: "{{target}} is muted indefinitely",
-    th: "{{target}}ถูกปิดสิทธิ์พูดโดยไม่มีกำหนด",
+    vi: "{{target}} bị cấm nói",
+    en: "{{target}} is muted",
+    th: "{{target}}ถูกปิดสิทธิ์พูด",
   },
   SYS_COMMUNITY_MEMBER_MUTED_SELF: {
-    vi: "Bạn bị cấm nói vô thời hạn",
-    en: "You are muted indefinitely",
-    th: "คุณถูกปิดสิทธิ์พูดโดยไม่มีกำหนด",
+    vi: "Bạn bị cấm nói",
+    en: "You are muted",
+    th: "คุณถูกปิดสิทธิ์พูด",
   },
   SYS_COMMUNITY_MEMBER_UNMUTED: {
     vi: "{{target}} đã được bỏ cấm nói",
@@ -872,9 +872,9 @@ export const SYSTEM_MESSAGES = {
     th: "คุณปิดสิทธิ์พูด{{target}}จนถึง {{until}}",
   },
   SYS_COMMUNITY_MEMBER_MUTED_ACTOR: {
-    vi: "Bạn đã cấm nói {{target}} vô thời hạn",
-    en: "You muted {{target}} indefinitely",
-    th: "คุณปิดสิทธิ์พูด{{target}}โดยไม่มีกำหนด",
+    vi: "Bạn đã cấm nói {{target}}",
+    en: "You muted {{target}}",
+    th: "คุณปิดสิทธิ์พูด{{target}}",
   },
   SYS_COMMUNITY_MEMBER_UNMUTED_ACTOR: {
     vi: "Bạn đã bỏ cấm nói {{target}}",
@@ -901,9 +901,9 @@ export const SYSTEM_MESSAGES = {
     th: "{{actor}}ปิดสิทธิ์พูด{{target}}จนถึง {{until}}",
   },
   SYS_COMMUNITY_MEMBER_MUTED_BY: {
-    vi: "{{actor}} đã cấm nói {{target}} vô thời hạn",
-    en: "{{actor}} muted {{target}} indefinitely",
-    th: "{{actor}}ปิดสิทธิ์พูด{{target}}โดยไม่มีกำหนด",
+    vi: "{{actor}} đã cấm nói {{target}}",
+    en: "{{actor}} muted {{target}}",
+    th: "{{actor}}ปิดสิทธิ์พูด{{target}}",
   },
   SYS_COMMUNITY_MEMBER_UNMUTED_BY: {
     vi: "{{actor}} đã bỏ cấm nói {{target}}",

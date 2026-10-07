@@ -81,36 +81,10 @@ describe("POST /api/auth/change-password", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(repo.updatePasswordHash).toHaveBeenCalledTimes(1);
-    // Every OTHER device is signed out; the caller's own session is spared.
-    expect(repo.revokeSessionsAfterPasswordChange).toHaveBeenCalledWith(
-      TEST_USER_ID,
-      TEST_SESSION_ID
-    );
   });
 
-  it("force-disconnects the other devices but not the caller's session", async () => {
-    sessions.listActiveSessionIds.mockResolvedValue([
-      { id: TEST_SESSION_ID },
-      { id: "other-session-1" },
-      { id: "other-session-2" },
-    ]);
-
-    const res = await request(app)
-      .post("/api/auth/change-password")
-      .set(bearer(makeAccessToken()))
-      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456!" });
-
-    expect(res.status).toBe(200);
-    expect(publishRevoked.mock.calls.map((call) => call[2])).toEqual([
-      "other-session-1",
-      "other-session-2",
-    ]);
-  });
-
-  // A password change revokes the other devices' sessions but used to leave
-  // their FCM/APNs rows in notifications-service, so every signed-out device
-  // kept receiving push forever.
-  it("drops the push tokens of every device it signs out, sparing the caller's", async () => {
+  // Other devices are signed out only when the user confirms (revoke-all).
+  it("leaves every other device signed in", async () => {
     sessions.listActiveSessionIds.mockResolvedValue([
       { id: TEST_SESSION_ID },
       { id: "other-session-1" },
@@ -122,11 +96,9 @@ describe("POST /api/auth/change-password", () => {
       .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456!" });
 
     expect(res.status).toBe(200);
-    expect(publishAllRevoked).toHaveBeenCalledTimes(1);
-    expect(publishAllRevoked).toHaveBeenCalledWith({
-      userId: TEST_USER_ID,
-      exceptSessionId: TEST_SESSION_ID,
-    });
+    expect(repo.revokeSessionsAfterPasswordChange).not.toHaveBeenCalled();
+    expect(publishRevoked).not.toHaveBeenCalled();
+    expect(publishAllRevoked).not.toHaveBeenCalled();
   });
 
   it("does not revoke anything when the current password is wrong", async () => {

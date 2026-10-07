@@ -14,6 +14,7 @@ import { connectUserRedis, disableUserCache } from "./config/redis.js";
 import { startUserCreatedConsumer } from "./consumers/user-created.consumer.js";
 import { startUserDeletedConsumer } from "./consumers/user-deleted.consumer.js";
 import { startUserRestoredConsumer } from "./consumers/user-restored.consumer.js";
+import { startCustomStatusExpirySweeper } from "./jobs/custom-status-expiry-sweeper.js";
 
 async function start() {
   try {
@@ -69,6 +70,8 @@ async function start() {
         "User Service listening on port " + String(env.USER_SERVICE_PORT)
       );
     });
+
+    startCustomStatusExpirySweeper();
 
     try {
       startUserGrpcServer();

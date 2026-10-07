@@ -1622,7 +1622,6 @@ export const userPaths = {
                     whoCanFindMe: "EVERYONE",
                     whoCanSendFriendRequests: "EVERYONE",
                     whoCanSeeOnlineStatus: "EVERYONE",
-                    whoCanViewProfile: "EVERYONE",
                     whoCanCallMe: "EVERYONE",
                     callAllowedFriendIds: [],
                   },
@@ -1752,7 +1751,6 @@ export const userPaths = {
                     whoCanFindMe: "FRIENDS_OF_FRIENDS",
                     whoCanSendFriendRequests: "EVERYONE",
                     whoCanSeeOnlineStatus: "FRIENDS",
-                    whoCanViewProfile: "EVERYONE",
                     whoCanCallMe: "EVERYONE",
                     callAllowedFriendIds: [],
                   },
@@ -2180,6 +2178,84 @@ export const userPaths = {
             },
           },
         },
+      },
+    },
+  },
+  "/users/profiles/me/custom-status": {
+    put: {
+      tags: ["Users"],
+      summary: "Set my custom status",
+      operationId: "setMyCustomStatus",
+      description:
+        "Creates or replaces the caller's single custom status. At least one of `emoji` (exactly one emoji) / `text` (trimmed, ≤ 60 characters, no line breaks) is required. `durationSeconds` is an integer in [60, 2592000]; `expiresAt = startedAt = now + durationSeconds`, computed on the server. Visible to everyone except a peer the subject blocked (same as `bio`). Emits `user:custom_status_updated` with the full status on /chat (`user:<id>`, mirrored to `presence:<id>`).\n\n" +
+        "Validation errors are `400 VALIDATION_FAILED` with messages `USER_CUSTOM_STATUS_EMPTY`, `USER_CUSTOM_STATUS_TEXT_TOO_LONG`, `USER_CUSTOM_STATUS_TEXT_INVALID`, `USER_CUSTOM_STATUS_EMOJI_INVALID`, `USER_CUSTOM_STATUS_DURATION_INVALID` (localized).",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["durationSeconds"],
+              properties: {
+                emoji: { type: "string", nullable: true, maxLength: 32 },
+                text: { type: "string", nullable: true, maxLength: 200 },
+                durationSeconds: { type: "integer", minimum: 60, maximum: 2592000 },
+              },
+            },
+            example: { emoji: "✈️", text: "Travelling", durationSeconds: 604800 },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Status set",
+          content: {
+            "application/json": {
+              example: {
+                success: true,
+                message: "Status updated.",
+                data: {
+                  customStatus: {
+                    emoji: "✈️",
+                    text: "Travelling",
+                    startedAt: 1780000000000,
+                    expiresAt: 1780604800000,
+                    updatedAt: 1780000000000,
+                  },
+                  serverNow: 1780000000000,
+                },
+              },
+            },
+          },
+        },
+        "400": _badRequest,
+        "401": unauthorized,
+      },
+    },
+    delete: {
+      tags: ["Users"],
+      summary: "Clear my custom status",
+      operationId: "clearMyCustomStatus",
+      description:
+        "Clears the caller's custom status. Idempotent — 200 even when none is set (no event is emitted then).",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "Status cleared",
+          content: {
+            "application/json": {
+              example: {
+                success: true,
+                message: "Status cleared.",
+                data: { customStatus: null, serverNow: 1780000000000 },
+              },
+            },
+          },
+        },
+        "401": unauthorized,
       },
     },
   },

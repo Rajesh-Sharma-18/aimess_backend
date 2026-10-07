@@ -51,6 +51,7 @@ import { recentUserSearchRepository } from "../../src/repositories/recent-user-s
 import { userProfileRepository } from "../../src/repositories/user-profile.repository.js";
 import { friendshipRepository } from "../../src/repositories/friendship.repository.js";
 import { messagingGrpcClient } from "../../src/grpc/messaging.client.js";
+import { avatarService } from "../../src/services/avatar.service.js";
 import { TEST_USER_ID, bearer, makeAccessToken } from "../helpers/auth.js";
 
 const recentRepo = recentUserSearchRepository as unknown as Record<
@@ -110,7 +111,7 @@ beforeEach(() => {
   grpc.getGroupsByIds.mockResolvedValue([]);
 });
 
-describe("GET /api/v1/users/search (Recent) — a blocker the viewer has a chat with", () => {
+describe("GET /api/v1/users/search (Recent) — a blocker of the viewer", () => {
   const recentRow = {
     id: "row-1",
     userId: TEST_USER_ID,
@@ -120,7 +121,7 @@ describe("GET /api/v1/users/search (Recent) — a blocker the viewer has a chat 
     createdAt: new Date("2026-08-27T10:00:00Z"),
   };
 
-  it("keeps the row when a conversation exists — flagged, inert, carrying the roomId", async () => {
+  it("drops the row even when a conversation exists", async () => {
     blockedByBlocker({ withRoom: true });
     recentRepo.findByUserId.mockResolvedValue([recentRow]);
     pRepo.findDiscoverableByUserIds.mockResolvedValue([profile(BLOCKER)]);
@@ -128,18 +129,7 @@ describe("GET /api/v1/users/search (Recent) — a blocker the viewer has a chat 
     const res = await request(app).get("/api/v1/users/search").set(auth());
 
     expect(res.status).toBe(200);
-    const row = res.body.data.recent[0];
-    expect(row.userId).toBe(BLOCKER);
-    expect(row.isBlockedByPeer).toBe(true);
-    expect(row.isBlockedByMe).toBe(false);
-    // The row exists so the CONVERSATION can be opened from here — same screen
-    // the chat list reaches.
-    expect(row.roomId).toBe(ROOM);
-    // ...and offers nothing the API would refuse.
-    expect(row.canSendRequest).toBe(false);
-    expect(row.relationship.canSendRequest).toBe(false);
-    // A blocker's presence is not a liveness probe for the person they blocked.
-    expect(row.isOnline).toBe(false);
+    expect(res.body.data.recent).toHaveLength(0);
   });
 
   it("drops the row when there is no conversation — the block still hides them", async () => {
@@ -155,21 +145,13 @@ describe("GET /api/v1/users/search (Recent) — a blocker the viewer has a chat 
 });
 
 describe("GET /api/v1/users/search?q= — the same rule on the query path", () => {
-  it("keeps a blocker with a conversation out of the exclude list", async () => {
+  it("excludes a blocker even when a conversation exists", async () => {
     blockedByBlocker({ withRoom: true });
-    pRepo.findUsersNotInList.mockResolvedValue([profile(BLOCKER)]);
 
-    const res = await request(app)
-      .get("/api/v1/users/search?q=jane")
-      .set(auth());
+    await request(app).get("/api/v1/users/search?q=jane").set(auth());
 
-    expect(res.status).toBe(200);
     const excluded = pRepo.findUsersNotInList.mock.calls[0]![0] as string[];
-    expect(excluded).not.toContain(BLOCKER);
-    const row = res.body.data.other[0];
-    expect(row.isBlockedByPeer).toBe(true);
-    expect(row.roomId).toBe(ROOM);
-    expect(row.canSendRequest).toBe(false);
+    expect(excluded).toContain(BLOCKER);
   });
 
   it("still excludes a blocker the viewer has no conversation with", async () => {
@@ -185,6 +167,7 @@ describe("GET /api/v1/users/search?q= — the same rule on the query path", () =
 describe("GET /api/v1/users/:userId — the profile door", () => {
   const publicProfile = {
     ...profile(BLOCKER),
+    avatarUrl: "avatars/blocker.jpg",
     bio: "hi",
     coverImageUrl: null,
     lastSeenAt: null,
@@ -217,6 +200,11 @@ describe("GET /api/v1/users/:userId — the profile door", () => {
     expect(res.body.data.bio).toBeNull();
     expect(res.body.data.friendsCount).toBeNull();
     expect(res.body.data.isOnline).toBeNull();
+    expect(res.body.data.customStatus).toBeNull();
+    // Photo hidden too; the name stays.
+    expect(res.body.data.avatar.objectKey).toBeNull();
+    expect(avatarService.resolveViewUrlForClient).toHaveBeenLastCalledWith(null);
+    expect(res.body.data.firstName).toBe(publicProfile.firstName);
   });
 
   it("still 404s when there is no conversation", async () => {

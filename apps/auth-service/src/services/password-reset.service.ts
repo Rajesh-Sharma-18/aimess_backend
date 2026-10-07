@@ -16,6 +16,7 @@ import { AccountStatus, OtpPurpose } from "../generated/prisma/client.js";
 import {
   generateOtpCode,
   hashOtpCode,
+  loadLiveOtp,
   logDevOtp,
   normalizeEmail,
   verifyOtpCode,
@@ -116,10 +117,7 @@ export const passwordResetService = {
     input: VerifyPasswordResetOtpInput
   ): Promise<VerifyPasswordResetOtpResult> {
     const email = normalizeEmail(input.email);
-    const otp = await otpRepository.findLatestActive(
-      email,
-      OtpPurpose.PASSWORD_RESET
-    );
+    const otp = await loadLiveOtp(email, OtpPurpose.PASSWORD_RESET);
 
     if (!otp) {
       throw new BadRequestError("AUTH_OTP_INVALID");

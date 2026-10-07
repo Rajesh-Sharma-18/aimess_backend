@@ -1056,6 +1056,51 @@ describe("PATCH /messages/:messageId (edit)", () => {
     expect(broadcastPayload.data.editedAt).toBeGreaterThan(0);
   });
 
+  const editNewestSetup = (isNewest: boolean) => {
+    const now = Date.now();
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: "m1", roomId: ROOM, sentBy: TEST_USER_ID, messageType: "text",
+      deletedForAll: false, createdAt: new Date(now - 1000),
+    });
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({ role: "member", status: "active" });
+    mocks.generalRoomMessageRepo.editMessage.mockResolvedValue({
+      id: "m1", roomId: ROOM, sentBy: TEST_USER_ID, messageType: "text",
+      message: "edited", createdAt: new Date(now - 1000), editedAt: new Date(now),
+    });
+    mocks.generalRoomMessageRepo.findNewestSharedMessageId.mockResolvedValue(isNewest ? "m1" : "m2");
+    mocks.generalRoomRepo.setLastMessageContentIfCurrent.mockResolvedValue(true);
+    mocks.roomMemberRepo.findActiveByRoom.mockResolvedValue([
+      { userId: TEST_USER_ID }, { userId: "peer-1" },
+    ]);
+    mocks.redis.publish.mockClear();
+  };
+  const editedChannels = () =>
+    (mocks.redis.publish.mock.calls as Array<[string, string]>)
+      .filter(([, json]) => JSON.parse(json).event === "community:message:edited")
+      .map(([channel]) => channel)
+      .sort();
+
+  it("LIST: editing the room's newest message rewrites the snapshot and reaches every member's devices", async () => {
+    editNewestSetup(true);
+    const res = await request(app)
+      .patch(`${BASE}/messages/m1`)
+      .set(bearer(makeAccessToken()))
+      .send({ communityId: "comm-1", content: { text: "edited" } });
+    expect(res.status).toBe(200);
+    expect(mocks.generalRoomRepo.setLastMessageContentIfCurrent).toHaveBeenCalledWith(ROOM, "m1", "edited");
+    expect(editedChannels()).toEqual([`community:${ROOM}`, "user:peer-1", `user:${TEST_USER_ID}`].sort());
+  });
+
+  it("LIST: editing an older message stays on the room channel", async () => {
+    editNewestSetup(false);
+    const res = await request(app)
+      .patch(`${BASE}/messages/m1`)
+      .set(bearer(makeAccessToken()))
+      .send({ communityId: "comm-1", content: { text: "edited" } });
+    expect(res.status).toBe(200);
+    expect(editedChannels()).toEqual([`community:${ROOM}`]);
+  });
+
   it("SECURITY: 400 editing another user's message", async () => {
     mocks.generalRoomMessageRepo.findById.mockResolvedValue({
       id: "m1",

@@ -78,6 +78,11 @@ export const ADMIN_MESSAGES = {
     en: "Invalid or expired verification code.",
     th: "รหัสยืนยันไม่ถูกต้องหรือหมดอายุแล้ว",
   },
+  OTP_EXPIRED: {
+    vi: "Mã xác minh đã hết hạn, vui lòng yêu cầu mã mới",
+    en: "This verification code has expired. Please request a new one.",
+    th: "รหัสยืนยันหมดอายุแล้ว กรุณาขอรหัสใหม่",
+  },
   OTP_MAX_ATTEMPTS: {
     vi: "Bạn đã nhập sai quá nhiều lần. Vui lòng yêu cầu mã mới",
     en: "Too many failed attempts. Please request a new verification code.",

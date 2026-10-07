@@ -235,7 +235,10 @@ describe("gRPC editMessage — mentions", () => {
   it("GROUP passes raw mentions to the service and charges the gm:send bucket", async () => {
     const editMessage = jest.fn(async () => storedRow({ text: "@bo hi" }));
     const deps = {
-      groupMessageService: { editMessage },
+      groupMessageService: {
+        editMessage,
+        getActiveMemberIds: jest.fn(async () => ["u1", "u2"]),
+      },
     } as unknown as GrpcDeps;
 
     await invoke(
@@ -326,7 +329,7 @@ describe("gRPC editMessage — mentions", () => {
     ).resolves.toMatchObject(expected);
   });
 
-  it("any other edit error keeps the INTERNAL mapping", async () => {
+  it("any other edit error keeps its status + key instead of INTERNAL", async () => {
     const impl = createMessagingImpl({
       groupMessageService: {
         editMessage: jest.fn(async () => {
@@ -340,6 +343,7 @@ describe("gRPC editMessage — mentions", () => {
       editRequest("grp_room")
     );
 
-    expect(err).toMatchObject({ code: grpc.status.INTERNAL });
+    expect(err).toMatchObject({ message: "CHAT_EDIT_TEXT_ONLY" });
+    expect(err).not.toMatchObject({ code: grpc.status.INTERNAL });
   });
 });

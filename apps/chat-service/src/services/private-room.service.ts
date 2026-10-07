@@ -734,7 +734,9 @@ export class PrivateRoomService {
     const snap = snapshots.get(peerId) as Record<string, unknown> | undefined;
     const isDeletedUser = Boolean(snap?.isDeletedUser);
     const isBanned = banned.has(peerId);
-    const storedAvatar = snap?.avatar as string | undefined;
+    const storedAvatar = friendship.blockedByPeer
+      ? undefined
+      : (snap?.avatar as string | undefined);
     const [avatar, avatarUrls] = await Promise.all([
       buildAvatarMedia(storedAvatar),
       resolveMediaUrlMap([storedAvatar as string]),
@@ -939,6 +941,16 @@ export class PrivateRoomService {
     const peerIds = rooms
       .map((room) => (room.participants || []).find((p) => p !== userId) || "")
       .filter(Boolean);
+    // A peer who blocked the viewer keeps their name but not their photo.
+    const avatarHiddenPeers = new Set(
+      rooms.flatMap((room) => {
+        const peer = (room.participants || []).find((p) => p !== userId) || "";
+        return Array.isArray(room.blockedBy) &&
+          (room.blockedBy as string[]).includes(peer)
+          ? [peer]
+          : [];
+      })
+    );
 
     // Corrupt rooms (a group/community id stored as the peer) still exist until
     // the audit script's findings are acted on. Every lookup below tolerates
@@ -1037,8 +1049,10 @@ export class PrivateRoomService {
           async (id): Promise<[string, MediaObject]> => [
             id,
             await buildAvatarMedia(
-              (snapshots.get(id) as Record<string, unknown> | undefined)
-                ?.avatar as string | undefined
+              avatarHiddenPeers.has(id)
+                ? undefined
+                : ((snapshots.get(id) as Record<string, unknown> | undefined)
+                    ?.avatar as string | undefined)
             ),
           ]
         )
@@ -1401,8 +1415,10 @@ export class PrivateRoomService {
           displayName: resolveDisplayName(snapshot),
           memberId: (snapshot.memberId as string) || "",
           avatar: avatarMedia,
-          avatarUrl:
-            urlFromMap(avatarUrls, (snapshot.avatar as string) || "") || null,
+          avatarUrl: avatarHiddenPeers.has(peerId)
+            ? null
+            : urlFromMap(avatarUrls, (snapshot.avatar as string) || "") ||
+              null,
           avatarUrlExpiresIn: avatarMedia?.downloadUrlExpiresIn ?? null,
           isDeletedUser: isDeletedPeer,
           isBanned: isBannedPeer,

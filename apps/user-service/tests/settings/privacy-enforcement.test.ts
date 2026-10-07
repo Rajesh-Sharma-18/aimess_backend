@@ -6,7 +6,6 @@
  */
 import {
   SCHEMA_DEFAULT_SCOPE,
-  canViewProfile,
   discoverableWhere,
   scopeAdmits,
   visibleIdentity,
@@ -81,42 +80,38 @@ describe("discoverableWhere", () => {
     );
   });
 
-  it("restricts FRIENDS rows to direct friends only", () => {
+  it("admits accepted friends under every scope, NO_ONE included", () => {
     expect(where.OR).toEqual(
-      expect.arrayContaining([
-        {
-          privacySettings: { whoCanFindMe: "FRIENDS" },
-          userId: { in: [FRIEND] },
-        },
-      ])
+      expect.arrayContaining([{ userId: { in: [FRIEND] } }])
     );
   });
 
-  it("widens FRIENDS_OF_FRIENDS rows to friends AND their one-hop expansion", () => {
+  it("admits FRIENDS_OF_FRIENDS rows for the one-hop expansion", () => {
     expect(where.OR).toEqual(
       expect.arrayContaining([
         {
           privacySettings: { whoCanFindMe: "FRIENDS_OF_FRIENDS" },
-          userId: { in: [FRIEND, FOF] },
+          userId: { in: [FOF] },
         },
       ])
     );
   });
 
-  it("never puts a friend-of-friend into the FRIENDS branch", () => {
-    const friendsBranch = where.OR?.find(
-      (b) =>
-        typeof b === "object" &&
-        b !== null &&
-        "privacySettings" in b &&
-        (b as { privacySettings?: { whoCanFindMe?: string } }).privacySettings
-          ?.whoCanFindMe === "FRIENDS"
-    ) as { userId?: { in?: string[] } } | undefined;
-    expect(friendsBranch?.userId?.in).not.toContain(FOF);
-  });
-
-  it("has no branch that can match NO_ONE — it is unsearchable by anyone", () => {
+  it("hides NO_ONE from non-friends: no scope branch names it", () => {
     expect(JSON.stringify(where)).not.toContain("NO_ONE");
+    expect(JSON.stringify(where)).not.toContain(`"in":["${'${FOF}'}"]},{`);
+  });
+});
+
+describe("discoverableWhere — blocks", () => {
+  it("excludes users who blocked the viewer, even friends and chat peers", () => {
+    const where = discoverableWhere(
+      { friendIds: ["b"], friendOfFriendIds: [], blockerIds: ["b"] },
+      ["b"]
+    );
+    expect(where).toEqual({
+      AND: [expect.anything(), { userId: { notIn: ["b"] } }],
+    });
   });
 });
 
@@ -146,21 +141,8 @@ describe("presence + profile masking on list surfaces", () => {
     expect(visibleIsOnline(online(null), stranger)).toBe(false);
   });
 
-  it("still falls back to EVERYONE for profile visibility", () => {
-    expect(SCHEMA_DEFAULT_SCOPE.whoCanViewProfile).toBe("EVERYONE");
-    expect(canViewProfile({}, stranger)).toBe(true);
-  });
-
-  it("gates profile fields on whoCanViewProfile independently of presence", () => {
-    const p = { privacySettings: { whoCanViewProfile: "FRIENDS" } };
-    expect(canViewProfile(p, friend)).toBe(true);
-    expect(canViewProfile(p, stranger)).toBe(false);
-  });
-
-  it("admits a friend-of-friend to a FRIENDS_OF_FRIENDS profile", () => {
-    const p = { privacySettings: { whoCanViewProfile: "FRIENDS_OF_FRIENDS" } };
-    expect(canViewProfile(p, friendOfFriend)).toBe(true);
-    expect(canViewProfile(p, stranger)).toBe(false);
+  it("has no whoCanViewProfile scope any more", () => {
+    expect(SCHEMA_DEFAULT_SCOPE).not.toHaveProperty("whoCanViewProfile");
   });
 });
 
@@ -191,7 +173,6 @@ describe("visibleIdentity — name + avatar on profile-card surfaces", () => {
       lastName: "Lovelace",
       fullName: "Ada Lovelace",
     });
-    expect(canViewProfile(scoped("NO_ONE"), stranger)).toBe(false);
   });
 
   it("renders identically for a friend and for a stranger", () => {

@@ -49,3 +49,12 @@ export function splitBlocks(
   }
   return { hiddenIds, blockedByMe };
 }
+
+/** Peers with a block in either direction — presence never crosses one. */
+export function blockedEitherWay(
+  userId: string,
+  blocks: readonly BlockRow[]
+): Set<string> {
+  const { hiddenIds, blockedByMe } = splitBlocks(userId, blocks);
+  return new Set([...hiddenIds, ...blockedByMe]);
+}

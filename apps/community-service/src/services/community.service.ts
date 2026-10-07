@@ -16,6 +16,7 @@ import {
   currentLocale,
   isHiddenSystemMessage,
   localizeMessagePreview,
+  localizeCategoryName,
   buildCommunitySystemFallbackText,
   STORED_TEXT_LOCALE,
   t,
@@ -1105,7 +1106,10 @@ async function toCommunityData(
     handle: community.handle,
     description: community.description,
     type: community.type,
-    category: { id: community.category.id, name: community.category.name },
+    category: {
+      id: community.category.id,
+      name: localizeCategoryName(community.category.name),
+    },
     creatorId: community.creatorId,
     adminId: community.adminId,
     memberCount: community.memberCount,
@@ -1292,7 +1296,10 @@ async function toDiscoverItem(
     handle: community.handle,
     description: community.description,
     type: community.type,
-    category: { id: community.category.id, name: community.category.name },
+    category: {
+      id: community.category.id,
+      name: localizeCategoryName(community.category.name),
+    },
     memberCount: community.memberCount,
     memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
@@ -2139,7 +2146,11 @@ async function enrichMineCommunities(
 
 export const communityService = {
   async listCategories(): Promise<CommunityCategoryData[]> {
-    return communityRepository.listActiveCategories();
+    const categories = await communityRepository.listActiveCategories();
+    return categories.map((c) => ({
+      ...c,
+      name: localizeCategoryName(c.name),
+    }));
   },
 
   async listCategoriesAdmin(query: {
@@ -4410,6 +4421,7 @@ export const communityService = {
      * only. See MODERATION_TYPES_WITH_PERSONAL_COPY in @aimess/constants.
      */
     visibleToUserId?: string;
+    eventAt?: string;
   }): void {
     // Telegram silent-kick parity: joined / left / removed never reach the chat
     // timeline at all (they pile up across remove→rejoin cycles and the victim sees
@@ -4427,7 +4439,7 @@ export const communityService = {
         ...(args.extra ?? {}),
       },
       triggeredByUserId: args.actorId,
-      eventAt: new Date().toISOString(),
+      eventAt: args.eventAt ?? new Date().toISOString(),
       ...(args.visibleToUserId
         ? { visibleToUserId: args.visibleToUserId }
         : {}),
@@ -4756,7 +4768,10 @@ export const communityService = {
       publishCommunitySystemMessageForChatSafe({
         communityId: community.id,
         systemMessageType: "MEMBER_ADDED",
-        metadata: { targetUserId: member.userId, communityName: community.name },
+        metadata: {
+          targetUserId: member.userId,
+          communityName: community.name,
+        },
         triggeredByUserId: actorId,
         eventAt: args.eventAt,
       });
@@ -5684,7 +5699,10 @@ export const communityService = {
       membership.status === CommunityMemberStatus.ACTIVE &&
       (await this.isCommunityClosed(community.id));
 
-    if (membership.status === CommunityMemberStatus.BANNED || isClosedActiveRow) {
+    if (
+      membership.status === CommunityMemberStatus.BANNED ||
+      isClosedActiveRow
+    ) {
       // A banned community stays in the caller's list until THEY dismiss it.
       // Dismissing only HIDES the entry (dismissedAt) — status stays BANNED
       // and the ban metadata survives; only an admin unban lifts the ban.
@@ -5738,9 +5756,7 @@ export const communityService = {
   /** Owner-closed or Super Admin–suspended right now (false once deleted). */
   async isCommunityClosed(communityId: string): Promise<boolean> {
     const community = await communityRepository.findById(communityId);
-    return (
-      !!community && communityAccessPolicy.isEffectivelyClosed(community)
-    );
+    return !!community && communityAccessPolicy.isEffectivelyClosed(community);
   },
 
   /**
@@ -6328,6 +6344,14 @@ export const communityService = {
       mutedUntil: mutedUntil ? mutedUntil.getTime() : null,
       durationMinutes: durationMinutes ?? null,
     };
+    // Both lines share one eventAt so a re-mute / extension can retract the
+    // previous mute's lines without touching these.
+    const muteEventAt = new Date().toISOString();
+    publishCommunityMemberMuteRetractedForChatSafe({
+      communityId,
+      userId: targetUserId,
+      keepEventAt: muteEventAt,
+    });
     this.emitMemberSystemMessage({
       communityId,
       systemMessageType: "MEMBER_MUTED",
@@ -6335,6 +6359,7 @@ export const communityService = {
       targetUserId,
       visibleToUserId: targetUserId,
       extra: muteAudit,
+      eventAt: muteEventAt,
     });
     this.emitMemberSystemMessage({
       communityId,
@@ -6342,6 +6367,7 @@ export const communityService = {
       actorId: callerId,
       targetUserId,
       extra: muteAudit,
+      eventAt: muteEventAt,
     });
 
     // Best-effort: push a real-time notice to any of the target's currently-LIVE
@@ -6445,11 +6471,8 @@ export const communityService = {
       0
     );
 
-    // Telegram parity: this mute session is over, so the previous "You are
-    // muted until …" line no longer reflects reality — retract it (soft-delete
-    // + a `community:message:deleted` tombstone on the target's own `user:<id>`
-    // channel) so it disappears from history/pagination/sync everywhere, rather
-    // than leaving both the mute AND unmute lines stacked in their history.
+    // The mute is over: retract its lines — the member's personal notice and the
+    // moderators' audit line — from every timeline, live and on resync.
     publishCommunityMemberMuteRetractedForChatSafe({
       communityId,
       userId: targetUserId,
@@ -6592,8 +6615,7 @@ export const communityService = {
 
         // A lapsed timer IS an unmute, so it must leave both the member's history
         // and the moderation trail in the same state a manual unmute does: retract
-        // the now-false "You are muted until …" line, then post the MODERATION
-        // AUDIT line. Without this the member was left staring at a mute notice for
+        // the mute's lines (personal + audit), then post the MODERATION AUDIT line. Without this the member was left staring at a mute notice for
         // a mute that no longer exists, and the moderators' trail showed a mute
         // with no matching release. Push stays suppressed above — this is history,
         // not a ping.

@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import {
   countCharacters,
+  TEXT_CUSTOM_STATUS_MAX_LENGTH,
+  TEXT_CUSTOM_STATUS_MAX_RAW_LENGTH,
   TEXT_NAME_MAX_LENGTH,
   TEXT_NAME_MAX_RAW_LENGTH,
 } from "@aimess/constants";
@@ -101,3 +103,47 @@ export const updateProfileSchema = z
   );
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+
+export const CUSTOM_STATUS_MIN_DURATION_SECONDS = 60;
+export const CUSTOM_STATUS_MAX_DURATION_SECONDS = 30 * 24 * 60 * 60;
+
+// One grapheme that starts with a pictographic (covers VS16/ZWJ/skin-tone sequences) or is a flag pair.
+const EMOJI_START = /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}{2})/u;
+const CONTROL_CHARS = /[\p{Cc}\u2028\u2029]/u;
+
+const emptyToNull = (v: string | null | undefined) => (v ? v : null);
+
+export const setCustomStatusSchema = z
+  .object({
+    emoji: z
+      .string({ error: "USER_CUSTOM_STATUS_EMOJI_INVALID" })
+      .trim()
+      .max(32, "USER_CUSTOM_STATUS_EMOJI_INVALID")
+      .refine(
+        (v) => v === "" || (countCharacters(v) === 1 && EMOJI_START.test(v)),
+        "USER_CUSTOM_STATUS_EMOJI_INVALID"
+      )
+      .nullish()
+      .transform(emptyToNull),
+    text: z
+      .string({ error: "USER_CUSTOM_STATUS_TEXT_INVALID" })
+      .trim()
+      .max(TEXT_CUSTOM_STATUS_MAX_RAW_LENGTH, "USER_CUSTOM_STATUS_TEXT_TOO_LONG")
+      .refine((v) => !CONTROL_CHARS.test(v), "USER_CUSTOM_STATUS_TEXT_INVALID")
+      .refine(
+        (v) => countCharacters(v) <= TEXT_CUSTOM_STATUS_MAX_LENGTH,
+        "USER_CUSTOM_STATUS_TEXT_TOO_LONG"
+      )
+      .nullish()
+      .transform(emptyToNull),
+    durationSeconds: z
+      .number({ error: "USER_CUSTOM_STATUS_DURATION_INVALID" })
+      .int("USER_CUSTOM_STATUS_DURATION_INVALID")
+      .min(CUSTOM_STATUS_MIN_DURATION_SECONDS, "USER_CUSTOM_STATUS_DURATION_INVALID")
+      .max(CUSTOM_STATUS_MAX_DURATION_SECONDS, "USER_CUSTOM_STATUS_DURATION_INVALID"),
+  })
+  .refine((body) => body.emoji !== null || body.text !== null, {
+    message: "USER_CUSTOM_STATUS_EMPTY",
+  });
+
+export type SetCustomStatusInput = z.infer<typeof setCustomStatusSchema>;

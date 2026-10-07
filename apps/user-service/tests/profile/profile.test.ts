@@ -18,6 +18,7 @@ jest.mock("../../src/repositories/user-profile.repository.js", () => ({
     findByUserId: jest.fn(),
     findByUsername: jest.fn(),
     updateProfile: jest.fn(),
+    findCustomStatus: jest.fn(async () => null),
   },
 }));
 jest.mock("../../src/lib/user-cache.js", () => ({

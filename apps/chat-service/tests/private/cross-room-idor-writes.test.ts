@@ -459,3 +459,31 @@ describe("B1 cross-room IDOR — group forward (source-room bind)", () => {
     ).toHaveLength(1);
   });
 });
+
+describe("B1 cross-room IDOR — socket edit names a room the message is not in", () => {
+  it("private: NotFound before any write when roomId mismatches the message's room", async () => {
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: MSG, roomId: "prv_OTHER", senderId: TEST_USER_ID, messageType: "TEXT",
+      isDeleted: false, createdAt: new Date(),
+    });
+    await expect(
+      mocks.privateMessageService.editMessage({
+        messageId: MSG, userId: TEST_USER_ID, roomId: PRV, content: { text: "x" },
+      })
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(mocks.privateMessageRepo.editMessage).not.toHaveBeenCalled();
+  });
+
+  it("group: NotFound before any write when roomId mismatches the message's room", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: MSG, roomId: "grp_OTHER", senderId: TEST_USER_ID, messageType: "TEXT",
+      isDeleted: false, createdAt: new Date(),
+    });
+    await expect(
+      mocks.groupMessageService.editMessage({
+        messageId: MSG, userId: TEST_USER_ID, roomId: GRP, content: { text: "x" },
+      })
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(mocks.groupMessageRepo.editMessage).not.toHaveBeenCalled();
+  });
+});
