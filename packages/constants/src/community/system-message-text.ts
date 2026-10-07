@@ -402,7 +402,7 @@ export function buildCommunitySystemFallbackText(
 
     case "MEMBER_MUTED": {
       // Show the concrete expiry timestamp so the user knows exactly when they
-      // can post again; fall back to "indefinitely" when no expiry was set.
+      // can post again; a permanent mute names no duration.
       const mutedUntilMs = Number(metadata.mutedUntil);
       if (Number.isFinite(mutedUntilMs) && mutedUntilMs > 0) {
         const until = formatSystemDateTime(mutedUntilMs, locale);
