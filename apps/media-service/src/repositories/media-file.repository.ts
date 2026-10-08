@@ -145,6 +145,15 @@ export const mediaFileRepository = {
     }));
   },
 
+  /** ACTIVE -> ATTACHED for keys a persisting service just verified for write. */
+  async markAttached(objectKeys: string[]): Promise<void> {
+    if (objectKeys.length === 0) return;
+    await prisma.mediaFile.updateMany({
+      where: { objectKey: { in: objectKeys }, usageStatus: "ACTIVE" },
+      data: { usageStatus: "ATTACHED" },
+    });
+  },
+
   /** Lifecycle transition (ACTIVE -> UNUSED on dereference, -> DELETED on purge). */
   async setUsage(
     objectKey: string,
