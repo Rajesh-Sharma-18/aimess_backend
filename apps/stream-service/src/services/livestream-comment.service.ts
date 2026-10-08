@@ -4,7 +4,7 @@ import {
   NotFoundError,
   TooManyRequestsError,
 } from "@aimess/errors";
-import { consumeFallbackWindow } from "@aimess/utils";
+import { assertReportQuota, consumeFallbackWindow } from "@aimess/utils";
 import { env } from "../config/env.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import type { communityGrpcClient as CommunityGrpcClient } from "../grpc/community.client.js";
@@ -565,6 +565,7 @@ export class LivestreamCommentService {
     if (comment.livestreamId !== params.livestreamId) {
       throw new NotFoundError("COMMENT_NOT_FOUND");
     }
+    await assertReportQuota(this.redis, params.reportedBy);
 
     const report = await this.reportRepo.upsert({
       commentId: params.commentId,
