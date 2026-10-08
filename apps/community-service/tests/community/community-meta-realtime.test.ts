@@ -36,6 +36,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMemberByUserId: jest.fn(),
     updateCommunity: jest.fn(),
     updateMemberRole: jest.fn(),
+    findMemberMute: jest.fn().mockResolvedValue(null),
     setCommunityAdmin: jest.fn(),
     findActiveMemberIds: jest.fn(),
     findActiveCategoryById: jest.fn(),
