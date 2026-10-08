@@ -139,6 +139,13 @@ export interface PostSystemMessageParams {
  * badges. The whole operation is best-effort: failures are logged, never thrown,
  * so a lifecycle action never fails because its system message did.
  */
+const ROLE_NAMED_EVENTS = new Set<string>([
+  "MEMBER_ADDED",
+  "MEMBER_REMOVED",
+  "MEMBER_BANNED",
+  "MEMBER_UNBANNED",
+]);
+
 export class GroupSystemMessageService {
   constructor(
     private readonly messageRepo: GroupMessageRepository,
@@ -217,6 +224,23 @@ export class GroupSystemMessageService {
 
       const targetNames = targetUserIds.map((id) => this.nameOf(snapshots, id));
 
+      // A moderation line names an admin/moderator by role ("Admin removed Tom …"),
+      // stamped at action time; a Backoffice line is already "Administrator".
+      let actorRole: string | undefined;
+      if (
+        ROLE_NAMED_EVENTS.has(systemEvent) &&
+        actorId &&
+        !params.skipAdminActivity &&
+        !inData.actorRole
+      ) {
+        try {
+          actorRole = (await this.memberRepo.findByRoomAndUser(roomId, actorId))
+            ?.role;
+        } catch {
+          // No role: the line names the person, as before.
+        }
+      }
+
       // Member added / removed read "{actor} added {target} to {group}", so the
       // group's name is captured with the line — the same event-time snapshot
       // the names above are. Best-effort: no row → the line reads "… the group".
@@ -235,6 +259,7 @@ export class GroupSystemMessageService {
         ...(targetUserId ? { targetUserId, targetName } : {}),
         ...(targetUserIds.length ? { targetUserIds, targetNames } : {}),
         ...(groupName ? { groupName } : {}),
+        ...(actorRole && actorRole !== "MEMBER" ? { actorRole } : {}),
       };
 
       const text = buildGroupSystemFallbackText(systemEvent, systemData);

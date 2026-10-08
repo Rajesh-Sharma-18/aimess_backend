@@ -13,6 +13,21 @@ const TARGET = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const BYSTANDER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 describe("system message text — display names and You personalization", () => {
+  it("groups a batch community MEMBER_ADDED into one line", () => {
+    const metadata = {
+      actorUserId: ACTOR,
+      targetUserIds: [TARGET, BYSTANDER, "d1", "d2", "d3"],
+      targetNames: ["Jane", "Peter", "Ram", "Sita", "Om"],
+      communityName: "Testers",
+    };
+    expect(buildCommunitySystemFallbackText("MEMBER_ADDED", metadata, "Krish", "")).toBe(
+      "Krish added Jane, Peter, Ram and 2 others to Testers"
+    );
+    expect(buildCommunitySystemFallbackText("MEMBER_ADDED", metadata, "Krish", "", BYSTANDER)).toBe(
+      "Krish added You, Jane, Ram and 2 others to Testers"
+    );
+  });
+
   it("uses first+last name in third-person community lines (no username)", () => {
     expect(
       buildCommunitySystemFallbackText(
@@ -683,7 +698,7 @@ describe("historical immutability — text depends only on the message's own sna
  * MEMBER_MUTED / MEMBER_UNMUTED — Telegram-style duration phrasing (Phase 5).
  * The duration is carried structurally as `metadata.durationMinutes` so clients
  * can localize; the deterministic English fallback renders "…for <duration>" for
- * timed mutes and "…indefinitely" when there is no duration.
+ * timed mutes and no duration at all when the mute is permanent.
  */
 describe("formatMuteDuration — duration picker preset labels", () => {
   it("renders each picker preset to match its label", () => {
@@ -742,7 +757,7 @@ describe("MEMBER_MUTED — personal message with until date/time", () => {
     ).toBe(`You are muted until ${MUTED_UNTIL_DATE}`);
   });
 
-  it("indefinite mute (null/missing mutedUntil) reads '…indefinitely'", () => {
+  it("indefinite mute (null/missing mutedUntil) names no duration", () => {
     expect(
       buildCommunitySystemFallbackText(
         "MEMBER_MUTED",
@@ -751,9 +766,9 @@ describe("MEMBER_MUTED — personal message with until date/time", () => {
         "Peter Parker",
         BYSTANDER
       )
-    ).toBe("Admin User muted Peter Parker indefinitely");
+    ).toBe("Admin User muted Peter Parker");
 
-    // missing key also degrades to indefinitely
+    // missing key also reads as permanent
     expect(
       buildCommunitySystemFallbackText(
         "MEMBER_MUTED",
@@ -762,7 +777,7 @@ describe("MEMBER_MUTED — personal message with until date/time", () => {
         "Peter Parker",
         TARGET
       )
-    ).toBe("You are muted indefinitely");
+    ).toBe("You are muted");
   });
 
   it("manual unmute reads '{actor} unmuted X' / 'You were unmuted'", () => {
@@ -806,7 +821,7 @@ describe("community moderation lines — actor reads first person", () => {
     ["MEMBER_REMOVED", "You removed Peter Parker from the community", "Smiley Creatures removed You from the community", "Smiley Creatures removed Peter Parker from the community"],
     ["MEMBER_BANNED", "You banned Peter Parker", "You were banned from this community.", "Smiley Creatures banned Peter Parker"],
     ["MEMBER_UNBANNED", "You unbanned Peter Parker", "You were unbanned", "Smiley Creatures unbanned Peter Parker"],
-    ["MEMBER_MUTED", "You muted Peter Parker indefinitely", "You are muted indefinitely", "Smiley Creatures muted Peter Parker indefinitely"],
+    ["MEMBER_MUTED", "You muted Peter Parker", "You are muted", "Smiley Creatures muted Peter Parker"],
     ["MEMBER_UNMUTED", "You unmuted Peter Parker", "You were unmuted", "Smiley Creatures unmuted Peter Parker"],
   ])("%s", (type, asActor, asTarget, asBystander) => {
     expect(render(type, ACTOR)).toBe(asActor);
@@ -858,7 +873,7 @@ describe("community moderation lines — manual vs automatic actor", () => {
 
   it("stored (no viewer) audit text names both sides", () => {
     const manual = { actorUserId: ACTOR };
-    expect(render("MEMBER_MUTED", manual, "")).toBe("Julia Doyle muted Boyd Stevens indefinitely");
+    expect(render("MEMBER_MUTED", manual, "")).toBe("Julia Doyle muted Boyd Stevens");
     expect(render("MEMBER_UNMUTED", manual, "")).toBe("Julia Doyle unmuted Boyd Stevens");
     expect(render("MEMBER_BANNED", manual, "")).toBe("Julia Doyle banned Boyd Stevens");
     expect(render("MEMBER_UNBANNED", manual, "")).toBe("Julia Doyle unbanned Boyd Stevens");

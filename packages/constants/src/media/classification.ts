@@ -156,10 +156,11 @@ export function isDownloadableScanStatus(
 /**
  * Lifecycle state of a registered object, driving cleanup.
  *   ACTIVE  — referenced & live.
+ *   ATTACHED — passed a persisting service's write-time check (sent in a message); never uploader-deletable.
  *   UNUSED  — dereferenced (e.g. owning message deleted); grace clock running.
  *   DELETED — object removed from storage; row retained for audit until pruned.
  */
-export const MEDIA_USAGE_STATUSES = ["ACTIVE", "UNUSED", "DELETED"] as const;
+export const MEDIA_USAGE_STATUSES = ["ACTIVE", "ATTACHED", "UNUSED", "DELETED"] as const;
 export type MediaUsageStatus = (typeof MEDIA_USAGE_STATUSES)[number];
 
 // ─── Download-access policy (Phase 9) ──────────────────────────────────────

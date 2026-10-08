@@ -28,7 +28,6 @@ export const SCHEMA_DEFAULT_SCOPE = {
   whoCanFindMe: "EVERYONE",
   whoCanSendFriendRequests: "EVERYONE",
   whoCanSeeOnlineStatus: "FRIENDS",
-  whoCanViewProfile: "EVERYONE",
 } as const;
 
 /**
@@ -52,8 +51,8 @@ export type ViewerRelation = {
  *
  * An absent scope falls through to `EVERYONE`. Callers whose field defaults to
  * something stricter MUST pass the fallback explicitly — use
- * `SCHEMA_DEFAULT_SCOPE`, or the `visibleIsOnline` / `canViewProfile` helpers
- * below, which already do.
+ * `SCHEMA_DEFAULT_SCOPE`, or the `visibleIsOnline` helper
+ * below, which already does.
  */
 export function scopeAdmits(
   scope: string | null | undefined,
@@ -80,8 +79,7 @@ export function scopeAdmits(
  *
  *   where: { ...searchFilter, ...discoverableWhere(viewerFriendIds) }
  *
- * `NO_ONE` rows are excluded for everyone (including friends), matching the
- * "should not appear in search results for anyone" rule. Rows with no
+ * `NO_ONE` rows are excluded for everyone except accepted friends. Rows with no
  * `privacySettings` row yet are treated as `EVERYONE` (the schema default), so
  * this never hides users who have simply never opened Settings.
  *
@@ -98,33 +96,40 @@ export type ViewerGraph = {
   friendIds: string[];
   /** One-hop expansion of `friendIds`, excluding self and direct friends. */
   friendOfFriendIds: string[];
+  /** Users who blocked the viewer — never discoverable, room or friendship notwithstanding. */
+  blockerIds?: string[];
 };
 
 export function discoverableWhere(
-  viewer: ViewerGraph
+  viewer: ViewerGraph,
+  // Ids the caller already authorized past `whoCanFindMe` (existing live chats).
+  alwaysVisibleIds?: string[]
 ): Prisma.UserProfileWhereInput {
-  return {
+  const scope: Prisma.UserProfileWhereInput = {
     OR: [
       { privacySettings: { is: null } },
       { privacySettings: { whoCanFindMe: "EVERYONE" } },
-      {
-        privacySettings: { whoCanFindMe: "FRIENDS" },
-        userId: { in: viewer.friendIds },
-      },
+      // Accepted friends can always find each other, whatever the scope (incl. NO_ONE).
+      { userId: { in: viewer.friendIds } },
       {
         privacySettings: { whoCanFindMe: "FRIENDS_OF_FRIENDS" },
-        // Direct friends qualify too — FoF widens FRIENDS, never narrows it.
-        userId: { in: [...viewer.friendIds, ...viewer.friendOfFriendIds] },
+        userId: { in: viewer.friendOfFriendIds },
       },
+      ...(alwaysVisibleIds?.length
+        ? [{ userId: { in: alwaysVisibleIds } }]
+        : []),
     ],
   };
+  // A block beats every widening above: friendship and an existing chat included.
+  return viewer.blockerIds?.length
+    ? { AND: [scope, { userId: { notIn: viewer.blockerIds } }] }
+    : scope;
 }
 
 /** Prisma select fragment pulling the scopes list surfaces need to mask by. */
 export const PRIVACY_SCOPE_SELECT = {
   select: {
     whoCanSeeOnlineStatus: true,
-    whoCanViewProfile: true,
     // Not a masking scope — it decides whether the row may offer an "Add
     // Friend" action at all (see `canSendFriendRequest`). Carried on the same
     // select so no list surface needs a second query to answer that.
@@ -135,7 +140,6 @@ export const PRIVACY_SCOPE_SELECT = {
 type ScopeCarrier = {
   privacySettings?: {
     whoCanSeeOnlineStatus?: string | null;
-    whoCanViewProfile?: string | null;
     whoCanSendFriendRequests?: string | null;
   } | null;
 };
@@ -209,17 +213,6 @@ export function visibleIsOnline(
     : false;
 }
 
-/** Does this viewer get the gated profile fields (bio, cover, counts)? */
-export function canViewProfile(
-  profile: ScopeCarrier,
-  relation: ViewerRelation
-): boolean {
-  return scopeAdmits(
-    profile.privacySettings?.whoCanViewProfile ??
-      SCHEMA_DEFAULT_SCOPE.whoCanViewProfile,
-    relation
-  );
-}
 
 /**
  * Real name + avatar for a PROFILE-CARD surface: the profile endpoint, search

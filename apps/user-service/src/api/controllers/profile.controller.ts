@@ -5,8 +5,10 @@ import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import type {
   PublicProfileQuery,
+  SetCustomStatusInput,
   UpdateProfileInput,
 } from "../validators/profile.validator.js";
+import { customStatusService } from "../../services/custom-status.service.js";
 import { userProfileService } from "../../services/user-profile.service.js";
 import {
   credentialPlatformFor,
@@ -15,15 +17,19 @@ import {
 
 export const getMyProfile = asyncHandler(
   async (req: Request, res: Response) => {
-    const [profile, credentials] = await Promise.all([
+    const [profile, credentials, customStatus] = await Promise.all([
       userProfileService.getMyProfile(req.auth.userId),
       listCustomCredentials(credentialPlatformFor(req.get("x-platform"))),
+      customStatusService.getOwn(req.auth.userId),
     ]);
 
     return res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse({ ...profile, credentials }, t("USER_PROFILE_FETCHED", req.locale))
+        new ApiResponse(
+          { ...profile, credentials, ...customStatus },
+          t("USER_PROFILE_FETCHED", req.locale)
+        )
       );
   }
 );
@@ -68,3 +74,20 @@ export const getPublicProfile = asyncHandler(
       .json(new ApiResponse(profile, t("USER_PROFILE_FETCHED", req.locale)));
   }
 );
+
+export const setCustomStatus = asyncHandler(async (req: Request, res: Response) => {
+  const result = await customStatusService.set(
+    req.auth.userId,
+    req.body as SetCustomStatusInput
+  );
+  return res
+    .status(HTTP_STATUS.OK)
+    .json(new ApiResponse(result, t("USER_CUSTOM_STATUS_UPDATED", req.locale)));
+});
+
+export const clearCustomStatus = asyncHandler(async (req: Request, res: Response) => {
+  const result = await customStatusService.clear(req.auth.userId);
+  return res
+    .status(HTTP_STATUS.OK)
+    .json(new ApiResponse(result, t("USER_CUSTOM_STATUS_CLEARED", req.locale)));
+});

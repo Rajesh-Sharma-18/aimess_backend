@@ -64,6 +64,7 @@ import { avatarService } from "./avatar.service.js";
 import { usernameService } from "./username.service.js";
 import { publishProfileUpdatedSafe } from "../messaging/publish-profile-updated.js";
 import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
+import { activeCustomStatus } from "./custom-status.service.js";
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -364,19 +365,12 @@ export const userProfileService = {
     const isFriend = view.status === "ACCEPTED";
     const isDeletedUser = profile.status === ProfileStatus.DELETED;
 
-    const viewProfileScope =
-      profile.privacySettings?.whoCanViewProfile ??
-      SCHEMA_DEFAULT_SCOPE.whoCanViewProfile;
     const friendRequestScope =
       profile.privacySettings?.whoCanSendFriendRequests ??
       SCHEMA_DEFAULT_SCOPE.whoCanSendFriendRequests;
-    // `whoCanViewProfile` and `whoCanSendFriendRequests` both offer
-    // FRIENDS_OF_FRIENDS, and the lookup is two indexed queries — so resolve
-    // the mutual-friend edge once, only when EITHER scope actually depends on
-    // it and the cheaper isSelf/isFriend answers do not settle it.
-    const needsMutualFriend =
-      viewProfileScope === "FRIENDS_OF_FRIENDS" ||
-      friendRequestScope === "FRIENDS_OF_FRIENDS";
+    // The mutual-friend lookup is two indexed queries — only run it when the
+    // friend-request scope depends on it.
+    const needsMutualFriend = friendRequestScope === "FRIENDS_OF_FRIENDS";
     const isFriendOfFriend =
       needsMutualFriend && !isSelf && !isFriend
         ? await friendshipRepository.hasMutualFriend(viewerId, targetUserId)
@@ -387,23 +381,21 @@ export const userProfileService = {
     // when the card itself is now reachable: the exception above exists to keep
     // the conversation openable, not to hand back a profile the block took
     // away.
-    const canViewProfile =
-      !isDeletedUser &&
-      !blockedByTarget &&
-      scopeAdmits(viewProfileScope, relation);
+    const canViewProfile = !isDeletedUser && !blockedByTarget;
 
     // Name + avatar are NOT gated by `whoCanViewProfile` — a profile card has
     // to stay recognizable for the strangers who are allowed to find it. Only a
     // DELETED account is blanked, and resolving its avatar key as null yields
     // the same "no avatar" shape as a user who never set one.
     const identity = visibleIdentity(profile, { anonymize: isDeletedUser });
+    // A blocker's photo is hidden from the person they blocked; the name stays.
+    const avatarKey =
+      identity.avatarAllowed && !blockedByTarget ? profile.avatarUrl : null;
     const [avatarView, avatar] = await Promise.all([
-      avatarService.resolveViewUrlForClient(
-        identity.avatarAllowed ? profile.avatarUrl : null
-      ),
+      avatarService.resolveViewUrlForClient(avatarKey),
       toMediaObject({
         bucket: env.MINIO_BUCKET_AVATARS,
-        stored: identity.avatarAllowed ? profile.avatarUrl : null,
+        stored: avatarKey,
         prefixes: MEDIA_PREFIXES.userAvatars,
         strategy: mediaUrlStrategy,
       }),
@@ -438,6 +430,8 @@ export const userProfileService = {
       firstName: identity.firstName,
       lastName: identity.lastName,
       bio: canViewProfile ? profile.bio : null,
+      customStatus: canViewProfile ? activeCustomStatus(profile) : null,
+      serverNow: Date.now(),
       avatarUrl: avatarView?.url ?? null,
       avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
       avatar,

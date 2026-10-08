@@ -6,6 +6,7 @@ import { logger } from "@aimess/logger";
 
 import { env } from "../../config/env.js";
 import { mediaService } from "../../services/media.service.js";
+import { mediaFileRepository } from "../../repositories/media-file.repository.js";
 import type { MediaCategoryKey } from "../../config/uploads.js";
 
 /** Cap on keys per CheckMediaStatus call — one message's attachments, not a scan. */
@@ -111,6 +112,10 @@ export const mediaImpl: grpc.UntypedServiceImplementation = {
           .slice(0, MAX_STATUS_KEYS);
 
         const entries = await mediaService.checkMediaStatus(keys);
+        // The caller persists these next; from here an uploader cancel must not delete them.
+        void mediaFileRepository
+          .markAttached(entries.filter((e) => e.downloadable).map((e) => e.objectKey))
+          .catch(() => undefined);
         callback(null, {
           entries: entries.map((e) => ({
             objectKey: e.objectKey,

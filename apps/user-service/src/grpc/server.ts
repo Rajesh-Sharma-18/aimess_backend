@@ -27,6 +27,7 @@ import {
 import { avatarService } from "../services/avatar.service.js";
 import { buildFriendshipView } from "../lib/friendship-view.js";
 import { allocatedUsername } from "../lib/username.util.js";
+import { blockedEitherWay } from "../lib/block-visibility.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -209,16 +210,19 @@ export function startUserGrpcServer(): grpc.Server {
             callback(null, { visiblePeerIds: [] });
             return;
           }
-          const [friendIds, scopeByUserId] = await Promise.all([
+          const [friendIds, scopeByUserId, blocks] = await Promise.all([
             friendshipRepository.findAcceptedFriendIdsForUser(
               viewerId,
               peerIds
             ),
             userSettingsRepository.findOnlineVisibilityScopes(peerIds),
+            friendshipRepository.findAllBlocks(viewerId),
           ]);
           const friendSet = new Set(friendIds);
+          const blocked = blockedEitherWay(viewerId, blocks);
           callback(null, {
             visiblePeerIds: peerIds.filter((peerId) =>
+              !blocked.has(peerId) &&
               scopeAdmits(
                 // Missing row → FRIENDS (the schema default), NOT EVERYONE.
                 scopeByUserId.get(peerId) ??
@@ -260,20 +264,23 @@ export function startUserGrpcServer(): grpc.Server {
             callback(null, { allowedViewerIds: [] });
             return;
           }
-          const [friendIds, scopeByUserId] = await Promise.all([
+          const [friendIds, scopeByUserId, blocks] = await Promise.all([
             friendshipRepository.findAcceptedFriendIdsForUser(
               subjectId,
               viewerIds
             ),
             userSettingsRepository.findOnlineVisibilityScopes([subjectId]),
+            friendshipRepository.findAllBlocks(subjectId),
           ]);
           const friendSet = new Set(friendIds);
+          const blocked = blockedEitherWay(subjectId, blocks);
           // Missing row → FRIENDS (the schema default), NOT EVERYONE.
           const scope =
             scopeByUserId.get(subjectId) ??
             SCHEMA_DEFAULT_SCOPE.whoCanSeeOnlineStatus;
           callback(null, {
             allowedViewerIds: viewerIds.filter((viewerId) =>
+              !blocked.has(viewerId) &&
               scopeAdmits(scope, {
                 isSelf: viewerId === subjectId,
                 isFriend: friendSet.has(viewerId),

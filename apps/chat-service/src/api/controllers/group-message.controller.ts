@@ -1,6 +1,8 @@
 import type { Request, Response } from "express";
 import type { Redis, Cluster } from "ioredis";
+import { publishMessageEdited } from "../../lib/publish-message-edited.js";
 
+import { isIdempotentReplay } from "../../lib/idempotency.js";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 import { NotFoundError } from "@aimess/errors";
@@ -440,14 +442,20 @@ export class GroupMessageController {
           ? result.createdAt.getTime()
           : Date.now(),
       sequenceNumber: (full.sequenceNumber as number) ?? 0,
+      revision: (full.revision as number) ?? 0,
       // An edit re-emits the whole message; without the deadline the client
       // would drop the countdown it was already rendering.
       ...autoDeleteWireFields(result),
     });
     if (result.roomId) {
-      await this.redis.publish(
-        `conv:${result.roomId}`,
-        JSON.stringify({ event: "message:edited", data: editedEvent })
+      const memberIds = await this.messageService
+        .getActiveMemberIds(result.roomId)
+        .catch(() => [] as string[]);
+      await publishMessageEdited(
+        this.redis,
+        result.roomId,
+        editedEvent,
+        memberIds
       );
     }
     res
@@ -926,32 +934,36 @@ export class GroupMessageController {
       content: result.content ?? null,
       reactions: [],
       isForwarded: true,
+      forwardData: full.forwardData,
       serverTs: result.createdAt?.getTime() ?? Date.now(),
       sequenceNumber: (full.sequenceNumber as number) ?? 0,
       // A forward is a brand-new message in the TARGET room and carries that
       // room's timer — see the same spread on the private forward path.
       ...autoDeleteWireFields(result),
     });
-    await this.redis.publish(
-      `conv:${targetRoomId}`,
-      JSON.stringify({ event: "message:new", data: forwardedEvent })
-    );
-    // Fire-and-forget bump (incl. member fetch) — must never delay the HTTP response.
-    publishConvUpdatedSafe({
-      redis: this.redis,
-      type: "GROUP",
-      roomId: targetRoomId,
-      senderName: senderName ?? (full.senderName as string) ?? "",
-      fetchRecipients: () =>
-        this.messageService.getActiveMemberIds(targetRoomId),
-      senderId: userId,
-      lastMessageId: result.id,
-      lastMessageAt: result.createdAt?.getTime() ?? Date.now(),
-      preview: {
-        contentType: result.messageType,
-        text: buildMessagePreview(result.messageType, result.content),
-      },
-    });
+    // A replay already broadcast on its first send.
+    if (!isIdempotentReplay(result)) {
+      await this.redis.publish(
+        `conv:${targetRoomId}`,
+        JSON.stringify({ event: "message:new", data: forwardedEvent })
+      );
+      // Fire-and-forget bump (incl. member fetch) — must never delay the HTTP response.
+      publishConvUpdatedSafe({
+        redis: this.redis,
+        type: "GROUP",
+        roomId: targetRoomId,
+        senderName: senderName ?? (full.senderName as string) ?? "",
+        fetchRecipients: () =>
+          this.messageService.getActiveMemberIds(targetRoomId),
+        senderId: userId,
+        lastMessageId: result.id,
+        lastMessageAt: result.createdAt?.getTime() ?? Date.now(),
+        preview: {
+          contentType: result.messageType,
+          text: buildMessagePreview(result.messageType, result.content),
+        },
+      });
+    }
     res
       .status(HTTP_STATUS.CREATED)
       .json(

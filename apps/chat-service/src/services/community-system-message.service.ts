@@ -158,8 +158,12 @@ export class CommunitySystemMessageService {
         typeof metadata.targetUserId === "string"
           ? metadata.targetUserId
           : null;
-      const ids = [triggeredByUserId, targetUserId].filter((id): id is string =>
-        Boolean(id)
+      // Batch add (one operation ⇒ one MEMBER_ADDED audit line) names every target.
+      const targetUserIds = Array.isArray(metadata.targetUserIds)
+        ? metadata.targetUserIds.map((id) => String(id)).filter(Boolean)
+        : [];
+      const ids = [triggeredByUserId, targetUserId, ...targetUserIds].filter(
+        (id): id is string => Boolean(id)
       );
       const snapshots = ids.length
         ? await this.userSnapshotService.getUserSnapshotsMap(
@@ -186,6 +190,12 @@ export class CommunitySystemMessageService {
         // re-fetched value, which may be "" when user-service has no profile yet.
         ...(targetUserId
           ? { targetName: (metadata.targetName as string) || targetName }
+          : {}),
+        ...(targetUserIds.length
+          ? {
+              targetUserIds,
+              targetNames: targetUserIds.map((id) => this.nameOf(snapshots, id)),
+            }
           : {}),
       };
 
@@ -382,45 +392,63 @@ export class CommunitySystemMessageService {
       //    persisted, so moderators still pick it up from history/sync.
       //  - everything else → the room.
       const moderationOnly = isModerationOnlySystemMessage(systemMessageType);
+      const moderatorIds =
+        moderationOnly && !isPersonal
+          ? await this.resolveModerationRecipients(communityId)
+          : [];
       const redisChannels: string[] =
         isPersonal && visibleToUserId
           ? [`user:${visibleToUserId}`]
           : moderationOnly
-            ? (await this.resolveModerationRecipients(communityId)).map(
-                (id) => `user:${id}`
-              )
+            ? moderatorIds.map((id) => `user:${id}`)
             : [`community:${communityId}`];
 
       // SENDER-LESS wire: senderId/senderName/senderAvatar are intentionally
       // empty for SYSTEM messages — the actor is in systemMetadata only.
-      const wireFrame = JSON.stringify({
-        event: "community:message:new",
-        data: {
-          id: message.id,
-          messageId: message.id,
-          communityId,
-          roomId: communityId,
-          senderId: "",
-          senderName: "",
-          senderAvatar: "",
-          parentMessageId: "",
-          quoteData: null,
-          content: { text: fallbackText, files: [] },
-          reactions: [],
-          message: fallbackText,
-          contentType: normalizeMessageType("SYSTEM"),
-          clientMessageId: "",
-          serverTs,
-          sentAt: serverTs,
-          sequenceNumber: seq,
-          revision,
-          systemMessageType,
-          isPersonal,
-          systemMetadata: wireMetadata,
-        },
-      });
+      const buildFrame = (fallbackText: string) =>
+        JSON.stringify({
+          event: "community:message:new",
+          data: {
+            id: message.id,
+            messageId: message.id,
+            communityId,
+            roomId: communityId,
+            senderId: "",
+            senderName: "",
+            senderAvatar: "",
+            parentMessageId: "",
+            quoteData: null,
+            content: { text: fallbackText, files: [] },
+            reactions: [],
+            message: fallbackText,
+            contentType: normalizeMessageType("SYSTEM"),
+            clientMessageId: "",
+            serverTs,
+            sentAt: serverTs,
+            sequenceNumber: seq,
+            revision,
+            systemMessageType,
+            isPersonal,
+            systemMetadata: wireMetadata,
+          },
+        });
+      const wireFrame = buildFrame(fallbackText);
+      // Each moderator gets the line from their own perspective ("You muted X"
+      // for the actor), matching what the history read path renders.
+      const frameFor = (channel: string) =>
+        moderatorIds.length === 0
+          ? wireFrame
+          : buildFrame(
+              buildCommunitySystemFallbackText(
+                systemMessageType,
+                enrichedMetadata,
+                actorName,
+                targetName,
+                channel.slice("user:".length)
+              ) || fallbackText
+            );
       for (const channel of redisChannels) {
-        this.redis.publish(channel, wireFrame).catch((err: unknown) => {
+        this.redis.publish(channel, frameFor(channel)).catch((err: unknown) => {
           logger.warn(
             `CommunitySystemMessageService|redis.publish failed channel=${channel}: ${String(err)}`
           );
@@ -576,33 +604,61 @@ export class CommunitySystemMessageService {
   }
 
   /**
-   * Retracts the CURRENT mute session's "You are muted until …" PERSONAL line
-   * for one user (Telegram parity: on unmute, the stale mute line must not sit
-   * alongside the fresh unmute line in the member's history). No-op if the user
-   * has no active mute message (e.g. it already expired/was retracted, or the
-   * mute never posted a line). Same `deletedForAll` + tombstone mechanism as
-   * {@link retractSystemMessage}, but scoped to the affected user's own
-   * `user:<id>` channel via {@link publishPersonalMessageDeletions} — PERSONAL
-   * messages are never broadcast to the community room. Best-effort: never
-   * throws — a retraction failure must not roll back the unmute itself.
+   * Retracts every live MEMBER_MUTED line about one member — their personal
+   * notice and the moderators' audit line — on unmute, auto-expiry, or a re-mute
+   * (`keepEventAt` spares the new mute's own lines). Each removal bumps the room
+   * revision so offline clients replay it, and is tombstoned to exactly the
+   * users who could see the line. Idempotent and best-effort: never throws.
    */
-  async retractPersonalMuteMessage(params: {
+  async retractMuteLines(params: {
     communityId: string;
-    userId: string;
+    targetUserId: string;
+    keepEventAt?: string;
   }): Promise<void> {
-    const { communityId, userId } = params;
+    const { communityId, targetUserId, keepEventAt } = params;
     try {
-      const messageId = await this.messageRepo.findLatestActiveMutedMessageId({
+      const lines = await this.messageRepo.findLiveMuteLines({
         roomId: communityId,
-        userId,
+        targetUserId,
+        keepEventAt,
       });
-      if (!messageId) return;
-      const hidden = await this.messageRepo.deleteForAll(messageId);
-      if (!hidden) return;
-      this.publishPersonalMessageDeletions(communityId, userId, [messageId]);
+      if (lines.length === 0) return;
+      const moderatorIds = lines.some((l) => !l.visibleToUserId)
+        ? await this.resolveModerationRecipients(communityId)
+        : [];
+      for (const line of lines) {
+        const revision = await this.roomRepo.allocateRevision(communityId);
+        if (!(await this.messageRepo.retractIfLive(line.id, revision)))
+          continue;
+        const tombstone = JSON.stringify({
+          event: "community:message:deleted",
+          data: {
+            ...buildDeletePayload({
+              conversationType: "COMMUNITY",
+              messageId: line.id,
+              roomId: communityId,
+              scope: "forEveryone",
+              deletedBy: "",
+            }),
+            revision,
+          },
+        });
+        const recipients = line.visibleToUserId
+          ? [line.visibleToUserId]
+          : moderatorIds;
+        for (const userId of recipients) {
+          this.redis
+            .publish(`user:${userId}`, tombstone)
+            .catch((err: unknown) => {
+              logger.warn(
+                `CommunitySystemMessageService|mute-line tombstone publish failed community=${communityId} user=${userId} message=${line.id}: ${String(err)}`
+              );
+            });
+        }
+      }
     } catch (err) {
       logger.warn(
-        `CommunitySystemMessageService|retractPersonalMuteMessage failed community=${communityId} user=${userId}: ${String(err)}`
+        `CommunitySystemMessageService|retractMuteLines failed community=${communityId} target=${targetUserId}: ${String(err)}`
       );
     }
   }
@@ -639,8 +695,7 @@ export class CommunitySystemMessageService {
   /**
    * Tell an already-connected client to remove PERSONAL message(s) that were
    * just hard-deleted server-side for one user — stale join-session lines (see
-   * deletePersonalJoinMessages) and retracted mute lines (see
-   * retractPersonalMuteMessage). Without this, a client that already rendered
+   * deletePersonalJoinMessages). Without this, a client that already rendered
    * the line never learns it was deleted — it stays on screen until a full
    * refetch (reload/reconnect). PERSONAL messages are user-scoped, so this
    * publishes to the `user:<id>` channel (never `community:<id>`), mirroring

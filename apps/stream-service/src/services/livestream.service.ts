@@ -30,7 +30,10 @@ import type {
 } from "../repositories/livestream.repository.js";
 import { LIVE_STATUSES } from "../repositories/livestream.repository.js";
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
-import type { LivestreamViewerSessionRepository } from "../repositories/livestream-viewer-session.repository.js";
+import type {
+  LivestreamViewerSessionRepository,
+  ViewerStatusFilter,
+} from "../repositories/livestream-viewer-session.repository.js";
 import { buildHlsQualityUrls, buildFlvQualityUrls } from "./srs.service.js";
 import type {
   SrsService,
@@ -825,7 +828,8 @@ export class LivestreamService {
     const isResume = stream.status === "RECONNECTING";
 
     const playback = this.playbackUrlsFor(stream);
-    const updated = await this.streamRepo.updateById(stream.id, {
+    // Conditional, like handleUnpublish: an end claimed since the read wins.
+    const updated = await this.streamRepo.updateIfStatus(stream.id, [stream.status], {
       status: "LIVE",
       disconnectedAt: null,
       publisherClientId: clientId ?? null,
@@ -836,6 +840,9 @@ export class LivestreamService {
       flvUrl: playback.flvUrl,
       dashUrl: playback.dashUrl,
     });
+    if (!updated) {
+      return (await this.streamRepo.findById(stream.id))?.status === "LIVE";
+    }
 
     await this.publishStatus(updated.id, "LIVE", updated.communityId, {
       creatorId: updated.creatorId,
@@ -943,10 +950,15 @@ export class LivestreamService {
     }
 
     if (stream.status === "LIVE") {
-      const updated = await this.streamRepo.updateById(stream.id, {
-        status: "RECONNECTING",
-        disconnectedAt: new Date(),
-      });
+      // Conditional: an End Live (host, community admin, Super Admin) that
+      // lands between the read above and this write has already ENDED the row,
+      // and the publisher dropping is just its kick arriving.
+      const updated = await this.streamRepo.updateIfStatus(
+        stream.id,
+        ["LIVE"],
+        { status: "RECONNECTING", disconnectedAt: new Date() }
+      );
+      if (!updated) return;
       await this.publishStatus(updated.id, "RECONNECTING", updated.communityId);
       logger.info(
         `on_unpublish: stream id=${stream.id} entering RECONNECTING grace window (source=${stream.sourceType})`
@@ -1173,14 +1185,33 @@ export class LivestreamService {
     const liveStreamCount = await this.streamRepo.countLiveByCommunity(
       updated.communityId
     );
+// Closed BEFORE the ENDED broadcast, so every listener that refetches the
+    // viewer list on it (the admin monitor) already reads the final sessions.
+    await this.closeOpenViewerSessions(
+      updated.id,
+      updated.endedAt ?? new Date()
+    );
+    // Who ended it, for clients. The host stays `creatorId`/`hostUserId`
+    // whoever pressed End Live; a Super Admin is only ever "SUPER_ADMIN".
+    const endedByType = byPlatformAdmin
+      ? "SUPER_ADMIN"
+      : reason === "HOST_ENDED"
+        ? "HOST"
+        : reason === "COMMUNITY_ADMIN_ENDED"
+          ? "COMMUNITY_ADMIN"
+          : "SYSTEM";
     await this.publishStatus(updated.id, "ENDED", updated.communityId, {
       creatorId: stream.creatorId,
       endedReason: reason,
+      endedByType,
+      startedAt: updated.livedAt?.getTime(),
+      endedAt: updated.endedAt?.getTime() ?? Date.now(),
     });
-    void this.publishCommunityStreamEnded(updated, liveStreamCount, reason);
-    void this.closeOpenViewerSessions(
-      updated.id,
-      updated.endedAt ?? new Date()
+    void this.publishCommunityStreamEnded(
+      updated,
+      liveStreamCount,
+      reason,
+      endedByType
     );
     // Attributed to the user who ended it: the broadcaster on HOST_ENDED, the
     // acting admin on COMMUNITY_ADMIN_ENDED. A heartbeat or reconnect timeout is
@@ -1212,6 +1243,7 @@ export class LivestreamService {
       peakViewers: updated.peakViewers,
       liveStreamCount,
       reason,
+      wentLive: updated.livedAt != null,
       endedBy,
       // Every Backoffice (Super Admin) end; community copy then reads
       // "Administrator ended {host}'s …". The admin's id is deliberately
@@ -1339,7 +1371,11 @@ export class LivestreamService {
    * `community:stream:started` are not re-emitted, since this is a mixed
    * webhook/manual environment resuming the same session, not a fresh go-live.
    */
-  async markLive(id: string, requesterId: string): Promise<StreamView> {
+  async markLive(
+    id: string,
+    requesterId: string,
+    sessionId = ""
+  ): Promise<StreamView> {
     await assertNotSystemBanned(this.redis, requesterId);
 
     const stream = await this.streamRepo.findById(id);
@@ -1373,7 +1409,7 @@ export class LivestreamService {
     }
 
     const playback = this.playbackUrlsFor(stream);
-    const updated = await this.streamRepo.updateById(id, {
+    const updated = await this.streamRepo.updateIfStatus(id, [stream.status], {
       status: "LIVE",
       disconnectedAt: null,
       ...(isResume ? {} : { livedAt: new Date() }),
@@ -1381,6 +1417,12 @@ export class LivestreamService {
       flvUrl: playback.flvUrl,
       dashUrl: playback.dashUrl,
     });
+    if (!updated) {
+      // Ended (or gone LIVE through the SRS hook) since the read above.
+      const current = await this.streamRepo.findById(id);
+      if (current?.status === "LIVE") return this.viewOf(current);
+      throw new BadRequestError("STREAM_ALREADY_ENDED");
+    }
 
     await this.publishStatus(updated.id, "LIVE", updated.communityId, {
       creatorId: updated.creatorId,
@@ -1396,7 +1438,7 @@ export class LivestreamService {
       );
     } else {
       // Host viewer session — see handlePublish for the rationale.
-      void this.recordHostViewerJoin(updated.id, updated.creatorId);
+      void this.recordHostViewerJoin(updated.id, updated.creatorId, sessionId);
       const startedAt = updated.livedAt?.getTime() ?? Date.now();
       const liveStreamCount = await this.streamRepo.countLiveByCommunity(
         updated.communityId
@@ -1446,11 +1488,15 @@ export class LivestreamService {
       return { success: false, status: stream.status };
     }
 
-    // The reason was accepted and then dropped, so a force-end was indistinguishable
-    // from the host ending their own broadcast in every downstream event.
+    // Every client (REST endedReason, stream:status, community:stream:ended)
+    // reads the generic ADMIN_FORCE_ENDED: the Backoffice reason code (SPAM,
+    // NUDITY, …) is moderation detail, kept on backoffice-service's audit row.
+    logger.info(
+      `adminForceEnd stream=${streamId} reasonCode=${reason || "-"}`
+    );
     const ended = await this.finalizeAsEnded(
       stream,
-      reason || "ADMIN_FORCE_ENDED",
+      "ADMIN_FORCE_ENDED",
       true,
       true
     );
@@ -2504,8 +2550,18 @@ export class LivestreamService {
         const liveStreamCount = await this.streamRepo.countLiveByCommunity(
           updated.communityId
         );
-        await this.publishStatus(updated.id, "ENDED", updated.communityId);
-        void this.publishCommunityStreamEnded(updated, liveStreamCount);
+        await this.publishStatus(updated.id, "ENDED", updated.communityId, {
+          creatorId: updated.creatorId,
+          endedReason: "PENDING_TIMEOUT",
+          endedByType: "SYSTEM",
+          endedAt: end.endedAt.getTime(),
+        });
+        void this.publishCommunityStreamEnded(
+          updated,
+          liveStreamCount,
+          "PENDING_TIMEOUT",
+          "SYSTEM"
+        );
         // The sweeper is the one end path that bypasses finalizeAsEnded, so it also
         // bypassed the audit row. It never went live — record it as SYSTEM.
         publishAdminActivitySafe({
@@ -2527,6 +2583,7 @@ export class LivestreamService {
           creatorId: updated.creatorId,
           endedAt: updated.endedAt?.getTime() ?? Date.now(),
           durationSeconds: 0,
+          wentLive: false,
           // Read the row rather than hardcoding 0: a PENDING stream is
           // watchable, so it can have accumulated a peak before timing out,
           // and backoffice stores whatever this event carries.
@@ -2763,10 +2820,16 @@ export class LivestreamService {
 
   private async recordHostViewerJoin(
     streamId: string,
-    creatorId: string
+    creatorId: string,
+    authSessionId = ""
   ): Promise<void> {
     try {
-      await this.viewerSessionRepo.recordJoin(streamId, creatorId);
+      await this.viewerSessionRepo.recordJoin({
+        livestreamId: streamId,
+        userId: creatorId,
+        authSessionId,
+        isHost: true,
+      });
     } catch (error) {
       logger.warn(
         `recordHostViewerJoin failed for stream=${streamId}: ${String(error)}`
@@ -2775,15 +2838,33 @@ export class LivestreamService {
   }
 
   /**
-   * Durable join record (called by the gateway, fire-and-forget, right after
-   * the Redis `SADD` on `stream:join`). Redis stays the source of truth for
-   * CURRENT live presence/count; this is the persisted history the admin panel
-   * reads. Idempotent — a rejoin while already open reuses the open session
-   * (see {@link LivestreamViewerSessionRepository.recordJoin}).
+   * Durable join record for one socket (called by the gateway, fire-and-forget,
+   * on `stream:join`). Redis stays the source of truth for CURRENT live
+   * presence/count; this is the persisted per-device history the admin panel
+   * reads (see {@link LivestreamViewerSessionRepository.recordJoin}). Only a
+   * stream that can still be watched opens a session — a late join racing the
+   * end must not leave a session open after the end closed them all.
    */
-  async recordViewerJoin(streamId: string, userId: string): Promise<void> {
+  async recordViewerJoin(
+    streamId: string,
+    userId: string,
+    authSessionId: string
+  ): Promise<void> {
     try {
-      await this.viewerSessionRepo.recordJoin(streamId, userId);
+      const stream = await this.streamRepo.findById(streamId);
+      if (
+        stream &&
+        (stream.status === "PENDING" ||
+          stream.status === "LIVE" ||
+          stream.status === "RECONNECTING")
+      ) {
+        await this.viewerSessionRepo.recordJoin({
+          livestreamId: streamId,
+          userId,
+          authSessionId,
+          isHost: stream.creatorId === userId,
+        });
+      }
     } catch (error) {
       logger.warn(
         `recordViewerJoin failed for stream=${streamId} user=${userId}: ${String(error)}`
@@ -2815,14 +2896,33 @@ export class LivestreamService {
   }
 
   /**
-   * Close the durable viewer session (called by the gateway, fire-and-forget,
-   * from `stream:leave`, socket `disconnect`, and ban-kick). No-op when there
-   * is no open session for this user (duplicate leave, or a leave for a stream
-   * the socket never actually joined).
+   * Durable leave for one socket (called by the gateway, fire-and-forget, from
+   * `stream:leave` → LEFT, a dropped socket → DISCONNECTED, and ban-kick →
+   * REMOVED, which ends every device of the user at once). No-op without an
+   * open session, and for the host — see
+   * {@link LivestreamViewerSessionRepository.recordLeave}.
    */
-  async recordViewerLeave(streamId: string, userId: string): Promise<void> {
+  async recordViewerLeave(
+    streamId: string,
+    userId: string,
+    authSessionId: string,
+    reason: string
+  ): Promise<void> {
     try {
-      await this.viewerSessionRepo.recordLeave(streamId, userId);
+      if (reason === "REMOVED") {
+        await this.viewerSessionRepo.closeAllOpenForUser(
+          streamId,
+          userId,
+          new Date()
+        );
+      } else {
+        await this.viewerSessionRepo.recordLeave({
+          livestreamId: streamId,
+          userId,
+          authSessionId,
+          reason: reason === "LEFT" ? "LEFT" : "DISCONNECTED",
+        });
+      }
     } catch (error) {
       logger.warn(
         `recordViewerLeave failed for stream=${streamId} user=${userId}: ${String(error)}`
@@ -2851,10 +2951,9 @@ export class LivestreamService {
   }
 
   /**
-   * Admin: paginated, PER-USER viewer history for a stream (the "Livestream
-   * User List" screen). A rejoin/reconnect produces multiple underlying
-   * session rows, but this returns exactly one aggregated entry per unique
-   * user — see {@link LivestreamViewerSessionRepository.listByStream}.
+   * Admin: paginated viewer list for a stream — one row per user, aggregating
+   * all of that user's sessions (see
+   * {@link LivestreamViewerSessionRepository.listByStream}).
    */
   async adminListViewerSessions(
     streamId: string,
@@ -2863,42 +2962,38 @@ export class LivestreamService {
       limit: number;
       sortField: "joinedAt" | "watchDurationSeconds";
       sortDir: "asc" | "desc";
+      status: ViewerStatusFilter;
     }
   ): Promise<{
     sessions: Array<{
+      id: string;
       userId: string;
       joinedAt: Date;
       leftAt: Date | null;
+      endReason: string | null;
       watchDurationSeconds: number;
     }>;
     total: number;
   }> {
-    const skip = (params.page - 1) * params.limit;
     const { rows, total } = await this.viewerSessionRepo.listByStream(
       streamId,
       {
-        skip,
+        skip: (params.page - 1) * params.limit,
         take: params.limit,
         sortField: params.sortField,
         sortDir: params.sortDir,
+        status: params.status,
       }
     );
     const now = Date.now();
     return {
-      sessions: rows.map((r) => ({
-        userId: r.userId,
-        joinedAt: r.joinedAt,
-        leftAt: r.leftAt,
-        // Aggregated total already sums every CLOSED session for this user;
-        // top up with the currently-open session's live elapsed time (if
-        // any), same as the pre-aggregation per-row live-compute.
+      // Closed stretches plus, while active, the one still running.
+      sessions: rows.map(({ lastJoinedAt, ...r }) => ({
+        ...r,
         watchDurationSeconds:
           r.watchDurationSeconds +
-          (r.openSessionJoinedAt
-            ? Math.max(
-                0,
-                Math.round((now - r.openSessionJoinedAt.getTime()) / 1000)
-              )
+          (lastJoinedAt
+            ? Math.max(0, Math.round((now - lastJoinedAt.getTime()) / 1000))
             : 0),
       })),
       total,
@@ -3663,6 +3758,9 @@ export class LivestreamService {
       startedAt?: number;
       /** ENDED only — lets the host tell "an admin ended it" from their own end. */
       endedReason?: string;
+      /** ENDED only — HOST | COMMUNITY_ADMIN | SUPER_ADMIN | SYSTEM. */
+      endedByType?: string;
+      endedAt?: number;
     }
   ): Promise<void> {
     try {
@@ -3920,7 +4018,8 @@ export class LivestreamService {
   private async publishCommunityStreamEnded(
     stream: Livestream,
     liveStreamCount: number,
-    reason = "HOST_ENDED"
+    reason = "HOST_ENDED",
+    endedByType = "HOST"
   ): Promise<void> {
     try {
       const host = await this.resolveHost(stream.creatorId);
@@ -3938,7 +4037,12 @@ export class LivestreamService {
             livestreamId: stream.id,
             streamId: stream.id, // legacy alias
             host,
+            // The stream's owner, never the ender — clients key the end off
+            // streamId and only display endedByType.
+            hostUserId: stream.creatorId,
+            endedByType,
             status: "ENDED",
+            startedAt: stream.livedAt?.getTime() ?? null,
             endedAt: stream.endedAt?.getTime() ?? Date.now(),
             duration: formatStreamDuration(durationSeconds),
             durationSeconds,

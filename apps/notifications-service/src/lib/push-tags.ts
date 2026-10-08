@@ -17,8 +17,9 @@ export const pushTag = {
   /** "X mentioned you" / "@all" for one conversation. Kept apart from `conv:`
    *  so a later plain summary cannot replace it. */
   mention: (conversationId: string) => `mention:${conversationId}`,
-  /** Livestream started / ended in one community. Ended replaces started. */
-  live: (communityId: string) => `live:${communityId}`,
+  /** One livestream session: ended replaces started. Cards from before the
+   *  per-session tag were keyed on the community id (still closed by roomTags). */
+  live: (livestreamId: string) => `live:${livestreamId}`,
   /** "You were added to …" for one group or community. */
   added: (roomId: string) => `added:${roomId}`,
   /** Incoming friend request. */

@@ -181,6 +181,8 @@ export const listLivestreamUsersQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   sortField: z.enum(["joinedAt", "watchDurationSeconds"]).optional(),
   sortDir: z.enum(["asc", "desc"]).optional(),
+  search: z.string().trim().max(100).optional(),
+  status: z.enum(["ACTIVE", "LEFT", "ENDED"]).optional(),
 });
 export type ListLivestreamUsersQueryInput = z.infer<
   typeof listLivestreamUsersQuerySchema

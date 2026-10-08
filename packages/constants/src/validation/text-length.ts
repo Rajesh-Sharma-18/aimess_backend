@@ -22,6 +22,10 @@ export const TEXT_NAME_MAX_LENGTH = 30;
  */
 export const TEXT_NAME_MAX_RAW_LENGTH = 200;
 
+/** Custom status text, in characters (graphemes); raw cap = `user_profiles.customStatusText` VarChar(200). */
+export const TEXT_CUSTOM_STATUS_MAX_LENGTH = 60;
+export const TEXT_CUSTOM_STATUS_MAX_RAW_LENGTH = 200;
+
 const segmenter =
   typeof Intl !== "undefined" && "Segmenter" in Intl
     ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
@@ -69,4 +73,18 @@ export function withinTextNameLimit(
   return (
     value.length <= TEXT_NAME_MAX_RAW_LENGTH && countCharacters(value) <= max
   );
+}
+
+/**
+ * Message text and captions, counted the same way as the name fields: a 4,000
+ * limit is 4,000 characters as the person sees them, matching the website's
+ * composer, so an emoji or a Thai syllable no longer costs two or three. The
+ * raw UTF-16 ceiling (4x the limit) bounds what the segmenter has to walk.
+ */
+export function withinMessageTextLimit(
+  value: string | null | undefined,
+  max: number
+): boolean {
+  if (!value || value.length <= max) return true;
+  return value.length <= max * 4 && countCharacters(value) <= max;
 }

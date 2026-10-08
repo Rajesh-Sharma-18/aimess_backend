@@ -128,6 +128,8 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   // streamEnabled toggle, and ACTIVE membership.
   CommunityEvents.LIVESTREAM_STARTED,
   CommunityEvents.LIVESTREAM_ENDED,
+  // Deletes the end actor's own "is live" row (chat-service DELETE_ON_ARRIVAL).
+  "community.livestream_retracted",
   // Call HISTORY — one row per call per participant, written by the
   // `call.activity` projection (consumers/call.consumer.ts) from the canonical
   // terminal CallTimelineStatus. The live ring (CALL_INCOMING) and the

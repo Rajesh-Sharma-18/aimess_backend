@@ -550,8 +550,9 @@ describe("C. copy per path", () => {
     const added = publishChatUserEvent.mock.calls.find(
       ([, , evt]) => evt === "community:added"
     );
+    // The adding admin is named by role, never by name.
     expect(added?.[3].lastActivity.preview).toBe(
-      "User 1111 added You to Secret Club"
+      "Admin added You to Secret Club"
     );
   });
 });

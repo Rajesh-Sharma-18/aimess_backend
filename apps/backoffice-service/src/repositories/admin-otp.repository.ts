@@ -38,14 +38,10 @@ export const adminOtpRepository = {
     });
   },
 
-  findLatestActive(identifier: string, purpose: AdminOtpPurpose) {
+  // No expiry filter, so the caller can tell an expired code from a wrong one.
+  findLatestUnconsumed(identifier: string, purpose: AdminOtpPurpose) {
     return prisma.adminOtpCode.findFirst({
-      where: {
-        identifier,
-        purpose,
-        consumedAt: null,
-        expiresAt: { gt: new Date() },
-      },
+      where: { identifier, purpose, consumedAt: null },
       orderBy: { createdAt: "desc" },
     });
   },

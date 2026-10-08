@@ -114,7 +114,7 @@ describe("communityService.muteMember/unmuteMember — system message delivery",
     expect(payload.metadata.targetUserId).toBe(TARGET);
   });
 
-  it("unmuteMember also retracts the current mute session's PERSONAL MEMBER_MUTED line — the stale mute notice never outlives the mute", async () => {
+  it("unmuteMember retracts the mute's lines (personal + audit) — nothing is spared", async () => {
     await communityService.unmuteMember(CID, CALLER, TARGET);
 
     expect(muteRetracted).toHaveBeenCalledTimes(1);
@@ -124,9 +124,21 @@ describe("communityService.muteMember/unmuteMember — system message delivery",
     });
   });
 
-  it("muteMember does NOT retract anything — retraction only fires on unmute", async () => {
+  it("muteMember retracts the previous mute's lines but keeps its own (re-mute / extension never stacks)", async () => {
     await communityService.muteMember(CID, CALLER, TARGET, 60, "spam");
 
-    expect(muteRetracted).not.toHaveBeenCalled();
+    expect(muteRetracted).toHaveBeenCalledTimes(1);
+    const { keepEventAt } = muteRetracted.mock.calls[0][0] as {
+      keepEventAt: string;
+    };
+    expect(muteRetracted).toHaveBeenCalledWith({
+      communityId: CID,
+      userId: TARGET,
+      keepEventAt,
+    });
+    // Both new lines carry the spared eventAt, so neither is retracted.
+    for (const call of sysMsg.mock.calls) {
+      expect((call[0] as { eventAt: string }).eventAt).toBe(keepEventAt);
+    }
   });
 });

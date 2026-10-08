@@ -40,14 +40,10 @@ export const otpRepository = {
     });
   },
 
-  findLatestActive(identifier: string, purpose: OtpPurpose) {
+  // No expiry filter, so the caller can tell an expired code from a wrong one.
+  findLatestUnconsumed(identifier: string, purpose: OtpPurpose) {
     return prisma.otpCode.findFirst({
-      where: {
-        identifier,
-        purpose,
-        consumedAt: null,
-        expiresAt: { gt: new Date() },
-      },
+      where: { identifier, purpose, consumedAt: null },
       orderBy: { createdAt: "desc" },
     });
   },

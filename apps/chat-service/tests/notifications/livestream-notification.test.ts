@@ -1,6 +1,7 @@
 /**
  * Livestream rows belong to LIVE_NOW by event TYPE — never by the community
- * the stream runs in — and every stream gets its own card per event.
+ * the stream runs in — and every stream session gets ONE card, which its end
+ * rewrites in place.
  */
 import {
   categorize,
@@ -66,10 +67,10 @@ describe("livestream notification identity", () => {
     livestreamId,
   });
 
-  it("keys a livestream row on the stream, not the community", () => {
+  it("keys a livestream row on the stream session, not the community or event", () => {
     expect(
       resolveGroupKey("community.livestream_started", "host", data("s1"))
-    ).toBe("livestream:s1:community.livestream_started");
+    ).toBe("livestream:s1");
   });
 
   it("gives two streams in one community two separate cards", () => {
@@ -78,10 +79,16 @@ describe("livestream notification identity", () => {
     expect(a).not.toBe(b);
   });
 
-  it("keeps started and ended of one stream as two cards", () => {
+  it("shares one card between started and ended of the same stream", () => {
     expect(
       resolveGroupKey("community.livestream_started", "h", data("s1"))
-    ).not.toBe(resolveGroupKey("community.livestream_ended", "h", data("s1")));
+    ).toBe(resolveGroupKey("community.livestream_ended", "h", data("s1")));
+    expect(
+      resolveTransition(
+        "community.livestream_started",
+        "community.livestream_ended"
+      )
+    ).toEqual({ action: "UPDATE", resurface: true });
   });
 
   it("collapses a redelivered event onto its own card (no duplicate)", () => {
@@ -91,10 +98,40 @@ describe("livestream notification identity", () => {
     ).toBe(key);
     expect(
       resolveTransition(
-        "community.livestream_ended",
+        "community.livestream_started",
         "community.livestream_ended"
       ).action
     ).toBe("UPDATE");
+  });
+
+  it("a late start never regresses an ended card", () => {
+    expect(
+      resolveTransition(
+        "community.livestream_ended",
+        "community.livestream_started"
+      ).action
+    ).toBe("NOOP");
+  });
+
+  it("collapses a redelivered event onto its own card (no duplicate)", () => {
+    for (const type of LIVE) {
+      expect(resolveTransition(type, type).action).toBe("UPDATE");
+    }
+  });
+
+  it("the end actor's retraction deletes their live card", () => {
+    expect(
+      resolveTransition(
+        "community.livestream_started",
+        "community.livestream_retracted"
+      ).action
+    ).toBe("DELETE");
+    expect(
+      resolveGroupKey("community.livestream_retracted", undefined, {
+        ...data("s1"),
+        groupKey: "livestream:s1",
+      })
+    ).toBe("livestream:s1");
   });
 
   it("leaves ordinary community keys unchanged", () => {

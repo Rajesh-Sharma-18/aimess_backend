@@ -112,9 +112,16 @@ import {
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
+import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
+import {
+  assertForwardable,
+  directForwardContent,
+  type ForwardSource,
+} from "../lib/forward-source.js";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import { isBlockedRoom } from "../lib/blocked-room.js";
 import type { PrivateMessageReportRepository } from "../repositories/private-message-report.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CommunityReconcileClient } from "../grpc/community.client.js";
@@ -140,6 +147,7 @@ import {
   inviteContentType,
   isPersonalizableSystemContentType,
   personalizePrivateSystemMessageForViewer,
+  withinMessageTextLimit,
 } from "@aimess/constants";
 import { chatOpenRoomKey, filterBannedUserIds } from "@aimess/redis";
 import { allocateRoomSlot } from "../lib/room-lock.js";
@@ -225,16 +233,19 @@ export class PrivateMessageService {
      * "this id is server-generated, there is nothing to dedupe against".
      */
     dedupeKey?: string | null;
+    /** Set only by ForwardService, after the source's read access was verified. */
+    forwardData?: Record<string, unknown> | null;
   }): Promise<PrivateMessage> {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
-    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
+    if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS)) {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     }
     assertAttachmentsValid(params.messageType, params.content?.files);
     // Every uploaded object referenced by the message must be verified, owned by
     // the sender, and scoped to this room. `assertAttachmentsValid` above only
     // checks CLIENT-DECLARED size/duration; this checks the object itself.
-    await assertAttachmentsVerified({
+    // A forward re-posts another user's object from another room by design.
+    if (!params.forwardData) await assertAttachmentsVerified({
       resourceId: params.roomId,
       senderId: params.senderId,
       files: params.content?.files,
@@ -397,6 +408,9 @@ export class PrivateMessageService {
         // reply with no quote at all, and left the siblings unreachable to the
         // quote-refresh sweeps that keep `quoteData` in step with edits and deletes.
         ...(quoteData ? { quoteData } : {}),
+        ...(params.forwardData
+          ? { isForwarded: true, forwardData: params.forwardData }
+          : {}),
       };
 
       if (i === 0) {
@@ -690,6 +704,7 @@ export class PrivateMessageService {
       roomId: string;
       lastMessageId: string | null;
       participants: string[];
+      blockedBy?: unknown;
     }>;
     try {
       rooms = await this.roomRepo.findParticipatingRoomHeads(userId);
@@ -700,7 +715,7 @@ export class PrivateMessageService {
       return;
     }
     for (const room of rooms) {
-      if (!room.lastMessageId) continue;
+      if (!room.lastMessageId || isBlockedRoom(room.blockedBy)) continue;
       try {
         const { count, messageIds } = await this.messageRepo.markDeliveredUpTo(
           room.roomId,
@@ -1589,6 +1604,8 @@ export class PrivateMessageService {
   async editMessage(params: {
     messageId: string;
     userId: string;
+    /** Room the caller claims the message is in (socket path) — must match. */
+    roomId?: string;
     content: {
       text: string;
       urls?: string[];
@@ -1597,6 +1614,9 @@ export class PrivateMessageService {
   }): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // A caller-named room must be the message's own room (socket path names it; REST derives it).
+    if (params.roomId && params.roomId !== message.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     // Bind message↔room BEFORE the sender check: a user not in (or removed from)
     // the room can't mutate even their own old message. NotFound so existence
     // isn't leaked; keeps the room-bind uniform across all private writes.
@@ -1611,7 +1631,9 @@ export class PrivateMessageService {
       throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
     if (message.messageType !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
-    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
+if (!params.content?.text?.trim())
+      throw new BadRequestError("CHAT_TEXT_REQUIRED");
+    if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS))
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
@@ -1733,6 +1755,9 @@ export class PrivateMessageService {
     recipientId: string;
     upToMessageId: string;
   }): Promise<{ count: number; messageIds: string[] }> {
+    // Blocked either way: nothing is marked, so the backfill delivers after unblock.
+    const room = await this.roomRepo.findByRoomId(params.roomId);
+    if (isBlockedRoom(room?.blockedBy)) return { count: 0, messageIds: [] };
     return this.messageRepo.markDeliveredUpTo(
       params.roomId,
       params.recipientId,
@@ -2260,6 +2285,42 @@ export class PrivateMessageService {
       userId,
       getPrivateDeletionCutoff(room, userId)
     );
+  }
+
+  /** Source of a unified forward: the caller must still be able to read it. */
+  async loadForwardSource(
+    messageId: string,
+    userId: string
+  ): Promise<ForwardSource> {
+    const message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const room = await this.roomRepo.findByRoomId(message.roomId);
+    if (
+      !room?.participants?.includes(userId) ||
+      isHiddenForUser(message, userId) ||
+      isHiddenByCutoff(
+        message.createdAt,
+        getPrivateDeletionCutoff(room, userId)
+      )
+    ) {
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    }
+    if (message.isDeleted)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    assertForwardable(message);
+    return {
+      messageId: message.id,
+      roomId: message.roomId,
+      conversationType: "PRIVATE",
+      senderId: message.senderId ?? "",
+      senderName: "",
+      createdAtMs: message.createdAt.getTime(),
+      contentType: normalizeMessageType(message.messageType),
+      content: directForwardContent(message.content),
+      forwardData: message.isForwarded
+        ? ((message.forwardData as Record<string, unknown> | null) ?? null)
+        : null,
+    };
   }
 
   async forwardMessage(params: {

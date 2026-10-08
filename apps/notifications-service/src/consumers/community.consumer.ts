@@ -44,6 +44,7 @@ import { buildDeepLink } from "../lib/deep-link.js";
 import { communityCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
 import { pushTag, roomTags } from "../lib/push-tags.js";
+import { liveStreamTags, trackLiveStream } from "../lib/live-streams.js";
 import { redis } from "../config/redis.js";
 import { dismissTrayCards } from "../services/push-dismiss.js";
 import {
@@ -147,18 +148,57 @@ function withoutActor(
 async function dismissRoomCards(
   userIds: string[] | undefined,
   communityId: string,
-  reason: "LEFT" | "REMOVED" | "DELETED"
+  reason: "LEFT" | "REMOVED" | "DELETED" | "CLOSED",
+  tags?: string[]
 ): Promise<void> {
+  const roomCardTags = tags ?? [
+    ...roomTags(communityId),
+    ...(await liveStreamTags(communityId)),
+  ];
   await Promise.all(
     [...new Set(userIds ?? [])].filter(Boolean).map((userId) =>
       dismissTrayCards({
         userId,
-        tags: roomTags(communityId),
+        tags: roomCardTags,
         reason,
         data: { communityId, conversationId: communityId },
       })
     )
   );
+}
+
+const LIVESTREAM_RETRACTED = "community.livestream_retracted";
+
+const liveEndedKey = (livestreamId: string) =>
+  `notif:livestream:ended:${livestreamId}`;
+
+/**
+ * The end actor gets no "ended" card about their own action, so the "is live"
+ * card they were shown is taken back instead: the inbox row (every session, via
+ * `notification:deleted`) and the tray card on every device.
+ */
+async function retractLiveCard(
+  userId: string,
+  communityId: string,
+  livestreamId: string
+): Promise<void> {
+  await pushToUser({
+    userId,
+    category: "liveStreamEnabled",
+    type: LIVESTREAM_RETRACTED,
+    skipPush: true,
+    bypassSettings: true,
+    data: { groupKey: `livestream:${livestreamId}`, communityId, livestreamId },
+  }).catch((error: unknown) => {
+    logger.warn(`[livestream] retract live row failed user=${userId}`);
+    logger.warn(error);
+  });
+  await dismissTrayCards({
+    userId,
+    tags: [pushTag.live(livestreamId)],
+    reason: "LIVESTREAM_ENDED",
+    data: { communityId, livestreamId },
+  });
 }
 
 /** Name + avatar of ONE community, resolved together from ONE record. */
@@ -438,6 +478,12 @@ async function handleCommunityEvent(
       const p = data as CommunityLivestreamStartedPayload;
       const recipients = withoutActor(p.recipientIds, p.hostUserId);
       if (recipients.length === 0) break;
+      // A start that lands after its own end must not draw an "is live" card.
+      if (await redis.get(liveEndedKey(p.livestreamId)).catch(() => null)) {
+        logger.info(`[livestream] start after end skipped stream=${p.livestreamId}`);
+        break;
+      }
+      await trackLiveStream(p.communityId, p.livestreamId);
       const [identity, resolvedHostName] = await Promise.all([
         communityIdentityFor(
           p.communityId,
@@ -457,7 +503,7 @@ async function handleCommunityEvent(
         copy: communityCopy.livestreamStarted(identity.name, resolvedHostName),
         // Shared with LIVESTREAM_ENDED, so "ended" REPLACES the "Watch now" card
         // instead of leaving a tappable card for a stream that is over.
-        collapseKey: pushTag.live(p.communityId),
+        collapseKey: pushTag.live(p.livestreamId),
         ...base(
           type,
           identity,
@@ -469,6 +515,8 @@ async function handleCommunityEvent(
             hostAvatarUrl: p.hostAvatarUrl ?? "",
             communityHandle: p.communityHandle ?? "",
             actorSnapshot: JSON.stringify(actorSnapshot),
+            // Client push dedup: one start per stream, never one per community.
+            idempotencyKey: `live:${p.livestreamId}:started`,
           },
           // The community, not the stream: `aimess://stream/<id>` carries no community
           // context, so any client falling back to the deep link (web did) had nothing to
@@ -493,6 +541,12 @@ async function handleCommunityEvent(
       const endActorId =
         p.endedByUserId ??
         (p.endedReason === "ADMIN" ? undefined : p.hostUserId);
+      await redis
+        .set(liveEndedKey(p.livestreamId), "1", "EX", 86_400)
+        .catch(() => undefined);
+      if (p.endedByUserId && p.endedByUserId !== p.hostUserId) {
+        await retractLiveCard(p.endedByUserId, p.communityId, p.livestreamId);
+      }
       const recipients = withoutActor(p.recipientIds, endActorId);
       if (recipients.length === 0) break;
       const [identity, resolvedHostName, endedByName] = await Promise.all([
@@ -514,13 +568,13 @@ async function handleCommunityEvent(
             displayName: resolvedHostName,
             avatarUrl: p.hostAvatarUrl,
           };
-      await pushToUsers(recipients, (userId) => ({
+      // A silent end: the "is live" row is rewritten in place (inbox only, never a
+      // push, never re-badged) and its tray card is taken back. Both skip quiet
+      // hours and the livestream toggle, so no stale "is live" card survives.
+      const endedFor = (userId: string): PushInput => ({
         userId,
-        // ponytail: replaces the "started" card only where "ended" is delivered;
-        // quiet hours or a toggle flipped mid-stream leaves "started" until the
-        // user opens the community (roomTags). Send dismissTrayCards here too if
-        // that matters.
-        collapseKey: pushTag.live(p.communityId),
+        skipPush: true,
+        bypassSettings: true,
         // A Super Admin end reads "An administrator", a platform end (moderation,
         // bans) "System" — neither names the host; the host still rides in
         // data/actorSnapshot as the stream owner.
@@ -539,7 +593,9 @@ async function handleCommunityEvent(
                 endedByName || resolvedHostName,
                 p.duration,
                 // "{admin} ended {host}'s livestream" when the admin ended it.
-                endedByName ? resolvedHostName : undefined
+                endedByName ? resolvedHostName : undefined,
+                // …named by their role: "Admin ended {host}'s livestream".
+                p.endedByRole
               ),
         ...base(
           type,
@@ -557,16 +613,34 @@ async function handleCommunityEvent(
             endedReason: p.endedReason ?? "USER",
             communityHandle: p.communityHandle ?? "",
             actorSnapshot: JSON.stringify(actorSnapshot),
+            resurface: "false",
+            // Only the host, whose stream someone else ended, gets a row they
+            // never had; everyone else only ever sees their "is live" row change.
+            ...(userId === p.hostUserId && endActorId !== p.hostUserId
+              ? {}
+              : { updateOnly: "true" }),
           },
           buildDeepLink("community", p.communityId),
           "liveStreamEnabled",
-          {
-            screen: "COMMUNITY_LIVESTREAM",
-            livestreamId: p.livestreamId,
-          },
+          // An ended stream has nothing to watch: the row opens the community.
+          { screen: "COMMUNITY_CHAT" },
           generateEventThreadId(type)
         ),
-      }));
+      });
+      await Promise.all(
+        recipients.map(async (userId) => {
+          await pushToUser(endedFor(userId)).catch((error: unknown) => {
+            logger.warn(`[livestream] ended row failed user=${userId}`);
+            logger.warn(error);
+          });
+          await dismissTrayCards({
+            userId,
+            tags: [pushTag.live(p.livestreamId)],
+            reason: "LIVESTREAM_ENDED",
+            data: { communityId: p.communityId, livestreamId: p.livestreamId },
+          });
+        })
+      );
       break;
     }
 
@@ -747,7 +821,7 @@ async function handleCommunityEvent(
           ])
         : [undefined, undefined];
       const who = byAdd
-        ? ([actorName, targetName, p.actorId, p.targetUserId] as const)
+        ? ([actorName, targetName, p.actorId, p.targetUserId, p.actorRole] as const)
         : ([] as const);
       // Welcome the joiner — UNLESS they will get the dedicated "approved" or
       // "self_join" (MEMBER_JOINED) notification.
@@ -867,7 +941,8 @@ async function handleCommunityEvent(
           actorName,
           targetName,
           p.byPlatformAdmin ? PLATFORM_ADMIN_ACTOR_ID : p.actorId,
-          p.targetUserId
+          p.targetUserId,
+          p.byPlatformAdmin ? undefined : p.actorRole
         ),
         bypassSettings: true,
         ...base(
@@ -1181,6 +1256,13 @@ async function handleCommunityEvent(
 
     case CommunityEvents.CLOSED: {
       const p = data as CommunityClosedNotifyPayload;
+      // Members stay on close, so only its "is live" cards go; chat cards stay.
+      await dismissRoomCards(
+        p.memberIds,
+        p.communityId,
+        "CLOSED",
+        await liveStreamTags(p.communityId)
+      );
       const identity = await communityIdentityFor(p.communityId);
       await pushToUsers(p.memberIds, (userId) => ({
         userId,

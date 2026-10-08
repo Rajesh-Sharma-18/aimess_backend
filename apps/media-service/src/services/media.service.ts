@@ -489,6 +489,16 @@ export const mediaService = {
     );
     if (!owned) throw new ForbiddenError("MEDIA_CANCEL_FORBIDDEN");
 
+    // A sent message already references it (a lost ACK makes the client think it never sent);
+    // deleting would 404 the attachment for every member.
+    const row = await mediaFileRepository.findByObjectKey(params.objectKey);
+    if (row?.usageStatus === "ATTACHED") {
+      logger.warn(
+        `cancelUpload|refused: object attached to a sent message|key=${params.objectKey}|requesterId=${params.requesterId}`
+      );
+      return;
+    }
+
     // Routed through the shared cleanup helper so a failed delete is logged as a
     // critical event instead of escaping as a 500 that leaves an object nothing
     // in the system knows about.

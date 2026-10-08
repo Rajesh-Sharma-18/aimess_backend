@@ -15,7 +15,7 @@ import { loadActiveAuthUser } from "../lib/account-guard.js";
 import { assertEmailAvailable } from "../lib/email-availability.js";
 import { rethrowAsEmailConflict } from "../lib/email-conflict.js";
 import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
-import { normalizeEmail, verifyOtpCode } from "../lib/otp.js";
+import { loadLiveOtp, normalizeEmail, verifyOtpCode } from "../lib/otp.js";
 import { sendEmailOtp } from "../lib/send-email-otp.js";
 import { env } from "../config/env.js";
 import { publishChangeEmailOtpSafe } from "../messaging/publish-auth-email-otp.js";
@@ -97,12 +97,9 @@ export const changeEmailService = {
 
     await assertEmailAvailable(newEmail, userId);
 
-    const otp = await otpRepository.findLatestActive(
-      newEmail,
-      OtpPurpose.EMAIL_CHANGE
-    );
+    const otp = await loadLiveOtp(newEmail, OtpPurpose.EMAIL_CHANGE, userId);
 
-    if (!otp || otp.userId !== userId) {
+    if (!otp) {
       throw new BadRequestError("AUTH_OTP_INVALID");
     }
 

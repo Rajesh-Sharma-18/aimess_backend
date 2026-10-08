@@ -3276,6 +3276,12 @@ export const openApiSchemas = {
     description:
       "A viewer-session row for this stream (who watched, not the community roster — see the endpoint description).",
     properties: {
+      status: {
+        type: "string",
+        enum: ["ACTIVE", "LEFT", "ENDED"],
+        description:
+          "ACTIVE while the user has any session open. LEFT = they stopped watching while the stream was still running; ENDED = the stream ended while they were watching.",
+      },
       userId: { type: "string" },
       username: { type: "string", example: "john_doe" },
       fullName: {
@@ -3306,6 +3312,7 @@ export const openApiSchemas = {
       },
     },
     required: [
+      "status",
       "userId",
       "username",
       "fullName",
@@ -5252,7 +5259,6 @@ export const openApiSchemas = {
       whoCanFindMe: { $ref: "#/components/schemas/PrivacyScope" },
       whoCanSendFriendRequests: { $ref: "#/components/schemas/PrivacyScope" },
       whoCanSeeOnlineStatus: { $ref: "#/components/schemas/PrivacyScope" },
-      whoCanViewProfile: { $ref: "#/components/schemas/PrivacyScope" },
       whoCanCallMe: { $ref: "#/components/schemas/CallPrivacyScope" },
       callAllowedFriendIds: {
         type: "array",
@@ -5265,7 +5271,6 @@ export const openApiSchemas = {
       "whoCanFindMe",
       "whoCanSendFriendRequests",
       "whoCanSeeOnlineStatus",
-      "whoCanViewProfile",
       "whoCanCallMe",
       "callAllowedFriendIds",
     ],
@@ -5407,7 +5412,6 @@ export const openApiSchemas = {
         $ref: "#/components/schemas/FriendRequestScope",
       },
       whoCanSeeOnlineStatus: { $ref: "#/components/schemas/OnlineStatusScope" },
-      whoCanViewProfile: { $ref: "#/components/schemas/PrivacyScope" },
       whoCanCallMe: { $ref: "#/components/schemas/CallPrivacyScope" },
       callAllowedFriendIds: {
         type: "array",
@@ -12480,7 +12484,7 @@ export const openApiSchemas = {
   ChatPresence: {
     type: "object",
     description:
-      "Peer presence as THIS caller is allowed to see it. A peer whose whoCanSeeOnlineStatus excludes the caller returns the same shape as a genuinely-offline user, so the setting itself stays undisclosed.",
+      "Peer presence as THIS caller is allowed to see it. A peer whose whoCanSeeOnlineStatus excludes the caller returns isOnline:false, lastSeen:null and isHidden:true — render NO presence for it (no dot, no \"Offline\", no \"Last seen\").",
     properties: {
       userId: { type: "string" },
       isOnline: { type: "boolean" },
@@ -12494,6 +12498,11 @@ export const openApiSchemas = {
         type: "integer",
         description:
           "Monotonic per-user counter, advanced only on a real ONLINE<->OFFLINE flip. Compare against the `version` on presence:status so a late socket event cannot overwrite a newer state.",
+      },
+      isHidden: {
+        type: "boolean",
+        description:
+          "The peer's whoCanSeeOnlineStatus excludes the caller. Also carried by the presence:status a privacy re-authorization emits (true = revoked, false = granted). Conversation rows expose it as isPresenceHidden.",
       },
     },
   },
@@ -12850,7 +12859,7 @@ export const openApiSchemas = {
         nullable: true,
         minimum: 0,
         description:
-          "Active friends: accepted friendships minus platform-banned friends — the same set, and the same number, as GET /users/friends `totalCount`. Computed live, so a Super Admin ban drops the banned friend from every friend's count immediately and an unban restores it (a ban hides the friendship, it does not delete it). Null when `whoCanViewProfile` hides counts from this viewer.",
+          "Active friends: accepted friendships minus platform-banned friends — the same set, and the same number, as GET /users/friends `totalCount`. Computed live, so a Super Admin ban drops the banned friend from every friend's count immediately and an unban restores it (a ban hides the friendship, it does not delete it). Null when a block hides counts from this viewer.",
       },
       groupsCount: { type: "integer", nullable: true },
       communitiesCount: { type: "integer", nullable: true },

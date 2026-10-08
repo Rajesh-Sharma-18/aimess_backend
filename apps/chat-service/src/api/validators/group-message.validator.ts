@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CONTENT_TYPES } from "@aimess/constants";
+import { CONTENT_TYPES, withinMessageTextLimit } from "@aimess/constants";
 import { httpUrlSchema } from "./private-message.validator.js";
 
 import {
@@ -13,6 +13,9 @@ import {
   CHAT_MEDIA_INDEX_MAX,
   enforceMediaLimits,
 } from "../../constants/media-limits.js";
+
+const TEXT_TOO_LONG = `Message can be at most ${CHAT_TEXT_MAX_CHARS} characters`;
+const withinTextLimit = (v: string) => withinMessageTextLimit(v, CHAT_TEXT_MAX_CHARS);
 
 /**
  * Coarse TRANSPORT cap for `content.mentions`. The authoritative checks (50 per
@@ -54,7 +57,7 @@ export const sendGroupMessageSchema = z
   .object({
     roomId: z.string().min(5).max(100),
     content: z.object({
-      text: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+      text: z.string().refine(withinTextLimit, TEXT_TOO_LONG).default(""),
       urls: z.array(z.string()).default([]),
       files: z
         .array(
@@ -96,7 +99,7 @@ export const sendGroupMessageSchema = z
 export const sendGroupMessageBodySchema = z
   .object({
     content: z.object({
-      text: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+      text: z.string().refine(withinTextLimit, TEXT_TOO_LONG).default(""),
       urls: z.array(z.string()).default([]),
       files: z
         .array(
@@ -165,7 +168,7 @@ export const markGroupReadBodySchema = z.object({
  */
 export const editGroupMessageSchema = z.object({
   content: z.object({
-    text: z.string().min(1).max(CHAT_TEXT_MAX_CHARS),
+    text: z.string().min(1).refine(withinTextLimit, TEXT_TOO_LONG),
     urls: z.array(httpUrlSchema).default([]),
     // Absent = keep the previous mentions that are still valid for the new
     // text; present (even []) = replace them. See GroupMessageService.editMessage.

@@ -26,6 +26,7 @@ import {
   currentLocale,
   isCallContentType,
   personalizeGroupSystemMessageForViewer,
+  withinMessageTextLimit,
 } from "@aimess/constants";
 import {
   anonymizeSystemData,
@@ -121,6 +122,13 @@ import {
   isAlbumRowId,
 } from "../lib/album-messages.js";
 import { splitDirectMediaAlbum } from "../lib/split-media-album.js";
+import { markIdempotentReplay } from "../lib/idempotency.js";
+import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
+import {
+  assertForwardable,
+  directForwardContent,
+  type ForwardSource,
+} from "../lib/forward-source.js";
 import {
   resolveForEveryoneOverrides,
   resolveEffectiveLastLosers,
@@ -207,9 +215,11 @@ export class GroupMessageService {
      * before; pass `null` to say "this id is server-generated".
      */
     dedupeKey?: string | null;
+    /** Set only by ForwardService, after the source's read access was verified. */
+    forwardData?: Record<string, unknown> | null;
   }): Promise<GroupMessage & { senderRole?: string }> {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
-    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
+    if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS)) {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     }
     assertAttachmentsValid(
@@ -218,7 +228,7 @@ export class GroupMessageService {
     );
     // See private-message.service.ts — this verifies the OBJECT (scan verdict,
     // uploader, room scope), not just the client-declared size/duration.
-    await assertAttachmentsVerified({
+    if (!params.forwardData) await assertAttachmentsVerified({
       resourceId: params.roomId,
       senderId: params.senderId,
       files: params.content?.files as
@@ -460,6 +470,9 @@ export class GroupMessageService {
         // reply with no quote at all, and left the siblings unreachable to the
         // quote-refresh sweeps that keep `quoteData` in step with edits and deletes.
         ...(quoteData ? { quoteData } : {}),
+        ...(params.forwardData
+          ? { isForwarded: true, forwardData: params.forwardData }
+          : {}),
       };
 
       entity.sequenceNumber =
@@ -1777,6 +1790,8 @@ export class GroupMessageService {
   async editMessage(params: {
     messageId: string;
     userId: string;
+    /** Room the caller claims the message is in (socket path) — must match. */
+    roomId?: string;
     content: {
       text: string;
       urls?: string[];
@@ -1787,6 +1802,9 @@ export class GroupMessageService {
   }): Promise<GroupMessage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // A caller-named room must be the message's own room (socket path names it; REST derives it).
+    if (params.roomId && params.roomId !== message.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     // The edit route carries no roomId; derive the room from the message and
     // authorize the caller as an ACTIVE member of THAT room before any sender/
     // type/window check. A non-member (or someone not in the message's room)
@@ -1805,7 +1823,9 @@ export class GroupMessageService {
       throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
     if (message.messageType !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
-    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
+if (!params.content?.text?.trim())
+      throw new BadRequestError("CHAT_TEXT_REQUIRED");
+    if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS))
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
@@ -2538,6 +2558,34 @@ export class GroupMessageService {
     }
   }
 
+  /** Source of a unified forward: the caller must still be able to read it. */
+  async loadForwardSource(
+    messageId: string,
+    userId: string
+  ): Promise<ForwardSource> {
+    const message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    await this.assertActiveMemberOfMessageRoom(message, userId);
+    if (isHiddenForUser(message, userId))
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (message.isDeleted)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    assertForwardable(message);
+    return {
+      messageId: message.id,
+      roomId: message.roomId,
+      conversationType: "GROUP",
+      senderId: message.senderId ?? "",
+      senderName: message.senderName ?? "",
+      createdAtMs: message.createdAt.getTime(),
+      contentType: normalizeMessageType(message.messageType),
+      content: directForwardContent(message.content),
+      forwardData: message.isForwarded
+        ? ((message.forwardData as Record<string, unknown> | null) ?? null)
+        : null,
+    };
+  }
+
   async forwardMessage(params: {
     sourceMessageId: string;
     /** SOURCE room the message is being forwarded FROM (REST path param). When
@@ -2574,7 +2622,7 @@ export class GroupMessageService {
         params.senderId,
         params.clientMessageId
       );
-      if (existing) return withRole(existing);
+      if (existing) return withRole(markIdempotentReplay(existing));
     }
 
     // fetch source message

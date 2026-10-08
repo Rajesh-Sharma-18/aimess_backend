@@ -15,10 +15,11 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { publishUserSocketEvent } from "@aimess/redis";
+import { publishChatUserEvent, publishUserSocketEvent } from "@aimess/redis";
 import { logger } from "@aimess/logger";
 
 import { redis } from "../config/redis.js";
+import type { CustomStatus } from "../services/custom-status.service.js";
 
 /**
  * Tell a user's other logged-in devices to re-fetch their profile.
@@ -43,4 +44,41 @@ export function emitProfileUpdatedSafe(
     logger.warn(`Failed to publish user:profile_updated to notify:${userId}`);
     logger.warn(error);
   });
+}
+
+const CUSTOM_STATUS_EVENT = "user:custom_status_updated";
+
+/**
+ * `user:<id>` (/chat) reaches the owner's sockets and is mirrored by the gateway to
+ * `presence:<id>` watchers — who are authorized by online-status scope, not profile
+ * scope — so the status rides along only when the profile is visible to EVERYONE;
+ * otherwise that copy is a signal (no `customStatus` key) and the owner's devices get
+ * the full form on `notify:<id>` (/notify).
+ */
+export function emitCustomStatusUpdatedSafe(
+  userId: string,
+  updatedAt: Date,
+  customStatus: CustomStatus | null
+): void {
+  const signal = { userId, updatedAt: updatedAt.getTime(), serverNow: Date.now() };
+  const full = {
+    ...signal,
+    customStatus: customStatus && {
+      emoji: customStatus.emoji,
+      text: customStatus.text,
+      startedAt: customStatus.startedAt.getTime(),
+      expiresAt: customStatus.expiresAt.getTime(),
+      updatedAt: customStatus.updatedAt.getTime(),
+    },
+  };
+  const warn = (channel: string) => (error: unknown) => {
+    logger.warn(`Failed to publish ${CUSTOM_STATUS_EVENT} to ${channel}:${userId}`);
+    logger.warn(error);
+  };
+  void publishChatUserEvent(
+    redis,
+    userId,
+    CUSTOM_STATUS_EVENT,
+    full
+  ).catch(warn("user"));
 }

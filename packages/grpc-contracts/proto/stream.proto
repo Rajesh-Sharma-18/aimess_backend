@@ -74,8 +74,8 @@ service StreamService {
   // (as opposed to Redis, which only tracks CURRENT presence).
   rpc RecordViewerJoin (RecordViewerJoinRequest) returns (RecordViewerJoinResponse);
   // Called by the gateway (fire-and-forget) on stream:leave / disconnect / ban-kick.
-  // Closes the caller's most recent open session for this stream (idempotent —
-  // a second call with no open session is a no-op success).
+  // Releases one connection of the caller's device session and closes it once
+  // the device has none left (idempotent — no open session is a no-op success).
   rpc RecordViewerLeave (RecordViewerLeaveRequest) returns (RecordViewerLeaveResponse);
   // Admin: paginated viewer session history for a stream (the "Livestream User
   // List" screen). Backs GET /admin/v1/livestreams/:id/users.
@@ -359,29 +359,36 @@ message ForceEndStreamsByCommunityResponse {
 // ---- Viewer session tracking ------------------------------------------------
 
 message RecordViewerJoinRequest {
-  string stream_id = 1;
-  string user_id   = 2;
+  string stream_id       = 1;
+  string user_id         = 2;
+  // auth-service Session.id of the connecting socket — one per device login.
+  string auth_session_id = 3;
 }
 message RecordViewerJoinResponse {
   string session_id = 1;
 }
 
 message RecordViewerLeaveRequest {
-  string stream_id = 1;
-  string user_id   = 2;
+  string stream_id       = 1;
+  string user_id         = 2;
+  string auth_session_id = 3;
+  // LEFT | DISCONNECTED | REMOVED. REMOVED closes every device of the user.
+  string reason          = 4;
 }
 message RecordViewerLeaveResponse {
   bool success = 1; // true even when there was no open session to close (idempotent)
 }
 
-// One viewer's session on a stream. left_at = 0 means still watching; in that
-// case watch_duration_seconds is computed live (now - joined_at) rather than
-// stored, so it stays accurate while the admin has the page open.
+// One user's participation in a stream (all their sessions aggregated).
+// left_at = 0 means still watching; watch_duration_seconds then includes the
+// running stretch, so it stays accurate while the admin has the page open.
 message AdminViewerSessionRow {
   string user_id                = 1;
   int64  joined_at              = 2; // epoch ms
   int64  left_at                = 3; // epoch ms; 0 = still watching
   int64  watch_duration_seconds = 4;
+  string id                     = 5;
+  string end_reason             = 7; // LEFT | ENDED; "" while active
 }
 
 message AdminListViewerSessionsRequest {
@@ -390,10 +397,11 @@ message AdminListViewerSessionsRequest {
   int32  limit      = 3;
   string sort_field = 4; // joinedAt | watchDurationSeconds; "" = joinedAt
   string sort_dir    = 5; // asc | desc; "" = desc
+  string status     = 6; // ACTIVE | LEFT | ENDED; "" = all
 }
 message AdminListViewerSessionsResponse {
   repeated AdminViewerSessionRow sessions = 1;
-  int64 total = 2;
+  int64 total = 2; // rows matching `status`
 }
 
 message CheckCreatorHasActiveStreamRequest {

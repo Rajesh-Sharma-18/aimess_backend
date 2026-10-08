@@ -67,6 +67,8 @@ export type CommunityMemberAddedPayload = CommunityEventBase & {
   communityName?: string;
   /** Admins + moderators to inform that a member joined (consumer excludes the actor + the joiner). */
   moderatorRecipientIds?: string[];
+  /** The actor's community role at action time on an Add Member — they are named by it. */
+  actorRole?: string;
 };
 
 export type CommunityMemberKickedPayload = CommunityEventBase & {
@@ -79,6 +81,8 @@ export type CommunityMemberKickedPayload = CommunityEventBase & {
    * "Administrator removed You from …". Absent on in-app removals and older events.
    */
   byPlatformAdmin?: boolean;
+  /** The remover's community role at action time — they are named by it. */
+  actorRole?: string;
 };
 
 export type CommunityMemberBannedPayload = CommunityEventBase & {
@@ -283,6 +287,8 @@ export type CommunityLivestreamEndedPayload = CommunityEventBase & {
    */
   endedByUserId?: string;
   endedByDisplayName?: string;
+  /** `endedByUserId`'s community role at the end — they are named by it ("Admin" / "Moderator"). */
+  endedByRole?: string;
   recipientIds: string[];
 };
 

@@ -8,12 +8,6 @@ const friendRequestScopeSchema = z.enum([
   "NO_ONE",
 ]);
 const onlineStatusScopeSchema = z.enum(["EVERYONE", "FRIENDS", "NO_ONE"]);
-const viewProfileScopeSchema = z.enum([
-  "EVERYONE",
-  "FRIENDS_OF_FRIENDS",
-  "FRIENDS",
-  "NO_ONE",
-]);
 // EVERYONE is deliberately absent: it is retired as a selectable call scope, so a
 // client sending it is rejected rather than silently reopening calls to non-friends.
 const callPrivacyScopeSchema = z.enum([
@@ -75,7 +69,8 @@ const updatePrivacySettingsSchema = z
     whoCanFindMe: findMeScopeSchema.optional(),
     whoCanSendFriendRequests: friendRequestScopeSchema.optional(),
     whoCanSeeOnlineStatus: onlineStatusScopeSchema.optional(),
-    whoCanViewProfile: viewProfileScopeSchema.optional(),
+    // Retired setting: still accepted from old clients, then dropped by the service.
+    whoCanViewProfile: z.unknown().optional(),
     whoCanCallMe: callPrivacyScopeSchema.optional(),
     callAllowedFriendIds: z.array(uuidSchema).max(500).optional(),
   })

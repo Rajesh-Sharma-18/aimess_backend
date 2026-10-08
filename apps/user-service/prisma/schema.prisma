@@ -53,6 +53,13 @@ model UserProfile {
   lastSeenAt             DateTime?             @db.Timestamptz(3)
   // Status mirror — synced from auth-service for fast local checks
   status                 ProfileStatus         @default(ACTIVE)
+  // Custom status ("About"). Active only while customStatusExpiresAt > now();
+  // customStatusUpdatedAt is the client ordering version (bumped on set/clear/expiry).
+  customStatusEmoji      String?               @db.VarChar(32)
+  customStatusText       String?               @db.VarChar(200)
+  customStatusStartedAt  DateTime?             @db.Timestamptz(3)
+  customStatusExpiresAt  DateTime?             @db.Timestamptz(3)
+  customStatusUpdatedAt  DateTime?             @db.Timestamptz(3)
   createdAt              DateTime              @default(now()) @db.Timestamptz(3)
   updatedAt              DateTime              @updatedAt @db.Timestamptz(3)
   deletedAt              DateTime?             @db.Timestamptz(3)
@@ -80,6 +87,7 @@ model UserProfile {
   @@index([normalizedFirstName])
   @@index([normalizedLastName])
   @@index([normalizedFullName])
+  @@index([customStatusExpiresAt])
   @@map("user_profiles")
 }
 
@@ -138,7 +146,6 @@ model PrivacySettings {
   whoCanFindMe             PrivacyScope     @default(EVERYONE)
   whoCanSendFriendRequests PrivacyScope     @default(EVERYONE)
   whoCanSeeOnlineStatus    PrivacyScope     @default(FRIENDS)
-  whoCanViewProfile        PrivacyScope     @default(EVERYONE)
   whoCanCallMe             CallPrivacyScope @default(FRIENDS)
 
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

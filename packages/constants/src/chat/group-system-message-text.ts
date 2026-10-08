@@ -5,7 +5,10 @@ import {
   administratorActorLabel,
   BACKOFFICE_SOURCE,
   entityLabel,
+  formatNameList,
+  groupedTargetLabels,
   memberChangeText,
+  roleActorLabel,
   SYSTEM_ACTOR_ID,
   systemActorLabel,
 } from "../member-change-text.js";
@@ -154,64 +157,6 @@ export function formatTtlDuration(
 }
 
 /**
- * How many names a grouped system line spells out before collapsing the rest
- * into "and N others" (WhatsApp behaviour — a 50-member add must not render a
- * 50-name bubble).
- */
-const GROUPED_NAME_LIMIT = 3;
-
-/** "A", "A and B", "A, B and C", "A, B, C and 3 others". */
-function formatNameList(labels: string[], locale: SupportedLocale): string {
-  if (labels.length === 0) return "";
-  if (labels.length === 1) return labels[0]!;
-  if (labels.length <= GROUPED_NAME_LIMIT) {
-    return t("SYS_LIST_AND", locale, {
-      a: labels.slice(0, -1).join(", "),
-      b: labels[labels.length - 1]!,
-    });
-  }
-  const rest = labels.length - GROUPED_NAME_LIMIT;
-  return t(
-    rest === 1 ? "SYS_LIST_OTHERS_ONE" : "SYS_LIST_OTHERS_OTHER",
-    locale,
-    {
-      list: labels.slice(0, GROUPED_NAME_LIMIT).join(", "),
-      count: rest,
-    }
-  );
-}
-
-/**
- * Display labels for a BATCH system line's `targetUserIds` / `targetNames`
- * (one add-member operation ⇒ one row), or null when the row is the classic
- * single-target shape. The viewer, if they are one of the targets, is rendered
- * as "You" and hoisted to the front so they still see themselves named even
- * when the list overflows into "and N others".
- */
-function groupedTargetLabels(
-  data: Record<string, unknown>,
-  viewer: string,
-  locale: SupportedLocale
-): string[] | null {
-  const rawIds = data.targetUserIds;
-  if (!Array.isArray(rawIds) || rawIds.length < 2) return null;
-  const names = Array.isArray(data.targetNames) ? data.targetNames : [];
-  const entries = rawIds.map((id, i) => ({
-    id: String(id),
-    label: String(names[i] ?? "").trim() || t("SYS_NAME_A_MEMBER", locale),
-  }));
-  const viewerIndex = viewer
-    ? entries.findIndex((entry) => entry.id === viewer)
-    : -1;
-  if (viewerIndex >= 0) {
-    const [self] = entries.splice(viewerIndex, 1);
-    self!.label = t("SYS_SENDER_YOU", locale);
-    entries.unshift(self!);
-  }
-  return entries.map((entry) => entry.label);
-}
-
-/**
  * "You set messages to delete after 7 days" — the AUTO_DELETE_UPDATED line.
  *
  * Shared verbatim by the private and group renderers: the wording never names a
@@ -301,11 +246,13 @@ export function buildGroupSystemFallbackText(
 ): string {
   const historyLine = conversationHistoryText(event, locale);
   if (historyLine) return historyLine;
-  // Same legacy invite aliasing as buildPrivateSystemFallbackText below.
+  // Same legacy invite aliasing as buildPrivateSystemFallbackText below. An
+  // admin acting in that role (`actorRole`) is named by the role.
   const actor =
-    (data.actorName as string) ||
-    (data.inviterName as string) ||
-    t("SYS_NAME_SOMEONE", locale);
+    roleActorLabel(data.actorRole, locale) ??
+    ((data.actorName as string) ||
+      (data.inviterName as string) ||
+      t("SYS_NAME_SOMEONE", locale));
   const target = (data.targetName as string) || t("SYS_NAME_A_MEMBER", locale);
   const actorId = String(data.actorId ?? data.inviterId ?? "").trim();
   const targetId = String(data.targetUserId ?? "").trim();

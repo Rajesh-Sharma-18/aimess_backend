@@ -4,8 +4,11 @@ import {
   administratorActorLabel,
   BACKOFFICE_SOURCE,
   entityLabel,
+  formatNameList,
+  groupedTargetLabels,
   memberChangeText,
   PLATFORM_ADMIN_ACTOR_ID,
+  roleActorLabel,
   SYSTEM_ACTOR_ID,
   systemActorLabel,
 } from "../member-change-text.js";
@@ -169,9 +172,12 @@ export function buildCommunitySystemFallbackText(
   const byBackoffice =
     metadata.source === BACKOFFICE_SOURCE ||
     actorUserIdOf(metadata) === PLATFORM_ADMIN_ACTOR_ID;
+  // A moderation line stamps the actor's role at action time (`actorRole`):
+  // admins and moderators are named by that role, never by their name.
   const actor = byBackoffice
     ? administratorActorLabel(locale)
-    : actorName || t("SYS_NAME_SOMEONE", locale);
+    : roleActorLabel(metadata.actorRole, locale) ??
+      (actorName || t("SYS_NAME_SOMEONE", locale));
   const target =
     (metadata.targetName as string) ||
     targetName ||
@@ -402,7 +408,7 @@ export function buildCommunitySystemFallbackText(
 
     case "MEMBER_MUTED": {
       // Show the concrete expiry timestamp so the user knows exactly when they
-      // can post again; fall back to "indefinitely" when no expiry was set.
+      // can post again; a permanent mute names no duration.
       const mutedUntilMs = Number(metadata.mutedUntil);
       if (Number.isFinite(mutedUntilMs) && mutedUntilMs > 0) {
         const until = formatSystemDateTime(mutedUntilMs, locale);
@@ -466,8 +472,16 @@ export function buildCommunitySystemFallbackText(
     // added member's own PERSONAL notice and the MODERATION audit line read by
     // owner/admin/moderators. Both are the shared "{actor} added {target} to
     // {community}" sentence; only the reader's own side changes to "You".
-    case "MEMBER_ADDED":
-      return memberChangeText("ADDED", memberChangeLabels(), locale);
+    case "MEMBER_ADDED": {
+      // Batch add (one operation ⇒ one audit line) lists every target, like groups.
+      const grouped = groupedTargetLabels(metadata, viewer, locale);
+      const labels = memberChangeLabels();
+      return memberChangeText(
+        "ADDED",
+        grouped ? { ...labels, target: formatNameList(grouped, locale) } : labels,
+        locale
+      );
+    }
     case "JOIN_REQUEST_REJECTED":
       return t("SYS_COMMUNITY_JOIN_REQUEST_REJECTED", locale);
 

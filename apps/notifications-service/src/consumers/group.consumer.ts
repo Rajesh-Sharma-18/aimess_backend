@@ -45,7 +45,8 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
           actorName?.trim() ?? "",
           targetName?.trim() ?? "",
           p.actorId,
-          p.addedUserId
+          p.addedUserId,
+          p.actorRole
         ),
         deepLink,
         apnsThreadId: generateThreadId("GROUP", p.roomId),

@@ -1,7 +1,7 @@
 import {
+  Prisma,
   ProfileStatus,
   type ProfileGender,
-  type Prisma,
 } from "../generated/prisma/client.js";
 import { prisma } from "../config/prisma.js";
 import { normalizeUsername } from "../lib/username.util.js";
@@ -17,6 +17,27 @@ import {
   type ViewerGraph,
   PRIVACY_SCOPE_SELECT,
 } from "../lib/privacy-scope.js";
+
+export const CUSTOM_STATUS_SELECT = {
+  customStatusEmoji: true,
+  customStatusText: true,
+  customStatusStartedAt: true,
+  customStatusExpiresAt: true,
+  customStatusUpdatedAt: true,
+} as const;
+
+export type CustomStatusColumns = {
+  customStatusEmoji: string | null;
+  customStatusText: string | null;
+  customStatusStartedAt: Date | null;
+  customStatusExpiresAt: Date | null;
+  customStatusUpdatedAt: Date | null;
+};
+
+export type CustomStatusWriteRow = { userId: string };
+
+const CLEAR_CUSTOM_STATUS_SQL = Prisma.sql`"customStatusEmoji" = NULL, "customStatusText" = NULL,
+  "customStatusStartedAt" = NULL, "customStatusExpiresAt" = NULL`;
 
 /** Maximum users returned by findAllActiveExcept — prevents full-table scans on large deployments. */
 const AUTO_CONNECT_USER_LIMIT = 10_000;
@@ -116,14 +137,7 @@ function buildDiscoveryWhere(
       // has already authorized — never `discoverableWhere` itself, which three
       // other queries share. Every other clause (text, deletedAt, excludeIds,
       // keyset) still applies to those rows.
-      alwaysVisibleIds?.length
-        ? {
-            OR: [
-              discoverableWhere(viewer),
-              { userId: { in: alwaysVisibleIds } },
-            ],
-          }
-        : discoverableWhere(viewer),
+      discoverableWhere(viewer, alwaysVisibleIds),
       // Keyset "after" for orderBy [firstName asc, userId asc]. Same collation
       // drives both the sort and this comparison, so the two agree by
       // construction — which is the whole reason skip is droppable.
@@ -166,9 +180,53 @@ export const userProfileRepository = {
         groupsCount: true,
         status: true,
         deletedAt: true,
+        ...CUSTOM_STATUS_SELECT,
         privacySettings: PRIVACY_SCOPE_SELECT,
       },
     });
+  },
+
+  findCustomStatus(userId: string): Promise<CustomStatusColumns | null> {
+    return prisma.userProfile.findUnique({
+      where: { userId },
+      select: CUSTOM_STATUS_SELECT,
+    });
+  },
+
+  // Raw SQL so the profile's @updatedAt (the profile_updated ordering key) is not bumped.
+  async setCustomStatus(
+    userId: string,
+    s: { emoji: string | null; text: string | null; startedAt: Date; expiresAt: Date }
+  ): Promise<CustomStatusWriteRow | null> {
+    const rows = await prisma.$queryRaw<CustomStatusWriteRow[]>`
+      UPDATE "user_profiles" p SET
+        "customStatusEmoji" = ${s.emoji}, "customStatusText" = ${s.text},
+        "customStatusStartedAt" = ${s.startedAt}, "customStatusExpiresAt" = ${s.expiresAt},
+        "customStatusUpdatedAt" = ${s.startedAt}
+      WHERE p."userId" = ${userId}::uuid AND p."deletedAt" IS NULL
+      RETURNING p."userId"`;
+    return rows[0] ?? null;
+  },
+
+  /** No-op (empty result) when nothing is set, so a repeated clear emits nothing. */
+  async clearCustomStatus(userId: string, now: Date): Promise<CustomStatusWriteRow | null> {
+    const rows = await prisma.$queryRaw<CustomStatusWriteRow[]>`
+      UPDATE "user_profiles" p SET ${CLEAR_CUSTOM_STATUS_SQL}, "customStatusUpdatedAt" = ${now}
+      WHERE p."userId" = ${userId}::uuid AND p."customStatusExpiresAt" IS NOT NULL
+      RETURNING p."userId"`;
+    return rows[0] ?? null;
+  },
+
+  /** Atomic claim: concurrent sweepers re-check the WHERE after the row lock, so each row is claimed once. */
+  claimExpiredCustomStatuses(now: Date, limit: number): Promise<CustomStatusWriteRow[]> {
+    return prisma.$queryRaw<CustomStatusWriteRow[]>`
+      UPDATE "user_profiles" p SET ${CLEAR_CUSTOM_STATUS_SQL}, "customStatusUpdatedAt" = ${now}
+      WHERE p."userId" IN (
+        SELECT "userId" FROM "user_profiles"
+        WHERE "customStatusExpiresAt" <= ${now}
+        LIMIT ${limit} FOR UPDATE SKIP LOCKED
+      ) AND p."customStatusExpiresAt" <= ${now}
+      RETURNING p."userId"`;
   },
 
   findByUserId(userId: string) {
@@ -233,14 +291,7 @@ export const userProfileRepository = {
         normalizedUsername,
         deletedAt: null,
         ...DISCOVERABLE_PROFILE_WHERE,
-        ...(alwaysVisibleIds?.length
-          ? {
-              OR: [
-                discoverableWhere(viewer),
-                { userId: { in: alwaysVisibleIds } },
-              ],
-            }
-          : discoverableWhere(viewer)),
+        ...discoverableWhere(viewer, alwaysVisibleIds),
       },
       select: DISCOVERY_SELECT,
     });

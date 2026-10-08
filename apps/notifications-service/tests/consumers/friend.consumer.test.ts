@@ -124,7 +124,7 @@ describe("FRIEND_ACCEPTED", () => {
 });
 
 describe("FRIEND_REJECTED", () => {
-  it("pushes to the requester and settles the addressee's own row", async () => {
+  it("never pushes the requester, and settles the addressee's own row", async () => {
     await deliver(FriendshipEvents.FRIEND_REJECTED, {
       friendshipId: FRIENDSHIP_ID,
       requesterId: REQUESTER,
@@ -158,7 +158,8 @@ describe("FRIEND_REJECTED", () => {
       "You declined this friend request"
     );
     expect(toAddressee.skipPush).toBe(true);
-    expect(toRequester.skipPush).toBeUndefined();
+    // A declined request is recorded for the requester but never wakes a device.
+    expect(toRequester.skipPush).toBe(true);
   });
 });
 
@@ -181,8 +182,9 @@ describe("FRIEND_CANCELLED", () => {
     expect(toAddressee.copy("en").body).toBe(
       "John cancelled their friend request"
     );
-    // Silent: announcing a cancellation would contradict the row disappearing.
-    expect(toAddressee.dataOnly).toBe(true);
+    // Inbox only: no card, no silent render — the tray card is taken back by the dismissal.
+    expect(toAddressee.skipPush).toBe(true);
+    expect(toAddressee.dataOnly).toBeUndefined();
     // The requester cancelled: their row is removed via the inbox, no FCM.
     expect(
       push.mock.calls.find((c) => c[0].userId === REQUESTER)?.[0].skipPush

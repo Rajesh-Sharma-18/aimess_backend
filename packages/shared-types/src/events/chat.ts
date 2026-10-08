@@ -33,6 +33,8 @@ export type ChatGroupMemberAddedPayload = GroupPushImage & {
   addedUserId: string;
   /** Actor (OWNER/ADMIN) who performed the add. */
   actorId: string;
+  /** The actor's group role at the add — an admin/moderator is named by it. */
+  actorRole?: string;
   /** ISO-8601 timestamp captured at emit time. */
   eventAt: string;
 };

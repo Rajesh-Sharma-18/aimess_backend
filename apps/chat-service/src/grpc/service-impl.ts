@@ -14,10 +14,11 @@ import { randomUUID } from "node:crypto";
 import { once } from "../lib/once.js";
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
+import { publishMessageEdited } from "../lib/publish-message-edited.js";
+import { publishCommunityMessageEdited } from "../lib/publish-community-message-edited.js";
 import {
   isAppError,
   ForbiddenError,
-  TooManyRequestsError,
 } from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
 import { buildReactionActivityText, copyTickets } from "@aimess/constants";
@@ -49,6 +50,7 @@ import type { GroupMemberService } from "../services/group-member.service.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
+import type { ForwardedMediaGrantRepository } from "../repositories/forwarded-media-grant.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
@@ -226,6 +228,11 @@ export interface GrpcDeps {
   notificationRepo: NotificationRepository;
   chatMessageOrchestrator: ChatMessageOrchestrator;
   privateRoomService: PrivateRoomService;
+  /** Per-target grants for forwarded attachments (checkMediaAccess fallback). */
+  forwardedMediaGrantRepo?: Pick<
+    ForwardedMediaGrantRepository,
+    "findByObjectKey"
+  >;
 }
 
 /**
@@ -770,7 +777,8 @@ export function createMessagingImpl(
             req.conversationType
           );
 
-          const content = parseMessageContent(req, {
+          // Edits are TEXT-only: never let a socket edit smuggle attachments onto the row.
+          const { files: _files, ...content } = parseMessageContent(req, {
             allowMentions: conversationType === "GROUP",
           });
           // A group edit can add mentions (a push), so the socket path draws on
@@ -783,11 +791,13 @@ export function createMessagingImpl(
               ? await deps.groupMessageService.editMessage({
                   messageId: req.messageId,
                   userId: req.editorId,
+                  roomId: req.conversationId,
                   content,
                 })
               : await deps.privateMessageService.editMessage({
                   messageId: req.messageId,
                   userId: req.editorId,
+                  roomId: req.conversationId,
                   content,
                 });
 
@@ -821,14 +831,22 @@ export function createMessagingImpl(
               avatarUrl: urlFromMap(editReactAvatarMap, u.avatarUrl),
             })),
           }));
-          await redis.publish(
-            `conv:${req.conversationId}`,
-            JSON.stringify({
-              event: "message:edited",
-              data: buildChatMessageEvent({
+          const participantIds =
+            conversationType === "GROUP"
+              ? await deps.groupMessageService
+                  .getActiveMemberIds(updated.roomId)
+                  .catch(() => [] as string[])
+              : [
+                  updated.senderId ?? "",
+                  (updatedFull.receiverId as string) ?? "",
+                ];
+          await publishMessageEdited(
+            redis,
+            updated.roomId,
+            buildChatMessageEvent({
                 id: updated.id,
                 clientMessageId: (updatedFull.clientMessageId as string) ?? "",
-                roomId: req.conversationId,
+                roomId: updated.roomId,
                 conversationType,
                 senderId: updated.senderId ?? "",
                 // GROUP denormalizes senderName/senderAvatar on the row (same
@@ -856,11 +874,12 @@ export function createMessagingImpl(
                     ? updated.createdAt.getTime()
                     : Date.now(),
                 sequenceNumber: updated.sequenceNumber,
+                revision: (updatedFull.revision as number) ?? 0,
                 // An edit re-emits the whole message; without the deadline the
                 // client drops the countdown it was already rendering.
                 ...autoDeleteWireFields(updated),
               }),
-            })
+            participantIds
           );
 
           callback(null, {
@@ -871,13 +890,9 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC editMessage error: ${String(err)}`);
-          // Rate limit maps like sendMessage (RESOURCE_EXHAUSTED → RATE_LIMITED
-          // ack); every other edit error keeps its existing mapping.
-          callback(
-            err instanceof TooManyRequestsError
-              ? toGrpcCallbackError(err)
-              : { code: grpc.status.INTERNAL, message: String(err) }
-          );
+          // AppErrors keep their status + messageKey so the socket ack carries the real
+          // reason (not found / not yours / window expired) instead of SERVICE_ERROR.
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -1503,6 +1518,7 @@ export function createMessagingImpl(
                   quoteData: full.quoteData ?? null,
                   reactions: [],
                   isForwarded: true,
+                  forwardData: full.forwardData,
                   serverTs,
                   sequenceNumber: message.sequenceNumber,
                   countInUnread: (
@@ -3217,7 +3233,11 @@ export function createMessagingImpl(
         // caller did not supply it (upload path, or an older media-service).
         const objectCreatedAtMs = Number(req.objectCreatedAt ?? 0) || 0;
 
-        try {
+        // Throws (or returns false) on deny; reused for forwarded-media grants.
+        const allowedIn = async (
+          scope: string,
+          resourceId: string
+        ): Promise<boolean> => {
           switch (scope) {
             case "PRIVATE_CHAT": {
               // A private room's `participants` array is fixed at creation and
@@ -3300,10 +3320,31 @@ export function createMessagingImpl(
               break;
             }
             default:
-              callback(null, { allowed: false });
-              return;
+              return false;
           }
-          callback(null, { allowed: true });
+          return true;
+        };
+        try {
+          let allowed = await allowedIn(scope, resourceId).catch((err) => {
+            logger.debug(
+              `checkMediaAccess denied (scope=${scope}, user=${userId}, resource=${resourceId}): ${String(err)}`
+            );
+            return false;
+          });
+          // A forwarded attachment stays filed under its upload room; a grant
+          // lets the target room's members through under that room's own rules.
+          if (!allowed && objectKey && deps.forwardedMediaGrantRepo) {
+            for (const grant of await deps.forwardedMediaGrantRepo.findByObjectKey(
+              objectKey
+            )) {
+              if (await allowedIn(grant.scope, grant.roomId).catch(() => false)) {
+                allowed = true;
+                break;
+              }
+            }
+          }
+          callback(null, { allowed });
+          return;
         } catch (err) {
           // A denial (no historical membership row found) is the expected "no"
           // answer, not an RPC failure. Log at debug so an unexpected internal
@@ -3380,7 +3421,7 @@ export function createMessagingImpl(
             callback(null, { rooms: [] });
             return;
           }
-          const peers = await deps.privateRoomRepo.findPeersForUser(
+          const peers = await deps.privateRoomRepo.findVisiblePeersForUser(
             viewerId,
             limit
           );
@@ -4570,22 +4611,24 @@ export function createCommunityImpl(
             result.editedAt instanceof Date
               ? result.editedAt.getTime()
               : Date.now();
-          await redis.publish(
-            `community:${result.roomId}`,
-            JSON.stringify({
-              event: "community:message:edited",
-              data: {
-                messageId: result.id,
-                communityId: result.roomId,
-                roomId: result.roomId,
-                senderId: result.sentBy,
-                message: result.message ?? "",
-                contentType: normalizeMessageType(result.messageType),
-                isEdited: true,
-                editedAt: editedAtMs,
-                revision: (result as { revision?: number }).revision ?? 0,
-              },
-            })
+          const previewRecipients = await deps.communityMessageService
+            .previewRecipientsAfterEdit(result)
+            .catch(() => [] as string[]);
+          await publishCommunityMessageEdited(
+            redis,
+            result.roomId,
+            {
+              messageId: result.id,
+              communityId: result.roomId,
+              roomId: result.roomId,
+              senderId: result.sentBy,
+              message: result.message ?? "",
+              contentType: normalizeMessageType(result.messageType),
+              isEdited: true,
+              editedAt: editedAtMs,
+              revision: (result as { revision?: number }).revision ?? 0,
+            },
+            previewRecipients
           );
           callback(null, {
             messageId: result.id,
@@ -4608,7 +4651,7 @@ export function createCommunityImpl(
           });
         } catch (err) {
           logger.error(`gRPC editCommunityMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -5329,6 +5372,7 @@ export function createNotificationImpl(
               const {
                 excludeSessionId: _excl,
                 markRead: _markRead,
+                updateOnly: _updateOnly,
                 ...clientData
               } = data;
               await publishUserSocketEvent(
@@ -5379,6 +5423,18 @@ export function createNotificationImpl(
           const plan = existing
             ? resolveTransition(existing.type, req.type, data)
             : null;
+
+          // A producer that only rewrites a card the user already has (a silent
+          // livestream end) never materialises one out of nothing.
+          if (!existing && data.updateOnly === "true") {
+            callback(null, { id: "" });
+            return;
+          }
+
+          if (existing && plan?.action === "NOOP") {
+            callback(null, { id: existing.id });
+            return;
+          }
 
           if (existing && plan && plan.action !== "CREATE") {
             const existingPayload = (existing.payload ?? {}) as {

@@ -16,6 +16,7 @@ import {
   currentLocale,
   isHiddenSystemMessage,
   localizeMessagePreview,
+  localizeCategoryName,
   buildCommunitySystemFallbackText,
   STORED_TEXT_LOCALE,
   t,
@@ -1105,7 +1106,10 @@ async function toCommunityData(
     handle: community.handle,
     description: community.description,
     type: community.type,
-    category: { id: community.category.id, name: community.category.name },
+    category: {
+      id: community.category.id,
+      name: localizeCategoryName(community.category.name),
+    },
     creatorId: community.creatorId,
     adminId: community.adminId,
     memberCount: community.memberCount,
@@ -1292,7 +1296,10 @@ async function toDiscoverItem(
     handle: community.handle,
     description: community.description,
     type: community.type,
-    category: { id: community.category.id, name: community.category.name },
+    category: {
+      id: community.category.id,
+      name: localizeCategoryName(community.category.name),
+    },
     memberCount: community.memberCount,
     memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
@@ -2139,7 +2146,11 @@ async function enrichMineCommunities(
 
 export const communityService = {
   async listCategories(): Promise<CommunityCategoryData[]> {
-    return communityRepository.listActiveCategories();
+    const categories = await communityRepository.listActiveCategories();
+    return categories.map((c) => ({
+      ...c,
+      name: localizeCategoryName(c.name),
+    }));
   },
 
   async listCategoriesAdmin(query: {
@@ -2717,9 +2728,16 @@ export const communityService = {
               via: "add_members",
               eventAt: joinedEventAt,
               moderatorRecipientIds,
+              skipAuditLine: true,
             })
           )
         );
+        await this.postGroupedMemberAddedAuditLine({
+          community,
+          actorId: creatorId,
+          targetUserIds: createdMemberRows.map((row) => row.userId),
+          eventAt: joinedEventAt,
+        });
         // Observability: one structured line per create fan-out (no PII) so the
         // recipient count is greppable in prod when diagnosing a "didn't appear"
         // report. intendedRecipients = creator + every added member.
@@ -3803,11 +3821,8 @@ export const communityService = {
     targetUserId: string,
     reason?: string
   ): Promise<CommunityMemberData> {
-    const { target: _target } = await this._assertCanModerateMember(
-      communityId,
-      callerId,
-      targetUserId
-    );
+    const { target: _target, callerMembership } =
+      await this._assertCanModerateMember(communityId, callerId, targetUserId);
 
     // Single-document update + recompute of memberCount — no $transaction
     // (standalone Mongo). Recounting ACTIVE members is robust against drift.
@@ -3855,6 +3870,7 @@ export const communityService = {
       communityId,
       eventAt: new Date().toISOString(),
       actorId: callerId,
+      actorRole: callerMembership.role,
       targetUserId,
       reason: reason ?? null,
     });
@@ -3987,6 +4003,7 @@ export const communityService = {
       communityId,
       systemMessageType: "MEMBER_BANNED",
       actorId: callerId,
+      actorRole: callerMembership?.role,
       targetUserId,
       ...(reason ? { extra: { reason } } : {}),
     });
@@ -4410,6 +4427,9 @@ export const communityService = {
      * only. See MODERATION_TYPES_WITH_PERSONAL_COPY in @aimess/constants.
      */
     visibleToUserId?: string;
+    eventAt?: string;
+    /** The actor's community role at action time; readers see "Admin" / "Moderator", not the name. */
+    actorRole?: string;
   }): void {
     // Telegram silent-kick parity: joined / left / removed never reach the chat
     // timeline at all (they pile up across remove→rejoin cycles and the victim sees
@@ -4424,10 +4444,11 @@ export const communityService = {
       systemMessageType: args.systemMessageType,
       metadata: {
         ...(args.targetUserId ? { targetUserId: args.targetUserId } : {}),
+        ...(args.actorRole ? { actorRole: args.actorRole } : {}),
         ...(args.extra ?? {}),
       },
       triggeredByUserId: args.actorId,
-      eventAt: new Date().toISOString(),
+      eventAt: args.eventAt ?? new Date().toISOString(),
       ...(args.visibleToUserId
         ? { visibleToUserId: args.visibleToUserId }
         : {}),
@@ -4546,6 +4567,8 @@ export const communityService = {
      * fall back to the lazy internal resolution below.
      */
     moderatorRecipientIds?: string[];
+    /** Batch adds post ONE grouped audit line themselves (postGroupedMemberAddedAuditLine). */
+    skipAuditLine?: boolean;
   }): Promise<void> {
     const { community, member, memberCount, actorId, via, requestId } = args;
 
@@ -4557,12 +4580,24 @@ export const communityService = {
     // every surface. The community's name rides with the event (event-time
     // snapshot, like the names); chat-service resolves the actor's name for the
     // chat lines itself, and the list preview below needs it here.
+    // An admin/moderator's add names them by role; no role ⇒ named, as before.
+    let actorRole: string | undefined;
+    if (joinLineType === "MEMBER_ADDED") {
+      try {
+        actorRole = (
+          await communityRepository.findMembership(community.id, actorId)
+        )?.role;
+      } catch {
+        actorRole = undefined;
+      }
+    }
     const addedMetadata: Record<string, unknown> | null =
       joinLineType === "MEMBER_ADDED"
         ? {
             targetUserId: member.userId,
             targetName: member.snapshotDisplayName ?? "",
             actorUserId: actorId,
+            ...(actorRole ? { actorRole } : {}),
             actorName:
               (await fetchUserSnapshotHits([actorId])).get(actorId)
                 ?.displayName ?? "",
@@ -4587,6 +4622,7 @@ export const communityService = {
         requestId,
         communityName: community.name,
         moderatorRecipientIds,
+        ...(actorRole ? { actorRole } : {}),
       });
     }
 
@@ -4734,7 +4770,11 @@ export const communityService = {
       systemMessageType: joinLineType,
       metadata:
         joinLineType === "MEMBER_ADDED"
-          ? { targetUserId: member.userId, communityName: community.name }
+          ? {
+              targetUserId: member.userId,
+              communityName: community.name,
+              ...(actorRole ? { actorRole } : {}),
+            }
           : {},
       triggeredByUserId:
         joinLineType === "MEMBER_ADDED" ? actorId : member.userId,
@@ -4752,15 +4792,54 @@ export const communityService = {
     //
     // Only MEMBER_ADDED: a self-join / invite / approved request is not a
     // moderation action, and its COMMUNITY_JOINED line stays purely personal.
-    if (joinLineType === "MEMBER_ADDED") {
+    if (joinLineType === "MEMBER_ADDED" && !args.skipAuditLine) {
       publishCommunitySystemMessageForChatSafe({
         communityId: community.id,
         systemMessageType: "MEMBER_ADDED",
-        metadata: { targetUserId: member.userId, communityName: community.name },
+        metadata: {
+          targetUserId: member.userId,
+          communityName: community.name,
+          ...(actorRole ? { actorRole } : {}),
+        },
         triggeredByUserId: actorId,
         eventAt: args.eventAt,
       });
     }
+  },
+
+  /**
+   * One add-members operation ⇒ ONE "{admin} added A, B and N others" audit line
+   * (`targetUserIds`), like groups. The per-member personal "added You" notices
+   * still go out from notifyMemberJoined.
+   */
+  async postGroupedMemberAddedAuditLine(args: {
+    community: { id: string; name: string };
+    actorId: string;
+    targetUserIds: string[];
+    eventAt: string;
+  }): Promise<void> {
+    const { community, actorId, targetUserIds, eventAt } = args;
+    if (targetUserIds.length === 0) return;
+    let actorRole: string | undefined;
+    try {
+      actorRole = (await communityRepository.findMembership(community.id, actorId))
+        ?.role;
+    } catch {
+      actorRole = undefined;
+    }
+    publishCommunitySystemMessageForChatSafe({
+      communityId: community.id,
+      systemMessageType: "MEMBER_ADDED",
+      metadata: {
+        ...(targetUserIds.length === 1
+          ? { targetUserId: targetUserIds[0] }
+          : { targetUserIds }),
+        communityName: community.name,
+        ...(actorRole ? { actorRole } : {}),
+      },
+      triggeredByUserId: actorId,
+      eventAt,
+    });
   },
 
   /**
@@ -5194,6 +5273,7 @@ export const communityService = {
           via: "add_members",
           eventAt: new Date().toISOString(),
           moderatorRecipientIds,
+          skipAuditLine: true,
         });
       }
       for (const row of createdRows) {
@@ -5205,8 +5285,16 @@ export const communityService = {
           via: "add_members",
           eventAt: new Date().toISOString(),
           moderatorRecipientIds,
+          skipAuditLine: true,
         });
       }
+
+      await this.postGroupedMemberAddedAuditLine({
+        community,
+        actorId: callerId,
+        targetUserIds: added.map((m) => m.userId),
+        eventAt: new Date().toISOString(),
+      });
 
       // Their pending join requests were resolved inside the membership
       // transactions above; tell every open admin "Accept Requests" list to drop
@@ -5684,7 +5772,10 @@ export const communityService = {
       membership.status === CommunityMemberStatus.ACTIVE &&
       (await this.isCommunityClosed(community.id));
 
-    if (membership.status === CommunityMemberStatus.BANNED || isClosedActiveRow) {
+    if (
+      membership.status === CommunityMemberStatus.BANNED ||
+      isClosedActiveRow
+    ) {
       // A banned community stays in the caller's list until THEY dismiss it.
       // Dismissing only HIDES the entry (dismissedAt) — status stays BANNED
       // and the ban metadata survives; only an admin unban lifts the ban.
@@ -5738,9 +5829,7 @@ export const communityService = {
   /** Owner-closed or Super Admin–suspended right now (false once deleted). */
   async isCommunityClosed(communityId: string): Promise<boolean> {
     const community = await communityRepository.findById(communityId);
-    return (
-      !!community && communityAccessPolicy.isEffectivelyClosed(community)
-    );
+    return !!community && communityAccessPolicy.isEffectivelyClosed(community);
   },
 
   /**
@@ -6209,6 +6298,8 @@ export const communityService = {
       communityId,
       systemMessageType: "MEMBER_UNBANNED",
       actorId: callerId,
+      // Only an ADMIN may unban in-app; a Super Admin is "Administrator" via `source`.
+      ...(opts?.asPlatformAdmin ? {} : { actorRole: CommunityMemberRole.ADMIN }),
       targetUserId,
       ...(opts?.asPlatformAdmin ? { extra: { source: "BO" } } : {}),
     });
@@ -6262,7 +6353,7 @@ export const communityService = {
     durationMinutes: number | null | undefined,
     reason?: string
   ): Promise<CommunityMutedMemberData> {
-    const { target } = await this._assertCanModerateMember(
+    const { target, callerMembership } = await this._assertCanModerateMember(
       communityId,
       callerId,
       targetUserId
@@ -6328,20 +6419,32 @@ export const communityService = {
       mutedUntil: mutedUntil ? mutedUntil.getTime() : null,
       durationMinutes: durationMinutes ?? null,
     };
-    this.emitMemberSystemMessage({
+    // Both lines share one eventAt so a re-mute / extension can retract the
+    // previous mute's lines without touching these.
+    const muteEventAt = new Date().toISOString();
+    publishCommunityMemberMuteRetractedForChatSafe({
       communityId,
-      systemMessageType: "MEMBER_MUTED",
-      actorId: callerId,
-      targetUserId,
-      visibleToUserId: targetUserId,
-      extra: muteAudit,
+      userId: targetUserId,
+      keepEventAt: muteEventAt,
     });
     this.emitMemberSystemMessage({
       communityId,
       systemMessageType: "MEMBER_MUTED",
       actorId: callerId,
+      actorRole: callerMembership.role,
+      targetUserId,
+      visibleToUserId: targetUserId,
+      extra: muteAudit,
+      eventAt: muteEventAt,
+    });
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_MUTED",
+      actorId: callerId,
+      actorRole: callerMembership.role,
       targetUserId,
       extra: muteAudit,
+      eventAt: muteEventAt,
     });
 
     // Best-effort: push a real-time notice to any of the target's currently-LIVE
@@ -6445,11 +6548,8 @@ export const communityService = {
       0
     );
 
-    // Telegram parity: this mute session is over, so the previous "You are
-    // muted until …" line no longer reflects reality — retract it (soft-delete
-    // + a `community:message:deleted` tombstone on the target's own `user:<id>`
-    // channel) so it disappears from history/pagination/sync everywhere, rather
-    // than leaving both the mute AND unmute lines stacked in their history.
+    // The mute is over: retract its lines — the member's personal notice and the
+    // moderators' audit line — from every timeline, live and on resync.
     publishCommunityMemberMuteRetractedForChatSafe({
       communityId,
       userId: targetUserId,
@@ -6465,6 +6565,7 @@ export const communityService = {
       communityId,
       systemMessageType: "MEMBER_UNMUTED",
       actorId: callerId,
+      actorRole: callerMembership?.role,
       targetUserId,
     });
   },
@@ -6592,8 +6693,7 @@ export const communityService = {
 
         // A lapsed timer IS an unmute, so it must leave both the member's history
         // and the moderation trail in the same state a manual unmute does: retract
-        // the now-false "You are muted until …" line, then post the MODERATION
-        // AUDIT line. Without this the member was left staring at a mute notice for
+        // the mute's lines (personal + audit), then post the MODERATION AUDIT line. Without this the member was left staring at a mute notice for
         // a mute that no longer exists, and the moderators' trail showed a mute
         // with no matching release. Push stays suppressed above — this is history,
         // not a ping.

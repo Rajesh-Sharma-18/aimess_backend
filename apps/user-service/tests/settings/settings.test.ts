@@ -40,7 +40,6 @@ function fullBundle(overrides: Record<string, unknown> = {}) {
       whoCanFindMe: "EVERYONE",
       whoCanSendFriendRequests: "EVERYONE",
       whoCanSeeOnlineStatus: "EVERYONE",
-      whoCanViewProfile: "EVERYONE",
       whoCanCallMe: "FRIENDS",
       updatedAt: now,
     },
@@ -139,6 +138,19 @@ describe("PATCH /api/v1/users/settings/me", () => {
     expect(res.body.success).toBe(true);
     expect(repo.updateSettings).toHaveBeenCalledTimes(1);
     expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts and ignores the retired whoCanViewProfile from old clients", async () => {
+    const res = await request(app)
+      .patch("/api/v1/users/settings/me")
+      .set(auth())
+      .send({ privacy: { whoCanViewProfile: "FRIENDS" } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.privacy.whoCanViewProfile).toBe("EVERYONE");
+    expect(JSON.stringify(repo.updateSettings.mock.calls)).not.toContain(
+      "whoCanViewProfile"
+    );
   });
 
   it("updates a nested quiet-hours notification setting", async () => {

@@ -637,6 +637,7 @@ const VIEWER_CANDIDATE_CAP = 2000;
  * page slice that survives filtering/pagination).
  */
 type EnrichedViewer = {
+  endReason: string;
   userId: string;
   username: string;
   /** Used only for `search`/username sort filtering; NOT surfaced on the wire. */
@@ -660,6 +661,7 @@ type EnrichedViewer = {
 /** Map an enriched viewer → the wire item, presigning its avatar. */
 async function toViewerItem(e: EnrichedViewer): Promise<LivestreamUserItem> {
   return {
+    status: e.leftAt <= 0 ? "ACTIVE" : e.endReason === "ENDED" ? "ENDED" : "LEFT",
     userId: e.userId,
     username: e.username,
     fullName: e.fullName,
@@ -1456,7 +1458,8 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     if (!s) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
 
     const sortDir: "asc" | "desc" = query.sortDir === "asc" ? "asc" : "desc";
-    const search = query.search?.trim().toLowerCase();
+    // The panel prints a user as "@handle", so accept it typed that way.
+    const search = query.search?.trim().replace(/^@/, "").toLowerCase();
     // Only a recognized viewer role (community role) filters; any other value is
     // ignored (returns all) — matches the community path's "ignore invalid" rule.
     const rawRole = query.role?.trim().toLowerCase();
@@ -1474,13 +1477,16 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
         query.sortField === "watchDurationSeconds"
           ? "watchDurationSeconds"
           : "joinedAt";
-      const { sessions, total } = await streamClient.adminListViewerSessions({
-        streamId: livestreamId,
-        page: query.page,
-        limit: query.limit,
-        sortField: nativeSort,
-        sortDir,
-      });
+      const { sessions, total } = await streamClient.adminListViewerSessions(
+        {
+          streamId: livestreamId,
+          page: query.page,
+          limit: query.limit,
+          sortField: nativeSort,
+          sortDir,
+          status: query.status,
+        }
+      );
       const enriched = await this.enrichViewers(
         s.communityId,
         s.creatorId,
@@ -1498,6 +1504,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       limit: VIEWER_CANDIDATE_CAP,
       sortField: "joinedAt",
       sortDir,
+      status: query.status,
     });
     if (sessions.length >= VIEWER_CANDIDATE_CAP) {
       logger.warn(
@@ -1572,6 +1579,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     return sessions.map((v) => {
       const p = profileMap.get(v.userId);
       return {
+        endReason: v.endReason,
         userId: v.userId,
         username: p?.username ?? "",
         displayName: displayNameOf(p),

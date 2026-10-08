@@ -202,7 +202,7 @@ const envSchema = z.object({
 
   // Admin password-reset (OTP + reset token) tunables.
   ADMIN_OTP_LENGTH: z.coerce.number().int().positive().default(6),
-  ADMIN_OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  ADMIN_OTP_TTL_SECONDS: z.coerce.number().int().positive().default(60),
   ADMIN_OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   ADMIN_OTP_REQUEST_MAX: z.coerce.number().int().positive().default(5),
   ADMIN_OTP_REQUEST_WINDOW_SEC: z.coerce.number().int().positive().default(900),

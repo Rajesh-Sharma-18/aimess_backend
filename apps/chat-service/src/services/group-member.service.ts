@@ -273,6 +273,7 @@ export class GroupMemberService {
         groupName: room.name,
         addedUserId: params.userId,
         actorId: opts?.actorId ?? params.invitedBy ?? params.userId,
+        ...(actor?.role ? { actorRole: actor.role } : {}),
         eventAt: new Date().toISOString(),
       });
     }

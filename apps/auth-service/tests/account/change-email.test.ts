@@ -13,7 +13,7 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
 }));
 jest.mock("../../src/repositories/otp.repository.js", () => ({
   otpRepository: {
-    findLatestActive: jest.fn(),
+    findLatestUnconsumed: jest.fn(),
     incrementAttempts: jest.fn(async () => undefined),
     markConsumed: jest.fn(async () => undefined),
   },
@@ -22,6 +22,7 @@ jest.mock("../../src/lib/send-email-otp.js", () => ({
   sendEmailOtp: jest.fn(async () => ({ code: "123456" })),
 }));
 jest.mock("../../src/lib/otp.js", () => ({
+  loadLiveOtp: jest.requireActual("../../src/lib/otp.js").loadLiveOtp,
   normalizeEmail: (e: string) => e.trim().toLowerCase(),
   verifyOtpCode: jest.fn(async () => true),
 }));
@@ -146,12 +147,13 @@ describe("POST /api/auth/change-email/verify", () => {
       id: TEST_USER_ID,
       emailVerified: true,
     });
-    otpRepo.findLatestActive.mockResolvedValue({
+    otpRepo.findLatestUnconsumed.mockResolvedValue({
       id: "otp-1",
       userId: TEST_USER_ID,
       attempts: 0,
       maxAttempts: 5,
       codeHash: "hashed",
+      expiresAt: new Date(Date.now() + 60_000),
     });
     verifyCode.mockResolvedValue(true);
   });
@@ -167,8 +169,29 @@ describe("POST /api/auth/change-email/verify", () => {
     expect(repo.updateVerifiedEmail).toHaveBeenCalledWith(TEST_USER_ID, NEW);
   });
 
+  it("rejects an expired OTP with AUTH_OTP_EXPIRED, without touching the email", async () => {
+    otpRepo.findLatestUnconsumed.mockResolvedValue({
+      id: "otp-1",
+      userId: TEST_USER_ID,
+      attempts: 0,
+      maxAttempts: 5,
+      codeHash: "hashed",
+      expiresAt: new Date(Date.now() - 1),
+    });
+
+    const res = await request(app)
+      .post("/api/auth/change-email/verify")
+      .set(bearer(makeAccessToken()))
+      .send({ oldEmail: OLD, newEmail: NEW, code: "123456" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("AUTH_OTP_EXPIRED");
+    expect(verifyCode).not.toHaveBeenCalled();
+    expect(repo.updateVerifiedEmail).not.toHaveBeenCalled();
+  });
+
   it("returns 400 when no active OTP exists", async () => {
-    otpRepo.findLatestActive.mockResolvedValue(null);
+    otpRepo.findLatestUnconsumed.mockResolvedValue(null);
 
     const res = await request(app)
       .post("/api/auth/change-email/verify")
@@ -179,7 +202,7 @@ describe("POST /api/auth/change-email/verify", () => {
   });
 
   it("returns 400 when the OTP belongs to a different user (IDOR-safe)", async () => {
-    otpRepo.findLatestActive.mockResolvedValue({
+    otpRepo.findLatestUnconsumed.mockResolvedValue({
       id: "otp-1",
       userId: "someone-else",
       attempts: 0,
@@ -209,12 +232,13 @@ describe("POST /api/auth/change-email/verify", () => {
   });
 
   it("returns 400 once the attempt cap is reached, without touching the email", async () => {
-    otpRepo.findLatestActive.mockResolvedValue({
+    otpRepo.findLatestUnconsumed.mockResolvedValue({
       id: "otp-1",
       userId: TEST_USER_ID,
       attempts: 5,
       maxAttempts: 5,
       codeHash: "hashed",
+      expiresAt: new Date(Date.now() + 60_000),
     });
 
     const res = await request(app)

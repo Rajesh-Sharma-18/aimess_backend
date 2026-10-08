@@ -19,7 +19,7 @@ jest.mock("../../src/repositories/otp.repository.js", () => ({
   otpRepository: {
     consumeActiveForIdentifier: jest.fn(async () => undefined),
     create: jest.fn(async () => undefined),
-    findLatestActive: jest.fn(),
+    findLatestUnconsumed: jest.fn(),
     incrementAttempts: jest.fn(async () => undefined),
     markConsumed: jest.fn(async () => undefined),
   },
@@ -38,6 +38,7 @@ jest.mock("../../src/repositories/session.repository.js", () => ({
   },
 }));
 jest.mock("../../src/lib/otp.js", () => ({
+  loadLiveOtp: jest.requireActual("../../src/lib/otp.js").loadLiveOtp,
   generateOtpCode: jest.fn(() => "123456"),
   hashOtpCode: jest.fn(async () => "hashed-code"),
   verifyOtpCode: jest.fn(async () => true),
@@ -109,6 +110,7 @@ function activeOtp(overrides: Record<string, unknown> = {}) {
     attempts: 0,
     maxAttempts: 5,
     codeHash: "hashed-code",
+    expiresAt: new Date(Date.now() + 60_000),
     ...overrides,
   };
 }
@@ -226,7 +228,7 @@ describe("POST /api/auth/forgot-password/request", () => {
   });
 
   it("an unknown email cannot be carried on to verify", async () => {
-    otpRepo.findLatestActive.mockResolvedValue(null);
+    otpRepo.findLatestUnconsumed.mockResolvedValue(null);
 
     const res = await request(app)
       .post("/api/auth/forgot-password/verify")
@@ -253,7 +255,7 @@ describe("POST /api/auth/forgot-password/request", () => {
 
 describe("POST /api/auth/forgot-password/verify", () => {
   beforeEach(() => {
-    otpRepo.findLatestActive.mockResolvedValue(activeOtp());
+    otpRepo.findLatestUnconsumed.mockResolvedValue(activeOtp());
     authRepo.findByEmailForPasswordReset.mockResolvedValue(resettableUser());
     verifyCode.mockResolvedValue(true);
   });
@@ -270,7 +272,7 @@ describe("POST /api/auth/forgot-password/verify", () => {
   });
 
   it("returns 400 when no active OTP exists", async () => {
-    otpRepo.findLatestActive.mockResolvedValue(null);
+    otpRepo.findLatestUnconsumed.mockResolvedValue(null);
 
     const res = await request(app)
       .post("/api/auth/forgot-password/verify")
@@ -291,8 +293,23 @@ describe("POST /api/auth/forgot-password/verify", () => {
     expect(resetRepo.create).not.toHaveBeenCalled();
   });
 
+  it("rejects an expired OTP with AUTH_OTP_EXPIRED and issues no reset token", async () => {
+    otpRepo.findLatestUnconsumed.mockResolvedValue(
+      activeOtp({ expiresAt: new Date(Date.now() - 1) })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/forgot-password/verify")
+      .send({ email: "john@example.com", code: "123456" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("AUTH_OTP_EXPIRED");
+    expect(verifyCode).not.toHaveBeenCalled();
+    expect(resetRepo.create).not.toHaveBeenCalled();
+  });
+
   it("returns 400 when the OTP attempt cap is already reached", async () => {
-    otpRepo.findLatestActive.mockResolvedValue(
+    otpRepo.findLatestUnconsumed.mockResolvedValue(
       activeOtp({ attempts: 5, maxAttempts: 5 })
     );
 

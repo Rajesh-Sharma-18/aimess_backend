@@ -439,6 +439,29 @@ export class GeneralRoomRepository {
     });
   }
 
+  /** Rewrites the list snapshot's text when [messageId] is still the room's last message. */
+  async setLastMessageContentIfCurrent(
+    roomId: string,
+    messageId: string,
+    content: string
+  ): Promise<boolean> {
+    const room = await this.prisma.generalRoom.findUnique({
+      where: { id: roomId },
+      select: { lastMessageId: true, lastMessage: true },
+    });
+    if (!room || room.lastMessageId !== messageId) return false;
+    await this.prisma.generalRoom.update({
+      where: { id: roomId },
+      data: {
+        lastMessage: {
+          ...((room.lastMessage as Record<string, unknown> | null) ?? {}),
+          content,
+        } as Prisma.InputJsonValue,
+      },
+    });
+    return true;
+  }
+
   /** Soft-deactivate a community's chat room (driven by `community.deleted`). */
   async deactivateForCommunity(communityId: string): Promise<void> {
     await this.prisma.generalRoom.updateMany({

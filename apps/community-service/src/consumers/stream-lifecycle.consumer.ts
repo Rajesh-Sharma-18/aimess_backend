@@ -53,6 +53,8 @@ interface StreamEndedData {
   /** epoch ms */
   endedAt?: number;
   durationSeconds?: number;
+  /** false = never left PENDING; absent on older events. */
+  wentLive?: boolean;
   /**
    * Raw end reason from stream-service's finalizeAsEnded: "HOST_ENDED" for the
    * host's own End Live (and the natural ends that default to it), otherwise an
@@ -215,6 +217,13 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
   const durationSeconds = Math.max(0, Math.floor(data.durationSeconds ?? 0));
   const duration = formatStreamDuration(durationSeconds);
   const endedReason = streamEndedReason(data.reason, data.byPlatformAdmin);
+  // No "started" line was ever posted for it, so an "ended" line (and push) is noise.
+  if (data.wentLive === false) {
+    logger.info(
+      `[LIVE-SIDEBAR:COMMUNITY] stream.ended skipped (never went live) communityId=${communityId} streamId=${streamId}`
+    );
+    return;
+  }
   logger.info(
     `[LIVE-SIDEBAR:COMMUNITY] stream.ended lifecycle received communityId=${communityId} streamId=${streamId} creatorId=${creatorId} eventAt=${eventAt} durationSeconds=${durationSeconds} reason=${data.reason ?? ""} endedReason=${endedReason}`
   );
@@ -224,6 +233,12 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
   //    admin; "Administrator ended {host}'s …" for ADMIN (Super Admin, Backoffice),
   //    "System ended …" for SYSTEM. Both keep the host as the triggering user.
   const actorId = streamEndedActorId(data);
+  // A community admin/moderator who ended someone else's stream is named by role.
+  const endedByRole =
+    endedReason === "USER" && actorId !== creatorId
+      ? (await communityRepository.findMemberByUserId(communityId, actorId))
+          ?.role
+      : undefined;
   publishCommunitySystemMessageForChatSafe({
     communityId,
     systemMessageType: CommunitySystemMessageType.LIVE_STREAM_ENDED,
@@ -236,6 +251,7 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
       // Someone else ended it: chat-service resolves the host's name as the
       // target, so the line reads "{admin} ended {host}'s livestream".
       ...(actorId !== creatorId ? { targetUserId: creatorId } : {}),
+      ...(endedByRole ? { actorRole: endedByRole } : {}),
     },
     triggeredByUserId: actorId,
     eventAt,
@@ -288,7 +304,11 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
     durationSeconds,
     endedReason,
     ...(actor
-      ? { endedByUserId: actorId, endedByDisplayName: actor.displayName }
+      ? {
+          endedByUserId: actorId,
+          endedByDisplayName: actor.displayName,
+          ...(endedByRole ? { endedByRole } : {}),
+        }
       : {}),
     recipientIds,
   });

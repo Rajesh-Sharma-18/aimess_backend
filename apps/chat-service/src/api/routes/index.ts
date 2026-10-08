@@ -13,6 +13,7 @@ import { createUnreadSummaryRoutes } from "./unread-summary.routes.js";
 import { createCommunityRoutes } from "./community.routes.js";
 import { createCallRoutes } from "./call.routes.js";
 import { createMessageContextRoutes } from "./message-context.routes.js";
+import { createForwardRoutes } from "./forward.routes.js";
 import { healthRoutes } from "./health.routes.js";
 
 import type { PrivateRoomController } from "../controllers/private-room.controller.js";
@@ -32,6 +33,7 @@ import type { CallController } from "../controllers/call.controller.js";
 import type { PresenceController } from "../controllers/presence.controller.js";
 import type { MessageContextController } from "../controllers/message-context.controller.js";
 import type { MessageSearchController } from "../controllers/message-search.controller.js";
+import type { ForwardController } from "../controllers/forward.controller.js";
 
 export interface Controllers {
   privateRoomCtrl: PrivateRoomController;
@@ -51,6 +53,7 @@ export interface Controllers {
   presenceCtrl: PresenceController;
   messageContextCtrl: MessageContextController;
   messageSearchCtrl: MessageSearchController;
+  forwardCtrl: ForwardController;
 }
 
 export function createRoutes(controllers: Controllers): Router {
@@ -108,6 +111,7 @@ export function createRoutes(controllers: Controllers): Router {
     )
   );
   router.use(`${basePath}/calls`, createCallRoutes(controllers.callCtrl));
+  router.use(`${basePath}/forward`, createForwardRoutes(controllers.forwardCtrl));
   router.use(
     `${basePath}/messages`,
     createMessageContextRoutes(

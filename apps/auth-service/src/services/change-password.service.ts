@@ -8,22 +8,13 @@ import {
 
 import type { ChangePasswordInput } from "../api/validators/change-password.validator.js";
 import { loadActiveAuthUser } from "../lib/account-guard.js";
-import { revokeSessionsForPasswordChange } from "../lib/revoke-password-sessions.js";
 import { publishPasswordChangedSafe } from "../messaging/publish-auth-security.js";
 import { authRepository } from "../repositories/auth.repository.js";
 
 export const changePasswordService = {
-  /**
-   * `currentSessionId` is spared the revoke: a signed-in password change keeps
-   * the device that made it, and signs every OTHER device out — the behaviour
-   * a stolen-session victim expects. Password RESET revokes everything instead
-   * (see password-reset.service), because there no session is trusted.
-   */
-  async change(
-    userId: string,
-    input: ChangePasswordInput,
-    currentSessionId?: string
-  ): Promise<void> {
+  // Other devices are signed out only when the user confirms the client prompt
+  // (POST /auth/sessions/revoke-all). Password RESET still revokes everything.
+  async change(userId: string, input: ChangePasswordInput): Promise<void> {
     const user = await loadActiveAuthUser(userId);
 
     if (!user.passwordHash) {
@@ -50,12 +41,6 @@ export const changePasswordService = {
 
     await authRepository.updatePasswordHash(userId, passwordHash);
 
-    // DB revoke + Redis cache bust + push-token teardown + socket kick.
-    const revokedSessions = await revokeSessionsForPasswordChange(
-      userId,
-      currentSessionId
-    );
-
     publishPasswordChangedSafe({ userId, at: new Date().toISOString() });
 
     publishAdminActivitySafe({
@@ -63,7 +48,6 @@ export const changePasswordService = {
       action: USER_AUDIT_ACTIONS.USER_PASSWORD_CHANGED,
       targetType: "user",
       targetId: userId,
-      after: { revokedSessions },
     });
   },
 };

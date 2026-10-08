@@ -1,5 +1,13 @@
 # Livestream ended: who is named as the actor (Android)
 
+
+> **Update (2026-10-08):** a community admin/moderator who ends someone else's stream is now named by ROLE —
+> "Admin" or "Moderator" (`systemMetadata.actorRole`, push copy rendered server-side), never by name. The
+> end itself is SILENT: no visible push; the "is live" inbox row is rewritten in place
+> (`notification:updated`, same id, `navigation.screen = COMMUNITY_CHAT`) and the `live:<streamId>` tray
+> card is taken back via `NOTIFICATION_DISMISS` / `notify:dismiss`. Rows below that say "push" now mean
+> that inbox row.
+
 Backend status: **shipped** on `rajesh-dev`. The wording is unchanged. Only the actor named in the sentence changes, according to who pressed End Live.
 
 ## Current problem
@@ -11,7 +19,7 @@ When a Super Admin ended a livestream from Backoffice, every surface read "Syste
 | Who pressed End Live | Chat line (`content.text`) | Push / notification body |
 |---|---|---|
 | Host | `{Host} ended the livestream (4m)`, and the host reads `You ended the livestream (4m)` | `{Host} ended the livestream in {Community} after 4m` |
-| Community admin (End for Everyone) | `{Admin} ended {Host}'s livestream (4m)`, and that admin reads `You ended {Host}'s livestream (4m)` | `{Admin} ended {Host}'s livestream in {Community} after 4m` |
+| Community admin (End for Everyone) | `Admin ended {Host}'s livestream (4m)`, and that admin reads `You ended {Host}'s livestream (4m)` | `Admin ended {Host}'s livestream in {Community} after 4m` |
 | Super Admin (Backoffice) | `Administrator ended {Host}'s livestream (4m)`; the host reads `Administrator ended the livestream (4m)` | `Administrator ended {Host}'s livestream in {Community} after 4m`; the host gets `Administrator ended the livestream in {Community} after 4m` |
 | Platform (moderation, ban, timeout) | `System ended the livestream (4m)` (unchanged) | `System ended the livestream in {Community} after 4m` (unchanged) |
 
@@ -58,7 +66,7 @@ Older app builds that compare only `endedReason == "SYSTEM"` would show the host
 | # | Action | Host sees | Admin sees | Other moderator / member sees | Push recipients |
 |---|---|---|---|---|---|
 | 1 | Host ends | You ended… | {Host} ended… | {Host} ended… | everyone except the host |
-| 2 | Community admin ends | {Admin} ended {Host}'s… | You ended {Host}'s… | {Admin} ended {Host}'s… | everyone except that admin, host included |
+| 2 | Community admin ends | Admin ended {Host}'s… | You ended {Host}'s… | Admin ended {Host}'s… | everyone except that admin, host included |
 | 3 | Super Admin ends | Administrator ended {Host}'s… | Administrator ended the livestream… | Administrator ended {Host}'s… | everyone, host included |
 | 3b | Super Admin ends a community ADMIN's stream | Administrator ended {Admin host}'s… | Administrator ended the livestream… | Administrator ended {Admin host}'s… | everyone, host included |
 | 4 | Reopen the chat or relaunch after 1–3 | same text from history | same | same | |

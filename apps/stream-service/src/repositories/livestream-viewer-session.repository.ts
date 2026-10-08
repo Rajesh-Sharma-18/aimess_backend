@@ -1,107 +1,468 @@
-import type { PrismaClient } from "../generated/prisma/index.js";
+import type { Prisma, PrismaClient } from "../generated/prisma/index.js";
+
+const SESSIONS = "livestream_viewer_sessions";
+const VIEWERS = "livestream_viewers";
+
+/**
+ * How long a DISCONNECTED session stays resumable by the same device. Equal to
+ * the gateway's Socket.IO `connectionStateRecovery.maxDisconnectionDuration`:
+ * a reconnect inside it is, to the platform, the same connection — a page
+ * refresh or a network blip must not split one viewing into two sessions.
+ */
+const RECONNECT_GRACE_MS = 2 * 60 * 1000;
+
+/** How one device session ended. Internal — the admin list shows {@link ViewerEndReason}. */
+export type ViewerSessionEndReason =
+  | "LEFT"
+  | "DISCONNECTED"
+  | "STREAM_ENDED"
+  | "REMOVED";
+
+/**
+ * How a user's participation ended: LEFT when their last session closed while
+ * the stream was still running (a leave, a drop, a ban); ENDED when the stream
+ * itself ended while they were still watching. Set once, at that moment — a
+ * later stream end never turns LEFT into ENDED.
+ */
+export type ViewerEndReason = "LEFT" | "ENDED";
+
+export type ViewerStatusFilter = "ALL" | "ACTIVE" | "LEFT" | "ENDED";
+
+export interface ViewerRow {
+  id: string;
+  userId: string;
+  joinedAt: Date;
+  /** null while the user has at least one active session. */
+  leftAt: Date | null;
+  endReason: string | null;
+  /** Closed stretches only; the caller adds the running one. */
+  watchDurationSeconds: number;
+  /** Start of the current active stretch; null when not active. */
+  lastJoinedAt: Date | null;
+}
+
+/** A document as `$runCommandRaw` returns it — extended JSON. */
+type RawSession = {
+  _id: { $oid: string };
+  joinedAt: unknown;
+  connections?: unknown;
+  authSessionId?: string | null;
+};
 
 function computeSeconds(start: Date, end: Date): number {
   return Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000));
 }
 
+/** `device` is the auth session id, or "host" for the stream's one host session. */
+const openKeyOf = (livestreamId: string, userId: string, device: string) =>
+  `${livestreamId}:${userId}:${device}`;
+
+const asDate = (value: Date) => ({ $date: value.toISOString() });
+// Explicit int32 — a bare JSON number may land as a double/long, which Prisma
+// then refuses to read back into an `Int` field.
+const asInt = (value: number) => ({ $numberInt: String(value) });
+
+/** Whole seconds from a date field to `at`, never negative (aggregation expression). */
+const secondsSince = (field: string, at: { $date: string }) => ({
+  $max: [
+    asInt(0),
+    {
+      $toInt: {
+        $round: [{ $divide: [{ $subtract: [at, field] }, 1000] }, 0],
+      },
+    },
+  ],
+});
+
+function readNumber(value: unknown): number {
+  if (typeof value === "number") return value;
+  if (value && typeof value === "object") {
+    return Number(Object.values(value)[0]);
+  }
+  return 0;
+}
+
+function readDate(value: unknown): Date {
+  const raw = (value as { $date?: unknown } | null)?.$date ?? value;
+  if (raw && typeof raw === "object" && !(raw instanceof Date)) {
+    return new Date(Number(Object.values(raw)[0]));
+  }
+  return new Date(raw as string | Date);
+}
+
+function isDuplicateKey(error: unknown): boolean {
+  const e = error as { code?: unknown; message?: unknown } | null;
+  return e?.code === "P2002" || String(e?.message ?? "").includes("E11000");
+}
+
+/**
+ * Viewer tracking on two levels:
+ *
+ *  - SESSION (`livestream_viewer_sessions`): one per device login, with its own
+ *    join/leave time and lifecycle. Internal — it is what tells whether the
+ *    user is still watching from anywhere.
+ *  - PARTICIPATION (`livestream_viewers`): one per livestream + user (unique
+ *    index, server.ts). Counts the user's open sessions and is what the admin
+ *    viewer list reads: ACTIVE while any session is open, LEFT/ENDED only once
+ *    none is. A rejoin reopens this same record — never a second one.
+ *
+ * Every session open/close moves the participation counter by one, so the two
+ * levels stay consistent in any arrival order (increments commute).
+ */
 export class LivestreamViewerSessionRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
   /**
-   * Record a join. Idempotent per (livestreamId, userId): if the user already
-   * has an OPEN session (no `leftAt`) for this stream, its id is reused instead
-   * of creating a duplicate — covers reconnects and duplicate `stream:join`
-   * calls (e.g. a client re-emitting join before its leave fired).
+   * Single-document atomic update, returning the document AFTER it (or null
+   * when nothing matched). Raw on purpose: Prisma's MongoDB `update`/
+   * `updateMany` read the matching ids first and write by id afterwards, so a
+   * filter like "still at zero connections" would not hold at write time.
    */
-  async recordJoin(livestreamId: string, userId: string): Promise<string> {
-    // `{ isSet: false }`, NEVER `{ leftAt: null }` — `leftAt` is left UNSET
-    // (absent) on create, not explicitly null, and Prisma's MongoDB connector
-    // does not match an absent optional field with an `equals: null` filter
-    // (same idiom as `deletedAt: { isSet: false }` in community.repository.ts).
-    const existing = await this.prisma.livestreamViewerSession.findFirst({
-      where: { livestreamId, userId, leftAt: { isSet: false } },
-      orderBy: { joinedAt: "desc" },
-    });
-    if (existing) return existing.id;
+  private async findAndModify(
+    collection: string,
+    query: Prisma.InputJsonObject,
+    update: Prisma.InputJsonObject | Prisma.InputJsonArray,
+    options: { sort?: Prisma.InputJsonObject; upsert?: boolean } = {}
+  ): Promise<RawSession | null> {
+    const res = (await this.prisma.$runCommandRaw({
+      findAndModify: collection,
+      query,
+      update,
+      new: true,
+      ...(options.sort ? { sort: options.sort } : {}),
+      ...(options.upsert ? { upsert: true } : {}),
+    })) as { value?: RawSession | null };
+    return res.value ?? null;
+  }
 
-    const created = await this.prisma.livestreamViewerSession.create({
-      data: { livestreamId, userId },
-    });
-    return created.id;
+  // ── Session level ─────────────────────────────────────────────────────────
+
+  /**
+   * One socket of a device entered the stream.
+   *
+   * Viewer: a device already watching gains a connection (another tab of the
+   * same login); one that dropped within {@link RECONNECT_GRACE_MS} resumes its
+   * DISCONNECTED session; otherwise a new session starts. Another device of the
+   * same user never touches this one.
+   *
+   * Host: one session per stream whatever the device or the reconnects; only
+   * the stream's end closes it (see {@link closeAllOpenForStream}).
+   *
+   * A session that (re)opens makes the user's participation ACTIVE.
+   */
+  async recordJoin(p: {
+    livestreamId: string;
+    userId: string;
+    authSessionId: string;
+    isHost: boolean;
+  }): Promise<void> {
+    const openKey = openKeyOf(
+      p.livestreamId,
+      p.userId,
+      p.isHost ? "host" : p.authSessionId
+    );
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const open = await this.findAndModify(
+        SESSIONS,
+        { openKey },
+        { $inc: { connections: asInt(p.isHost ? 0 : 1) } }
+      );
+      if (open) {
+        // A host session opened at go-live by SRS has no device until the
+        // host's own app connects.
+        if (p.isHost && p.authSessionId && !open.authSessionId) {
+          await this.prisma.livestreamViewerSession.update({
+            where: { id: open._id.$oid },
+            data: { authSessionId: p.authSessionId },
+          });
+        }
+        return;
+      }
+      try {
+        if (!p.isHost && p.authSessionId && (await this.resume(p, openKey))) {
+          await this.openParticipation(p.livestreamId, p.userId);
+          return;
+        }
+        await this.prisma.livestreamViewerSession.create({
+          data: {
+            livestreamId: p.livestreamId,
+            userId: p.userId,
+            ...(p.authSessionId ? { authSessionId: p.authSessionId } : {}),
+            openKey,
+            connections: p.isHost ? 0 : 1,
+          },
+        });
+        await this.openParticipation(p.livestreamId, p.userId);
+        return;
+      } catch (error) {
+        // Another socket of this device opened the session first — join it.
+        if (!isDuplicateKey(error)) throw error;
+      }
+    }
+  }
+
+  private async resume(
+    p: { livestreamId: string; userId: string; authSessionId: string },
+    openKey: string
+  ): Promise<boolean> {
+    const resumed = await this.findAndModify(
+      SESSIONS,
+      {
+        livestreamId: p.livestreamId,
+        userId: p.userId,
+        authSessionId: p.authSessionId,
+        endReason: "DISCONNECTED",
+        leftAt: { $gte: asDate(new Date(Date.now() - RECONNECT_GRACE_MS)) },
+      },
+      {
+        $set: { openKey, connections: asInt(1) },
+        $unset: { leftAt: "", endReason: "", watchDurationSeconds: "" },
+      },
+      { sort: { leftAt: -1 } }
+    );
+    return resumed !== null;
   }
 
   /**
-   * Close the user's most recent OPEN session for this stream (leave,
-   * disconnect, or ban-kick). No-op success when there is no open session —
-   * leave events can legitimately arrive without a matching open join (e.g. a
-   * duplicate `stream:leave`, or a leave for a stream the socket never
-   * successfully joined).
+   * One socket of a device left. The session closes — LEFT on an explicit
+   * leave, DISCONNECTED on a dropped socket — only once the device has no
+   * socket left in the room, so closing one tab never ends a session another
+   * tab still feeds. No-op without an open session (duplicate leave, a leave
+   * for a stream never joined) and always for the host, whose session is keyed
+   * apart from any device and ends with the stream.
    */
-  async recordLeave(livestreamId: string, userId: string): Promise<boolean> {
-    // See recordJoin's comment — `{ isSet: false }`, not `{ leftAt: null }`.
-    const open = await this.prisma.livestreamViewerSession.findFirst({
-      where: { livestreamId, userId, leftAt: { isSet: false } },
-      orderBy: { joinedAt: "desc" },
-    });
-    if (!open) return false;
+  async recordLeave(p: {
+    livestreamId: string;
+    userId: string;
+    authSessionId: string;
+    reason: "LEFT" | "DISCONNECTED";
+  }): Promise<boolean> {
+    const openKey = openKeyOf(p.livestreamId, p.userId, p.authSessionId);
+    const open = await this.findAndModify(
+      SESSIONS,
+      { openKey },
+      { $inc: { connections: asInt(-1) } }
+    );
+    if (!open || readNumber(open.connections) > 0) return false;
 
     const leftAt = new Date();
-    await this.prisma.livestreamViewerSession.update({
-      where: { id: open.id },
-      data: {
-        leftAt,
-        watchDurationSeconds: computeSeconds(open.joinedAt, leftAt),
-      },
-    });
+    // Still at zero: a socket of this device that joined in between keeps the
+    // session open.
+    const closed = await this.findAndModify(
+      SESSIONS,
+      { _id: open._id, openKey, connections: { $lte: 0 } },
+      {
+        $set: {
+          leftAt: asDate(leftAt),
+          endReason: p.reason,
+          watchDurationSeconds: asInt(
+            computeSeconds(readDate(open.joinedAt), leftAt)
+          ),
+        },
+        $unset: { openKey: "" },
+      }
+    );
+    if (!closed) return false;
+    await this.releaseParticipation(p.livestreamId, p.userId, 1, leftAt);
     return true;
   }
 
+  /** Ban-kick: every device session of the user ends at once. */
+  async closeAllOpenForUser(
+    livestreamId: string,
+    userId: string,
+    endedAt: Date
+  ): Promise<number> {
+    const closed = await this.closeOpenSessions(
+      {
+        livestreamId,
+        userId,
+        openKey: { $ne: openKeyOf(livestreamId, userId, "host") },
+      },
+      endedAt,
+      "REMOVED"
+    );
+    if (closed > 0) {
+      await this.releaseParticipation(livestreamId, userId, closed, endedAt);
+    }
+    return closed;
+  }
+
   /**
-   * Bulk close-out for every still-open session when a stream ends (owner
-   * stop, SRS on_unpublish, admin force-end, stale-heartbeat sweeper) so no
-   * session is left open forever after an unexpected disconnect. Non-atomic
-   * read-then-update loop — bounded by the stream's viewer count, the same
-   * trade-off already accepted elsewhere in this codebase (e.g. the reaction
-   * toggle's non-atomic read-modify-write) at current scale.
+   * Close every still-open session — host included — when a stream ends
+   * (owner stop, SRS on_unpublish, admin force-end, stale-heartbeat sweeper),
+   * so an unexpected disconnect never leaves one open forever. Only users
+   * still active at this moment become ENDED; anyone who had already LEFT is
+   * not touched (`activeSessions > 0` excludes them).
    */
   async closeAllOpenForStream(
     livestreamId: string,
     endedAt: Date
   ): Promise<number> {
-    // See recordJoin's comment — `{ isSet: false }`, not `{ leftAt: null }`.
-    const open = await this.prisma.livestreamViewerSession.findMany({
-      where: { livestreamId, leftAt: { isSet: false } },
-      select: { id: true, joinedAt: true },
-    });
-    if (open.length === 0) return 0;
-
-    await Promise.all(
-      open.map((s) =>
-        this.prisma.livestreamViewerSession.update({
-          where: { id: s.id },
-          data: {
-            leftAt: endedAt,
-            watchDurationSeconds: computeSeconds(s.joinedAt, endedAt),
-          },
-        })
-      )
+    const closed = await this.closeOpenSessions(
+      { livestreamId },
+      endedAt,
+      "STREAM_ENDED"
     );
-    return open.length;
+    const at = asDate(endedAt);
+    await this.prisma.$runCommandRaw({
+      update: VIEWERS,
+      updates: [
+        {
+          q: { livestreamId, activeSessions: { $gt: 0 } },
+          u: [
+            {
+              $set: {
+                activeSessions: asInt(0),
+                leftAt: at,
+                endReason: "ENDED",
+                watchDurationSeconds: {
+                  $add: [
+                    "$watchDurationSeconds",
+                    secondsSince("$lastJoinedAt", at),
+                  ],
+                },
+              },
+            },
+            { $unset: "lastJoinedAt" },
+          ],
+          multi: true,
+        },
+      ],
+    });
+    return closed;
   }
 
   /**
-   * Paginated, PER-USER viewer history for the admin "Livestream User List"
-   * screen. A user who rejoined the same stream has multiple underlying
-   * `LivestreamViewerSession` rows (by design — see the model doc); this
-   * aggregates them into one entry per user via a MongoDB `groupBy`:
-   *   - joinedAt  = earliest session's joinedAt (`_min`)
-   *   - leftAt    = latest session's leftAt (`_max`), but null while the user
-   *                 has any currently-open session (still watching)
-   *   - watchDurationSeconds = sum of every CLOSED session's duration
-   *     (`_sum`, nulls from open sessions are excluded by Mongo's `$sum`); the
-   *     currently-open session's live elapsed time is layered on by the
-   *     caller, same as the pre-aggregation behavior for a single open row.
-   * `total` is the count of DISTINCT users, not raw session rows.
+   * One server-side update for every matching open session, each row's
+   * duration computed by Mongo — a stream ending with thousands watching is a
+   * single round trip, not one write per viewer.
+   */
+  private async closeOpenSessions(
+    filter: Prisma.InputJsonObject,
+    endedAt: Date,
+    reason: ViewerSessionEndReason
+  ): Promise<number> {
+    const at = asDate(endedAt);
+    const res = (await this.prisma.$runCommandRaw({
+      update: SESSIONS,
+      updates: [
+        {
+          // A raw `leftAt: null` matches an ABSENT field, unlike Prisma's.
+          q: { ...filter, leftAt: null },
+          u: [
+            {
+              $set: {
+                leftAt: at,
+                endReason: reason,
+                connections: asInt(0),
+                watchDurationSeconds: secondsSince("$joinedAt", at),
+              },
+            },
+            { $unset: "openKey" },
+          ],
+          multi: true,
+        },
+      ],
+    })) as { nModified?: unknown };
+    return readNumber(res.nModified);
+  }
+
+  // ── Participation level ───────────────────────────────────────────────────
+
+  /**
+   * A session of the user opened: find-or-create the user's one participation
+   * record and count it. Going from no open session to one starts a new active
+   * stretch and clears Left At; the first join time is kept for good.
+   */
+  private async openParticipation(
+    livestreamId: string,
+    userId: string
+  ): Promise<void> {
+    const now = asDate(new Date());
+    const wasActive = { $gt: [{ $ifNull: ["$activeSessions", 0] }, 0] };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await this.findAndModify(
+          VIEWERS,
+          { livestreamId, userId },
+          [
+            {
+              $set: {
+                joinedAt: { $ifNull: ["$joinedAt", now] },
+                lastJoinedAt: { $cond: [wasActive, "$lastJoinedAt", now] },
+                activeSessions: {
+                  $add: [{ $ifNull: ["$activeSessions", asInt(0)] }, asInt(1)],
+                },
+                watchDurationSeconds: {
+                  $ifNull: ["$watchDurationSeconds", asInt(0)],
+                },
+              },
+            },
+            { $unset: ["leftAt", "endReason"] },
+          ],
+          { upsert: true }
+        );
+        return;
+      } catch (error) {
+        // Two first joins raced on the unique (livestreamId, userId) index.
+        if (!isDuplicateKey(error)) throw error;
+      }
+    }
+  }
+
+  /**
+   * `count` sessions of the user closed while the stream runs. Only when none
+   * is left does the participation end — as LEFT, Left At stamped and the
+   * stretch added to the duration. (The stream's own end is ENDED, see
+   * {@link closeAllOpenForStream}.)
+   */
+  private async releaseParticipation(
+    livestreamId: string,
+    userId: string,
+    count: number,
+    at: Date
+  ): Promise<void> {
+    const reason: ViewerEndReason = "LEFT";
+    const when = asDate(at);
+    const ending = { $lte: ["$activeSessions", asInt(count)] };
+    await this.findAndModify(
+      VIEWERS,
+      { livestreamId, userId, activeSessions: { $gt: 0 } },
+      [
+        {
+          $set: {
+            activeSessions: {
+              $max: [
+                asInt(0),
+                { $subtract: ["$activeSessions", asInt(count)] },
+              ],
+            },
+            leftAt: { $cond: [ending, when, "$leftAt"] },
+            endReason: { $cond: [ending, reason, "$endReason"] },
+            watchDurationSeconds: {
+              $cond: [
+                ending,
+                {
+                  $add: [
+                    "$watchDurationSeconds",
+                    secondsSince("$lastJoinedAt", when),
+                  ],
+                },
+                "$watchDurationSeconds",
+              ],
+            },
+            lastJoinedAt: { $cond: [ending, "$$REMOVE", "$lastJoinedAt"] },
+          },
+        },
+      ]
+    );
+  }
+
+  /**
+   * Paginated participation list for the admin viewer table — exactly one row
+   * per user, however many devices or rejoins. `total` counts rows matching
+   * `status`.
    */
   async listByStream(
     livestreamId: string,
@@ -110,83 +471,47 @@ export class LivestreamViewerSessionRepository {
       take: number;
       sortField: "joinedAt" | "watchDurationSeconds";
       sortDir: "asc" | "desc";
+      status: ViewerStatusFilter;
     }
-  ): Promise<{
-    rows: Array<{
-      userId: string;
-      joinedAt: Date;
-      leftAt: Date | null;
-      watchDurationSeconds: number;
-      /** Currently-open session's joinedAt, for live-elapsed-time top-up by the caller; null when the user has no open session. */
-      openSessionJoinedAt: Date | null;
-    }>;
-    total: number;
-  }> {
-    // A single-key orderBy — Prisma's groupBy typing ties each orderBy key to
-    // the "by" list, and rejects a userId tiebreaker here since "userId" is
-    // the group key, not an aggregate; ties are rare enough (same joinedAt or
-    // watchDurationSeconds down to the second/ms) that stability isn't worth
-    // fighting the type checker for. Kept inline (not hoisted to a separately
-    // pre-annotated variable) — an explicit `OrderByWithAggregationInput`
-    // annotation widens the union and Prisma's groupBy typing then can't tell
-    // which variant it is, forcing every possible field into "by".
-    const grouped = await this.prisma.livestreamViewerSession.groupBy({
-      by: ["userId"],
-      where: { livestreamId },
-      _min: { joinedAt: true },
-      _max: { leftAt: true },
-      _sum: { watchDurationSeconds: true },
-      orderBy:
-        params.sortField === "watchDurationSeconds"
-          ? { _sum: { watchDurationSeconds: params.sortDir } }
-          : { _min: { joinedAt: params.sortDir } },
-      skip: params.skip,
-      take: params.take,
-    });
-    const distinctUsers = await this.prisma.livestreamViewerSession.findMany({
-      where: { livestreamId },
-      distinct: ["userId"],
-      select: { userId: true },
-    });
-
-    if (grouped.length === 0) {
-      return { rows: [], total: distinctUsers.length };
-    }
-
-    // See recordJoin's comment — `{ isSet: false }`, not `{ leftAt: null }`.
-    const userIds = grouped.map((g) => g.userId);
-    const openSessions = await this.prisma.livestreamViewerSession.findMany({
-      where: {
-        livestreamId,
-        userId: { in: userIds },
-        leftAt: { isSet: false },
-      },
-      select: { userId: true, joinedAt: true },
-    });
-    const openJoinedAtByUser = new Map(
-      openSessions.map((s) => [s.userId, s.joinedAt])
-    );
-
-    const rows = grouped.map((g) => {
-      const openJoinedAt = openJoinedAtByUser.get(g.userId) ?? null;
-      return {
-        userId: g.userId,
-        joinedAt: g._min.joinedAt ?? openJoinedAt ?? new Date(0),
-        leftAt: openJoinedAt ? null : (g._max.leftAt ?? null),
-        watchDurationSeconds: g._sum.watchDurationSeconds ?? 0,
-        openSessionJoinedAt: openJoinedAt,
-      };
-    });
-
-    return { rows, total: distinctUsers.length };
+  ): Promise<{ rows: ViewerRow[]; total: number }> {
+    // `{ isSet: false }`, NEVER `{ leftAt: null }` — an active participation
+    // has no `leftAt` at all, and Prisma's MongoDB connector does not match an
+    // absent field with `equals: null`. `endReason` exists only once ended.
+    const where =
+      params.status === "ACTIVE"
+        ? { livestreamId, leftAt: { isSet: false } }
+        : params.status === "ALL"
+          ? { livestreamId }
+          : { livestreamId, endReason: params.status };
+    const [rows, total] = await Promise.all([
+      this.prisma.livestreamViewer.findMany({
+        where,
+        orderBy: [
+          params.sortField === "watchDurationSeconds"
+            ? { watchDurationSeconds: params.sortDir }
+            : { joinedAt: params.sortDir },
+          { id: params.sortDir },
+        ],
+        skip: params.skip,
+        take: params.take,
+        select: {
+          id: true,
+          userId: true,
+          joinedAt: true,
+          leftAt: true,
+          endReason: true,
+          watchDurationSeconds: true,
+          lastJoinedAt: true,
+        },
+      }),
+      this.prisma.livestreamViewer.count({ where }),
+    ]);
+    return { rows, total };
   }
 
   /**
-   * Distinct-viewer count for one stream — the SAME dedupe `listByStream`
-   * already does for `total`, without paging through the rows. This is the
-   * number that must equal the admin viewer list's total, so callers needing
-   * a "viewer count" for a single stream (e.g. the detail screen) should use
-   * this instead of the raw `totalViews` join-attempt counter.
+   * Distinct-viewer count for one stream — the admin detail's viewer count,
+   * and always equal to the viewer list's unfiltered total.
    */
   async countDistinctUsers(livestreamId: string): Promise<number> {
     const distinctUsers = await this.prisma.livestreamViewerSession.findMany({
@@ -199,8 +524,8 @@ export class LivestreamViewerSessionRepository {
 
   /**
    * Batch distinct-viewer counts, keyed by livestreamId — used by the admin
-   * list screen so `viewerCount` matches the per-stream viewer list total
-   * without an N+1 query per row.
+   * list screen so `viewerCount` matches the per-stream count without an N+1
+   * query per row.
    */
   async countDistinctUsersByStreamIds(
     livestreamIds: string[]

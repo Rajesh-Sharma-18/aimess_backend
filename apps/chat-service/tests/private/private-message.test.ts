@@ -1241,6 +1241,73 @@ describe("PATCH /messages/:messageId (edit)", () => {
     expect(res.status).toBe(400);
   });
 
+  it("MULTI-DEVICE: message:edited reaches the room AND both participants' personal buses, with revision", async () => {
+    const now = Date.now();
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "msg_1", roomId: ROOM, senderId: TEST_USER_ID, messageType: "TEXT",
+      isDeleted: false, createdAt: new Date(now - 1000),
+    });
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM, participants: [TEST_USER_ID, "peer"],
+    });
+    mocks.privateMessageRepo.editMessage.mockResolvedValue({
+      id: "msg_1", roomId: ROOM, senderId: TEST_USER_ID, receiverId: "peer",
+      messageType: "TEXT", content: { text: "edited" },
+      createdAt: new Date(now - 1000), editedAt: new Date(now), revision: 9,
+    });
+    (mocks.redis.publish as jest.Mock).mockClear();
+
+    const res = await request(app)
+      .patch(`/api/chat/private/messages/msg_1`)
+      .set(bearer(makeAccessToken()))
+      .send({ content: { text: "edited" } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isEdited).toBe(true);
+    expect(res.body.data.revision).toBe(9);
+    const channels = ((mocks.redis.publish as jest.Mock).mock.calls as Array<[string, string]>)
+      .filter(([, json]) => JSON.parse(json).event === "message:edited")
+      .map(([channel]) => channel)
+      .sort();
+    expect(channels).toEqual([`conv:${ROOM}`, "user:peer", `user:${TEST_USER_ID}`].sort());
+  });
+
+  it("NEGATIVE: 400 editing a deleted message", async () => {
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "msg_1", roomId: ROOM, senderId: TEST_USER_ID, messageType: "TEXT",
+      isDeleted: true, createdAt: new Date(),
+    });
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM, participants: [TEST_USER_ID, "peer"],
+    });
+
+    const res = await request(app)
+      .patch(`/api/chat/private/messages/msg_1`)
+      .set(bearer(makeAccessToken()))
+      .send({ content: { text: "x" } });
+
+    expect(res.status).toBe(400);
+    expect(mocks.privateMessageRepo.editMessage).not.toHaveBeenCalled();
+  });
+
+  it("NEGATIVE: 400 with whitespace-only edit text", async () => {
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "msg_1", roomId: ROOM, senderId: TEST_USER_ID, messageType: "TEXT",
+      isDeleted: false, createdAt: new Date(),
+    });
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM, participants: [TEST_USER_ID, "peer"],
+    });
+
+    const res = await request(app)
+      .patch(`/api/chat/private/messages/msg_1`)
+      .set(bearer(makeAccessToken()))
+      .send({ content: { text: "   " } });
+
+    expect(res.status).toBe(400);
+    expect(mocks.privateMessageRepo.editMessage).not.toHaveBeenCalled();
+  });
+
   it("NEGATIVE: 404 when the message is gone", async () => {
     mocks.privateMessageRepo.findById.mockResolvedValue(null);
 
