@@ -617,6 +617,7 @@ export function registerChatNamespace(
               isOnline: subject?.isOnline ?? false,
               lastSeen: subject?.lastSeen ?? null,
               version: subject?.version ?? 0,
+              isHidden: false,
             });
             return;
           }
@@ -626,10 +627,13 @@ export function registerChatNamespace(
             // (see BACKEND_PRESENCE_MOBILE.md): version-guarding this one would
             // let a stale-but-higher version keep the green dot lit for a
             // viewer who is no longer allowed to see it.
+            // `isHidden` tells the client to drop the indicator entirely
+            // rather than render the masked state as "Offline".
             watcher.emit("presence:status", {
               userId: subjectId,
               isOnline: false,
               lastSeen: null,
+              isHidden: true,
             });
             void watcher.leave(`presence:${subjectId}`);
           }
@@ -1204,7 +1208,8 @@ export function registerChatNamespace(
   const MessagePinSchema = withCommunityAliases(MessagePinSchemaBase);
 
   const PresenceSubscribeSchema = z.object({
-    peerIds: z.array(z.string().min(1)).max(500),
+    // Every id becomes a room name (see the intent rooms below), so bound it.
+    peerIds: z.array(z.string().min(1).max(128)).max(500),
   });
   // 1:1 only. `groupId` used to be accepted here as the alternative to
   // `calleeId`, which made the group ring path reachable by any authenticated
@@ -1829,28 +1834,26 @@ export function registerChatNamespace(
         // silently dropped rather than erroring: a per-peer rejection would
         // itself disclose the setting.
         void (async () => {
-          // Resolve visibility FIRST, then join.
-          //
-          // The intent rooms used to be joined for every supplied id before any
-          // authorization ran, and `peerIds` is an array of up to 500 arbitrary
-          // strings. Repeated emits with fresh random ids therefore grew the
-          // adapter's in-memory room maps without bound, on the process that is
-          // the single public edge and holds no database — a memory-exhaustion
-          // path against every namespace at once, for the cost of a socket
-          // frame.
+          // Resolve visibility FIRST, then join. `peerIds` is up to 500
+          // arbitrary strings per frame and frames are unlimited, so every room
+          // this handler joins is bounded by the per-socket cap below — the
+          // gateway is the single public edge and holds no database.
           const visible = await userClient.filterVisiblePresence(
             userId,
             r.data.peerIds
           );
 
-          // Record the INTENT to watch each peer the caller may watch. Nothing
-          // is ever published to `presence-intent:*` — it exists so a later
-          // widening (NO_ONE → EVERYONE, or becoming friends) can find the
-          // sockets that asked and grant them, without the client
-          // re-subscribing. A peer the caller cannot see today is not recorded:
-          // that is what made the room set attacker-controlled.
+          // Record the INTENT to watch each requested peer — denied ones
+          // included. Nothing is ever published to `presence-intent:*`; it
+          // exists so a later widening (NO_ONE → EVERYONE, or becoming friends)
+          // can find the sockets that asked and grant them, without the client
+          // re-subscribing. A peer hidden today is exactly the one a widening
+          // must reach, so skipping it left the viewer blank until a reload.
+          // Memory stays bounded by MAX_PRESENCE_ROOMS_PER_SOCKET and the id
+          // length cap; only `presence:<id>` (the delivery room) is gated.
           const intentRooms = presenceRoomsFor(socket);
-          for (const peerId of visible) {
+          for (const peerId of r.data.peerIds) {
+            if (intentRooms.has(peerId)) continue;
             if (intentRooms.size >= MAX_PRESENCE_ROOMS_PER_SOCKET) {
               logger.warn(
                 `/chat presence:subscribe room cap reached socketId=${socket.id} userId=${userId} cap=${String(MAX_PRESENCE_ROOMS_PER_SOCKET)}`

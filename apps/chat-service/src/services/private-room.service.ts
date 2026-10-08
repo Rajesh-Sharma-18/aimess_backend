@@ -308,6 +308,8 @@ export interface PrivateRoomPeer {
   isOnline: boolean;
   /** Server-generated epoch ms. Meaningful only while `isOnline` is false. */
   lastSeen: number | null;
+  /** Peer's `whoCanSeeOnlineStatus` excludes the viewer — render no presence. */
+  isHidden: boolean;
 }
 
 /**
@@ -387,6 +389,8 @@ export interface PrivateConversationListItem extends PeerFriendshipRelationship 
   isOffline: boolean;
   /** Server-generated epoch ms. Meaningful only while `isOnline` is false. */
   lastSeen: number | null;
+  /** Peer's `whoCanSeeOnlineStatus` excludes the viewer — render no presence. */
+  isPresenceHidden: boolean;
   unreadMessageCount: number;
   lastActivityAt: number;
   lastActivity: PrivateConversationLastActivity;
@@ -412,6 +416,7 @@ function toConversationListItem(
     isOnline: room.peer.isOnline,
     isOffline: !room.peer.isOnline,
     lastSeen: room.peer.lastSeen,
+    isPresenceHidden: room.peer.isHidden,
     unreadMessageCount: room.unreadMessageCount,
     lastActivityAt: room.lastActivityAt,
     lastActivity: room.lastActivity,
@@ -450,6 +455,8 @@ export interface PrivateRoomDetailsData extends PeerFriendshipRelationship {
   isOffline: boolean;
   /** Server-generated epoch ms. Meaningful only while `isOnline` is false. */
   lastSeen: number | null;
+  /** Peer's `whoCanSeeOnlineStatus` excludes the viewer — render no presence. */
+  isPresenceHidden: boolean;
   isMuted: boolean;
   muteUntil: number | null;
   unreadMessageCount: number;
@@ -835,6 +842,7 @@ export class PrivateRoomService {
       isOnline: enriched.peer.isOnline,
       isOffline: !enriched.peer.isOnline,
       lastSeen: enriched.peer.lastSeen,
+      isPresenceHidden: enriched.peer.isHidden,
       isMuted: enriched.isMuted,
       muteUntil,
       unreadMessageCount: enriched.unreadMessageCount,
@@ -1432,6 +1440,10 @@ export class PrivateRoomService {
           lastSeen: isInertPeer
             ? null
             : (presenceByPeer.get(peerId)?.lastSeen ?? null),
+          // Inert peers already render their own "no presence" state.
+          isHidden: isInertPeer
+            ? false
+            : presenceByPeer.get(peerId)?.isHidden === true,
         },
         lastActivityAt,
         lastActivity,
