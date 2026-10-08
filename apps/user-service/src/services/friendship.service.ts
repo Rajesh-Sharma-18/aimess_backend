@@ -1,4 +1,5 @@
 import { BadRequestError, ConflictError, NotFoundError } from "@aimess/errors";
+import { assertActionQuota } from "@aimess/utils";
 import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
@@ -42,6 +43,7 @@ import { messagingGrpcClient } from "../grpc/messaging.client.js";
 import { bannedAmong } from "../lib/banned-users.js";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
+import { redis } from "../config/redis.js";
 import { avatarService } from "./avatar.service.js";
 import type { ListFriendRequestsQuery } from "../api/validators/friendship.validator.js";
 import type {
@@ -95,6 +97,8 @@ export type PlatformDisconnectResult = {
 };
 
 const BATCH_CHUNK_SIZE = 500;
+const DAY_SEC = 86_400;
+const FRIEND_REQUEST_DAILY_LIMIT = 50;
 
 type PeerBrief = {
   userId: string;
@@ -602,6 +606,23 @@ export const friendshipService = {
       if (!scopeAdmits(scope, { isFriend: alreadyFriends, isFriendOfFriend })) {
         throw new BadRequestError("FRIEND_REQUEST_NOT_ALLOWED");
       }
+    }
+
+    // Charged only when this call issues a request (not a refusal, not the mutual auto-accept).
+    if (
+      !existing ||
+      (existing.status !== "ACCEPTED" && existing.status !== "PENDING")
+    ) {
+      await assertActionQuota(
+        redis,
+        {
+          key: `friend-request:${requesterId}`,
+          limit: FRIEND_REQUEST_DAILY_LIMIT,
+          windowSec: DAY_SEC,
+          blockSec: DAY_SEC,
+        },
+        "FRIEND_REQUEST_LIMIT_REACHED"
+      );
     }
 
     if (existing) {
