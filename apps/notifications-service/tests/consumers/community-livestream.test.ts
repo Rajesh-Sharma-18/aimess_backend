@@ -356,7 +356,7 @@ describe("LIVESTREAM_ENDED branch", () => {
       "Quản trị viên đã kết thúc buổi phát trực tiếp của Jane Doe trong Cool Community sau 4m"
     );
     expect(input.copy("th").body).toBe(
-      "ผู้ดูแลระบบจบไลฟ์สตรีมของJane DoeในCool Communityหลังจาก 4m"
+      "ผู้ดูแลระบบจบไลฟ์สตรีมของ Jane Doe ใน Cool Community หลังจาก 4m"
     );
     for (const locale of ["en", "vi", "th"]) {
       expect(input.copy(locale).body).not.toMatch(/System|Hệ thống|An administrator/);

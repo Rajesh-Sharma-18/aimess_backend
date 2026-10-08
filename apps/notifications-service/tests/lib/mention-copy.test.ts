@@ -44,7 +44,7 @@ describe("chat mention inbox copy", () => {
     });
     expect(copy("th")).toEqual({
       title: "Weekend Trip",
-      body: "Ana กล่าวถึงคุณในWeekend Trip",
+      body: "Ana กล่าวถึงคุณใน Weekend Trip",
     });
   });
 
@@ -93,7 +93,7 @@ describe("chat @all mention inbox copy", () => {
       body: "Ana mentioned @all in Weekend Trip",
     });
     expect(copy("vi").body).toBe("Ana đã nhắc đến @all trong Weekend Trip");
-    expect(copy("th").body).toBe("Ana กล่าวถึง @all ในWeekend Trip");
+    expect(copy("th").body).toBe("Ana กล่าวถึง @all ใน Weekend Trip");
     for (const locale of ["en", "vi", "th"] as const) {
       expect(copy(locale).body).not.toBe(
         chatCopy.mentionInbox({
@@ -212,7 +212,7 @@ describe("chat mention copy", () => {
       "Bạn được nhắc đến trong Weekend Trip"
     );
     expect(chatMentionPreviewHiddenBody("Weekend Trip", "th")).toBe(
-      "มีคนกล่าวถึงคุณในWeekend Trip"
+      "มีคนกล่าวถึงคุณใน Weekend Trip"
     );
     expect(chatMentionPreviewHiddenBody(undefined, "en")).toBe(
       "You were mentioned"

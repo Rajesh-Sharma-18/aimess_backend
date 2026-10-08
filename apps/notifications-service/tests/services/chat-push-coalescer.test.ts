@@ -640,7 +640,7 @@ describe("chat push coalescing — group @all", () => {
       "Mọi người được nhắc đến trong Weekend Trip"
     );
     expect(sent.showPreviewOverride("th")).toBe(
-      "มีการกล่าวถึงทุกคนในWeekend Trip"
+      "มีการกล่าวถึงทุกคนใน Weekend Trip"
     );
   });
 

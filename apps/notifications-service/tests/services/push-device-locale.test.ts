@@ -56,7 +56,7 @@ const USER_ID = "11111111-1111-4111-8111-111111111111";
 
 const EN = "John sent you a friend request";
 const VI = "John đã gửi cho bạn lời mời kết bạn";
-const TH = "Johnส่งคำขอเป็นเพื่อนถึงคุณ";
+const TH = "John ส่งคำขอเป็นเพื่อนถึงคุณ";
 
 const settings = (language: string) => ({
   chatEnabled: true,

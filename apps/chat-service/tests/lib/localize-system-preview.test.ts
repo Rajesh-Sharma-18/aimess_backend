@@ -42,7 +42,7 @@ describe("withLocalizedSystemPreview", () => {
     ).toBe("Alex đã xóa Jim khỏi nhóm");
     expect(
       textOf(withLocalizedSystemPreview(GROUP_SNAPSHOT, "GROUP", "x", "th"))
-    ).toBe("AlexนำJimออกจากกลุ่ม");
+    ).toBe("Alex นำ Jim ออกจากกลุ่ม");
   });
 
   it("gives the subject their first-person row, translated", () => {
@@ -50,7 +50,7 @@ describe("withLocalizedSystemPreview", () => {
       textOf(
         withLocalizedSystemPreview(GROUP_SNAPSHOT, "GROUP", "target-1", "th")
       )
-    ).toBe("Alexนำคุณออกจากกลุ่ม");
+    ).toBe("Alex นำคุณออกจากกลุ่ม");
   });
 
   it("never translates interpolated names", () => {
@@ -75,7 +75,7 @@ describe("withLocalizedSystemPreview", () => {
     const rendered = runWithLocale("th", () =>
       textOf(withLocalizedSystemPreview(GROUP_SNAPSHOT, "GROUP", "x"))
     );
-    expect(rendered).toBe("AlexนำJimออกจากกลุ่ม");
+    expect(rendered).toBe("Alex นำ Jim ออกจากกลุ่ม");
   });
 
   it("keeps a legacy snapshot (no systemEvent) byte-identical", () => {

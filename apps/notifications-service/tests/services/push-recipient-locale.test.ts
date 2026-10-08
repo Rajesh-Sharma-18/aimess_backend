@@ -82,7 +82,7 @@ describe("pushToUser — recipient language", () => {
 
     expect(en).toBe("John sent you a friend request");
     expect(vi).toBe("John đã gửi cho bạn lời mời kết bạn");
-    expect(th).toBe("Johnส่งคำขอเป็นเพื่อนถึงคุณ");
+    expect(th).toBe("John ส่งคำขอเป็นเพื่อนถึงคุณ");
     expect(new Set([en, vi, th]).size).toBe(3);
   });
 

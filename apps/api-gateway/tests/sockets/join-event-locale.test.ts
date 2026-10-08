@@ -220,6 +220,6 @@ describe("group:added — the same rebuild on the DB snapshot shape", () => {
   it("gives the ADDED member their own first-person line, in their language", () => {
     expect(
       textOf(personalizeConvUpdatedPreview(GROUP_ADDED, "target-1", "th"))
-    ).toBe("Alexเพิ่มคุณเข้ากลุ่ม");
+    ).toBe("Alex เพิ่มคุณเข้ากลุ่ม");
   });
 });

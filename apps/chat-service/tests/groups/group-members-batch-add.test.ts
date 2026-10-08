@@ -275,6 +275,6 @@ describe("grouped MEMBER_ADDED text — per-viewer wording", () => {
     ).toBe("Krish đã thêm User B, User C và User D vào nhóm");
     expect(
       buildGroupSystemFallbackText("MEMBER_ADDED", systemData, "admin-1", "th")
-    ).toBe("คุณเพิ่มUser B, User C และUser Dเข้ากลุ่ม");
+    ).toBe("คุณเพิ่ม User B, User C และ User D เข้ากลุ่ม");
   });
 });

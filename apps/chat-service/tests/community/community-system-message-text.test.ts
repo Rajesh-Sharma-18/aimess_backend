@@ -285,7 +285,7 @@ describe("system message text — display names and You personalization", () => 
     const render = (locale: "vi" | "th") =>
       buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", "viewer", locale);
     expect(render("vi").startsWith("Quản trị viên đã kết thúc buổi phát trực tiếp của Mind Flayer (")).toBe(true);
-    expect(render("th").startsWith("ผู้ดูแลระบบจบไลฟ์สตรีมของMind Flayer (")).toBe(true);
+    expect(render("th").startsWith("ผู้ดูแลระบบจบไลฟ์สตรีมของ Mind Flayer (")).toBe(true);
   });
 
   it('Super Admin end: the host reads "Administrator ended the livestream", never "You" or "System"', () => {
@@ -882,7 +882,7 @@ describe("community moderation lines — manual vs automatic actor", () => {
   it("localizes per viewer locale (vi/th)", () => {
     const manual = { actorUserId: ACTOR };
     expect(render("MEMBER_BANNED", manual, BYSTANDER, "vi")).toBe("Julia Doyle đã cấm Boyd Stevens");
-    expect(render("MEMBER_UNMUTED", manual, BYSTANDER, "th")).toBe("Julia Doyleเปิดสิทธิ์พูดให้Boyd Stevens");
+    expect(render("MEMBER_UNMUTED", manual, BYSTANDER, "th")).toBe("Julia Doyle เปิดสิทธิ์พูดให้ Boyd Stevens");
     expect(
       render("MEMBER_UNMUTED", { actorUserId: "system", source: "auto" }, BYSTANDER, "vi")
     ).toBe("Boyd Stevens đã được bỏ cấm nói");
