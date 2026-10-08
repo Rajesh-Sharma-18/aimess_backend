@@ -44,6 +44,10 @@ jest.mock("@aimess/redis", () => ({
   publishUserSocketEvent: jest.fn(async () => 1),
 }));
 
+jest.mock("../../src/services/push-dismiss.js", () => ({
+  dismissTrayCards: jest.fn(async () => undefined),
+}));
+
 jest.mock("../../src/grpc/community.client.js", () => ({
   communityClient: { getCommunityBrief: jest.fn(async () => null) },
 }));
@@ -92,6 +96,10 @@ function fannedOutTo(): string[] {
 
 /** The PushInput one recipient would receive (what pushToUsers builds per user). */
 function inputFor(userId: string): Record<string, unknown> {
+  const single = push.mock.calls.find(
+    (c) => (c[0] as { userId: string }).userId === userId
+  );
+  if (single) return single[0] as Record<string, unknown>;
   const call = pushMany.mock.calls.find((c) =>
     (c[0] as unknown as string[]).includes(userId)
   );
@@ -219,11 +227,11 @@ describe("LIVESTREAM_ENDED", () => {
     expect((input.data as Record<string, string>).durationSeconds).toBe("5040");
   });
 
-  it("fans out exactly once — no duplicate notification per member", async () => {
+  it("rewrites each member's row exactly once — no duplicate per member", async () => {
     await deliver(CommunityEvents.LIVESTREAM_ENDED, endedPayload);
 
-    expect(pushMany).toHaveBeenCalledTimes(1);
-    expect(push).not.toHaveBeenCalled();
+    expect(fannedOutTo().sort()).toEqual([MEMBER_A, MEMBER_B].sort());
+    expect(pushMany).not.toHaveBeenCalled();
   });
 
   it("creates nothing at all when the host is the only candidate", async () => {
