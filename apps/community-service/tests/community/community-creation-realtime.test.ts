@@ -61,6 +61,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
 jest.mock("../../src/repositories/community.repository.js", () => ({
   communityRepository: {
     findActiveCategoryById: jest.fn(),
+    countOwnedCommunities: jest.fn(async () => 0),
     createCommunity: jest.fn(),
     createMember: jest.fn(),
     createManyMembers: jest.fn(),
@@ -172,6 +173,7 @@ const validInput = {
 beforeEach(() => {
   jest.clearAllMocks();
 
+  repo.countOwnedCommunities.mockResolvedValue(0);
   repo.findActiveCategoryById.mockResolvedValue({
     id: "cat001",
     name: "Technology",

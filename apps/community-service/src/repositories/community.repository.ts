@@ -887,6 +887,13 @@ export const communityRepository = {
     return prisma.community.count({ where: { deletedAt: { isSet: false } } });
   },
 
+  /** Non-deleted communities the user currently owns (closed/suspended still count). */
+  countOwnedCommunities(userId: string) {
+    return prisma.community.count({
+      where: { adminId: userId, deletedAt: { isSet: false } },
+    });
+  },
+
   // ---------------------------------------------------------------------------
   // Members
   // ---------------------------------------------------------------------------

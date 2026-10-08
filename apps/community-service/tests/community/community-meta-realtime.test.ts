@@ -40,6 +40,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     setCommunityAdmin: jest.fn(),
     findActiveMemberIds: jest.fn(),
     findActiveCategoryById: jest.fn(),
+    countOwnedCommunities: jest.fn(async () => 0),
     createAuditLog: jest.fn(),
     // update() answers with getById()'s caller view — these back it.
     findMuteByUserAndCommunity: jest.fn(),
@@ -232,7 +233,8 @@ describe("update() — response carries live + caller state, not defaults", () =
   beforeEach(() => {
     repo.findById.mockResolvedValue(baseCommunity);
     repo.findActiveMemberIds.mockResolvedValue([M1, M2]);
-    repo.findActiveCategoryById.mockResolvedValue({ id: "cat-2", name: "Sports" });
+    repo.countOwnedCommunities.mockResolvedValue(0);
+  repo.findActiveCategoryById.mockResolvedValue({ id: "cat-2", name: "Sports" });
     repo.findMuteByUserAndCommunity.mockResolvedValue({
       mutedUntil: null,
       streamEnabled: true,

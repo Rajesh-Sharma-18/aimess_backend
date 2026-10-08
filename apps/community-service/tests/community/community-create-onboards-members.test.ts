@@ -62,6 +62,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
 jest.mock("../../src/repositories/community.repository.js", () => ({
   communityRepository: {
     findActiveCategoryById: jest.fn(),
+    countOwnedCommunities: jest.fn(async () => 0),
     createCommunity: jest.fn(),
     createMember: jest.fn(),
     createManyMembers: jest.fn(),
@@ -196,6 +197,7 @@ const inputWithMembers = {
 beforeEach(() => {
   jest.clearAllMocks();
 
+  repo.countOwnedCommunities.mockResolvedValue(0);
   repo.findActiveCategoryById.mockResolvedValue({
     id: "cat001",
     name: "Technology",
@@ -234,6 +236,27 @@ const addedCalls = () =>
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
+
+describe("communityService.create — 5 owned communities per account", () => {
+  it("refuses the 6th with COMMUNITY_CREATE_LIMIT_REACHED and writes nothing", async () => {
+    repo.countOwnedCommunities.mockResolvedValue(5);
+
+    await expect(
+      communityService.create(CREATOR, inputWithMembers)
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      messageKey: "COMMUNITY_CREATE_LIMIT_REACHED",
+    });
+    expect(repo.countOwnedCommunities).toHaveBeenCalledWith(CREATOR);
+    expect(repo.createCommunity).not.toHaveBeenCalled();
+  });
+
+  it("allows the 5th", async () => {
+    repo.countOwnedCommunities.mockResolvedValue(4);
+    await communityService.create(CREATOR, inputWithMembers);
+    expect(repo.createCommunity).toHaveBeenCalled();
+  });
+});
 
 describe("communityService.create — onboards members added at creation", () => {
   it("emits community:added to the creator AND every added member (3 total)", async () => {

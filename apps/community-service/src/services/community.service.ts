@@ -31,6 +31,7 @@ import {
   publishUserSocketEvent,
 } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
+import { assertReportQuota } from "@aimess/utils";
 import type {
   CommunityAddedPayload,
   CommunityClosedPayload,
@@ -1235,6 +1236,8 @@ function publishNotificationMuteChanged(
 
 /** Platform cap on concurrent LIVE streams per community (see stream-service). */
 const MAX_ACTIVE_LIVESTREAMS = 5;
+// ponytail: count-then-create, no Mongo transaction; two racing creates can land a 6th.
+const MAX_OWNED_COMMUNITIES = 5;
 
 /**
  * Derive the list/detail livestream fields from a community's LIVE stream count.
@@ -2483,6 +2486,13 @@ export const communityService = {
     creatorId: string,
     input: CreateCommunityInput
   ): Promise<CommunityData> {
+    if (
+      (await communityRepository.countOwnedCommunities(creatorId)) >=
+      MAX_OWNED_COMMUNITIES
+    ) {
+      throw new BadRequestError("COMMUNITY_CREATE_LIMIT_REACHED");
+    }
+
     const name = normalizeName(input.name);
     const handle = normalizeHandle(input.handle);
 
@@ -9807,6 +9817,8 @@ export const communityService = {
         return toReportData(existingOpen);
       }
     }
+
+    await assertReportQuota(redis, callerId);
 
     let row;
     try {

@@ -2491,7 +2491,17 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         );
         callback(null, { reportId: report.reportId, ok: true });
       } catch (err) {
-        if (isAppError(err)) {
+        // The daily report quota must reach the socket ack as RATE_LIMITED + retry-after, not ok:false.
+        if (isAppError(err) && err.statusCode === 429) {
+          const metadata = new grpc.Metadata();
+          metadata.set("retry-after", String(err.retryAfterSec ?? 0));
+          callback({
+            code: grpc.status.RESOURCE_EXHAUSTED,
+            details: err.messageKey,
+            message: err.messageKey,
+            metadata,
+          } as grpc.ServiceError);
+        } else if (isAppError(err)) {
           callback(null, { reportId: "", ok: false });
         } else {
           logger.error("createReport gRPC handler failed", err);
