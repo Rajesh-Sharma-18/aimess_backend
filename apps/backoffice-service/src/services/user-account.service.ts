@@ -97,12 +97,12 @@ function orNull(value: string): string | null {
   return value === "" ? null : value;
 }
 
-function notifyAccountUpdated(userId: string, actorId: string): void {
+// The acting admin stays in the audit log only; apps read "Administrator".
+function notifyAccountUpdated(userId: string): void {
   publishAdminUserNotifySafe({
     userId,
     type: AdminUserEvents.USER_ACCOUNT_UPDATED,
     ...ACCOUNT_UPDATED_FALLBACK_COPY,
-    data: { actorId },
   });
 }
 
@@ -270,7 +270,7 @@ export const userAccountService = {
           ip: ctx.ip,
           userAgent: ctx.userAgent,
         });
-        notifyAccountUpdated(userId, actor.id);
+        notifyAccountUpdated(userId);
         if (DIRECTORY_FIELDS.some((field) => field in changes)) {
           announceUserDirectoryChange();
         }
@@ -335,7 +335,7 @@ export const userAccountService = {
       ip: ctx.ip,
       userAgent: ctx.userAgent,
     });
-    notifyAccountUpdated(userId, actor.id);
+    notifyAccountUpdated(userId);
 
     return userAccountService.getAccount(userId);
   },

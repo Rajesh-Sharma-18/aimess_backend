@@ -94,6 +94,15 @@ function setup(opts: {
       row = { ...row, ...data };
       return { ...row };
     }),
+    updateIfStatus: jest.fn(
+      async (_id: string, from: readonly string[], data: Record<string, unknown>) => {
+        await flush(); // a real write yields, so an end can land first
+        if (!from.includes(row.status)) return null;
+        row = { ...row, ...data };
+        return { ...row };
+      }
+    ),
+    findBySrsName: jest.fn(async () => ({ ...row })),
     countLiveByCommunity: jest.fn().mockResolvedValue(0),
     countActiveByCommunityAndCreator: jest.fn().mockResolvedValue(0),
     countActiveByCommunity: jest.fn().mockResolvedValue(0),
@@ -560,10 +569,26 @@ describe("stopStream — idempotency and races", () => {
       ([name]) => name === "stream.ended"
     )![1];
     expect(ended).toMatchObject({
-      reason: "MANUAL_ADMIN",
+      reason: "ADMIN_FORCE_ENDED",
       endedBy: null,
       byPlatformAdmin: true,
     });
+  });
+
+  it("the Backoffice reason code never reaches clients — they read ADMIN_FORCE_ENDED", async () => {
+    const t = setup({});
+    await t.service.adminForceEnd("stream-1", "NUDITY");
+    await flush();
+
+    const wire = JSON.stringify([
+      t.published("stream:status"),
+      t.published("community:stream:ended"),
+      t.eventPublisher.mock.calls,
+    ]);
+    expect(wire).not.toContain("NUDITY");
+    expect(t.row().endedReason).toBe("ADMIN_FORCE_ENDED");
+    const view = await t.service.getStream("stream-1", ADMIN);
+    expect(view.endedReason).toBe("ADMIN_FORCE_ENDED");
   });
 
   it("Backoffice adminForceEnd ends a community ADMIN-hosted stream too", async () => {
@@ -573,6 +598,43 @@ describe("stopStream — idempotency and races", () => {
 
     expect(res).toEqual({ success: true, status: "ENDED" });
     expect(t.endEvents().domainEnded).toBe(1);
+  });
+
+  // Every end path emits the same two client events; they name the HOST whose
+  // stream ended and only classify the ender, never identify a Super Admin.
+  it.each<[string, (t: ReturnType<typeof setup>) => Promise<unknown>, string]>([
+    ["host", (t) => t.service.stopStream("stream-1", CREATOR), "HOST"],
+    ["community admin", (t) => t.service.stopStream("stream-1", ADMIN), "COMMUNITY_ADMIN"],
+    ["Super Admin", (t) => t.service.adminForceEnd("stream-1", "MANUAL_ADMIN"), "SUPER_ADMIN"],
+    [
+      "platform (ban)",
+      (t) => t.service.forceEndStreamsByCreator(CREATOR, "comm-1", "MEMBER_BANNED"),
+      "SYSTEM",
+    ],
+  ])("ended by %s → canonical ENDED events carry the host and endedByType", async (_l, end, type) => {
+    const t = setup({});
+    (t.streamRepo as any).findActiveByCreator = jest.fn(async () => [{ ...t.row() }]);
+    await end(t);
+    await flush();
+
+    const [status] = t.published("stream:status").filter((m) => m.data.status === "ENDED");
+    const [ended] = t.published("community:stream:ended");
+    expect(status.data).toMatchObject({
+      streamId: "stream-1",
+      creatorId: CREATOR,
+      endedByType: type,
+      startedAt: expect.any(Number),
+      endedAt: expect.any(Number),
+    });
+    expect(ended.data).toMatchObject({
+      streamId: "stream-1",
+      hostUserId: CREATOR,
+      host: expect.objectContaining({ userId: CREATOR }),
+      endedByType: type,
+      startedAt: expect.any(Number),
+      endedAt: expect.any(Number),
+      durationSeconds: expect.any(Number),
+    });
   });
 
   it("host and community-admin ends never carry byPlatformAdmin", async () => {
@@ -629,6 +691,43 @@ describe("stopStream — idempotency and races", () => {
       )![1];
       expect(ended.byPlatformAdmin).toBeUndefined();
     }
+  });
+
+  // The publisher dropping is often the End Live's own kick arriving: SRS's
+  // on_unpublish reads LIVE, the end claims ENDED, then the hook writes. It
+  // must not resurrect the row as RECONNECTING (a server reappearing, and the
+  // reconnect sweeper ending it a second time).
+  it.each<[string, (t: ReturnType<typeof setup>) => Promise<unknown>]>([
+    ["host", (t) => t.service.stopStream("stream-1", CREATOR)],
+    ["community admin", (t) => t.service.stopStream("stream-1", ADMIN)],
+    ["Super Admin", (t) => t.service.adminForceEnd("stream-1", "MANUAL_ADMIN")],
+  ])("SRS on_unpublish racing a %s end leaves the stream ENDED, announced once", async (_l, end) => {
+    const t = setup({});
+
+    await Promise.all([t.service.handleUnpublish("public-1"), end(t)]);
+    await flush();
+
+    expect(t.row().status).toBe("ENDED");
+    expect(t.endEvents().domainEnded).toBe(1);
+    expect(t.endEvents().status).toBe(1);
+    // RECONNECTING may precede the end (the hook won the row first), never follow it.
+    expect(t.published("stream:status").at(-1).data.status).toBe("ENDED");
+  });
+
+  it("an SRS on_publish (reconnect) racing an end does not bring the stream back LIVE", async () => {
+    const t = setup({ row: { status: "RECONNECTING" } });
+
+    const [allowed] = await Promise.all([
+      t.service.handlePublish("public-1", "client-2", "trusted"),
+      t.service.stopStream("stream-1", ADMIN),
+    ]);
+    await flush();
+
+    expect(t.row().status).toBe("ENDED");
+    expect(allowed).toBe(false);
+    expect(
+      t.published("stream:status").filter((m) => m.data.status === "LIVE")
+    ).toHaveLength(0);
   });
 
   it("community-close bulk end racing a host stop counts only the stream it actually ended", async () => {

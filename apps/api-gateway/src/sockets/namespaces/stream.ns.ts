@@ -217,6 +217,9 @@ export function registerStreamNamespace(
         // decrement again — the HDEL below nukes the whole refcount.
         const incremented = s.data.streamIncremented as Set<string> | undefined;
         incremented?.delete(streamId);
+        // Its durable session is closed below with every other device's.
+        const sessions = s.data.viewerSessions as Set<string> | undefined;
+        sessions?.delete(streamId);
       }
       // Nuke the banned user's whole refcount (any/all tabs) so getViewers /
       // viewer_count reflect the kick immediately, regardless of how many
@@ -229,9 +232,14 @@ export function registerStreamNamespace(
           `/stream ban session hdel error for ${streamId}: ${String(err)}`
         );
       }
-      // Close their durable viewer session too — best-effort.
+      // Close every device session of theirs too — best-effort.
       streamClient
-        .recordViewerLeave({ streamId, userId: bannedUserId })
+        .recordViewerLeave({
+          streamId,
+          userId: bannedUserId,
+          authSessionId: "",
+          reason: "REMOVED",
+        })
         .catch((err: unknown) =>
           logger.warn(
             `/stream ban recordViewerLeave failed for ${streamId}: ${String(err)}`
@@ -411,7 +419,21 @@ export function registerStreamNamespace(
             flvUrl?: string;
             startedAt?: number;
             endedReason?: string;
+            endedByType?: string;
+            endedAt?: number;
           };
+          // ENDED only: whose stream ended (the host, never the ender), who
+          // kind of actor ended it, and when. Absent on other statuses.
+          const endedFields =
+            d.status === "ENDED"
+              ? {
+                  ...(d.endedReason ? { endedReason: d.endedReason } : {}),
+                  ...(d.creatorId ? { hostUserId: d.creatorId } : {}),
+                  ...(d.endedByType ? { endedByType: d.endedByType } : {}),
+                  ...(d.startedAt ? { startedAt: d.startedAt } : {}),
+                  ...(d.endedAt ? { endedAt: d.endedAt } : {}),
+                }
+              : {};
           // Broadcast the clean status event to all viewers in the room.
           // communityId is included so FE on the stream viewer screen can update
           // the community isLive badge without a separate /community room subscription.
@@ -419,9 +441,9 @@ export function registerStreamNamespace(
             streamId: d.streamId,
             status: d.status,
             communityId: d.communityId,
-            // ENDED only (absent otherwise): HOST_ENDED, COMMUNITY_ADMIN_ENDED, ...
+            // endedReason: HOST_ENDED, COMMUNITY_ADMIN_ENDED, ADMIN_FORCE_ENDED, ...
             // so the host can tell an admin force-end from their own End Live.
-            ...(d.endedReason ? { endedReason: d.endedReason } : {}),
+            ...endedFields,
           });
           // If this is a LIVE transition, find the broadcaster's socket and send them
           // a targeted confirmation so their UI can switch to "You are live!".
@@ -461,7 +483,7 @@ export function registerStreamNamespace(
                     streamId: d.streamId,
                     status: "ENDED",
                     communityId: d.communityId,
-                    ...(d.endedReason ? { endedReason: d.endedReason } : {}),
+                    ...endedFields,
                   });
                 }
               } catch (err) {
@@ -563,6 +585,44 @@ export function registerStreamNamespace(
     (socket.data as { streamIncremented?: Set<string> }).streamIncremented =
       streamIncremented;
 
+    // Streams THIS socket holds a durable viewer-session connection on. Kept
+    // apart from `streamIncremented` so a Redis blip on the presence bump can
+    // never leave a session opened here that no leave path later releases.
+    const viewerSessions = new Set<string>();
+    (socket.data as { viewerSessions?: Set<string> }).viewerSessions =
+      viewerSessions;
+
+    // One durable connection per (socket, stream): a re-emitted join is a no-op.
+    const openViewerSession = (streamId: string): Promise<void> => {
+      if (viewerSessions.has(streamId)) return Promise.resolve();
+      viewerSessions.add(streamId);
+      return streamClient
+        .recordViewerJoin({ streamId, userId, authSessionId: sessionId })
+        .catch((err: unknown) => {
+          logger.warn(
+            `/stream recordViewerJoin failed for ${streamId}: ${String(err)}`
+          );
+        });
+    };
+    const releaseViewerSession = (
+      streamId: string,
+      reason: "LEFT" | "DISCONNECTED"
+    ): Promise<void> => {
+      if (!viewerSessions.delete(streamId)) return Promise.resolve();
+      return streamClient
+        .recordViewerLeave({
+          streamId,
+          userId,
+          authSessionId: sessionId,
+          reason,
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `/stream recordViewerLeave failed for ${streamId}: ${String(err)}`
+          );
+        });
+    };
+
     // Last accepted `stream:heartbeat` per stream, for THIS socket. Per-socket
     // and declared here so it dies with the connection — deliberately not the
     // namespace-scoped shape `viewerCountTimers` uses, since a throttle shared
@@ -655,16 +715,14 @@ export function registerStreamNamespace(
       for (const room of socket.rooms) {
         if (room.startsWith("stream:") && !room.startsWith("stream:viewers:")) {
           const streamId = room.slice("stream:".length);
-          void incrementPresence(streamId).then((count) => {
+          // The disconnect closed this device's session as DISCONNECTED; the
+          // recovery is inside the resume window, so this reopens that row.
+          void Promise.all([
+            incrementPresence(streamId),
+            openViewerSession(streamId),
+          ]).then(([count]) => {
             if (count === null) return;
-            // Presence bookkeeping runs regardless, but only SOCKET mode may
-            // emit a socket-derived count — in CDN mode the number comes solely
-            // from the sweeper's relayed CDN ticks.
-            if (VIEWER_COUNT_SOURCE !== "SOCKET") return;
-            streamNs.to(roomKey(streamId)).emit("stream:viewer_count", {
-              streamId,
-              viewerCount: Math.max(0, count),
-            });
+            broadcastViewerCount(streamId, count);
           });
         }
       }
@@ -758,16 +816,9 @@ export function registerStreamNamespace(
             if (count !== null) viewerCount = count;
           }
 
-          // Durable viewer-session record (separate from the Redis presence set
-          // above) — best-effort, never blocks or fails the join ack. Idempotent
-          // server-side: a reconnect while still "open" reuses the same session.
-          streamClient
-            .recordViewerJoin({ streamId, userId })
-            .catch((err: unknown) =>
-              logger.warn(
-                `/stream recordViewerJoin failed for ${streamId}: ${String(err)}`
-              )
-            );
+          // Durable per-device viewer session (separate from the Redis presence
+          // above) — best-effort, never blocks or fails the join ack.
+          const sessionRecorded = openViewerSession(streamId);
 
           // Backfill recent comments (best-effort; a stream-service blip must
           // not block the join).
@@ -846,7 +897,9 @@ export function registerStreamNamespace(
               videoLostSince: access.videoLostSince || null,
             },
           });
-          emitViewerCount(streamId);
+          // After the session write, so a listener re-reading the viewer list
+          // on this count (the admin monitor) already sees the join.
+          void sessionRecorded.then(() => emitViewerCount(streamId));
         })();
       }
     );
@@ -868,20 +921,13 @@ export function registerStreamNamespace(
           const hadIncrement = streamIncremented.has(streamId);
           void socket.leave(roomKey(streamId));
           streamCommentPermissions.delete(streamId);
-          if (hadIncrement) {
-            await decrementPresence(streamId);
-            emitViewerCount(streamId);
-            // Close the durable viewer session to match the presence
-            // decrement — best-effort, never blocks the leave ack.
-            streamClient
-              .recordViewerLeave({ streamId, userId })
-              .catch((err: unknown) =>
-                logger.warn(
-                  `/stream recordViewerLeave failed for ${streamId}: ${String(err)}`
-                )
-              );
-          }
+          if (hadIncrement) await decrementPresence(streamId);
           ackOk(callback, "SOCKET_STREAM_LEFT", locale);
+          // An explicit leave ends this device's session as LEFT (unless
+          // another tab of it is still in the room). Counted after the write,
+          // for the same reason as the join.
+          await releaseViewerSession(streamId, "LEFT");
+          if (hadIncrement) emitViewerCount(streamId);
         })();
       }
     );
@@ -1192,7 +1238,11 @@ export function registerStreamNamespace(
       // contributed to (not socket.rooms — a same-user sibling tab is
       // tracked by its own socket's streamIncremented, so we never
       // stomp on it here).
-      const streamIds = [...streamIncremented];
+      const streamIds = [...new Set([...streamIncremented, ...viewerSessions])];
+      // The client closing its own socket is a deliberate leave; anything else
+      // (transport close, ping timeout, server-side kick) is a drop.
+      const sessionEnd =
+        reason === "client namespace disconnect" ? "LEFT" : "DISCONNECTED";
 
       // NOTE: `viewerCountTimers` is namespace-scoped and deliberately NOT
       // cleared here. A pending timer belongs to a STREAM, not to this socket —
@@ -1206,15 +1256,9 @@ export function registerStreamNamespace(
       for (const streamId of streamIds) {
         void (async () => {
           await decrementPresence(streamId);
-          // Close the durable viewer session — covers crashes/network drops
-          // that never fire an explicit stream:leave. Best-effort.
-          streamClient
-            .recordViewerLeave({ streamId, userId })
-            .catch((err: unknown) =>
-              logger.warn(
-                `/stream disconnect recordViewerLeave failed for ${streamId}: ${String(err)}`
-              )
-            );
+          // Covers crashes/network drops that never fire an explicit
+          // stream:leave. Awaited so the count below follows the write.
+          await releaseViewerSession(streamId, sessionEnd);
           // Emit directly (the per-socket debounce map is already cleared and
           // the socket is leaving — read once and broadcast to the room).
           try {

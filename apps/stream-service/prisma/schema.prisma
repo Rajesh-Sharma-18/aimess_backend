@@ -126,25 +126,64 @@ model Livestream {
 }
 
 // -----------------------------------------------------------------------------
-// LivestreamViewerSession — one join→leave watch session for a user on a
-//   livestream. Durable history; Redis (`stream:session:users:<streamId>`,
-//   owned by api-gateway) remains the source of truth for CURRENT live
-//   presence/count — this table is only for "who watched, when, how long".
-//   A user can have multiple sessions per stream (rejoin after a leave), but
-//   at most ONE open session (leftAt: null) at a time — reconnects reuse the
-//   open session instead of creating a duplicate.
+// LivestreamViewerSession — one join→leave watch session of ONE DEVICE (auth
+//   login session) on a livestream. Durable history; Redis
+//   (`stream:session:users:<streamId>`, owned by api-gateway) remains the
+//   source of truth for CURRENT live presence/count — this table is only for
+//   "who watched, from what, when, how long".
+//   Each device of a user has its own lifecycle; tabs of the same login share
+//   one session (`connections` counts them). At most one OPEN session per
+//   device, enforced by the sparse unique index on `openKey` (server.ts). The
+//   host has a single session per stream that only the stream's end closes.
 // -----------------------------------------------------------------------------
 model LivestreamViewerSession {
   id                   String    @id @default(auto()) @map("_id") @db.ObjectId
   livestreamId         String
   userId               String
+  // auth-service Session.id of the login the viewer connected with.
+  authSessionId        String?
+  // Set only while open: `<livestreamId>:<userId>:<authSessionId|host>`.
+  openKey              String?
+  // Open sockets of this device currently in the stream room.
+  connections          Int?
   joinedAt             DateTime  @default(now())
   leftAt               DateTime?
+  // LEFT | DISCONNECTED | STREAM_ENDED | REMOVED — set together with leftAt.
+  endReason            String?
   watchDurationSeconds Int?
 
   @@index([livestreamId, userId])
   @@index([livestreamId, joinedAt])
   @@map("livestream_viewer_sessions")
+}
+
+// -----------------------------------------------------------------------------
+// LivestreamViewer — one user's overall participation in a livestream: exactly
+//   one per (livestreamId, userId), whatever the devices, reconnects or
+//   rejoins. Aggregates that user's LivestreamViewerSession rows and is what
+//   the admin viewer list reads. ACTIVE (no leftAt) while any session is open;
+//   a rejoin reopens this same record.
+// -----------------------------------------------------------------------------
+model LivestreamViewer {
+  id                   String    @id @default(auto()) @map("_id") @db.ObjectId
+  livestreamId         String
+  userId               String
+  // Open sessions of this user right now.
+  activeSessions       Int
+  // First join; never moved by a rejoin.
+  joinedAt             DateTime
+  // Start of the current active stretch; absent while not active.
+  lastJoinedAt         DateTime?
+  // Set only while no session is open.
+  leftAt               DateTime?
+  // LEFT | ENDED — how the last session ended; set together with leftAt.
+  endReason            String?
+  // Sum of closed active stretches (time with at least one session open).
+  watchDurationSeconds Int
+
+  @@unique([livestreamId, userId])
+  @@index([livestreamId, joinedAt])
+  @@map("livestream_viewers")
 }
 
 // -----------------------------------------------------------------------------

@@ -26,6 +26,7 @@ import {
   currentLocale,
   isCallContentType,
   personalizeGroupSystemMessageForViewer,
+  withinMessageTextLimit,
 } from "@aimess/constants";
 import {
   anonymizeSystemData,
@@ -218,7 +219,7 @@ export class GroupMessageService {
     forwardData?: Record<string, unknown> | null;
   }): Promise<GroupMessage & { senderRole?: string }> {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
-    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
+    if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS)) {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     }
     assertAttachmentsValid(
@@ -1822,9 +1823,9 @@ export class GroupMessageService {
       throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
     if (message.messageType !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
-    if (!params.content?.text?.trim())
+if (!params.content?.text?.trim())
       throw new BadRequestError("CHAT_TEXT_REQUIRED");
-    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
+    if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS))
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");

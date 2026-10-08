@@ -9,6 +9,7 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:backfill:audit-activity": "tsx scripts/backfill-audit-activity.ts",
+    "db:backfill:livestream-viewers": "tsx scripts/backfill-livestream-viewers.ts",
     "cdn:provision-transcode": "tsx scripts/provision-cdn-transcode.ts",
     "build": "prisma generate && tsc",
     "typecheck": "tsc --noEmit",

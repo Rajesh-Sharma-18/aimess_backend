@@ -410,11 +410,23 @@ export async function serializeNotification(
    */
   viewerSessionId?: string | null
 ): Promise<NotificationDTO> {
-  const storedPayload = (row.payload ?? {}) as {
+  const rawPayload = (row.payload ?? {}) as {
     title?: string;
     body?: string;
     data?: Record<string, string>;
   };
+  // Account ban/suspend/unban/update rows are Backoffice actions. Older rows
+  // stored the Super Admin's id as the actor; it never reaches apps.
+  const backofficeAccountRow = row.type.startsWith("admin.user_");
+  const storedPayload =
+    backofficeAccountRow && rawPayload.data?.actorId !== undefined
+      ? {
+          ...rawPayload,
+          data: Object.fromEntries(
+            Object.entries(rawPayload.data).filter(([k]) => k !== "actorId")
+          ),
+        }
+      : rawPayload;
   const storedData = storedPayload.data ?? {};
   const localized = localizeRow(storedData, locale, viewerId);
   // The re-rendered sentence replaces the stored one for every downstream step
@@ -438,7 +450,9 @@ export async function serializeNotification(
     | { userId?: string; displayName?: string; avatarUrl?: string }
     | undefined;
 
-  const actorId = row.actorId || actorSnapshot?.userId || "";
+  const actorId = backofficeAccountRow
+    ? ""
+    : row.actorId || actorSnapshot?.userId || "";
   const freshActor = actorId ? refresh.actorById.get(actorId) : undefined;
   const actorAvatarUrl = nonEmpty(
     freshActor?.avatarUrl ??
