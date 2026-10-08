@@ -700,6 +700,11 @@ export const COMMUNITY_MESSAGES = {
     en: "You have reached the maximum number of active invite links for this community. Revoke an existing link first.",
     th: "คุณมีลิงก์เชิญที่ใช้งานอยู่ครบจำนวนสูงสุดสำหรับคอมมูนิตี้นี้แล้ว กรุณาเพิกถอนลิงก์เดิมก่อน",
   },
+  COMMUNITY_CREATE_LIMIT_REACHED: {
+    vi: "Bạn đã đạt số lượng cộng đồng tối đa có thể tạo.",
+    en: "You've reached the maximum number of communities you can create.",
+    th: "คุณสร้างชุมชนครบจำนวนสูงสุดแล้ว",
+  },
   COMMUNITY_INVITE_LINK_PREVIEW_FETCHED: {
     vi: "Đã lấy thông tin cộng đồng qua liên kết mời",
     en: "Community details fetched",

@@ -23,6 +23,12 @@ export const COMMON_MESSAGES = {
     en: "You're doing that a little too quickly. Please wait a moment and try again.",
     th: "คุณดำเนินการเร็วเกินไปเล็กน้อย กรุณารอสักครู่แล้วลองใหม่",
   },
+  /** Reports across every surface (chat, community, livestream) share one daily quota. */
+  REPORT_LIMIT_REACHED: {
+    vi: "Bạn đã gửi quá nhiều báo cáo hôm nay. Vui lòng thử lại vào ngày mai.",
+    en: "You've submitted too many reports today. Please try again tomorrow.",
+    th: "คุณส่งรายงานมากเกินไปในวันนี้ กรุณาลองใหม่พรุ่งนี้",
+  },
   /** HTTP 503 — a downstream service is unreachable or its circuit breaker is open. */
   SERVICE_UNAVAILABLE: {
     vi: "Dịch vụ tạm thời gián đoạn. Vui lòng thử lại sau giây lát.",
