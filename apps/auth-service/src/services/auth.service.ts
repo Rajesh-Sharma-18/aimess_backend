@@ -18,6 +18,11 @@ import {
   normalizeLoginIdentifier,
 } from "../lib/login-identifier.js";
 import { assertNotBanned } from "../lib/account-guard.js";
+import {
+  accountLockedError,
+  lockedForSec,
+  recordWrongPassword,
+} from "../lib/login-lockout.js";
 import { passwordUnavailableCode } from "../lib/sign-in-methods.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { issueAuthTokens } from "../lib/token.js";
@@ -141,9 +146,9 @@ export const authService = {
       throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
     }
 
-    if (user.lockedUntil && user.lockedUntil > new Date()) {
+    if (lockedForSec(user.lockedUntil) > 0) {
       auditFailure("ACCOUNT_LOCKED", user.id);
-      throw new UnauthorizedError("AUTH_ACCOUNT_LOCKED");
+      throw accountLockedError(lockedForSec(user.lockedUntil));
     }
 
     if (user.status === AccountStatus.BANNED) {
@@ -184,12 +189,11 @@ export const authService = {
       user.passwordHash
     );
     if (!passwordValid) {
-      await authRepository.recordFailedLogin(
-        user.id,
-        env.AUTH_MAX_FAILED_LOGINS,
-        env.AUTH_LOCKOUT_MINUTES
-      );
+      const lockSec = await recordWrongPassword(user.id);
+      await authRepository.recordFailedLogin(user.id, lockSec);
       auditFailure("INVALID_PASSWORD", user.id);
+      // The tripping attempt already answers LOCKED, so the client can show the wait at once.
+      if (lockSec > 0) throw accountLockedError(lockSec);
       throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
     }
 

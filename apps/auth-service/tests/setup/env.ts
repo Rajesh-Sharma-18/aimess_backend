@@ -52,6 +52,7 @@ export {};
 // has to declare headroom like any other limiter it is not the subject of.
 // The spec that tests the throttle sets its own values.
 process.env.OTP_REQUEST_MAX = "100000";
+process.env.OTP_REQUEST_IP_MAX = "100000";
 
 // The proof of work is exercised for real (a wrong solution is still rejected),
 // just cheaply — at the production 20 bits every register/validate test would

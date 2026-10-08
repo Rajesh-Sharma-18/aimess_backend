@@ -100,6 +100,40 @@ describe("POST /api/auth/login", () => {
     expect(issue).not.toHaveBeenCalled();
   });
 
+  it("5th wrong password within 10 min locks for 15 min → AUTH_ACCOUNT_LOCKED + retryAfter 900", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(activeUser({ id: "user-lock" }));
+    const attempt = () =>
+      request(app)
+        .post("/api/auth/login")
+        .send({ account: "johndoe", password: "WrongPassword999" });
+
+    for (let i = 0; i < 4; i += 1) {
+      const res = await attempt();
+      expect(res.body.code).toBe("AUTH_INVALID_CREDENTIALS");
+    }
+    const res = await attempt();
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe("AUTH_ACCOUNT_LOCKED");
+    expect(res.body.error.retryAfter).toBe(900);
+    expect(res.headers["retry-after"]).toBe("900");
+    expect(repo.recordFailedLogin).toHaveBeenLastCalledWith("user-lock", 900);
+  });
+
+  it("a locked account answers AUTH_ACCOUNT_LOCKED with the remaining seconds", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      activeUser({ lockedUntil: new Date(Date.now() + 60_000) })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "johndoe", password: PASSWORD });
+
+    expect(res.body.error.code).toBe("AUTH_ACCOUNT_LOCKED");
+    expect(res.body.error.retryAfter).toBeGreaterThan(55);
+    expect(res.body.error.retryAfter).toBeLessThanOrEqual(60);
+  });
+
   it("returns 401 when the account is locked", async () => {
     repo.findByAccountForLogin.mockResolvedValue(
       activeUser({ lockedUntil: new Date(Date.now() + 60_000) })

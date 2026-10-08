@@ -599,30 +599,20 @@ export const authRepository = {
   },
 
   /**
-   * Atomically increment failed-login attempts; once `maxAttempts` is reached,
-   * lock the account for `lockoutMinutes`. Runs in a transaction so concurrent
-   * bad-password attempts cannot race past the threshold.
+   * Count a failed login and, when `lockSec` > 0, lock the account for that
+   * long. The 10-minute window that decides `lockSec` lives in Redis
+   * (`lib/login-lockout.ts`); this lifetime counter never decays, so it must
+   * not drive the lock.
    */
-  recordFailedLogin(
-    userId: string,
-    maxAttempts: number,
-    lockoutMinutes: number
-  ) {
-    return prisma.$transaction(async (tx) => {
-      const updated = await tx.authUser.update({
-        where: { id: userId },
-        data: { failedLoginAttempts: { increment: 1 } },
-        select: { failedLoginAttempts: true },
-      });
-
-      if (updated.failedLoginAttempts >= maxAttempts) {
-        await tx.authUser.update({
-          where: { id: userId },
-          data: {
-            lockedUntil: new Date(Date.now() + lockoutMinutes * 60 * 1000),
-          },
-        });
-      }
+  async recordFailedLogin(userId: string, lockSec: number): Promise<void> {
+    await prisma.authUser.update({
+      where: { id: userId },
+      data: {
+        failedLoginAttempts: { increment: 1 },
+        ...(lockSec > 0
+          ? { lockedUntil: new Date(Date.now() + lockSec * 1000) }
+          : {}),
+      },
     });
   },
 
