@@ -13,6 +13,21 @@ const TARGET = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const BYSTANDER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 describe("system message text — display names and You personalization", () => {
+  it("groups a batch community MEMBER_ADDED into one line", () => {
+    const metadata = {
+      actorUserId: ACTOR,
+      targetUserIds: [TARGET, BYSTANDER, "d1", "d2", "d3"],
+      targetNames: ["Jane", "Peter", "Ram", "Sita", "Om"],
+      communityName: "Testers",
+    };
+    expect(buildCommunitySystemFallbackText("MEMBER_ADDED", metadata, "Krish", "")).toBe(
+      "Krish added Jane, Peter, Ram and 2 others to Testers"
+    );
+    expect(buildCommunitySystemFallbackText("MEMBER_ADDED", metadata, "Krish", "", BYSTANDER)).toBe(
+      "Krish added You, Jane, Ram and 2 others to Testers"
+    );
+  });
+
   it("uses first+last name in third-person community lines (no username)", () => {
     expect(
       buildCommunitySystemFallbackText(

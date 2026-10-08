@@ -2728,9 +2728,16 @@ export const communityService = {
               via: "add_members",
               eventAt: joinedEventAt,
               moderatorRecipientIds,
+              skipAuditLine: true,
             })
           )
         );
+        await this.postGroupedMemberAddedAuditLine({
+          community,
+          actorId: creatorId,
+          targetUserIds: createdMemberRows.map((row) => row.userId),
+          eventAt: joinedEventAt,
+        });
         // Observability: one structured line per create fan-out (no PII) so the
         // recipient count is greppable in prod when diagnosing a "didn't appear"
         // report. intendedRecipients = creator + every added member.
@@ -4560,6 +4567,8 @@ export const communityService = {
      * fall back to the lazy internal resolution below.
      */
     moderatorRecipientIds?: string[];
+    /** Batch adds post ONE grouped audit line themselves (postGroupedMemberAddedAuditLine). */
+    skipAuditLine?: boolean;
   }): Promise<void> {
     const { community, member, memberCount, actorId, via, requestId } = args;
 
@@ -4783,7 +4792,7 @@ export const communityService = {
     //
     // Only MEMBER_ADDED: a self-join / invite / approved request is not a
     // moderation action, and its COMMUNITY_JOINED line stays purely personal.
-    if (joinLineType === "MEMBER_ADDED") {
+    if (joinLineType === "MEMBER_ADDED" && !args.skipAuditLine) {
       publishCommunitySystemMessageForChatSafe({
         communityId: community.id,
         systemMessageType: "MEMBER_ADDED",
@@ -4796,6 +4805,41 @@ export const communityService = {
         eventAt: args.eventAt,
       });
     }
+  },
+
+  /**
+   * One add-members operation ⇒ ONE "{admin} added A, B and N others" audit line
+   * (`targetUserIds`), like groups. The per-member personal "added You" notices
+   * still go out from notifyMemberJoined.
+   */
+  async postGroupedMemberAddedAuditLine(args: {
+    community: { id: string; name: string };
+    actorId: string;
+    targetUserIds: string[];
+    eventAt: string;
+  }): Promise<void> {
+    const { community, actorId, targetUserIds, eventAt } = args;
+    if (targetUserIds.length === 0) return;
+    let actorRole: string | undefined;
+    try {
+      actorRole = (await communityRepository.findMembership(community.id, actorId))
+        ?.role;
+    } catch {
+      actorRole = undefined;
+    }
+    publishCommunitySystemMessageForChatSafe({
+      communityId: community.id,
+      systemMessageType: "MEMBER_ADDED",
+      metadata: {
+        ...(targetUserIds.length === 1
+          ? { targetUserId: targetUserIds[0] }
+          : { targetUserIds }),
+        communityName: community.name,
+        ...(actorRole ? { actorRole } : {}),
+      },
+      triggeredByUserId: actorId,
+      eventAt,
+    });
   },
 
   /**
@@ -5229,6 +5273,7 @@ export const communityService = {
           via: "add_members",
           eventAt: new Date().toISOString(),
           moderatorRecipientIds,
+          skipAuditLine: true,
         });
       }
       for (const row of createdRows) {
@@ -5240,8 +5285,16 @@ export const communityService = {
           via: "add_members",
           eventAt: new Date().toISOString(),
           moderatorRecipientIds,
+          skipAuditLine: true,
         });
       }
+
+      await this.postGroupedMemberAddedAuditLine({
+        community,
+        actorId: callerId,
+        targetUserIds: added.map((m) => m.userId),
+        eventAt: new Date().toISOString(),
+      });
 
       // Their pending join requests were resolved inside the membership
       // transactions above; tell every open admin "Accept Requests" list to drop

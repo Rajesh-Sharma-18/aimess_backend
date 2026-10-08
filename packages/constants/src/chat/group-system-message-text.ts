@@ -5,6 +5,8 @@ import {
   administratorActorLabel,
   BACKOFFICE_SOURCE,
   entityLabel,
+  formatNameList,
+  groupedTargetLabels,
   memberChangeText,
   roleActorLabel,
   SYSTEM_ACTOR_ID,
@@ -152,64 +154,6 @@ export function formatTtlDuration(
   if (s % 60 === 0) return unit(s / 60, "MINUTE");
   // Sub-minute custom timers are a raw count, not copy.
   return `${s}s`;
-}
-
-/**
- * How many names a grouped system line spells out before collapsing the rest
- * into "and N others" (WhatsApp behaviour — a 50-member add must not render a
- * 50-name bubble).
- */
-const GROUPED_NAME_LIMIT = 3;
-
-/** "A", "A and B", "A, B and C", "A, B, C and 3 others". */
-function formatNameList(labels: string[], locale: SupportedLocale): string {
-  if (labels.length === 0) return "";
-  if (labels.length === 1) return labels[0]!;
-  if (labels.length <= GROUPED_NAME_LIMIT) {
-    return t("SYS_LIST_AND", locale, {
-      a: labels.slice(0, -1).join(", "),
-      b: labels[labels.length - 1]!,
-    });
-  }
-  const rest = labels.length - GROUPED_NAME_LIMIT;
-  return t(
-    rest === 1 ? "SYS_LIST_OTHERS_ONE" : "SYS_LIST_OTHERS_OTHER",
-    locale,
-    {
-      list: labels.slice(0, GROUPED_NAME_LIMIT).join(", "),
-      count: rest,
-    }
-  );
-}
-
-/**
- * Display labels for a BATCH system line's `targetUserIds` / `targetNames`
- * (one add-member operation ⇒ one row), or null when the row is the classic
- * single-target shape. The viewer, if they are one of the targets, is rendered
- * as "You" and hoisted to the front so they still see themselves named even
- * when the list overflows into "and N others".
- */
-function groupedTargetLabels(
-  data: Record<string, unknown>,
-  viewer: string,
-  locale: SupportedLocale
-): string[] | null {
-  const rawIds = data.targetUserIds;
-  if (!Array.isArray(rawIds) || rawIds.length < 2) return null;
-  const names = Array.isArray(data.targetNames) ? data.targetNames : [];
-  const entries = rawIds.map((id, i) => ({
-    id: String(id),
-    label: String(names[i] ?? "").trim() || t("SYS_NAME_A_MEMBER", locale),
-  }));
-  const viewerIndex = viewer
-    ? entries.findIndex((entry) => entry.id === viewer)
-    : -1;
-  if (viewerIndex >= 0) {
-    const [self] = entries.splice(viewerIndex, 1);
-    self!.label = t("SYS_SENDER_YOU", locale);
-    entries.unshift(self!);
-  }
-  return entries.map((entry) => entry.label);
 }
 
 /**

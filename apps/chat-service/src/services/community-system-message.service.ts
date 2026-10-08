@@ -158,8 +158,12 @@ export class CommunitySystemMessageService {
         typeof metadata.targetUserId === "string"
           ? metadata.targetUserId
           : null;
-      const ids = [triggeredByUserId, targetUserId].filter((id): id is string =>
-        Boolean(id)
+      // Batch add (one operation ⇒ one MEMBER_ADDED audit line) names every target.
+      const targetUserIds = Array.isArray(metadata.targetUserIds)
+        ? metadata.targetUserIds.map((id) => String(id)).filter(Boolean)
+        : [];
+      const ids = [triggeredByUserId, targetUserId, ...targetUserIds].filter(
+        (id): id is string => Boolean(id)
       );
       const snapshots = ids.length
         ? await this.userSnapshotService.getUserSnapshotsMap(
@@ -186,6 +190,12 @@ export class CommunitySystemMessageService {
         // re-fetched value, which may be "" when user-service has no profile yet.
         ...(targetUserId
           ? { targetName: (metadata.targetName as string) || targetName }
+          : {}),
+        ...(targetUserIds.length
+          ? {
+              targetUserIds,
+              targetNames: targetUserIds.map((id) => this.nameOf(snapshots, id)),
+            }
           : {}),
       };
 

@@ -4,6 +4,8 @@ import {
   administratorActorLabel,
   BACKOFFICE_SOURCE,
   entityLabel,
+  formatNameList,
+  groupedTargetLabels,
   memberChangeText,
   PLATFORM_ADMIN_ACTOR_ID,
   roleActorLabel,
@@ -470,8 +472,16 @@ export function buildCommunitySystemFallbackText(
     // added member's own PERSONAL notice and the MODERATION audit line read by
     // owner/admin/moderators. Both are the shared "{actor} added {target} to
     // {community}" sentence; only the reader's own side changes to "You".
-    case "MEMBER_ADDED":
-      return memberChangeText("ADDED", memberChangeLabels(), locale);
+    case "MEMBER_ADDED": {
+      // Batch add (one operation ⇒ one audit line) lists every target, like groups.
+      const grouped = groupedTargetLabels(metadata, viewer, locale);
+      const labels = memberChangeLabels();
+      return memberChangeText(
+        "ADDED",
+        grouped ? { ...labels, target: formatNameList(grouped, locale) } : labels,
+        locale
+      );
+    }
     case "JOIN_REQUEST_REJECTED":
       return t("SYS_COMMUNITY_JOIN_REQUEST_REJECTED", locale);
 
