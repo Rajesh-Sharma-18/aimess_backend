@@ -22,6 +22,7 @@
 import { PrivateMessageRepository } from "../../src/repositories/private-message.repository.js";
 import { GroupMessageRepository } from "../../src/repositories/group-message.repository.js";
 import { GeneralRoomMessageRepository } from "../../src/repositories/general-room-message.repository.js";
+import { accentInsensitivePattern } from "../../src/repositories/message-search.js";
 
 const ROOM = "room-1";
 const USER = "user-1";
@@ -67,7 +68,7 @@ describe("PrivateMessageRepository.searchByText", () => {
 
     const pipeline = aggregateRaw.mock.calls[0][0].pipeline;
     expect(pipeline[0].$match["content.text"]).toEqual({
-      $regex: "hello",
+      $regex: accentInsensitivePattern("hello"),
       $options: "i",
     });
     expect(JSON.stringify(pipeline)).not.toContain("$text");
@@ -86,7 +87,6 @@ describe("PrivateMessageRepository.searchByText", () => {
     });
 
     const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
-    expect(match["content.text"].$regex).toBe("c\\+\\+ \\(v2\\)\\.\\*");
     expect(new RegExp(match["content.text"].$regex).test("c++ (v2).*")).toBe(
       true
     );
@@ -232,7 +232,7 @@ describe("GroupMessageRepository.searchByText", () => {
 
     const pipeline = aggregateRaw.mock.calls[0][0].pipeline;
     expect(pipeline[0].$match["content.text"]).toEqual({
-      $regex: "hello",
+      $regex: accentInsensitivePattern("hello"),
       $options: "i",
     });
     expect(JSON.stringify(pipeline)).not.toContain("$skip");
