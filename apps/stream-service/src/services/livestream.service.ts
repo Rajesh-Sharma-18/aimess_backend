@@ -1243,6 +1243,7 @@ export class LivestreamService {
       peakViewers: updated.peakViewers,
       liveStreamCount,
       reason,
+      wentLive: updated.livedAt != null,
       endedBy,
       // Every Backoffice (Super Admin) end; community copy then reads
       // "Administrator ended {host}'s …". The admin's id is deliberately
@@ -2582,6 +2583,7 @@ export class LivestreamService {
           creatorId: updated.creatorId,
           endedAt: updated.endedAt?.getTime() ?? Date.now(),
           durationSeconds: 0,
+          wentLive: false,
           // Read the row rather than hardcoding 0: a PENDING stream is
           // watchable, so it can have accumulated a peak before timing out,
           // and backoffice stores whatever this event carries.
