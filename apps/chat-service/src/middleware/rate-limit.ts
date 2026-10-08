@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { logger } from "@aimess/logger";
 import { TooManyRequestsError } from "@aimess/errors";
 import {
+  assertReportQuota,
   buildApiError,
   getRequestId,
   resolveLocaleFromRequest,
@@ -30,6 +31,10 @@ interface RateLimitOptions {
   cost?: (req: Request) => number;
   /** See {@link ConsumeRateLimitParams.onCacheError}. Writes pass "fallback". */
   onCacheError?: "open" | "fallback";
+  /** Narrows the bucket below the caller, e.g. per conversation. Runs after body validation. */
+  subKey?: (req: Request) => string | undefined;
+  /** Refusal code; defaults to the generic RATE_LIMITED. */
+  messageKey?: string;
 }
 
 /** Log once per fail-open so a silent Redis outage is visible in the logs. */
@@ -214,6 +219,8 @@ export function createRateLimit({
   keyPrefix,
   cost,
   onCacheError = "open",
+  subKey,
+  messageKey = "RATE_LIMITED",
 }: RateLimitOptions) {
   return async (
     req: Request,
@@ -223,7 +230,9 @@ export function createRateLimit({
     const authData = (req as unknown as Record<string, unknown>).auth as
       | { userId: string }
       | undefined;
-    const identifier = authData?.userId || req.ip || "unknown";
+    const caller = authData?.userId || req.ip || "unknown";
+    const sub = subKey?.(req);
+    const identifier = sub ? `${caller}:${sub}` : caller;
     const tokens = Math.max(1, cost ? cost(req) : 1);
 
     const { allowed, retryAfterSec } = await consumeRateLimit({
@@ -267,7 +276,7 @@ export function createRateLimit({
       ...buildApiError({
         statusCode: 429,
         locale: req.locale ?? resolveLocaleFromRequest(req),
-        messageKey: "RATE_LIMITED",
+        messageKey,
         retryAfterSec,
         requestId: getRequestId(req),
       }),
@@ -292,26 +301,9 @@ export function createRateLimit({
  *
  * Numbers are per user per minute, sliding window (see {@link createRateLimit}):
  *
- *  - `send`     300 — the abuse-relevant number, and the only one a normal
- *                     typist can approach. Being a sliding window rather than a
- *                     fixed bucket, a burst of 300 is allowed immediately; it is
- *                     the sustained rate (5/s averaged over the minute) that is
- *                     capped.
- *
- *                     It was 60, which is one message per second sustained and
- *                     therefore no burst headroom at all: a normal burst — a
- *                     thought sent as six quick lines, a paste split into rows,
- *                     a forward of a selection — spends a minute's allowance in
- *                     seconds and the next message is refused. Measured driving
- *                     the real composer at 100 messages / 10ms into a group and
- *                     a community: 28 sends refused, and because each refusal
- *                     also counted against the caller's circuit breaker (see
- *                     BUSINESS_GRPC_STATUS_CODES in @aimess/grpc-utils) the
- *                     refusals cascaded into 10-second windows where every send
- *                     failed. 300 clears a WhatsApp-shaped burst of ~10-20/s
- *                     lasting a few seconds while still refusing a sustained
- *                     flood — an unattended loop is capped at 5/s, and the 429
- *                     (with `Retry-After`) it gets is unchanged.
+ *  - `send` — NOT per user: per (sender, conversation), client-mandated
+ *              ({@link MESSAGE_SEND_LIMITS}): 60/min per private recipient,
+ *              30/min per group or community channel. See {@link sendRateLimit}.
  *  - `read`     240 — read-position writes fire on every conversation open,
  *                     every scroll to bottom and every socket reconnect
  *                     catch-up, so this has to clear a reconnect burst across
@@ -339,11 +331,22 @@ export function messagingRateLimits(prefix: string): {
   return {
     // Sends degrade to the in-process counter rather than failing fully open:
     // a Redis outage is exactly when an unlimited send path hurts most.
-    send: bucket("send", "fallback"),
+    send: sendRateLimit(prefix as MessagingScope),
     read: bucket("read"),
     interact: bucket("interact"),
     sensitive: bucket("sensitive", "fallback"),
   };
+}
+
+/** The shared 20/day report budget. Mount after body validation. */
+export async function reportQuota(
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): Promise<void> {
+  const { userId } = (req as unknown as { auth: { userId: string } }).auth;
+  await assertReportQuota(redis, userId);
+  next();
 }
 
 /** Window every messaging bucket uses. */
@@ -355,7 +358,6 @@ export const MESSAGING_RATE_WINDOW_MS = 60_000;
  * each number is what it is.
  */
 export const MESSAGING_RATE_LIMITS = {
-  send: 300,
   read: 240,
   interact: 120,
   sensitive: 30,
@@ -364,8 +366,36 @@ export const MESSAGING_RATE_LIMITS = {
 /** Conversation kinds, matching the `pm` / `gm` / `cm` key prefixes. */
 export type MessagingScope = "pm" | "gm" | "cm";
 
+/** Client-mandated send ceilings per sender per conversation per minute. */
+export const MESSAGE_SEND_LIMITS: Record<MessagingScope, number> = {
+  pm: 60,
+  gm: 30,
+  cm: 30,
+};
+
+/** Bucket key for one sender in one conversation, shared by REST and gRPC. */
+function sendIdentifier(userId: string, roomId: string | undefined): string {
+  return roomId ? `${userId}:${roomId}` : userId;
+}
+
+/** REST send limiter. `roomOf` defaults to the `:roomId` path param. */
+export function sendRateLimit(
+  scope: MessagingScope,
+  roomOf: (req: Request) => string | undefined = (req) =>
+    req.params.roomId as string | undefined
+) {
+  return createRateLimit({
+    windowMs: MESSAGING_RATE_WINDOW_MS,
+    maxRequests: MESSAGE_SEND_LIMITS[scope],
+    keyPrefix: `${scope}:send`,
+    // Sends degrade to the in-process counter rather than failing fully open.
+    onCacheError: "fallback",
+    subKey: roomOf,
+  });
+}
+
 /**
- * Charge one send against the caller's bucket, or throw.
+ * Charge `tokens` sends against (sender, conversation), or throw.
  *
  * Called from the gRPC handlers so the socket path is subject to the same limit
  * as the REST route — same key, same window, same ceiling — instead of being an
@@ -375,13 +405,16 @@ export type MessagingScope = "pm" | "gm" | "cm";
  */
 export async function assertSendAllowed(
   scope: MessagingScope,
-  userId: string
+  userId: string,
+  roomId: string,
+  tokens = 1
 ): Promise<void> {
   const { allowed, retryAfterSec } = await consumeRateLimit({
     keyPrefix: `${scope}:send`,
-    identifier: userId,
+    identifier: sendIdentifier(userId, roomId),
     windowMs: MESSAGING_RATE_WINDOW_MS,
-    maxRequests: MESSAGING_RATE_LIMITS.send,
+    maxRequests: MESSAGE_SEND_LIMITS[scope],
+    tokens,
     onCacheError: "fallback",
   });
 
@@ -390,10 +423,9 @@ export async function assertSendAllowed(
   logger.warn("rate_limit_exceeded", {
     service: "chat-service",
     rule: `${scope}:send`,
-    scope: "user",
-    scopeKey: userId,
-    transport: "grpc",
-    limit: MESSAGING_RATE_LIMITS.send,
+    scope: "user_room",
+    scopeKey: sendIdentifier(userId, roomId),
+    limit: MESSAGE_SEND_LIMITS[scope],
     retryAfter: retryAfterSec,
   });
 

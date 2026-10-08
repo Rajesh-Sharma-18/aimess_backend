@@ -32,6 +32,34 @@ beforeEach(() => {
 });
 
 describe("POST /api/chat/groups (create)", () => {
+  it("LIMIT: 10 groups a day, the 11th → 429 CHAT_GROUP_CREATE_LIMIT_REACHED + retryAfter", async () => {
+    mocks.groupRoomRepo.create.mockResolvedValue({ roomId: "grp_new" });
+    mocks.groupMemberRepo.create.mockResolvedValue({ role: "ADMIN" });
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: "grp_new",
+    });
+    const auth = bearer(
+      makeAccessToken({ userId: "44444444-4444-4444-8444-444444444444" })
+    );
+
+    for (let i = 0; i < 10; i += 1) {
+      const ok = await request(app)
+        .post("/api/chat/groups")
+        .set(auth)
+        .send({ name: `g${i}` });
+      expect(ok.status).toBe(201);
+    }
+    const res = await request(app)
+      .post("/api/chat/groups")
+      .set(auth)
+      .send({ name: "g11" });
+
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("CHAT_GROUP_CREATE_LIMIT_REACHED");
+    expect(res.body.error.retryAfter).toBeGreaterThan(0);
+    expect(res.headers["retry-after"]).toBeDefined();
+  });
+
   it("POSITIVE: creates a group and returns 201 with room + member", async () => {
     mocks.groupRoomRepo.create.mockResolvedValue({
       roomId: "grp_new",

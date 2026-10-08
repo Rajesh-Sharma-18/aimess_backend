@@ -3,7 +3,10 @@ import { Router } from "express";
 import { authenticate } from "../../middleware/authenticate.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { validateBody } from "../middleware/validate-body.js";
-import { messagingRateLimits } from "../../middleware/rate-limit.js";
+import {
+  messagingRateLimits,
+  sendRateLimit,
+} from "../../middleware/rate-limit.js";
 import {
   communityTimelineQuerySchema,
   communitySyncQuerySchema,
@@ -169,8 +172,8 @@ export function createCommunityRoutes(
   router.post(
     "/rooms/:roomId/messages/:messageId/forward",
     authenticate,
-    limits.send,
     validateBody(forwardCommunityMessageBodySchema),
+    sendRateLimit("cm", (req) => req.body?.targetRoomId),
     messageCtrl.forwardMessage
   );
 

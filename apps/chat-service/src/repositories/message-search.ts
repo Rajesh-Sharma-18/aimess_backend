@@ -149,6 +149,50 @@ export function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Base letter of `ch` with accents dropped (`Đ`→`d`, `ố`→`o`), lower-cased. */
+export function foldSearchChar(ch: string): string {
+  return ch
+    .normalize("NFD")
+    .replace(/\p{M}+/gu, "")
+    .replace(/[đĐ]/g, "d")
+    .toLowerCase();
+}
+
+// Every accented Latin letter (Latin-1 → Latin Extended-B + Vietnamese block), grouped by base.
+const ACCENT_VARIANTS: Map<string, string> = (() => {
+  const groups = new Map<string, Set<string>>();
+  const ranges: Array<[number, number]> = [
+    [0x00c0, 0x024f],
+    [0x1e00, 0x1eff],
+  ];
+  for (const [from, to] of ranges) {
+    for (let cp = from; cp <= to; cp++) {
+      const ch = String.fromCodePoint(cp);
+      const base = foldSearchChar(ch);
+      if (base.length !== 1 || !/[a-z]/.test(base) || base === ch) continue;
+      const set = groups.get(base) ?? new Set([base, base.toUpperCase()]);
+      set.add(ch);
+      groups.set(base, set);
+    }
+  }
+  return new Map([...groups].map(([base, set]) => [base, [...set].join("")]));
+})();
+
+/**
+ * Accent-insensitive literal pattern: "duong pho" matches "Đường phố". The query is
+ * folded first, then every letter becomes a class of its accented variants.
+ */
+export function accentInsensitivePattern(query: string): string {
+  return [...query]
+    .map((ch) => {
+      const base = foldSearchChar(ch);
+      if (base.length !== 1) return escapeRegex(ch);
+      const variants = ACCENT_VARIANTS.get(base);
+      return variants ? `[${variants}]` : escapeRegex(base);
+    })
+    .join("");
+}
+
 /**
  * Builds the message-search page pipeline: a case-insensitive SUBSTRING match
  * on `field`, newest-first with an `_id` tiebreaker, bounded by a keyset cursor
@@ -190,7 +234,7 @@ export function buildTextSearchPipeline(params: {
   const keyset = keysetFilter(params.cursor);
   const match: Record<string, unknown> = {
     ...params.match,
-    [params.field]: { $regex: escapeRegex(params.query), $options: "i" },
+    [params.field]: { $regex: accentInsensitivePattern(params.query), $options: "i" },
   };
   // Kept as a separate stage rather than merged: `match` may already carry its
   // own `createdAt` bound (a deletion/ban cutoff) that a merged object would
@@ -221,7 +265,7 @@ export function buildTextSearchCountPipeline(params: {
     {
       $match: {
         ...params.match,
-        [params.field]: { $regex: escapeRegex(params.query), $options: "i" },
+        [params.field]: { $regex: accentInsensitivePattern(params.query), $options: "i" },
       },
     },
     { $count: "total" },

@@ -4,7 +4,11 @@ import { authenticate } from "../../middleware/authenticate.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { validateParams } from "../middleware/validate-params.js";
-import { messagingRateLimits } from "../../middleware/rate-limit.js";
+import {
+  messagingRateLimits,
+  reportQuota,
+  sendRateLimit,
+} from "../../middleware/rate-limit.js";
 import {
   deleteGroupMessageSchema,
   forwardGroupMessageSchema,
@@ -161,6 +165,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     authenticate,
     limits.sensitive,
     validateBody(reportGroupMessageSchema),
+    reportQuota,
     ctrl.reportMessage
   );
 
@@ -168,8 +173,8 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.post(
     "/rooms/:roomId/messages/:messageId/forward",
     authenticate,
-    limits.send,
     validateBody(forwardGroupMessageSchema),
+    sendRateLimit("gm", (req) => req.body?.targetRoomId),
     ctrl.forwardMessage
   );
 

@@ -4,7 +4,11 @@ import { authenticate } from "../../middleware/authenticate.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { validateParams } from "../middleware/validate-params.js";
-import { messagingRateLimits } from "../../middleware/rate-limit.js";
+import {
+  messagingRateLimits,
+  reportQuota,
+  sendRateLimit,
+} from "../../middleware/rate-limit.js";
 import {
   deleteMessageQuerySchema,
   forwardMessageSchema,
@@ -101,6 +105,7 @@ export function createPrivateMessageRoutes(
     authenticate,
     sensitiveLimit,
     validateBody(reportPrivateUserSchema),
+    reportQuota,
     roomCtrl.reportUser
   );
 
@@ -202,6 +207,7 @@ export function createPrivateMessageRoutes(
     authenticate,
     sensitiveLimit,
     validateBody(reportMessageSchema),
+    reportQuota,
     messageCtrl.reportMessage
   );
 
@@ -247,8 +253,8 @@ export function createPrivateMessageRoutes(
   router.post(
     "/rooms/:roomId/messages/:messageId/forward",
     authenticate,
-    sendLimit,
     validateBody(forwardMessageSchema),
+    sendRateLimit("pm", (req) => req.body?.targetRoomId),
     messageCtrl.forwardMessage
   );
 

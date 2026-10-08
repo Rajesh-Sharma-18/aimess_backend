@@ -805,6 +805,39 @@ describe("pins + forward + reactions", () => {
 });
 
 describe("POST /:roomId/messages/:messageId/report", () => {
+  it("LIMIT: 20 reports a day, the 21st → 429 REPORT_LIMIT_REACHED + retryAfter", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: "g1",
+      roomId: ROOM,
+      senderId: "other-user",
+      content: { text: "hi" },
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.addReport.mockResolvedValue({ id: "g1", reports: [] });
+    const auth = bearer(
+      makeAccessToken({ userId: "55555555-5555-4555-8555-555555555555" })
+    );
+
+    for (let i = 0; i < 20; i += 1) {
+      const ok = await request(app)
+        .post(`${BASE}/${ROOM}/messages/g1/report`)
+        .set(auth)
+        .send({ reportReason: "SPAM" });
+      expect(ok.status).toBe(201);
+    }
+    const res = await request(app)
+      .post(`${BASE}/${ROOM}/messages/g1/report`)
+      .set(auth)
+      .send({ reportReason: "SPAM" });
+
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("REPORT_LIMIT_REACHED");
+    expect(res.body.error.retryAfter).toBeGreaterThan(0);
+    expect(mocks.groupMessageRepo.addReport).toHaveBeenCalledTimes(20);
+  });
+
   it("POSITIVE: an active member reports a message → 201 + persisted report", async () => {
     mocks.groupMessageRepo.findById.mockResolvedValue({
       id: "g1",

@@ -1602,8 +1602,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community report.create gRPC error: ${String(err)}`);
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
+            const { code, detailKey, retryAfter } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey, retryAfter);
           });
       }
     );
@@ -1755,8 +1755,8 @@ export function registerCommunityNamespace(
             logger.warn(
               `/community message:forward gRPC error: ${String(err)}`
             );
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
+            const { code, detailKey, retryAfter } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey, retryAfter);
           });
       }
     );

@@ -253,7 +253,7 @@ describe("gRPC editMessage — mentions", () => {
         ]
       )[0].content.mentions
     ).toEqual(MENTIONS);
-    expect(rateLimitMock).toHaveBeenCalledWith("gm", "u1");
+    expect(rateLimitMock).toHaveBeenCalledWith("gm", "u1", "grp_room");
   });
 
   it("PRIVATE strips mentions and is not charged", async () => {

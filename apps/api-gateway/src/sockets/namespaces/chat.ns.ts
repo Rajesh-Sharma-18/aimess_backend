@@ -1764,8 +1764,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:edit gRPC error: ${String(err)}`);
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
+            const { code, detailKey, retryAfter } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey, retryAfter);
           });
       }
     );
@@ -2156,8 +2156,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:forward gRPC error: ${String(err)}`);
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
+            const { code, detailKey, retryAfter } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey, retryAfter);
           });
       }
     );
