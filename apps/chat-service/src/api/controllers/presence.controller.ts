@@ -12,8 +12,8 @@ export class PresenceController {
    * Peer presence, viewer-scoped. `whoCanSeeOnlineStatus` is enforced here and
    * not only on the socket `presence:subscribe` path — otherwise this endpoint
    * is a trivial bypass of the exact setting that gate exists to protect.
-   * A denied viewer sees `{isOnline: false, lastSeen: null}`: the same shape a
-   * genuinely-offline peer returns, so the setting itself stays undisclosed.
+   * A denied viewer sees `{isOnline: false, lastSeen: null, isHidden: true}`;
+   * the client renders no presence at all for it, not "Offline".
    */
   getPresence = asyncHandler(async (req: Request, res: Response) => {
     const userId = req.params.userId as string;
@@ -30,6 +30,7 @@ export class PresenceController {
         isOnline: view?.isOnline ?? false,
         lastSeen: view?.lastSeen ?? null,
         version: view?.version ?? 0,
+        isHidden: view?.isHidden ?? true,
       })
     );
   });
