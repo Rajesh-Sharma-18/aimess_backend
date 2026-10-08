@@ -139,6 +139,7 @@ export interface NotificationDTO {
 const INTERNAL_DATA_DIRECTIVES = [
   "markRead",
   "excludeSessionId",
+  "updateOnly",
   // Replay tickets consumed by `localizeRow` below. They describe how to build
   // the sentence, so once it IS built they are noise on the wire — and a client
   // that started reading them would be re-implementing the copy catalog.

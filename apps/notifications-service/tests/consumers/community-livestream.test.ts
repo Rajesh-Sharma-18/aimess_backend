@@ -145,6 +145,14 @@ describe("LIVESTREAM_STARTED branch", () => {
   });
 });
 
+
+const endedInputs = () =>
+  pushOne.mock.calls
+    .map((c) => c[0])
+    .filter((i) => i.type === CommunityEvents.LIVESTREAM_ENDED);
+const endedRecipients = () => endedInputs().map((i) => i.userId);
+const endedFor = (userId: string) => endedInputs().find((i) => i.userId === userId);
+
 describe("LIVESTREAM_ENDED branch", () => {
   it("replaces the started card in place and no longer routes to the stream", async () => {
     await deliver(CommunityEvents.LIVESTREAM_ENDED, {
@@ -152,13 +160,21 @@ describe("LIVESTREAM_ENDED branch", () => {
       duration: "1m",
       durationSeconds: 60,
     });
-    const input = pushMany.mock.calls[0][1](U1);
-    expect(input.collapseKey).toBe(`live:${SID}`);
+    const input = endedFor(U1);
+    // Silent: an inbox rewrite only, through every gate, never a tray card.
+    expect(input).toMatchObject({ skipPush: true, bypassSettings: true });
+    expect(input.collapseKey).toBeUndefined();
     expect(input.data).toMatchObject({
       livestreamId: SID,
       resurface: "false",
-      idempotencyKey: `live:${SID}:ended`,
+      updateOnly: "true",
     });
+    expect(dismiss).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: U1, tags: [`live:${SID}`] })
+    );
+    expect(dismiss).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: U2, tags: [`live:${SID}`] })
+    );
     const nav = JSON.parse(input.data.navigation);
     expect(nav.screen).toBe("COMMUNITY_CHAT");
     expect(nav.livestreamId).toBeUndefined();
@@ -169,8 +185,9 @@ describe("LIVESTREAM_ENDED branch", () => {
       86_400
     );
     // The host ended it and never had a live card: nothing to retract.
-    expect(pushOne).not.toHaveBeenCalled();
-    expect(dismiss).not.toHaveBeenCalled();
+    expect(pushOne.mock.calls.map((c) => c[0].type)).not.toContain(
+      "community.livestream_retracted"
+    );
   });
 
   it("community admin's own live card is retracted, never rewritten into an ended card", async () => {
@@ -194,7 +211,7 @@ describe("LIVESTREAM_ENDED branch", () => {
     expect(dismiss).toHaveBeenCalledWith(
       expect.objectContaining({ userId: U1, tags: [`live:${SID}`] })
     );
-    expect(pushMany.mock.calls[0][0]).toEqual([HOST, U2]);
+    expect(endedRecipients()).toEqual([HOST, U2]);
   });
 
   it("fans out an 'ended the livestream' push with the duration", async () => {
@@ -204,8 +221,8 @@ describe("LIVESTREAM_ENDED branch", () => {
       durationSeconds: 5040,
     });
 
-    expect(pushMany).toHaveBeenCalledTimes(1);
-    const [recipients, build] = pushMany.mock.calls[0];
+        const recipients = endedRecipients();
+    const build = endedFor;
     expect(recipients).toEqual([U1, U2]);
 
     const input = build(U2);
@@ -229,8 +246,8 @@ describe("LIVESTREAM_ENDED branch", () => {
       endedReason: "SYSTEM",
     });
 
-    expect(pushMany).toHaveBeenCalledTimes(1);
-    const [recipients, build] = pushMany.mock.calls[0];
+        const recipients = endedRecipients();
+    const build = endedFor;
     // Host still excluded — no self-notification.
     expect(recipients).toEqual([U1, U2]);
     const input = build(U1);
@@ -256,8 +273,8 @@ describe("LIVESTREAM_ENDED branch", () => {
       endedByDisplayName: "Admin Person",
     });
 
-    expect(pushMany).toHaveBeenCalledTimes(1);
-    const [recipients, build] = pushMany.mock.calls[0];
+        const recipients = endedRecipients();
+    const build = endedFor;
     expect(recipients).toEqual([U2]);
     const body = build(U2).copy("en").body;
     expect(body).toBe("Admin Person ended Jane Doe's livestream in Cool Community after 2m");
@@ -275,7 +292,8 @@ describe("LIVESTREAM_ENDED branch", () => {
       endedReason: "USER",
     });
 
-    const [recipients, build] = pushMany.mock.calls[0];
+    const recipients = endedRecipients();
+    const build = endedFor;
     expect(recipients).toEqual([U1]);
     expect(build(U1).copy("en").body).toBe(
       "Jane Doe ended the livestream in Cool Community after 4m"
@@ -294,7 +312,8 @@ describe("LIVESTREAM_ENDED branch", () => {
       endedByDisplayName: "Admin Person",
     });
 
-    const [recipients, build] = pushMany.mock.calls[0];
+    const recipients = endedRecipients();
+    const build = endedFor;
     expect(recipients).toEqual([HOST, U2]);
     expect(build(HOST).copy("en").body).toBe(
       "Admin Person ended Jane Doe's livestream in Cool Community after 4m"
@@ -315,8 +334,8 @@ describe("LIVESTREAM_ENDED branch", () => {
       endedReason: "ADMIN",
     });
 
-    expect(pushMany).toHaveBeenCalledTimes(1);
-    const [recipients, build] = pushMany.mock.calls[0];
+        const recipients = endedRecipients();
+    const build = endedFor;
     expect(recipients).toEqual([HOST, U1, U2]);
     // The host reads the host-less form; everyone else is told whose it was.
     expect(build(HOST).copy("en").body).toBe(
@@ -340,5 +359,17 @@ describe("LIVESTREAM_ENDED branch", () => {
     expect(input.actorId).toBeUndefined();
     expect(input.data).toMatchObject({ endedReason: "ADMIN", hostUserId: HOST });
     expect(JSON.stringify(input.data)).not.toMatch(/endedBy(UserId|DisplayName)/);
+  });
+
+  it("the host gets a row only when someone else ended their stream", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      recipientIds: [HOST, U1],
+      duration: "4m",
+      durationSeconds: 240,
+      endedReason: "ADMIN",
+    });
+    expect(endedFor(HOST)?.data.updateOnly).toBeUndefined();
+    expect(endedFor(U1)?.data.updateOnly).toBe("true");
   });
 });

@@ -5372,6 +5372,7 @@ export function createNotificationImpl(
               const {
                 excludeSessionId: _excl,
                 markRead: _markRead,
+                updateOnly: _updateOnly,
                 ...clientData
               } = data;
               await publishUserSocketEvent(
@@ -5422,6 +5423,13 @@ export function createNotificationImpl(
           const plan = existing
             ? resolveTransition(existing.type, req.type, data)
             : null;
+
+          // A producer that only rewrites a card the user already has (a silent
+          // livestream end) never materialises one out of nothing.
+          if (!existing && data.updateOnly === "true") {
+            callback(null, { id: "" });
+            return;
+          }
 
           if (existing && plan?.action === "NOOP") {
             callback(null, { id: existing.id });

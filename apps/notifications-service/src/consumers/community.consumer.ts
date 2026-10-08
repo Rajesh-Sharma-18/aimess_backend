@@ -561,13 +561,13 @@ async function handleCommunityEvent(
             displayName: resolvedHostName,
             avatarUrl: p.hostAvatarUrl,
           };
-      await pushToUsers(recipients, (userId) => ({
+      // A silent end: the "is live" row is rewritten in place (inbox only, never a
+      // push, never re-badged) and its tray card is taken back. Both skip quiet
+      // hours and the livestream toggle, so no stale "is live" card survives.
+      const endedFor = (userId: string): PushInput => ({
         userId,
-        // ponytail: replaces the "started" card only where "ended" is delivered;
-        // quiet hours or a toggle flipped mid-stream leaves "started" in the tray,
-        // and the clients' tap-time stream check keeps it from opening an ended
-        // stream. Send dismissTrayCards here too if that matters.
-        collapseKey: pushTag.live(p.livestreamId),
+        skipPush: true,
+        bypassSettings: true,
         // A Super Admin end reads "An administrator", a platform end (moderation,
         // bans) "System" — neither names the host; the host still rides in
         // data/actorSnapshot as the stream owner.
@@ -604,9 +604,12 @@ async function handleCommunityEvent(
             endedReason: p.endedReason ?? "USER",
             communityHandle: p.communityHandle ?? "",
             actorSnapshot: JSON.stringify(actorSnapshot),
-            // Rewrites the "is live" row in place without re-badging it.
             resurface: "false",
-            idempotencyKey: `live:${p.livestreamId}:ended`,
+            // Only the host, whose stream someone else ended, gets a row they
+            // never had; everyone else only ever sees their "is live" row change.
+            ...(userId === p.hostUserId && endActorId !== p.hostUserId
+              ? {}
+              : { updateOnly: "true" }),
           },
           buildDeepLink("community", p.communityId),
           "liveStreamEnabled",
@@ -614,7 +617,21 @@ async function handleCommunityEvent(
           { screen: "COMMUNITY_CHAT" },
           generateEventThreadId(type)
         ),
-      }));
+      });
+      await Promise.all(
+        recipients.map(async (userId) => {
+          await pushToUser(endedFor(userId)).catch((error: unknown) => {
+            logger.warn(`[livestream] ended row failed user=${userId}`);
+            logger.warn(error);
+          });
+          await dismissTrayCards({
+            userId,
+            tags: [pushTag.live(p.livestreamId)],
+            reason: "LIVESTREAM_ENDED",
+            data: { communityId: p.communityId, livestreamId: p.livestreamId },
+          });
+        })
+      );
       break;
     }
 
