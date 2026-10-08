@@ -3,6 +3,7 @@ import * as amqp from "amqplib";
 
 import { env } from "../config/env.js";
 import { roomTags } from "../lib/push-tags.js";
+import { liveStreamTags } from "../lib/live-streams.js";
 import { dismissTrayCards } from "../services/push-dismiss.js";
 
 const CHAT_READ_QUEUE = "chat.read.queue";
@@ -42,7 +43,12 @@ async function handleConversationRead(
   await dismissTrayCards({
     userId: data.readerId,
     type: "MESSAGE_READ",
-    tags: roomTags(data.conversationId),
+    tags: [
+      ...roomTags(data.conversationId),
+      ...(data.conversationType === "COMMUNITY"
+        ? await liveStreamTags(data.conversationId)
+        : []),
+    ],
     reason: data.reason ?? "READ",
     alwaysPushMobile: true,
     collapseKey: `read:${data.conversationId}`,

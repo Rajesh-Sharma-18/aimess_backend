@@ -44,6 +44,7 @@ import { buildDeepLink } from "../lib/deep-link.js";
 import { communityCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
 import { pushTag, roomTags } from "../lib/push-tags.js";
+import { liveStreamTags, trackLiveStream } from "../lib/live-streams.js";
 import { redis } from "../config/redis.js";
 import { dismissTrayCards } from "../services/push-dismiss.js";
 import {
@@ -147,13 +148,18 @@ function withoutActor(
 async function dismissRoomCards(
   userIds: string[] | undefined,
   communityId: string,
-  reason: "LEFT" | "REMOVED" | "DELETED"
+  reason: "LEFT" | "REMOVED" | "DELETED" | "CLOSED",
+  tags?: string[]
 ): Promise<void> {
+  const roomCardTags = tags ?? [
+    ...roomTags(communityId),
+    ...(await liveStreamTags(communityId)),
+  ];
   await Promise.all(
     [...new Set(userIds ?? [])].filter(Boolean).map((userId) =>
       dismissTrayCards({
         userId,
-        tags: roomTags(communityId),
+        tags: roomCardTags,
         reason,
         data: { communityId, conversationId: communityId },
       })
@@ -477,6 +483,7 @@ async function handleCommunityEvent(
         logger.info(`[livestream] start after end skipped stream=${p.livestreamId}`);
         break;
       }
+      await trackLiveStream(p.communityId, p.livestreamId);
       const [identity, resolvedHostName] = await Promise.all([
         communityIdentityFor(
           p.communityId,
@@ -1246,6 +1253,13 @@ async function handleCommunityEvent(
 
     case CommunityEvents.CLOSED: {
       const p = data as CommunityClosedNotifyPayload;
+      // Members stay on close, so only its "is live" cards go; chat cards stay.
+      await dismissRoomCards(
+        p.memberIds,
+        p.communityId,
+        "CLOSED",
+        await liveStreamTags(p.communityId)
+      );
       const identity = await communityIdentityFor(p.communityId);
       await pushToUsers(p.memberIds, (userId) => ({
         userId,

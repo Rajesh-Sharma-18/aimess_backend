@@ -44,10 +44,16 @@ jest.mock("../../src/services/push-dismiss.js", () => ({
   dismissTrayCards: jest.fn(async () => undefined),
 }));
 
+jest.mock("../../src/lib/live-streams.js", () => ({
+  trackLiveStream: jest.fn(async () => undefined),
+  liveStreamTags: jest.fn(async () => ["live:s-old", "live:s-now"]),
+}));
+
 import { CommunityEvents } from "@aimess/shared-types";
 
 import { startCommunityConsumer } from "../../src/consumers/community.consumer.js";
 import { redis } from "../../src/config/redis.js";
+import { trackLiveStream } from "../../src/lib/live-streams.js";
 import { dismissTrayCards } from "../../src/services/push-dismiss.js";
 import { pushToUser, pushToUsers } from "../../src/services/push.service.js";
 
@@ -371,5 +377,37 @@ describe("LIVESTREAM_ENDED branch", () => {
     });
     expect(endedFor(HOST)?.data.updateOnly).toBeUndefined();
     expect(endedFor(U1)?.data.updateOnly).toBe("true");
+  });
+});
+
+describe("per-stream live cards close with the community", () => {
+  it("a start is tracked so the community's own dismissals can find its card", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_STARTED, startedPayload);
+    expect(trackLiveStream).toHaveBeenCalledWith(CID, SID);
+  });
+
+  it("closing the community takes back its live cards, not its chat cards", async () => {
+    await deliver(CommunityEvents.CLOSED, {
+      communityId: CID,
+      memberIds: [U1],
+      actorId: HOST,
+    });
+    expect(dismiss).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: U1, tags: ["live:s-old", "live:s-now"] })
+    );
+  });
+
+  it("a removed member loses the community's live cards with its room cards", async () => {
+    await deliver(CommunityEvents.MEMBER_KICKED, {
+      communityId: CID,
+      targetUserId: U1,
+      actorId: HOST,
+    });
+    expect(dismiss).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: U1,
+        tags: expect.arrayContaining([`conv:${CID}`, "live:s-old", "live:s-now"]),
+      })
+    );
   });
 });
