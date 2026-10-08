@@ -69,7 +69,7 @@ describe("livestream notification identity", () => {
   it("keys a livestream row on the stream, not the community", () => {
     expect(
       resolveGroupKey("community.livestream_started", "host", data("s1"))
-    ).toBe("livestream:s1:community.livestream_started");
+    ).toBe("livestream:s1");
   });
 
   it("gives two streams in one community two separate cards", () => {
@@ -78,10 +78,16 @@ describe("livestream notification identity", () => {
     expect(a).not.toBe(b);
   });
 
-  it("keeps started and ended of one stream as two cards", () => {
+  it("shares one card between started and ended of the same stream", () => {
     expect(
       resolveGroupKey("community.livestream_started", "h", data("s1"))
-    ).not.toBe(resolveGroupKey("community.livestream_ended", "h", data("s1")));
+    ).toBe(resolveGroupKey("community.livestream_ended", "h", data("s1")));
+    expect(
+      resolveTransition(
+        "community.livestream_started",
+        "community.livestream_ended"
+      )
+    ).toEqual({ action: "UPDATE", resurface: true });
   });
 
   it("collapses a redelivered event onto its own card (no duplicate)", () => {

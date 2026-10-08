@@ -69,13 +69,14 @@ export function resolveGroupKey(
     return sessionId ? `auth:login:${sessionId}` : null;
   }
 
-  // One card per stream per event, wherever the stream runs. Without this a
-  // community stream fell into `community:<id>:<type>` below, so the NEXT
-  // stream in the same community rewrote the previous card in place
-  // (`notification:updated`, not resurfaced) instead of arriving as new.
+  // One card per stream, shared by its start and end events, so the end
+  // event transitions the existing start card instead of inserting a
+  // duplicate. Keyed by livestreamId (not type) so a later stream in the
+  // same community still gets its own card instead of colliding with
+  // `community:<id>:<type>` below.
   const livestreamId = nonEmpty(data.livestreamId);
   if (livestreamId && isLiveType(type)) {
-    return `livestream:${livestreamId}:${type}`;
+    return `livestream:${livestreamId}`;
   }
 
   const communityId = nonEmpty(data.communityId);
