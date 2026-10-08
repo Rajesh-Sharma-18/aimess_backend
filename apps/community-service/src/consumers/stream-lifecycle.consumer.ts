@@ -224,6 +224,12 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
   //    admin; "Administrator ended {host}'s …" for ADMIN (Super Admin, Backoffice),
   //    "System ended …" for SYSTEM. Both keep the host as the triggering user.
   const actorId = streamEndedActorId(data);
+  // A community admin/moderator who ended someone else's stream is named by role.
+  const endedByRole =
+    endedReason === "USER" && actorId !== creatorId
+      ? (await communityRepository.findMemberByUserId(communityId, actorId))
+          ?.role
+      : undefined;
   publishCommunitySystemMessageForChatSafe({
     communityId,
     systemMessageType: CommunitySystemMessageType.LIVE_STREAM_ENDED,
@@ -236,6 +242,7 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
       // Someone else ended it: chat-service resolves the host's name as the
       // target, so the line reads "{admin} ended {host}'s livestream".
       ...(actorId !== creatorId ? { targetUserId: creatorId } : {}),
+      ...(endedByRole ? { actorRole: endedByRole } : {}),
     },
     triggeredByUserId: actorId,
     eventAt,
@@ -288,7 +295,11 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
     durationSeconds,
     endedReason,
     ...(actor
-      ? { endedByUserId: actorId, endedByDisplayName: actor.displayName }
+      ? {
+          endedByUserId: actorId,
+          endedByDisplayName: actor.displayName,
+          ...(endedByRole ? { endedByRole } : {}),
+        }
       : {}),
     recipientIds,
   });

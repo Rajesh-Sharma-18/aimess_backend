@@ -3814,11 +3814,8 @@ export const communityService = {
     targetUserId: string,
     reason?: string
   ): Promise<CommunityMemberData> {
-    const { target: _target } = await this._assertCanModerateMember(
-      communityId,
-      callerId,
-      targetUserId
-    );
+    const { target: _target, callerMembership } =
+      await this._assertCanModerateMember(communityId, callerId, targetUserId);
 
     // Single-document update + recompute of memberCount — no $transaction
     // (standalone Mongo). Recounting ACTIVE members is robust against drift.
@@ -3866,6 +3863,7 @@ export const communityService = {
       communityId,
       eventAt: new Date().toISOString(),
       actorId: callerId,
+      actorRole: callerMembership.role,
       targetUserId,
       reason: reason ?? null,
     });
@@ -3998,6 +3996,7 @@ export const communityService = {
       communityId,
       systemMessageType: "MEMBER_BANNED",
       actorId: callerId,
+      actorRole: callerMembership?.role,
       targetUserId,
       ...(reason ? { extra: { reason } } : {}),
     });
@@ -4422,6 +4421,8 @@ export const communityService = {
      */
     visibleToUserId?: string;
     eventAt?: string;
+    /** The actor's community role at action time; readers see "Admin" / "Moderator", not the name. */
+    actorRole?: string;
   }): void {
     // Telegram silent-kick parity: joined / left / removed never reach the chat
     // timeline at all (they pile up across remove→rejoin cycles and the victim sees
@@ -4436,6 +4437,7 @@ export const communityService = {
       systemMessageType: args.systemMessageType,
       metadata: {
         ...(args.targetUserId ? { targetUserId: args.targetUserId } : {}),
+        ...(args.actorRole ? { actorRole: args.actorRole } : {}),
         ...(args.extra ?? {}),
       },
       triggeredByUserId: args.actorId,
@@ -4569,12 +4571,24 @@ export const communityService = {
     // every surface. The community's name rides with the event (event-time
     // snapshot, like the names); chat-service resolves the actor's name for the
     // chat lines itself, and the list preview below needs it here.
+    // An admin/moderator's add names them by role; no role ⇒ named, as before.
+    let actorRole: string | undefined;
+    if (joinLineType === "MEMBER_ADDED") {
+      try {
+        actorRole = (
+          await communityRepository.findMembership(community.id, actorId)
+        )?.role;
+      } catch {
+        actorRole = undefined;
+      }
+    }
     const addedMetadata: Record<string, unknown> | null =
       joinLineType === "MEMBER_ADDED"
         ? {
             targetUserId: member.userId,
             targetName: member.snapshotDisplayName ?? "",
             actorUserId: actorId,
+            ...(actorRole ? { actorRole } : {}),
             actorName:
               (await fetchUserSnapshotHits([actorId])).get(actorId)
                 ?.displayName ?? "",
@@ -4599,6 +4613,7 @@ export const communityService = {
         requestId,
         communityName: community.name,
         moderatorRecipientIds,
+        ...(actorRole ? { actorRole } : {}),
       });
     }
 
@@ -4746,7 +4761,11 @@ export const communityService = {
       systemMessageType: joinLineType,
       metadata:
         joinLineType === "MEMBER_ADDED"
-          ? { targetUserId: member.userId, communityName: community.name }
+          ? {
+              targetUserId: member.userId,
+              communityName: community.name,
+              ...(actorRole ? { actorRole } : {}),
+            }
           : {},
       triggeredByUserId:
         joinLineType === "MEMBER_ADDED" ? actorId : member.userId,
@@ -4771,6 +4790,7 @@ export const communityService = {
         metadata: {
           targetUserId: member.userId,
           communityName: community.name,
+          ...(actorRole ? { actorRole } : {}),
         },
         triggeredByUserId: actorId,
         eventAt: args.eventAt,
@@ -6225,6 +6245,8 @@ export const communityService = {
       communityId,
       systemMessageType: "MEMBER_UNBANNED",
       actorId: callerId,
+      // Only an ADMIN may unban in-app; a Super Admin is "Administrator" via `source`.
+      ...(opts?.asPlatformAdmin ? {} : { actorRole: CommunityMemberRole.ADMIN }),
       targetUserId,
       ...(opts?.asPlatformAdmin ? { extra: { source: "BO" } } : {}),
     });
@@ -6278,7 +6300,7 @@ export const communityService = {
     durationMinutes: number | null | undefined,
     reason?: string
   ): Promise<CommunityMutedMemberData> {
-    const { target } = await this._assertCanModerateMember(
+    const { target, callerMembership } = await this._assertCanModerateMember(
       communityId,
       callerId,
       targetUserId
@@ -6356,6 +6378,7 @@ export const communityService = {
       communityId,
       systemMessageType: "MEMBER_MUTED",
       actorId: callerId,
+      actorRole: callerMembership.role,
       targetUserId,
       visibleToUserId: targetUserId,
       extra: muteAudit,
@@ -6365,6 +6388,7 @@ export const communityService = {
       communityId,
       systemMessageType: "MEMBER_MUTED",
       actorId: callerId,
+      actorRole: callerMembership.role,
       targetUserId,
       extra: muteAudit,
       eventAt: muteEventAt,
@@ -6488,6 +6512,7 @@ export const communityService = {
       communityId,
       systemMessageType: "MEMBER_UNMUTED",
       actorId: callerId,
+      actorRole: callerMembership?.role,
       targetUserId,
     });
   },

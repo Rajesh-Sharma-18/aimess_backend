@@ -593,7 +593,9 @@ async function handleCommunityEvent(
                 endedByName || resolvedHostName,
                 p.duration,
                 // "{admin} ended {host}'s livestream" when the admin ended it.
-                endedByName ? resolvedHostName : undefined
+                endedByName ? resolvedHostName : undefined,
+                // …named by their role: "Admin ended {host}'s livestream".
+                p.endedByRole
               ),
         ...base(
           type,
@@ -819,7 +821,7 @@ async function handleCommunityEvent(
           ])
         : [undefined, undefined];
       const who = byAdd
-        ? ([actorName, targetName, p.actorId, p.targetUserId] as const)
+        ? ([actorName, targetName, p.actorId, p.targetUserId, p.actorRole] as const)
         : ([] as const);
       // Welcome the joiner — UNLESS they will get the dedicated "approved" or
       // "self_join" (MEMBER_JOINED) notification.
@@ -939,7 +941,8 @@ async function handleCommunityEvent(
           actorName,
           targetName,
           p.byPlatformAdmin ? PLATFORM_ADMIN_ACTOR_ID : p.actorId,
-          p.targetUserId
+          p.targetUserId,
+          p.byPlatformAdmin ? undefined : p.actorRole
         ),
         bypassSettings: true,
         ...base(

@@ -32,6 +32,19 @@ export const SYSTEM_MESSAGES = {
     en: "Administrator",
     th: "ผู้ดูแลระบบ",
   },
+  /** A community/group admin or moderator acting in that role is named by the
+   *  role, never by their name ("Admin removed Tom …"). Distinct from the
+   *  platform's "Administrator". */
+  SYS_NAME_ROLE_ADMIN: {
+    vi: "Người quản trị",
+    en: "Admin",
+    th: "แอดมิน",
+  },
+  SYS_NAME_ROLE_MODERATOR: {
+    vi: "Người kiểm duyệt",
+    en: "Moderator",
+    th: "ผู้ช่วยดูแล",
+  },
   SYS_NAME_SOMEONE: {
     vi: "Ai đó",
     en: "Someone",

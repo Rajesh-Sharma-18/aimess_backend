@@ -50,6 +50,20 @@ export const administratorActorLabel = (locale: SupportedLocale): string =>
   t("SYS_NAME_ADMINISTRATOR", locale);
 
 /**
+ * "Admin" / "Moderator" for an actor who acted in that role (an owner is the
+ * admin), null for anyone else, so the caller keeps the person's name.
+ */
+export function roleActorLabel(
+  role: unknown,
+  locale: SupportedLocale
+): string | null {
+  const r = String(role ?? "").trim().toUpperCase();
+  if (r === "ADMIN" || r === "OWNER") return t("SYS_NAME_ROLE_ADMIN", locale);
+  if (r === "MODERATOR") return t("SYS_NAME_ROLE_MODERATOR", locale);
+  return null;
+}
+
+/**
  * One side of the sentence from the reader's point of view: the reader's own
  * userId renders as "You", {@link SYSTEM_ACTOR_ID} as "System",
  * {@link PLATFORM_ADMIN_ACTOR_ID} as "Administrator", anyone else by

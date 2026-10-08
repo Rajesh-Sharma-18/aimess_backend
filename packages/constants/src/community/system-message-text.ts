@@ -6,6 +6,7 @@ import {
   entityLabel,
   memberChangeText,
   PLATFORM_ADMIN_ACTOR_ID,
+  roleActorLabel,
   SYSTEM_ACTOR_ID,
   systemActorLabel,
 } from "../member-change-text.js";
@@ -169,9 +170,12 @@ export function buildCommunitySystemFallbackText(
   const byBackoffice =
     metadata.source === BACKOFFICE_SOURCE ||
     actorUserIdOf(metadata) === PLATFORM_ADMIN_ACTOR_ID;
+  // A moderation line stamps the actor's role at action time (`actorRole`):
+  // admins and moderators are named by that role, never by their name.
   const actor = byBackoffice
     ? administratorActorLabel(locale)
-    : actorName || t("SYS_NAME_SOMEONE", locale);
+    : roleActorLabel(metadata.actorRole, locale) ??
+      (actorName || t("SYS_NAME_SOMEONE", locale));
   const target =
     (metadata.targetName as string) ||
     targetName ||

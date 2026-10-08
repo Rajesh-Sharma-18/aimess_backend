@@ -25,6 +25,7 @@ import {
   memberChangeText,
   personLabel,
   PLATFORM_ADMIN_ACTOR_ID,
+  roleActorLabel,
   SYSTEM_ACTOR_ID,
   type MemberChange,
 } from "./member-change-text.js";
@@ -443,7 +444,8 @@ export const communityCopy = register("community", {
       communityName: string,
       hostName: string,
       duration?: string | null,
-      streamHostName?: string | null
+      streamHostName?: string | null,
+      actorRole?: string | null
     ): LocalizedCopy =>
     (locale) => {
       const host = streamHostName?.trim();
@@ -458,7 +460,7 @@ export const communityCopy = register("community", {
       return {
         title: named(communityName, locale),
         body: t(key, locale, {
-          name: person(hostName, locale),
+          name: roleActorLabel(actorRole, locale) ?? person(hostName, locale),
           community: named(communityName, locale),
           duration: duration ?? "",
           host: host ?? "",
@@ -551,7 +553,8 @@ export const communityCopy = register("community", {
       actorName?: string | null,
       targetName?: string | null,
       actorId?: string | null,
-      targetUserId?: string | null
+      targetUserId?: string | null,
+      actorRole?: string | null
     ): LocalizedCopy =>
     (locale, viewerId) => ({
       title: named(communityName, locale),
@@ -559,7 +562,7 @@ export const communityCopy = register("community", {
         ? memberChange(
             "ADDED",
             named(communityName, locale),
-            { id: actorId, name: actorName },
+            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
@@ -578,7 +581,8 @@ export const communityCopy = register("community", {
       actorName?: string | null,
       targetName?: string | null,
       actorId?: string | null,
-      targetUserId?: string | null
+      targetUserId?: string | null,
+      actorRole?: string | null
     ): LocalizedCopy =>
     (locale, viewerId) => ({
       title: named(communityName, locale),
@@ -586,7 +590,7 @@ export const communityCopy = register("community", {
         ? memberChange(
             "ADDED",
             named(communityName, locale),
-            { id: actorId, name: actorName },
+            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
@@ -624,7 +628,8 @@ export const communityCopy = register("community", {
       actorName?: string | null,
       targetName?: string | null,
       actorId?: string | null,
-      targetUserId?: string | null
+      targetUserId?: string | null,
+      actorRole?: string | null
     ): LocalizedCopy =>
     (locale, viewerId) => ({
       title: named(communityName, locale),
@@ -637,7 +642,7 @@ export const communityCopy = register("community", {
               // SYSTEM_ACTOR_ID, which only the Backoffice removal ever stored.
               id:
                 actorId === SYSTEM_ACTOR_ID ? PLATFORM_ADMIN_ACTOR_ID : actorId,
-              name: actorName,
+              name: roleActorLabel(actorRole, locale) ?? actorName,
             },
             { id: targetUserId, name: targetName },
             viewerId,
@@ -1020,7 +1025,8 @@ export const groupCopy = register("group", {
       actorName?: string | null,
       targetName?: string | null,
       actorId?: string | null,
-      targetUserId?: string | null
+      targetUserId?: string | null,
+      actorRole?: string | null
     ): LocalizedCopy =>
     (locale, viewerId) => ({
       title: groupName || t("NOTIF_GROUP_UNNAMED", locale),
@@ -1028,7 +1034,7 @@ export const groupCopy = register("group", {
         ? memberChange(
             "ADDED",
             groupName || t("NOTIF_GROUP_UNNAMED", locale),
-            { id: actorId, name: actorName },
+            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
@@ -1206,6 +1212,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "hostName",
     "duration",
     "streamHostName",
+    "actorRole",
   ],
   "community.livestreamEndedBySystem": ["communityName", "duration"],
   "community.livestreamEndedByAdmin": ["communityName", "duration", "hostName"],
@@ -1218,6 +1225,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "targetName",
     "actorId",
     "targetUserId",
+    "actorRole",
   ],
   "community.memberAddedForModerators": [
     "communityName",
@@ -1225,6 +1233,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "targetName",
     "actorId",
     "targetUserId",
+    "actorRole",
   ],
   "community.adminTransferred": ["communityName"],
   "community.roleChanged": ["newRole", "communityName"],
@@ -1234,6 +1243,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "targetName",
     "actorId",
     "targetUserId",
+    "actorRole",
   ],
   "community.memberBanned": ["communityName"],
   "community.memberUnbanned": ["communityName"],
@@ -1264,6 +1274,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "targetName",
     "actorId",
     "targetUserId",
+    "actorRole",
   ],
   "group.memberMuted": ["groupName", "mutedUntil"],
   "group.memberUnmuted": ["groupName"],

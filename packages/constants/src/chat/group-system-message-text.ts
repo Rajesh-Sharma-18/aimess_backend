@@ -6,6 +6,7 @@ import {
   BACKOFFICE_SOURCE,
   entityLabel,
   memberChangeText,
+  roleActorLabel,
   SYSTEM_ACTOR_ID,
   systemActorLabel,
 } from "../member-change-text.js";
@@ -301,11 +302,13 @@ export function buildGroupSystemFallbackText(
 ): string {
   const historyLine = conversationHistoryText(event, locale);
   if (historyLine) return historyLine;
-  // Same legacy invite aliasing as buildPrivateSystemFallbackText below.
+  // Same legacy invite aliasing as buildPrivateSystemFallbackText below. An
+  // admin acting in that role (`actorRole`) is named by the role.
   const actor =
-    (data.actorName as string) ||
-    (data.inviterName as string) ||
-    t("SYS_NAME_SOMEONE", locale);
+    roleActorLabel(data.actorRole, locale) ??
+    ((data.actorName as string) ||
+      (data.inviterName as string) ||
+      t("SYS_NAME_SOMEONE", locale));
   const target = (data.targetName as string) || t("SYS_NAME_A_MEMBER", locale);
   const actorId = String(data.actorId ?? data.inviterId ?? "").trim();
   const targetId = String(data.targetUserId ?? "").trim();
