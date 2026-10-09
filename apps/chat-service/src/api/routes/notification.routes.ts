@@ -37,6 +37,8 @@ export function createNotificationRoutes(ctrl: NotificationController): Router {
     validateBody(recordActionSchema),
     ctrl.recordAction
   );
+  // Clear all (optional ?type= category). Declared before "/:id" for readability; no overlap.
+  router.delete("/", authenticate, ctrl.clearAll);
   router.delete("/:id", authenticate, ctrl.deleteNotification);
 
   return router;

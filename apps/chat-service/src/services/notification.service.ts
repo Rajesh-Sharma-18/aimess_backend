@@ -10,6 +10,7 @@ import {
 } from "../repositories/notification.repository.js";
 import type { Notification } from "../generated/prisma/index.js";
 import {
+  canonicalCategoryId,
   categoryWhere,
   categorize,
   LOGIN_DETECTED_TYPE,
@@ -238,6 +239,35 @@ export class NotificationService {
     const fanout = await this.notificationRepo.getUnreadFanout(userId);
     await this.publishCountEvent(userId, "notification:all-read", fanout);
     return { unreadCount: unreadCountForSession(fanout, viewerSessionId) };
+  }
+
+  /** "Clear all" (AIMESS-45) — the bulk twin of {@link deleteNotification}. */
+  async clearAll(
+    userId: string,
+    category: NotificationCategory = "ALL",
+    viewerSessionId?: string | null
+  ): Promise<{ cleared: number; unreadCount: number }> {
+    // System rows (security/account) are never cleared — same rule as the clients' per-row delete.
+    const isSystem = canonicalCategoryId(category) === "SYSTEM";
+    const extraWhere = {
+      AND: [
+        ...(category === "ALL" ? [] : [categoryWhere(category)]),
+        { NOT: categoryWhere("SYSTEM") },
+      ],
+    };
+    const { count } = isSystem
+      ? { count: 0 }
+      : await this.notificationRepo.deleteAll(userId, extraWhere);
+    const fanout = await this.notificationRepo.getUnreadFanout(userId);
+    if (count > 0) {
+      await this.publishCountEvent(userId, "notification:cleared", fanout, {
+        type: category,
+      });
+    }
+    return {
+      cleared: count,
+      unreadCount: unreadCountForSession(fanout, viewerSessionId),
+    };
   }
 
   async getUnreadCount(
