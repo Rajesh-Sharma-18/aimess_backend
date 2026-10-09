@@ -172,6 +172,14 @@ import {
 /** Claim-key suffix recording that a message's @all already pushed. */
 const MENTION_ALL_CLAIM = "ALL";
 
+function assertWithinHistory(
+  createdAt: Date,
+  member: Parameters<typeof getGroupVisibilityCutoff>[0]
+): void {
+  if (isHiddenByCutoff(createdAt, getGroupVisibilityCutoff(member)))
+    throw new ForbiddenError("CHAT_MESSAGE_BEFORE_JOIN");
+}
+
 export class GroupMessageService {
   constructor(
     private readonly messageRepo: GroupMessageRepository,
@@ -1533,6 +1541,7 @@ export class GroupMessageService {
       userId
     );
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+    assertWithinHistory(message.createdAt, member);
     // Parity with CommunityMessageService.deleteForMe — a muted member cannot
     // mutate their own view of room content either.
     assertGroupMemberNotMuted(member);
@@ -2059,6 +2068,10 @@ if (!params.content?.text?.trim())
     const MAX_ATTEMPTS = 5;
     let message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    assertWithinHistory(
+      message.createdAt,
+      await this.memberRepo.findByRoomAndUser(message.roomId, userId)
+    );
     let added = false;
     let scoped: number | null = null;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -2182,6 +2195,10 @@ if (!params.content?.text?.trim())
   ): Promise<GroupMessage | null> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    assertWithinHistory(
+      message.createdAt,
+      await this.memberRepo.findByRoomAndUser(message.roomId, userId)
+    );
     const target = resolveMediaReactionIndex(message.content, mediaIndex);
     if (target === false)
       throw new BadRequestError("CHAT_MEDIA_INDEX_OUT_OF_RANGE");
@@ -2287,7 +2304,10 @@ if (!params.content?.text?.trim())
     // room, never the path's.
     if (params.roomId && params.roomId !== message.roomId)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    await assertGroupMember(this.memberRepo, message.roomId, params.reporterId);
+    assertWithinHistory(
+      message.createdAt,
+      await assertGroupMember(this.memberRepo, message.roomId, params.reporterId)
+    );
     const updated = await this.messageRepo.addReport(params.messageId, {
       userReportId: params.reporterId,
       userReportReason: params.reportReason,
@@ -3126,6 +3146,7 @@ if (!params.content?.text?.trim())
     const message = await this.messageRepo.findById(params.messageId);
     if (!message || message.roomId !== params.roomId)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    assertWithinHistory(message.createdAt, requester);
 
     const messageSeq =
       (message as { sequenceNumber?: number }).sequenceNumber ?? 0;
@@ -3276,8 +3297,8 @@ if (!params.content?.text?.trim())
     /** The other members of a collage, when the popup was opened on one. */
     siblingMessageIds?: string[] | null;
   }): Promise<ReactionDetailsPage> {
-    const { readCutoffBefore } = params.asAdmin
-      ? { readCutoffBefore: null as Date | null }
+    const { member, readCutoffBefore } = params.asAdmin
+      ? { member: null, readCutoffBefore: null as Date | null }
       : await assertGroupReadAccess(
           this.memberRepo,
           params.roomId,
@@ -3290,6 +3311,7 @@ if (!params.content?.text?.trim())
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (readCutoffBefore && message.createdAt > readCutoffBefore)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    assertWithinHistory(message.createdAt, member);
 
     const messages = await this.collectReactionTargets(
       params.roomId,
@@ -3332,7 +3354,7 @@ if (!params.content?.text?.trim())
       }
     >;
   }> {
-    const { readCutoffBefore } = await assertGroupReadAccess(
+    const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
       params.requesterId,
@@ -3344,6 +3366,7 @@ if (!params.content?.text?.trim())
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (readCutoffBefore && message.createdAt > readCutoffBefore)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    assertWithinHistory(message.createdAt, member);
 
     const raw = await this.messageRepo.getReactions(params.messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");

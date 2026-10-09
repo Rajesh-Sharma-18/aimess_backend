@@ -105,6 +105,8 @@ export class GroupMemberService {
        * speak for a link it was never sent with.
        */
       joinedViaToken?: string | null;
+      /** Adder's choice: true ⇒ full history visible; default ⇒ only messages after the add. */
+      shareHistory?: boolean;
     },
     opts?: {
       systemEvent?: SystemEvent;
@@ -233,6 +235,7 @@ export class GroupMemberService {
         role: params.role || "MEMBER",
         status: "ACTIVE",
         joinedAt: new Date(),
+        historyFrom: params.shareHistory ? new Date(0) : null,
         invitedBy: params.invitedBy || null,
         joinedViaToken: params.joinedViaToken || null,
         leftAt: null,
@@ -243,6 +246,19 @@ export class GroupMemberService {
         // any other path never reaches here with a BANNED row.
         ...(existing?.status === "BANNED"
           ? { bannedAt: null, bannedBy: null }
+          : {}),
+        // Re-add: stale clear/read state from the old membership must not cap or shift visibility.
+        ...(existing
+          ? {
+              clearedAt: null,
+              clearChatAt: null,
+              lastReadMessageId: null,
+              lastReadAt: null,
+              receiptReadMessageId: null,
+              receiptReadAt: null,
+              unreadCount: 0,
+              dismissedAt: { unset: true },
+            }
           : {}),
       });
     } catch (err) {
@@ -325,6 +341,7 @@ export class GroupMemberService {
     roomId: string;
     userIds: string[];
     invitedBy: string;
+    shareHistory?: boolean;
   }): Promise<{
     added: GroupMember[];
     skipped: { userId: string; reason: string }[];
@@ -345,7 +362,12 @@ export class GroupMemberService {
       try {
         added.push(
           await this.addMember(
-            { roomId: params.roomId, userId, invitedBy: params.invitedBy },
+            {
+              roomId: params.roomId,
+              userId,
+              invitedBy: params.invitedBy,
+              shareHistory: params.shareHistory,
+            },
             { deferAnnouncements: true }
           )
         );
@@ -412,6 +434,8 @@ export class GroupMemberService {
         role: member.role,
         isJoined: true,
         addedAt: member.joinedAt,
+        // History floor as epoch ms: 0 = full history shared, else joinedAt.
+        historyFrom: (member.historyFrom ?? member.joinedAt).getTime(),
         // Which invitation admitted them, so a session watching an invitation
         // card can tell whether THIS card is the one that just worked (null =
         // no link was involved, e.g. a direct admin add).

@@ -443,6 +443,8 @@ model GroupMember {
   role                 String    @default("MEMBER")
   status               String    @default("ACTIVE")
   joinedAt             DateTime  @default(now())
+  // History visibility floor: null ⇒ joinedAt; epoch 0 ⇒ added with shared history.
+  historyFrom          DateTime?
   invitedBy            String?
   // The invite-link TOKEN this membership was obtained with, when it came from
   // a link at all (null for a direct admin add, and for every row written

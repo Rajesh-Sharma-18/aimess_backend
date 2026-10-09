@@ -164,6 +164,7 @@ export class GroupMemberRepository {
       roomId: string;
       role: string;
       joinedAt: Date;
+      historyFrom: Date | null;
       unreadCount: number;
       notificationSettings: GroupMember["notificationSettings"];
       clearedAt: Date | null;
@@ -177,6 +178,7 @@ export class GroupMemberRepository {
         roomId: true,
         role: true,
         joinedAt: true,
+        historyFrom: true,
         unreadCount: true,
         notificationSettings: true,
         clearedAt: true,
@@ -220,6 +222,7 @@ export class GroupMemberRepository {
       clearedAt: Date | null;
       clearChatAt: Date | null;
       joinedAt: Date | null;
+      historyFrom: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -229,6 +232,7 @@ export class GroupMemberRepository {
         clearedAt: true,
         clearChatAt: true,
         joinedAt: true,
+        historyFrom: true,
       },
       // Uncapped: the search queries the list in chunks (SEARCH_ROOM_CHUNK_SIZE).
       // [userId, status, updatedAt desc] serves the equality.
@@ -845,6 +849,7 @@ export class GroupMemberRepository {
         role: (data.role as string) ?? "MEMBER",
         status: (data.status as string) ?? "ACTIVE",
         joinedAt: (data.joinedAt as Date) ?? new Date(),
+        historyFrom: (data.historyFrom as Date) ?? null,
         invitedBy: (data.invitedBy as string) ?? null,
         unreadCount: (data.unreadCount as number) ?? 0,
         notificationSettings: (data.notificationSettings as object) ?? {
