@@ -1,4 +1,4 @@
-/** AIMESS-45: "Clear all" soft-deletes every non-system notification and fans out once. */
+/** AIMESS-45: "Clear all" soft-deletes every notification and fans out once. */
 import { NotificationService } from "../../src/services/notification.service.js";
 
 function build(count = 3) {
@@ -14,34 +14,21 @@ function build(count = 3) {
 }
 
 describe("NotificationService.clearAll", () => {
-  it("clears everything except system rows and tells the other devices", async () => {
+  it("clears every notification, System included, and tells the other devices", async () => {
     const { service, repo, redis } = build();
 
-    const result = await service.clearAll("u1", "ALL");
+    const result = await service.clearAll("u1");
 
     expect(result.cleared).toBe(3);
-    const where = repo.deleteAll.mock.calls[0]![1] as { AND: unknown[] };
-    expect(where.AND).toHaveLength(1);
-    expect(where.AND[0]).toHaveProperty("NOT");
+    expect(repo.deleteAll).toHaveBeenCalledWith("u1", undefined);
     expect(redis.publish).toHaveBeenCalled();
   });
 
-  it("never clears the System tab", async () => {
-    const { service, repo, redis } = build();
+  it("publishes nothing when there was nothing to clear", async () => {
+    const { service, redis } = build(0);
 
-    const result = await service.clearAll("u1", "SYSTEM");
+    await service.clearAll("u1");
 
-    expect(result.cleared).toBe(0);
-    expect(repo.deleteAll).not.toHaveBeenCalled();
     expect(redis.publish).not.toHaveBeenCalled();
-  });
-
-  it("scopes to one category when asked", async () => {
-    const { service, repo } = build();
-
-    await service.clearAll("u1", "CALLS");
-
-    const where = repo.deleteAll.mock.calls[0]![1] as { AND: unknown[] };
-    expect(where.AND).toHaveLength(2);
   });
 });

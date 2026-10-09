@@ -10,7 +10,6 @@ import {
 } from "../repositories/notification.repository.js";
 import type { Notification } from "../generated/prisma/index.js";
 import {
-  canonicalCategoryId,
   categoryWhere,
   categorize,
   LOGIN_DETECTED_TYPE,
@@ -247,17 +246,9 @@ export class NotificationService {
     category: NotificationCategory = "ALL",
     viewerSessionId?: string | null
   ): Promise<{ cleared: number; unreadCount: number }> {
-    // System rows (security/account) are never cleared — same rule as the clients' per-row delete.
-    const isSystem = canonicalCategoryId(category) === "SYSTEM";
-    const extraWhere = {
-      AND: [
-        ...(category === "ALL" ? [] : [categoryWhere(category)]),
-        { NOT: categoryWhere("SYSTEM") },
-      ],
-    };
-    const { count } = isSystem
-      ? { count: 0 }
-      : await this.notificationRepo.deleteAll(userId, extraWhere);
+    // "Clear all" means every notification, System included (client decision, AIMESS-45).
+    const extraWhere = category === "ALL" ? undefined : categoryWhere(category);
+    const { count } = await this.notificationRepo.deleteAll(userId, extraWhere);
     const fanout = await this.notificationRepo.getUnreadFanout(userId);
     if (count > 0) {
       await this.publishCountEvent(userId, "notification:cleared", fanout, {
