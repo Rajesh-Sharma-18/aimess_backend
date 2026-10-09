@@ -118,7 +118,7 @@ describe("buildGroupSystemFallbackText — MEMBER_BANNED / MEMBER_UNBANNED actor
     ).toBe("Bạn đã cấm Tom");
     expect(
       buildGroupSystemFallbackText("MEMBER_UNBANNED", ROW, "actor-1", "th")
-    ).toBe("คุณปลดแบนTom");
+    ).toBe("คุณปลดแบน Tom");
   });
 });
 
@@ -174,7 +174,7 @@ describe("buildGroupSystemFallbackText — MEMBER_REMOVED", () => {
     ).toBe("Bạn đã xóa Tom khỏi nhóm");
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "actor-1", "th")
-    ).toBe("คุณนำTomออกจากกลุ่ม");
+    ).toBe("คุณนำ Tom ออกจากกลุ่ม");
   });
 });
 
@@ -279,7 +279,7 @@ describe("buildGroupSystemFallbackText — Backoffice (Super Admin) actor", () =
     ).toBe("Quản trị viên đã xóa Tom khỏi nhóm");
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", BO, "bystander-1", "th")
-    ).toBe("ผู้ดูแลระบบนำTomออกจากกลุ่ม");
+    ).toBe("ผู้ดูแลระบบนำ Tom ออกจากกลุ่ม");
   });
 
   // Realtime and history both re-render the stored row through this function.

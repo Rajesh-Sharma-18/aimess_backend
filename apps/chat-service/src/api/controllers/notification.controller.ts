@@ -186,6 +186,20 @@ export class NotificationController {
       );
   });
 
+  clearAll = asyncHandler(async (req: Request, res: Response) => {
+    const { userId, sessionId } = req.auth;
+    const category = parseCategory(req.query.type);
+    const result = await this.service.clearAll(userId, category, sessionId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          { ...result, type: category },
+          t("CHAT_NOTIFICATION_DELETED", req.locale)
+        )
+      );
+  });
+
   getUnreadCount = asyncHandler(async (req: Request, res: Response) => {
     const { userId, sessionId } = req.auth;
     const unreadCount = await this.service.getUnreadCount(userId, sessionId);

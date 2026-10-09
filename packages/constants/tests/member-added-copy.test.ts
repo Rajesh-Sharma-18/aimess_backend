@@ -109,7 +109,7 @@ describe("member-added copy", () => {
       "John Smith đã thêm Bạn vào Gokuldham Society"
     );
     expect(community("th", TOM).body).toBe(
-      "John Smithเพิ่มคุณเข้าGokuldham Society"
+      "John Smith เพิ่มคุณเข้า Gokuldham Society"
     );
   });
 

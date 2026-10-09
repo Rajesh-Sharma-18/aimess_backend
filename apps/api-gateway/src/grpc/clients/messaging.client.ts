@@ -386,7 +386,7 @@ export interface EndCallParams {
   /** A callee leg that did not answer cannot end the call. */
   legId?: string;
   /** "NO_ANSWER" when the caller's ring window elapsed (see EndCallRequest). */
-  reason?: "NO_ANSWER";
+  reason?: "NO_ANSWER" | "FAILED";
   /** See AnswerCallParams.sessionId. */
   sessionId?: string;
 }

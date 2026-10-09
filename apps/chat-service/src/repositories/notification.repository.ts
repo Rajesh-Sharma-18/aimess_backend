@@ -407,6 +407,25 @@ export class NotificationRepository {
   }
 
   /**
+   * "Clear all" (AIMESS-45): owner-scoped soft-delete of every live row, optionally
+   * one category. Tombstones like {@link deleteById}, so `/sync` replays it.
+   */
+  async deleteAll(
+    userId: string,
+    extraWhere?: Record<string, unknown>
+  ): Promise<{ count: number }> {
+    const result = await this.prisma.notification.updateMany({
+      where: { userId, isDeleted: false, ...(extraWhere ?? {}) },
+      data: {
+        isDeleted: true,
+        deletedAt: new Date(),
+        version: { increment: 1 },
+      },
+    });
+    return { count: result.count };
+  }
+
+  /**
    * Owner-scoped soft-delete of EVERY still-active row in one notification
    * group, returning the ids that actually changed so each can be relayed.
    *

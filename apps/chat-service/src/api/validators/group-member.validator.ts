@@ -10,6 +10,7 @@ export const addMemberSchema = z
     roomId: z.string().min(5).max(100),
     userId: z.string().min(5).max(100).optional(),
     userIds: z.array(z.string().min(5).max(100)).min(1).max(256).optional(),
+    shareHistory: z.boolean().optional().default(false),
   })
   .refine((body) => Boolean(body.userId) || Boolean(body.userIds?.length), {
     message: "userId or userIds is required",

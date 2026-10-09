@@ -1252,7 +1252,9 @@ export function registerChatNamespace(
     // that the user hung up. Closed enum — chat-service re-validates the call
     // state before it changes the outcome, so this can only ever pick between
     // two legitimate readings of the same hangup.
-    reason: z.enum(["NO_ANSWER"]).optional(),
+    // "FAILED" = the client could not start/keep media (LiveKit/WebRTC error,
+    // mic/camera denied) — settles the card as Failed (AIMESS-43).
+    reason: z.enum(["NO_ANSWER", "FAILED"]).optional(),
   });
   const CallRejoinSchema = z.object({ callId: z.string().min(1) });
 
@@ -1769,8 +1771,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:edit gRPC error: ${String(err)}`);
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
+            const { code, detailKey, retryAfter } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey, retryAfter);
           });
       }
     );
@@ -2159,8 +2161,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:forward gRPC error: ${String(err)}`);
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
+            const { code, detailKey, retryAfter } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey, retryAfter);
           });
       }
     );

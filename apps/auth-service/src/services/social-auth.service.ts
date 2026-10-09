@@ -21,6 +21,7 @@ import {
 } from "../lib/social-account.util.js";
 import { resolveSocialProfileName } from "../lib/social-profile-name.js";
 import { assertNotBanned, assertNotDeleted } from "../lib/account-guard.js";
+import { accountLockedError, lockedForSec } from "../lib/login-lockout.js";
 import { assertEmailAvailable } from "../lib/email-availability.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import type { DeviceInfoInput } from "../api/validators/device-info.validator.js";
@@ -66,8 +67,8 @@ function assertUserCanLogin(user: AuthUserRow): void {
   // identity ever reaches this line.
   assertNotDeleted(user.deletedAt);
 
-  if (user.lockedUntil && user.lockedUntil > new Date()) {
-    throw new UnauthorizedError("AUTH_ACCOUNT_LOCKED");
+  if (lockedForSec(user.lockedUntil) > 0) {
+    throw accountLockedError(lockedForSec(user.lockedUntil));
   }
 
   // Google and Apple sign-in both funnel through here, so a banned account is

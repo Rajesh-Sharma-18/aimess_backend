@@ -89,8 +89,9 @@ const {
   mentionAllAllowed,
   assertSendAllowed,
   consumeRateLimit,
-  MESSAGING_RATE_LIMITS,
+  MESSAGE_SEND_LIMITS,
   MESSAGING_RATE_WINDOW_MS,
+  sendRateLimit,
 } =
   require("../../src/middleware/rate-limit.js") as typeof import("../../src/middleware/rate-limit.js");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -98,15 +99,17 @@ const { env } =
   require("../../src/config/env.js") as typeof import("../../src/config/env.js");
 
 const USER = "user-1";
+const ROOM = "room-1";
+type Scope = "pm" | "gm" | "cm";
 
 /** Consume `n` tokens the way the REST middleware does, for the same bucket. */
-async function consumeAsRest(scope: string, times: number) {
+async function consumeAsRest(scope: Scope, times: number, room = ROOM) {
   for (let i = 0; i < times; i += 1) {
     await consumeRateLimit({
       keyPrefix: `${scope}:send`,
-      identifier: USER,
+      identifier: `${USER}:${room}`,
       windowMs: MESSAGING_RATE_WINDOW_MS,
-      maxRequests: MESSAGING_RATE_LIMITS.send,
+      maxRequests: MESSAGE_SEND_LIMITS[scope],
       onCacheError: "fallback",
     });
   }
@@ -118,76 +121,142 @@ beforeEach(() => {
 });
 
 describe("send limiter — one bucket for REST and gRPC", () => {
+  it("client table: 60/min per private recipient, 30/min per group/community channel", () => {
+    expect(MESSAGE_SEND_LIMITS).toEqual({ pm: 60, gm: 30, cm: 30 });
+  });
+
   it.each(["pm", "gm", "cm"] as const)(
     "%s: refuses the gRPC send once the REST quota is spent",
     async (scope) => {
-      await consumeAsRest(scope, MESSAGING_RATE_LIMITS.send);
+      await consumeAsRest(scope, MESSAGE_SEND_LIMITS[scope]);
 
       // The socket path arrives here. Previously it had its own (absent) limit.
-      await expect(assertSendAllowed(scope, USER)).rejects.toMatchObject({
+      await expect(assertSendAllowed(scope, USER, ROOM)).rejects.toMatchObject({
         statusCode: 429,
         messageKey: "RATE_LIMITED",
       });
     }
   );
 
-  it("allows sends up to the ceiling, then refuses", async () => {
-    for (let i = 0; i < MESSAGING_RATE_LIMITS.send; i += 1) {
-      await expect(assertSendAllowed("pm", USER)).resolves.toBeUndefined();
-    }
+  it.each(["pm", "gm", "cm"] as const)(
+    "%s: allows sends up to the ceiling, then refuses",
+    async (scope) => {
+      for (let i = 0; i < MESSAGE_SEND_LIMITS[scope]; i += 1) {
+        await expect(
+          assertSendAllowed(scope, USER, ROOM)
+        ).resolves.toBeUndefined();
+      }
 
-    await expect(assertSendAllowed("pm", USER)).rejects.toMatchObject({
-      statusCode: 429,
-    });
-  });
+      await expect(assertSendAllowed(scope, USER, ROOM)).rejects.toMatchObject({
+        statusCode: 429,
+      });
+    }
+  );
 
   it("charges the same key REST uses, so neither path is a free door", async () => {
-    await assertSendAllowed("pm", USER);
+    await assertSendAllowed("pm", USER, ROOM);
 
-    expect([...store.keys()]).toContain(`rl:pm:send:${USER}`);
+    expect([...store.keys()]).toContain(`rl:pm:send:${USER}:${ROOM}`);
   });
 
   it("keeps the buckets separate per user", async () => {
-    for (let i = 0; i < MESSAGING_RATE_LIMITS.send; i += 1) {
-      await assertSendAllowed("pm", USER);
-    }
+    await consumeAsRest("pm", MESSAGE_SEND_LIMITS.pm);
 
     // A throttled user must not throttle everyone else.
-    await expect(assertSendAllowed("pm", "user-2")).resolves.toBeUndefined();
+    await expect(
+      assertSendAllowed("pm", "user-2", ROOM)
+    ).resolves.toBeUndefined();
+  });
+
+  it("keeps the buckets separate per conversation (recipient / channel)", async () => {
+    await consumeAsRest("gm", MESSAGE_SEND_LIMITS.gm);
+
+    await expect(assertSendAllowed("gm", USER, ROOM)).rejects.toMatchObject({
+      statusCode: 429,
+    });
+    await expect(
+      assertSendAllowed("gm", USER, "room-2")
+    ).resolves.toBeUndefined();
   });
 
   it("keeps the buckets separate per conversation kind", async () => {
-    await consumeAsRest("pm", MESSAGING_RATE_LIMITS.send);
+    await consumeAsRest("pm", MESSAGE_SEND_LIMITS.pm);
 
-    // Exhausting private sends must not block group or community sends: they
-    // are separate ceilings by design, and always have been on REST.
-    await expect(assertSendAllowed("gm", USER)).resolves.toBeUndefined();
-    await expect(assertSendAllowed("cm", USER)).resolves.toBeUndefined();
+    await expect(assertSendAllowed("gm", USER, ROOM)).resolves.toBeUndefined();
+    await expect(assertSendAllowed("cm", USER, ROOM)).resolves.toBeUndefined();
   });
 
-  it("still bounds sends when Redis is unavailable", async () => {
-    // The old behaviour was to fail fully open, so a Redis outage removed every
-    // send limit at once — exactly when a flood is least absorbable. Writes now
-    // degrade to a per-process counter with the same ceiling.
-    execFails = true;
-
-    for (let i = 0; i < MESSAGING_RATE_LIMITS.send; i += 1) {
-      await expect(
-        assertSendAllowed("pm", "outage-user")
-      ).resolves.toBeUndefined();
-    }
-
-    await expect(assertSendAllowed("pm", "outage-user")).rejects.toMatchObject({
+  it("charges a multi-message forward per message", async () => {
+    await expect(
+      assertSendAllowed("cm", USER, ROOM, MESSAGE_SEND_LIMITS.cm)
+    ).resolves.toBeUndefined();
+    await expect(assertSendAllowed("cm", USER, ROOM)).rejects.toMatchObject({
       statusCode: 429,
     });
   });
 
-  it("reports a retry hint the client can wait on", async () => {
-    await consumeAsRest("pm", MESSAGING_RATE_LIMITS.send);
+  it("still bounds sends when Redis is unavailable", async () => {
+    // Writes degrade to a per-process counter with the same ceiling.
+    execFails = true;
 
-    await expect(assertSendAllowed("pm", USER)).rejects.toMatchObject({
+    for (let i = 0; i < MESSAGE_SEND_LIMITS.pm; i += 1) {
+      await expect(
+        assertSendAllowed("pm", "outage-user", ROOM)
+      ).resolves.toBeUndefined();
+    }
+
+    await expect(
+      assertSendAllowed("pm", "outage-user", ROOM)
+    ).rejects.toMatchObject({ statusCode: 429 });
+  });
+
+  it("reports a retry hint the client can wait on", async () => {
+    await consumeAsRest("pm", MESSAGE_SEND_LIMITS.pm);
+
+    await expect(assertSendAllowed("pm", USER, ROOM)).rejects.toMatchObject({
       retryAfterSec: expect.any(Number),
     });
+  });
+});
+
+describe("REST sendRateLimit — same (sender, conversation) bucket", () => {
+  const call = async (roomId: string) => {
+    const req = {
+      auth: { userId: USER },
+      params: { roomId },
+      headers: {},
+      method: "POST",
+      originalUrl: `/rooms/${roomId}/messages`,
+    };
+    const res = {
+      statusCode: 200,
+      body: undefined as unknown,
+      setHeader: jest.fn(),
+      status(code: number) {
+        this.statusCode = code;
+        return this;
+      },
+      json(b: unknown) {
+        this.body = b;
+        return this;
+      },
+    };
+    const next = jest.fn();
+    await sendRateLimit("gm")(req as never, res as never, next);
+    return { res, next };
+  };
+
+  it("refuses REST once gRPC spent the room's quota; another room is unaffected", async () => {
+    for (let i = 0; i < MESSAGE_SEND_LIMITS.gm; i += 1) {
+      await assertSendAllowed("gm", USER, ROOM);
+    }
+    const refused = await call(ROOM);
+    expect(refused.next).not.toHaveBeenCalled();
+    expect(refused.res.statusCode).toBe(429);
+    expect(refused.res.body).toMatchObject({
+      error: { code: "RATE_LIMITED", retryAfter: expect.any(Number) },
+    });
+    expect((await call("room-2")).next).toHaveBeenCalled();
   });
 });
 
@@ -207,7 +276,7 @@ describe("@all limiter — per room and sender", () => {
     }
 
     await expect(mentionAllAllowed(USER, "room-2")).resolves.toBe(true);
-    await expect(assertSendAllowed("gm", USER)).resolves.toBeUndefined();
-    expect(sorted(`rl:gm:send:${USER}`)).toHaveLength(1);
+    await expect(assertSendAllowed("gm", USER, ROOM)).resolves.toBeUndefined();
+    expect(sorted(`rl:gm:send:${USER}:${ROOM}`)).toHaveLength(1);
   });
 });

@@ -31,6 +31,7 @@ import {
   publishUserSocketEvent,
 } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
+import { assertReportQuota } from "@aimess/utils";
 import type {
   CommunityAddedPayload,
   CommunityClosedPayload,
@@ -1235,6 +1236,8 @@ function publishNotificationMuteChanged(
 
 /** Platform cap on concurrent LIVE streams per community (see stream-service). */
 const MAX_ACTIVE_LIVESTREAMS = 5;
+// ponytail: count-then-create, no Mongo transaction; two racing creates can land a 6th.
+const MAX_OWNED_COMMUNITIES = 5;
 
 /**
  * Derive the list/detail livestream fields from a community's LIVE stream count.
@@ -2483,6 +2486,13 @@ export const communityService = {
     creatorId: string,
     input: CreateCommunityInput
   ): Promise<CommunityData> {
+    if (
+      (await communityRepository.countOwnedCommunities(creatorId)) >=
+      MAX_OWNED_COMMUNITIES
+    ) {
+      throw new BadRequestError("COMMUNITY_CREATE_LIMIT_REACHED");
+    }
+
     const name = normalizeName(input.name);
     const handle = normalizeHandle(input.handle);
 
@@ -3669,6 +3679,22 @@ export const communityService = {
       targetUserId,
       role
     );
+
+    // Staff can't be muted: promoting a muted member lifts the mute in the same flow.
+    if (role !== CommunityMemberRole.MEMBER) {
+      const mute = await communityRepository.findMemberMute(
+        communityId,
+        targetUserId
+      );
+      if (mute && (!mute.mutedUntil || mute.mutedUntil.getTime() > Date.now())) {
+        await this._liftMemberMute(
+          communityId,
+          callerId,
+          callerMembership?.role,
+          targetUserId
+        );
+      }
+    }
 
     await this.recordAudit({
       communityId,
@@ -6508,23 +6534,38 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_MEMBER_NOT_MUTED");
     }
 
+    await this._liftMemberMute(
+      communityId,
+      callerId,
+      callerMembership?.role,
+      targetUserId
+    );
+  },
+
+  /** Clears an active mute and fans the unmute out (chat gate, sockets, streams, audit). */
+  async _liftMemberMute(
+    communityId: string,
+    actorId: string,
+    actorRole: CommunityMemberRole | undefined,
+    targetUserId: string
+  ): Promise<void> {
     await communityRepository.deleteMemberMute(communityId, targetUserId);
 
     await this.recordAudit({
       communityId,
-      actorId: callerId,
+      actorId,
       action: "MEMBER_UNMUTED",
       targetUserId,
     });
 
     logger.info(
-      `Community member unmuted: community=${communityId} by=${callerId} target=${targetUserId}`
+      `Community member unmuted: community=${communityId} by=${actorId} target=${targetUserId}`
     );
 
     publishCommunityMemberUnmutedSafe({
       communityId,
       eventAt: new Date().toISOString(),
-      actorId: callerId,
+      actorId,
       targetUserId,
     });
 
@@ -6535,7 +6576,7 @@ export const communityService = {
       targetUserId,
       isMuted: false,
       mutedUntil: null,
-      actorId: callerId,
+      actorId,
     });
 
     // Best-effort: push a real-time notice to any of the target's currently-LIVE
@@ -6564,8 +6605,8 @@ export const communityService = {
     this.emitMemberSystemMessage({
       communityId,
       systemMessageType: "MEMBER_UNMUTED",
-      actorId: callerId,
-      actorRole: callerMembership?.role,
+      actorId,
+      actorRole,
       targetUserId,
     });
   },
@@ -9776,6 +9817,8 @@ export const communityService = {
         return toReportData(existingOpen);
       }
     }
+
+    await assertReportQuota(redis, callerId);
 
     let row;
     try {

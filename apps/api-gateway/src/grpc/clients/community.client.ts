@@ -20,6 +20,7 @@ export interface CommunityMediaFile {
   width?: number;
   height?: number;
   durationMs?: number;
+  thumbnailObjectKey?: string;
   blurhash?: string;
   waveform?: number[];
 }

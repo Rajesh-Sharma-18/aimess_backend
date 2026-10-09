@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import { authenticate } from "../../middleware/authenticate.js";
 import { validateBody } from "../middleware/validate-body.js";
+import { reportQuota } from "../../middleware/rate-limit.js";
 import {
   addMemberSchema,
   leaveGroupSchema,
@@ -43,6 +44,7 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     "/report",
     authenticate,
     validateBody(reportMemberSchema),
+    reportQuota,
     ctrl.reportMember
   );
   router.post(

@@ -262,6 +262,18 @@ export const SYSTEM_MESSAGES = {
     en: "Missed {{label}}",
     th: "{{label}}ที่ไม่ได้รับ",
   },
+  // Conversation-list line for the callee of a call that never connected
+  // (AIMESS-43 §4). Whole phrases, not "Missed {{label}}", so the casing is right.
+  SYS_CALL_PREVIEW_MISSED_VOICE: {
+    vi: "Cuộc gọi thoại nhỡ",
+    en: "Missed voice call",
+    th: "สายสนทนาที่ไม่ได้รับ",
+  },
+  SYS_CALL_PREVIEW_MISSED_VIDEO: {
+    vi: "Cuộc gọi video nhỡ",
+    en: "Missed video call",
+    th: "สายวิดีโอที่ไม่ได้รับ",
+  },
   SYS_CALL_MISSED: {
     vi: "{{label}} không có người trả lời",
     en: "{{label}} was not answered",

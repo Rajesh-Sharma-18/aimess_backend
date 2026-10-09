@@ -431,7 +431,8 @@ export function createMessagingImpl(
               // write. Charged before any work: the point is to refuse cheaply.
               await assertSendAllowed(
                 conversationType === "GROUP" ? "gm" : "pm",
-                req.senderId
+                req.senderId,
+                req.conversationId
               );
               // Server-side resolution — req.senderName/Avatar are optional,
               // client-supplied fields that arrive empty over the socket path.
@@ -784,7 +785,7 @@ export function createMessagingImpl(
           // A group edit can add mentions (a push), so the socket path draws on
           // the same `gm:send` bucket as a send instead of being unmetered.
           if (conversationType === "GROUP") {
-            await assertSendAllowed("gm", req.editorId);
+            await assertSendAllowed("gm", req.editorId, req.conversationId);
           }
           const updated =
             conversationType === "GROUP"
@@ -1431,6 +1432,13 @@ export function createMessagingImpl(
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
 
+          // A forward is a message into the target conversation: same bucket as a send there.
+          await assertSendAllowed(
+            conversationType === "GROUP" ? "gm" : "pm",
+            req.senderId ?? "",
+            req.targetConversationId ?? ""
+          );
+
           // Same server-side resolution as `sendMessage` above: the socket path
           // sends these empty, and a group row denormalizes the name onto both
           // the message and the list preview.
@@ -1579,10 +1587,7 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC forwardMessage error: ${String(err)}`);
-          callback({
-            code: grpc.status.INTERNAL,
-            message: String(err),
-          });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -2057,7 +2062,10 @@ export function createMessagingImpl(
             callId: req.callId ?? "",
             userId: req.userId ?? "",
             legId: req.legId || undefined,
-            reason: req.reason === "NO_ANSWER" ? "NO_ANSWER" : undefined,
+            reason:
+              req.reason === "NO_ANSWER" || req.reason === "FAILED"
+                ? req.reason
+                : undefined,
             sessionId: req.sessionId || undefined,
           });
           callback(null, {
@@ -3682,7 +3690,7 @@ export function createCommunityImpl(
               // path matters most: one community message is amplified to every
               // member over Redis pub/sub plus a push notification each, so an
               // unmetered socket frame turned into thousands of emits and sends.
-              await assertSendAllowed("cm", req.senderId);
+              await assertSendAllowed("cm", req.senderId, req.roomId);
 
               const [identity, room] = await Promise.all([
                 resolveSenderIdentity(
@@ -5206,6 +5214,11 @@ export function createCommunityImpl(
             senderId: string;
             clientMessageId: string;
           };
+          await assertSendAllowed(
+            "cm",
+            req.senderId,
+            req.targetRoomId || req.targetCommunityId
+          );
           const result = await deps.communityMessageService.forwardMessage({
             sourceMessageId: req.sourceMessageId,
             sourceCommunityId: req.sourceCommunityId,
@@ -5217,7 +5230,7 @@ export function createCommunityImpl(
           callback(null, result);
         } catch (err) {
           logger.error(`gRPC forwardCommunityMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },

@@ -112,6 +112,20 @@ export const UNREAD_COUNTABLE_EVENT_RAW_MATCH = {
 
 
 /**
+ * Private-room recount match for one viewer. A sender-less row (the 1:1 call
+ * card) has no sender to exclude, so it counts only for the participant it is
+ * addressed to — the callee of a missed call, never the caller (AIMESS-43).
+ */
+export function privateUnreadMatchFor(userId: string) {
+  return {
+    $and: [
+      UNREAD_COUNTABLE_EVENT_RAW_MATCH,
+      { $or: [{ senderId: { $ne: "" } }, { receiverId: userId }] },
+    ],
+  };
+}
+
+/**
  * Per-surface unread aggregate: the message total AND how many conversations
  * carry at least one unread. The nav badges render `conversations` (a room
  * with 500 unread contributes 1); `messages` stays for per-row/legacy totals.

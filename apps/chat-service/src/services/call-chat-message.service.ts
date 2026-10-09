@@ -2,6 +2,9 @@ import {
   buildCallTimelineText,
   callContentType,
   isTerminalCallStatus,
+  normalizeCallEndReason,
+  resolveCallEndReason,
+  type CallEndReason,
   type CallTimelineStatus,
 } from "@aimess/constants";
 import { logger } from "@aimess/logger";
@@ -28,6 +31,8 @@ export interface PostCallChatMessageParams {
   /** Transition timestamp. NOT the row's timestamp — see `createdAt` below. */
   endedAt: Date;
   endedBy: string;
+  /** Overrides the status-derived reason where the status alone is ambiguous (MISSED = no answer OR caller cancel). */
+  endReason?: CallEndReason;
 }
 
 export type GetCallMessageUserSnapshotFn = (
@@ -157,6 +162,10 @@ export class CallChatMessageService {
     const systemEvent = isTerminalCallStatus(status)
       ? SystemEvent.CALL_ENDED
       : SystemEvent.CALL_STARTED;
+    const endReason = isTerminalCallStatus(status)
+      ? (params.endReason ??
+        resolveCallEndReason({ status, durationSec, endedBy: params.endedBy }))
+      : null;
     const systemData = {
       callId: params.callId,
       callType: callLabel,
@@ -165,6 +174,7 @@ export class CallChatMessageService {
       callerId: params.callerId,
       calleeId: params.calleeId,
       endedBy: params.endedBy,
+      ...(endReason ? { endReason } : {}),
     };
     const content = {
       text,
@@ -179,6 +189,7 @@ export class CallChatMessageService {
         durationSec,
         callerId: params.callerId,
         calleeId: params.calleeId,
+        ...(endReason ? { endReason } : {}),
       },
     };
     // NO call state raises the chat badge — MISSED included. A call row always
@@ -195,7 +206,15 @@ export class CallChatMessageService {
     // through their own push (`publishCallMissedSafe`) and the notification
     // inbox row (`call.activity`) — the group call card already counts nothing
     // (see tests/groups/group-call-card.test.ts); private now matches.
-    const countInUnread = false;
+    //
+    // AIMESS-43 reverses this for the CALLEE of a call that never connected:
+    // the spec wants it unread until they open the chat. The two traps above
+    // are closed separately — the recount now counts this sender-less row for
+    // its receiver only (`privateUnreadMatchFor`), and the counter is credited
+    // only when the row lies past the callee's read pointer (applyTransition),
+    // so every credited unit is one the recount reproduces.
+    const countInUnread =
+      !!endReason && normalizeCallEndReason(endReason, durationSec) !== "completed";
 
     return existing
       ? this.applyTransition({
@@ -359,7 +378,16 @@ export class CallChatMessageService {
     // here would rewind the inbox row to the call and reorder the list wrongly.
     const room = await this.roomRepo.findByRoomId(roomId).catch(() => null);
     const isRoomLastMessage = room?.lastMessageId === existing.id;
-    if (isRoomLastMessage) {
+    // A callee who already read past the ringing card (chat open while it rang)
+    // has seen it — crediting them would be a unit the recount can't reproduce.
+    const creditUnread =
+      countInUnread &&
+      (await this.roomRepo
+        .isPastReadPointer(roomId, params.calleeId, existing.sequenceNumber ?? 0)
+        .catch(() => false));
+    // Not the last message: the snapshot write is rejected by its newer-than
+    // gate and only the unread credit lands, which is exactly what is owed.
+    if (isRoomLastMessage || creditUnread) {
       await this.roomRepo
         .updateRoomOnNewMessage({
           roomId,
@@ -376,8 +404,7 @@ export class CallChatMessageService {
             revision: message.revision,
           },
           receiverId: params.calleeId,
-          // A MISSED call is the one transition that raises the callee's badge.
-          unreadIncrement: countInUnread ? 1 : 0,
+          unreadIncrement: creditUnread ? 1 : 0,
         })
         .catch((error: unknown) => {
           logger.warn(
@@ -396,7 +423,7 @@ export class CallChatMessageService {
       messageType,
       systemEvent,
       systemData,
-      countInUnread,
+      countInUnread: creditUnread,
       text,
       params,
       // The row keeps its original timestamp across the whole lifecycle.

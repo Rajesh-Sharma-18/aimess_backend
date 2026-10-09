@@ -152,7 +152,7 @@ describe("system message rendering per locale", () => {
   it("keeps the first-person form per viewer inside each language", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", data, "t1", "th")
-    ).toBe("Alexนำคุณออกจากกลุ่ม");
+    ).toBe("Alex นำคุณออกจากกลุ่ม");
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", data, "t1", "vi")
     ).toBe("Alex đã xóa Bạn khỏi nhóm");

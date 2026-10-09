@@ -41,14 +41,21 @@ export function getGroupVisibilityCutoff(
         clearedAt?: Date | null;
         clearChatAt?: Date | null;
         joinedAt?: Date | null;
+        historyFrom?: Date | null;
       }
     | null
     | undefined
 ): Date | undefined {
+  // historyFrom = epoch 0 ⇒ added with shared history: no join floor.
+  const joinFloor = member?.historyFrom
+    ? member.historyFrom.getTime() > 0
+      ? member.historyFrom
+      : undefined
+    : (member?.joinedAt ?? undefined);
   return latest(
     member?.clearedAt ?? undefined,
     member?.clearChatAt ?? undefined,
-    member?.joinedAt ?? undefined
+    joinFloor
   );
 }
 
@@ -90,6 +97,7 @@ export function groupHistoryLineEvent(
         clearedAt?: Date | null;
         clearChatAt?: Date | null;
         joinedAt?: Date | null;
+        historyFrom?: Date | null;
       }
     | null
     | undefined

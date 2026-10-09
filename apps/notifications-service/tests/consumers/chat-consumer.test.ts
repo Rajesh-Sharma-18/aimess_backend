@@ -1479,7 +1479,7 @@ describe("startChatConsumer — group mention inbox rows", () => {
       "Alice đã nhắc đến @all trong Weekend Trip"
     );
     expect(rowFor("a")!.copy!("th").body).toBe(
-      "Alice กล่าวถึง @all ในWeekend Trip"
+      "Alice กล่าวถึง @all ใน Weekend Trip"
     );
     // The opted-out user still gets their ordinary message push.
     expect(pushedIds()).toEqual(["a", "opted-out"]);

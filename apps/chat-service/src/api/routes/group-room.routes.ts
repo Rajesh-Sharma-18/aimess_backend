@@ -12,10 +12,13 @@ import {
 import { autoDeleteSchema } from "../validators/private-message.validator.js";
 import type { GroupRoomController } from "../controllers/group-room.controller.js";
 
+// Client table: 10 groups per day, then blocked until the window clears.
 const createLimit = createRateLimit({
   windowMs: 86_400_000,
   maxRequests: 10,
   keyPrefix: "gr:create",
+  onCacheError: "fallback",
+  messageKey: "CHAT_GROUP_CREATE_LIMIT_REACHED",
 });
 
 /**
@@ -36,8 +39,8 @@ export function createGroupRoomRoutes(ctrl: GroupRoomController): Router {
   router.post(
     "/",
     authenticate,
-    createLimit,
     validateBody(createGroupSchema),
+    createLimit,
     ctrl.create
   );
   router.get("/my-groups", authenticate, ctrl.getUserGroups);

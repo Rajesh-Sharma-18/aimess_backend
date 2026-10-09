@@ -91,11 +91,12 @@ export class CallController {
   endCall = asyncHandler(async (req: Request, res: Response) => {
     const { userId, sessionId } = req.auth;
     const callId = req.params.callId as string;
-    const { legId } = req.body as { legId?: string };
+    const { legId, reason } = req.body as { legId?: string; reason?: string };
     const call = await this.callService.endCall({
       callId,
       userId,
       legId,
+      reason: reason === "NO_ANSWER" || reason === "FAILED" ? reason : undefined,
       sessionId,
     });
     res.status(HTTP_STATUS.OK).json(

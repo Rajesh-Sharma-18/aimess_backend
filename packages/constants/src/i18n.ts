@@ -40,11 +40,24 @@ export type MessageParams = Record<string, string | number>;
  */
 export function interpolate(text: string, params?: MessageParams): string {
   if (!params) return text;
-  return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (whole, name: string) => {
-    const value = params[name];
-    return value === undefined ? whole : String(value);
-  });
+  return text.replace(
+    /\{\{\s*(\w+)\s*\}\}/g,
+    (whole, name: string, offset: number) => {
+      const value = params[name];
+      if (value === undefined) return whole;
+      const s = String(value);
+      if (!s) return s;
+      // Thai has no word spaces, but a Latin name glued to Thai text ("Alexนำ") reads as one word.
+      const before = isThai(text[offset - 1]) && !isThai(s[0]) ? " " : "";
+      const after =
+        isThai(text[offset + whole.length]) && !isThai(s[s.length - 1]) ? " " : "";
+      return before + s + after;
+    }
+  );
 }
+
+const isThai = (c: string | undefined): boolean =>
+  c !== undefined && c >= "฀" && c <= "๿";
 
 /**
  * Get a localized message for the given key and locale.

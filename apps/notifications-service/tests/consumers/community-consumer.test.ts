@@ -880,7 +880,7 @@ describe("actor name resolution", () => {
       "Smiley Creatures đã chấp thuận yêu cầu tham gia Cool Community của bạn"
     );
     expect(copy("th").body).toBe(
-      "Smiley Creaturesอนุมัติคำขอเข้าร่วมCool Communityของคุณ"
+      "Smiley Creatures อนุมัติคำขอเข้าร่วม Cool Community ของคุณ"
     );
   });
 

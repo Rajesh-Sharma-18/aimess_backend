@@ -547,6 +547,11 @@ export const CHAT_MESSAGES = {
     en: "Group member limit reached",
     th: "กลุ่มมีสมาชิกครบจำนวนสูงสุดแล้ว",
   },
+  CHAT_GROUP_CREATE_LIMIT_REACHED: {
+    vi: "Bạn đã tạo tối đa số nhóm cho phép hôm nay. Vui lòng thử lại vào ngày mai.",
+    en: "You've reached today's limit for creating groups. Please try again tomorrow.",
+    th: "คุณสร้างกลุ่มครบจำนวนที่กำหนดสำหรับวันนี้แล้ว กรุณาลองใหม่พรุ่งนี้",
+  },
   CHAT_OWNER_CANNOT_LEAVE: {
     vi: "Quản trị viên không thể rời đi. Hãy chỉ định quản trị viên khác hoặc giải tán nhóm.",
     en: "Admin cannot leave. Make someone else admin or disband the group.",

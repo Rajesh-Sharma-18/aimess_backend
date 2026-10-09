@@ -448,6 +448,7 @@ export class GroupRoomService {
         clearChatAt?: Date | null;
         clearedAt?: Date | null;
         joinedAt?: Date | null;
+        historyFrom?: Date | null;
       }
     >,
     userId: string

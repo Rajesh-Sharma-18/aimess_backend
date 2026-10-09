@@ -240,6 +240,27 @@ export class NotificationService {
     return { unreadCount: unreadCountForSession(fanout, viewerSessionId) };
   }
 
+  /** "Clear all" (AIMESS-45) — the bulk twin of {@link deleteNotification}. */
+  async clearAll(
+    userId: string,
+    category: NotificationCategory = "ALL",
+    viewerSessionId?: string | null
+  ): Promise<{ cleared: number; unreadCount: number }> {
+    // "Clear all" means every notification, System included (client decision, AIMESS-45).
+    const extraWhere = category === "ALL" ? undefined : categoryWhere(category);
+    const { count } = await this.notificationRepo.deleteAll(userId, extraWhere);
+    const fanout = await this.notificationRepo.getUnreadFanout(userId);
+    if (count > 0) {
+      await this.publishCountEvent(userId, "notification:cleared", fanout, {
+        type: category,
+      });
+    }
+    return {
+      cleared: count,
+      unreadCount: unreadCountForSession(fanout, viewerSessionId),
+    };
+  }
+
   async getUnreadCount(
     userId: string,
     viewerSessionId?: string | null

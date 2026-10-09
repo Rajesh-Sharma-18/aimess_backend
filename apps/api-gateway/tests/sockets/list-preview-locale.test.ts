@@ -42,13 +42,13 @@ describe("personalizeConvUpdatedPreview", () => {
     ).toBe("Alex đã xóa Jim khỏi nhóm");
     expect(
       previewOf(personalizeConvUpdatedPreview(GROUP_BUMP, "x", "th"))
-    ).toBe("AlexนำJimออกจากกลุ่ม");
+    ).toBe("Alex นำ Jim ออกจากกลุ่ม");
   });
 
   it("gives the subject member the first-person row in THEIR language", () => {
     expect(
       previewOf(personalizeConvUpdatedPreview(GROUP_BUMP, "target-1", "th"))
-    ).toBe("Alexนำคุณออกจากกลุ่ม");
+    ).toBe("Alex นำคุณออกจากกลุ่ม");
   });
 
   it("never translates the interpolated names", () => {
@@ -149,7 +149,7 @@ describe("one bump, one language per recipient", () => {
 
     expect(previewOf(en.emit.mock.calls[0][1])).toBe("Alex removed Jim from the group");
     expect(previewOf(vi.emit.mock.calls[0][1])).toBe("Alex đã xóa Jim khỏi nhóm");
-    expect(previewOf(th.emit.mock.calls[0][1])).toBe("AlexนำJimออกจากกลุ่ม");
+    expect(previewOf(th.emit.mock.calls[0][1])).toBe("Alex นำ Jim ออกจากกลุ่ม");
   });
 
   it("translates a media LABEL row per reader, and only the label", () => {

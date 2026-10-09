@@ -65,7 +65,7 @@ describe("emitPersonalizedSender — one broadcast, one language per recipient",
 
     expect(textOf(bystanderEn)).toBe("Alex removed Jim from the group");
     expect(textOf(bystanderVi)).toBe("Alex đã xóa Jim khỏi nhóm");
-    expect(textOf(bystanderTh)).toBe("AlexนำJimออกจากกลุ่ม");
+    expect(textOf(bystanderTh)).toBe("Alex นำ Jim ออกจากกลุ่ม");
   });
 
   it("gives the removed member the first-person line in THEIR language", async () => {
@@ -80,7 +80,7 @@ describe("emitPersonalizedSender — one broadcast, one language per recipient",
     );
 
     const payload = target.emit.mock.calls[0][1] as { contentText: string };
-    expect(payload.contentText).toBe("Alexนำคุณออกจากกลุ่ม");
+    expect(payload.contentText).toBe("Alex นำคุณออกจากกลุ่ม");
   });
 
   it("localizes the sender-is-you swap instead of always saying 'You'", async () => {

@@ -21,7 +21,7 @@ import { isObjectId } from "../lib/object-id.js";
 import { assertPrivateParticipants } from "../lib/room-id.js";
 import {
   shouldCountInUnread,
-  UNREAD_COUNTABLE_EVENT_RAW_MATCH,
+  privateUnreadMatchFor,
   type UnreadStats,
 } from "../lib/unread-count.js";
 import {
@@ -518,7 +518,7 @@ export class PrivateRoomRepository {
             senderId: { $ne: userId },
             // Personally hidden by this viewer ⇒ invisible ⇒ not unread.
             [`deletedFor.${userId}`]: { $exists: false },
-            ...UNREAD_COUNTABLE_EVENT_RAW_MATCH,
+            ...privateUnreadMatchFor(userId),
           },
         },
         {
@@ -588,6 +588,17 @@ export class PrivateRoomRepository {
         `PrivateRoomRepository|healUnread failed room=${roomId}: ${String(err)}`
       );
     }
+  }
+
+  /** True when [seq] lies past this user's read pointer, i.e. a row there is still unread for them. */
+  async isPastReadPointer(
+    roomId: string,
+    userId: string,
+    seq: number
+  ): Promise<boolean> {
+    const room = await this.prisma.privateRoom.findUnique({ where: { roomId } });
+    if (!room) return false;
+    return seq > (await this.readPointerSeq(room, userId));
   }
 
   /**
@@ -1085,7 +1096,7 @@ export class PrivateRoomRepository {
             // `messageType != SYSTEM` + `systemEvent: null`) is what let a room
             // whose only unread content was an invite keep a counter this
             // recount could never clear.
-            ...UNREAD_COUNTABLE_EVENT_RAW_MATCH,
+            ...privateUnreadMatchFor(userId),
           },
         },
         { $count: "total" },

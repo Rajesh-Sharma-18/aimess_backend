@@ -62,6 +62,7 @@ function buildCallService() {
       }),
       allocateSequence: jest.fn().mockResolvedValue(7),
       updateRoomOnNewMessage: jest.fn().mockResolvedValue({}),
+      isPastReadPointer: jest.fn().mockResolvedValue(true),
     },
     redis: {
       publish: jest.fn().mockResolvedValue(1),
@@ -109,20 +110,45 @@ const ringingRow = {
   },
 };
 
-describe("S6 — a missed call never raises the chat badge", () => {
-  it("does not increment the callee's unread counter on the MISSED transition", async () => {
+describe("S6 — a missed call is unread for the callee until opened (AIMESS-43)", () => {
+  it("credits the callee once when the card lies past their read pointer", async () => {
     const { service, stubs } = buildCallService();
     stubs.messageRepo.findByClientMessageId.mockResolvedValue(ringingRow);
 
     await service.post({ ...base, outcome: "MISSED" });
 
+    expect(stubs.roomRepo.isPastReadPointer).toHaveBeenCalledWith(ROOM, CALLEE, 7);
     expect(stubs.roomRepo.updateRoomOnNewMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ receiverId: CALLEE, unreadIncrement: 0 })
+      expect.objectContaining({ receiverId: CALLEE, unreadIncrement: 1 })
     );
-    // …and the persisted row agrees, so no OTHER counter can pick it up either.
+    // The persisted row agrees, so the recount reproduces the unit.
+    expect(stubs.messageRepo.updateCallState).toHaveBeenCalledWith(
+      expect.objectContaining({ countInUnread: true })
+    );
+  });
+
+  it("does not credit a callee who already read past the ringing card", async () => {
+    const { service, stubs } = buildCallService();
+    stubs.messageRepo.findByClientMessageId.mockResolvedValue(ringingRow);
+    stubs.roomRepo.isPastReadPointer.mockResolvedValue(false);
+
+    await service.post({ ...base, outcome: "MISSED" });
+
+    expect(stubs.roomRepo.updateRoomOnNewMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ unreadIncrement: 0 })
+    );
+  });
+
+  it("never credits a completed call", async () => {
+    const { service, stubs } = buildCallService();
+    stubs.messageRepo.findByClientMessageId.mockResolvedValue(ringingRow);
+
+    await service.post({ ...base, outcome: "ENDED", durationSec: 30 });
+
     expect(stubs.messageRepo.updateCallState).toHaveBeenCalledWith(
       expect.objectContaining({ countInUnread: false })
     );
+    expect(stubs.roomRepo.isPastReadPointer).not.toHaveBeenCalled();
   });
 
   it("still writes the card and bumps the list (the row itself is unchanged)", async () => {

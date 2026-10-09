@@ -1,0 +1,7 @@
+{
+  "name": "aimess-health-check",
+  "private": true,
+  "type": "module",
+  "scripts": { "check": "node check.mjs" },
+  "dependencies": { "socket.io-client": "^4.8.1" }
+}

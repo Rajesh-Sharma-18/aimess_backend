@@ -106,11 +106,19 @@ const envSchema = z.object({
   AUTH_MAX_FAILED_LOGINS: z.coerce.number().int().positive().default(5),
   /** Lockout window (minutes) applied once the failed-login threshold is hit. */
   AUTH_LOCKOUT_MINUTES: z.coerce.number().int().positive().default(15),
+  /** Window (minutes) the failed-login threshold is counted in (client table: 5 per 10 min). */
+  AUTH_FAILED_LOGIN_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10),
 
-  /** Max OTP issuance requests per identifier within the window below. */
-  OTP_REQUEST_MAX: z.coerce.number().int().positive().default(5),
-  /** Sliding window (seconds) for the OTP issuance throttle. */
-  OTP_REQUEST_WINDOW_SEC: z.coerce.number().int().positive().default(900),
+  /** Max OTP issuance requests per email within the window below (client table: 3/hour). */
+  OTP_REQUEST_MAX: z.coerce.number().int().positive().default(3),
+  /** Window (seconds) for the OTP issuance throttle; also the block once exceeded. */
+  OTP_REQUEST_WINDOW_SEC: z.coerce.number().int().positive().default(3600),
+  /** Per-IP OTP issuance ceiling in the same window (many inboxes from one address). */
+  OTP_REQUEST_IP_MAX: z.coerce.number().int().positive().default(20),
   /** Dev only: fixed OTP (e.g. 123456). Logged in terminal until email is wired up. */
   OTP_DEV_FIXED_CODE: z.string().optional(),
 

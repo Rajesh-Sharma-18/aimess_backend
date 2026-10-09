@@ -40,6 +40,7 @@ export type VisibleObjectKeyProbe = (params: {
 export async function assertGroupMediaWithinHistory(params: {
   member: {
     joinedAt?: Date | null;
+    historyFrom?: Date | null;
     clearedAt?: Date | null;
     clearChatAt?: Date | null;
   } | null;

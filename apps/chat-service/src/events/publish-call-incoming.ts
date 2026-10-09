@@ -68,6 +68,8 @@ export interface CallMissedPayload {
   callType: string;
   /** epoch ms */
   missedAt: number;
+  /** Tags the tray card per room so reading the chat closes it (AIMESS-43 S11b). */
+  privateRoomId?: string;
 }
 
 export interface CallCancelPayload {

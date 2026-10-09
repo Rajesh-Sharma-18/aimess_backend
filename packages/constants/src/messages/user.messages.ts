@@ -168,6 +168,11 @@ export const USER_MESSAGES = {
     en: "You have already sent a friend request to this user.",
     th: "คุณส่งคำขอเป็นเพื่อนถึงผู้ใช้รายนี้ไปแล้ว",
   },
+  FRIEND_REQUEST_LIMIT_REACHED: {
+    vi: "Bạn đã gửi quá nhiều lời mời kết bạn hôm nay. Vui lòng thử lại sau 24 giờ.",
+    en: "You've sent too many friend requests today. Please try again in 24 hours.",
+    th: "คุณส่งคำขอเป็นเพื่อนมากเกินไปในวันนี้ กรุณาลองใหม่อีกครั้งใน 24 ชั่วโมง",
+  },
   FRIEND_ALREADY_FRIENDS: {
     vi: "Bạn đã là bạn bè với người dùng này",
     en: "You are already friends with this user.",

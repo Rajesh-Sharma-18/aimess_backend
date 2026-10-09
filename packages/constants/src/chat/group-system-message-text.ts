@@ -469,9 +469,90 @@ export const CALL_TIMELINE_STATUSES = [
   "DECLINED",
   "CANCELLED",
   "FAILED",
+  "BUSY",
 ] as const;
 
 export type CallTimelineStatus = (typeof CALL_TIMELINE_STATUSES)[number];
+
+/**
+ * Why a 1:1 call ended — the field every client renders the card from
+ * (AIMESS-43 call-card spec §1). Rides on `content.call.endReason` and
+ * `systemData.endReason`; `callStatus` stays for older clients.
+ */
+export const CALL_END_REASONS = [
+  "completed",
+  "no_answer",
+  "declined",
+  "canceled",
+  "busy",
+  "failed",
+  "dropped",
+] as const;
+
+export type CallEndReason = (typeof CALL_END_REASONS)[number];
+
+/** Server-side end reason for a settled card; null while the call is live. */
+export function resolveCallEndReason(params: {
+  status: string;
+  durationSec?: number | null;
+  endedBy?: string | null;
+}): CallEndReason | null {
+  const status = String(params.status ?? "").toUpperCase();
+  const duration = Math.max(0, Math.floor(Number(params.durationSec ?? 0)));
+  switch (status) {
+    case "RINGING":
+    case "ANSWERED":
+      return null;
+    case "MISSED":
+      return "no_answer";
+    case "DECLINED":
+      return "declined";
+    case "CANCELLED":
+      return "canceled";
+    case "FAILED":
+      return "failed";
+    case "BUSY":
+      return "busy";
+    default:
+      // A connected call the server tore down (LiveKit/orphan/timeout) is a drop.
+      return String(params.endedBy ?? "").startsWith("SYSTEM")
+        ? "dropped"
+        : duration >= 1
+          ? "completed"
+          : "failed";
+  }
+}
+
+/** `dropped` resolves by duration (spec §1): ≥ 1s completed, else failed. */
+export function normalizeCallEndReason(
+  reason: CallEndReason,
+  durationSec?: number | null
+): Exclude<CallEndReason, "dropped"> {
+  if (reason !== "dropped") return reason;
+  return Math.floor(Number(durationSec ?? 0)) >= 1 ? "completed" : "failed";
+}
+
+/** Conversation-list line per viewer (spec §4) — never shows a duration. */
+export function buildCallListPreviewText(params: {
+  callType?: string | null;
+  endReason?: CallEndReason | null;
+  durationSec?: number | null;
+  viewerIsCaller: boolean;
+  locale?: SupportedLocale;
+}): string {
+  const locale = params.locale ?? STORED_TEXT_LOCALE;
+  const video = String(params.callType ?? "").toUpperCase() === "VIDEO";
+  const reason = params.endReason
+    ? normalizeCallEndReason(params.endReason, params.durationSec)
+    : null;
+  if (reason && reason !== "completed" && !params.viewerIsCaller) {
+    return t(
+      video ? "SYS_CALL_PREVIEW_MISSED_VIDEO" : "SYS_CALL_PREVIEW_MISSED_VOICE",
+      locale
+    );
+  }
+  return t(video ? "SYS_CALL_LABEL_VIDEO" : "SYS_CALL_LABEL_VOICE", locale);
+}
 
 /** True if the call row has reached a state it can never leave. */
 export function isTerminalCallStatus(status: string): boolean {
@@ -593,13 +674,31 @@ export function buildPrivateSystemFallbackText(
       return t("SYS_COMMUNITY_INVITE_SHARED", locale, { actor });
 
     case "CALL_STARTED":
-    case "CALL_ENDED":
+    case "CALL_ENDED": {
+      const callerId = String(data.callerId ?? "");
+      const endReason = (data.endReason as CallEndReason | undefined) ?? null;
+      if (viewer && callerId && endReason) {
+        return buildCallListPreviewText({
+          callType: data.callType as string,
+          endReason,
+          durationSec: data.durationSec as number,
+          viewerIsCaller: viewer === callerId,
+          locale,
+        });
+      }
       return buildCallTimelineText({
         callType: data.callType as string,
         status: data.status as string,
         durationSec: data.durationSec as number,
+        direction:
+          viewer && callerId
+            ? viewer === callerId
+              ? "OUTGOING"
+              : "INCOMING"
+            : null,
         locale,
       });
+    }
 
     case "FRIENDSHIP_CREATED":
       return isActor || isTarget
