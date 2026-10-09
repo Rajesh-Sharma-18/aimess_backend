@@ -61,6 +61,7 @@ function buildService() {
       }),
       allocateSequence: jest.fn().mockResolvedValue(7),
       updateRoomOnNewMessage: jest.fn().mockResolvedValue({}),
+      isPastReadPointer: jest.fn().mockResolvedValue(true),
     },
     redis: {
       publish: jest.fn().mockResolvedValue(1),
@@ -268,7 +269,7 @@ describe("CallChatMessageService — in-place transitions", () => {
     });
   });
 
-  it("keeps the kind on a declined call and does not raise a badge", async () => {
+  it("keeps the kind on a declined call and counts it unread for the callee", async () => {
     const { service, stubs } = buildService();
     stubs.messageRepo.findByClientMessageId.mockResolvedValue(
       existingRow("RINGING")
@@ -280,7 +281,7 @@ describe("CallChatMessageService — in-place transitions", () => {
       expect.objectContaining({
         messageType: "VOICE_CALL",
         systemEvent: "CALL_ENDED",
-        countInUnread: false,
+        countInUnread: true,
         content: expect.objectContaining({
           text: "Voice call was not answered",
           call: expect.objectContaining({ callStatus: "DECLINED" }),
@@ -312,13 +313,9 @@ describe("CallChatMessageService — in-place transitions", () => {
     );
   });
 
-  // MISSED used to be the one transition that raised the callee's badge. It no
-  // longer does: no recount of a private room's unread total can ever see a
-  // call row (they all carry a `systemEvent`), so that credit was unreachable
-  // and stuck the nav badge above an empty Unread tab. The callee still hears
-  // about it — call push + notification inbox row. See
-  // tests/calls/missed-call-unread-badge.test.ts.
-  it("MISSED transitions the card without raising the callee's badge", async () => {
+  // AIMESS-43: a missed call is unread for the callee until opened. The recount
+  // now sees it for the receiver only. See tests/calls/missed-call-unread-badge.test.ts.
+  it("MISSED transitions the card and raises the callee's badge", async () => {
     const { service, stubs } = buildService();
     stubs.messageRepo.findByClientMessageId.mockResolvedValue(
       existingRow("RINGING")
@@ -332,10 +329,10 @@ describe("CallChatMessageService — in-place transitions", () => {
     await service.post({ ...base, outcome: "MISSED" });
 
     expect(stubs.messageRepo.updateCallState).toHaveBeenCalledWith(
-      expect.objectContaining({ countInUnread: false })
+      expect.objectContaining({ countInUnread: true })
     );
     expect(stubs.roomRepo.updateRoomOnNewMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ unreadIncrement: 0 })
+      expect.objectContaining({ unreadIncrement: 1 })
     );
   });
 

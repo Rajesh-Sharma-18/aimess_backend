@@ -1,4 +1,5 @@
 import {
+  privateUnreadMatchFor,
   shouldCountInUnread,
   UNREAD_COUNTABLE_EVENT_RAW_MATCH,
 } from "../../src/lib/unread-count.js";
@@ -19,6 +20,8 @@ type Doc = {
   messageType?: string;
   systemEvent?: string | null;
   countInUnread?: boolean;
+  senderId?: string;
+  receiverId?: string;
 };
 
 function matches(clause: unknown, doc: Doc): boolean {
@@ -100,5 +103,25 @@ describe("UNREAD_COUNTABLE_EVENT_RAW_MATCH mirrors shouldCountInUnread", () => {
         countInUnread: false,
       })
     ).toBe(false);
+  });
+});
+
+describe("privateUnreadMatchFor (AIMESS-43 missed-call unread)", () => {
+  const missedCard: Doc = {
+    messageType: "VOICE_CALL",
+    systemEvent: "CALL_ENDED",
+    countInUnread: true,
+    senderId: "",
+    receiverId: "callee",
+  };
+
+  it("counts a sender-less missed-call card for its callee only", () => {
+    expect(matches(privateUnreadMatchFor("callee"), missedCard)).toBe(true);
+    expect(matches(privateUnreadMatchFor("caller"), missedCard)).toBe(false);
+  });
+
+  it("leaves ordinary messages to the sender filter", () => {
+    const text: Doc = { messageType: "TEXT", senderId: "peer", receiverId: "me" };
+    expect(matches(privateUnreadMatchFor("me"), text)).toBe(true);
   });
 });
