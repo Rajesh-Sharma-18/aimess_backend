@@ -75,8 +75,11 @@ export function resolveGroupKey(
     return sessionId ? `auth:login:${sessionId}` : null;
   }
 
-  // One card per stream SESSION: "ended" rewrites that stream's "is live" card
-  // in place, and the next stream in the same community gets its own card.
+  // One card per stream, shared by its start and end events, so the end
+  // event transitions the existing start card instead of inserting a
+  // duplicate. Keyed by livestreamId (not type) so a later stream in the
+  // same community still gets its own card instead of colliding with
+  // `community:<id>:<type>` below.
   const livestreamId = nonEmpty(data.livestreamId);
   if (livestreamId && isLiveType(type)) {
     return `livestream:${livestreamId}`;

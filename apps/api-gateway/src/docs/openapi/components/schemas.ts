@@ -12484,7 +12484,7 @@ export const openApiSchemas = {
   ChatPresence: {
     type: "object",
     description:
-      "Peer presence as THIS caller is allowed to see it. A peer whose whoCanSeeOnlineStatus excludes the caller returns the same shape as a genuinely-offline user, so the setting itself stays undisclosed.",
+      "Peer presence as THIS caller is allowed to see it. A peer whose whoCanSeeOnlineStatus excludes the caller returns isOnline:false, lastSeen:null and isHidden:true — render NO presence for it (no dot, no \"Offline\", no \"Last seen\").",
     properties: {
       userId: { type: "string" },
       isOnline: { type: "boolean" },
@@ -12498,6 +12498,11 @@ export const openApiSchemas = {
         type: "integer",
         description:
           "Monotonic per-user counter, advanced only on a real ONLINE<->OFFLINE flip. Compare against the `version` on presence:status so a late socket event cannot overwrite a newer state.",
+      },
+      isHidden: {
+        type: "boolean",
+        description:
+          "The peer's whoCanSeeOnlineStatus excludes the caller. Also carried by the presence:status a privacy re-authorization emits (true = revoked, false = granted). Conversation rows expose it as isPresenceHidden.",
       },
     },
   },

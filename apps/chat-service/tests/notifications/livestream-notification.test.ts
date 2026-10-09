@@ -79,10 +79,23 @@ describe("livestream notification identity", () => {
     expect(a).not.toBe(b);
   });
 
-  it("ended rewrites the started card of the same stream in place", () => {
+  it("shares one card between started and ended of the same stream", () => {
     expect(
       resolveGroupKey("community.livestream_started", "h", data("s1"))
-    ).toBe(resolveGroupKey("community.livestream_ended", "admin", data("s1")));
+    ).toBe(resolveGroupKey("community.livestream_ended", "h", data("s1")));
+    expect(
+      resolveTransition(
+        "community.livestream_started",
+        "community.livestream_ended"
+      )
+    ).toEqual({ action: "UPDATE", resurface: true });
+  });
+
+  it("collapses a redelivered event onto its own card (no duplicate)", () => {
+    const key = resolveGroupKey("community.livestream_ended", "h", data("s1"));
+    expect(
+      resolveGroupKey("community.livestream_ended", "h", data("s1"))
+    ).toBe(key);
     expect(
       resolveTransition(
         "community.livestream_started",

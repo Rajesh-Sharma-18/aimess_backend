@@ -269,7 +269,7 @@ describe("PresenceService — viewer-scoped reads", () => {
     });
   });
 
-  it("PRIVACY: a peer whoCanSeeOnlineStatus excludes reads as offline with no lastSeen", async () => {
+  it("PRIVACY: a peer whoCanSeeOnlineStatus excludes reads hidden — offline, no lastSeen", async () => {
     const cacheRepo = makeCacheRepo({ sessionsByUser: { peer: [live()] } });
     const { redis } = makeFakeRedis();
     const denyAll = {
@@ -286,7 +286,27 @@ describe("PresenceService — viewer-scoped reads", () => {
       isOnline: false,
       lastSeen: null,
       version: 0,
+      isHidden: true,
     });
+  });
+
+  it("PRIVACY: a visible peer is not hidden, even without a presence snapshot", async () => {
+    const cacheRepo = makeCacheRepo({ sessionsByUser: { peer: [live()] } });
+    const { redis } = makeFakeRedis();
+    const allowAll = {
+      filterVisiblePresence: async (_v: string, ids: string[]) => new Set(ids),
+      filterPresenceViewers: async (_s: string, ids: string[]) => new Set(ids),
+    };
+    const svc = new PresenceService(cacheRepo as any, redis, {}, allowAll);
+
+    await svc.recompute("peer");
+    const views = await svc.getPresenceViewsFor("viewer", ["peer", "ghost"]);
+
+    expect(views.get("peer")).toMatchObject({
+      isOnline: true,
+      isHidden: false,
+    });
+    expect(views.get("ghost")?.isHidden).toBe(false);
   });
 
   it("PRIVACY: with no visibility gate wired at all, everything reads offline", async () => {
@@ -298,6 +318,7 @@ describe("PresenceService — viewer-scoped reads", () => {
     const views = await svc.getPresenceViewsFor("viewer", ["peer"]);
 
     expect(views.get("peer")?.isOnline).toBe(false);
+    expect(views.get("peer")?.isHidden).toBe(true);
   });
 });
 

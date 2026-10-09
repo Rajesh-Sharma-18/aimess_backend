@@ -46,6 +46,12 @@ export interface PresenceView {
   lastSeen: number | null;
   /** Monotonic per-user counter; advances ONLY on an ONLINE↔OFFLINE flip. */
   version: number;
+  /**
+   * `whoCanSeeOnlineStatus` excludes this viewer. The view is then the masked
+   * `{isOnline:false, lastSeen:null}` and the client must render NO presence
+   * at all — not "Offline", which would itself be a presence claim.
+   */
+  isHidden: boolean;
 }
 
 export class PresenceService {
@@ -280,7 +286,8 @@ export class PresenceService {
    * Viewer-scoped presence for many peers in one pass — what a conversation
    * list, a room-details response, or a `presence:subscribe` ack needs to show
    * the right state immediately, without waiting for the next flip.
-   * Peers the viewer may not see are reported offline with no last-seen.
+   * Peers the viewer may not see are reported `isHidden` (offline, no
+   * last-seen) — fail-closed paths included.
    */
   async getPresenceViewsFor(
     viewerId: string,
@@ -289,7 +296,13 @@ export class PresenceService {
     const views = new Map<string, PresenceView>(
       peerIds.map((id) => [
         id,
-        { userId: id, isOnline: false, lastSeen: null, version: 0 },
+        {
+          userId: id,
+          isOnline: false,
+          lastSeen: null,
+          version: 0,
+          isHidden: true,
+        },
       ])
     );
     if (peerIds.length === 0 || !this.visibilityGate) return views;
@@ -300,8 +313,13 @@ export class PresenceService {
     );
     if (visible.size === 0) return views;
 
+    for (const id of visible) {
+      const view = views.get(id);
+      if (view) view.isHidden = false;
+    }
     const snapshots = await this.cacheRepo.getPresenceSnapshots([...visible]);
-    for (const [id, snapshot] of snapshots) views.set(id, snapshot);
+    for (const [id, snapshot] of snapshots)
+      views.set(id, { ...snapshot, isHidden: false });
     return views;
   }
 
