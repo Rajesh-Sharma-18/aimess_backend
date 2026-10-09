@@ -84,11 +84,13 @@ const CommunityMsgSendFileSchema = z.object({
   width: z.number().positive().optional(),
   height: z.number().positive().optional(),
   durationMs: z.number().nonnegative().optional(),
+  // Video/GIF poster frame; zod strips unknown keys, so omitting it dropped every community poster.
+  thumbnailObjectKey: z.string().min(1).max(500).optional(),
   blurhash: z.string().max(120).optional(),
   waveform: z.array(z.number()).max(2048).optional(),
 });
 
-const CommunityMsgSendSchema = z.object({
+export const CommunityMsgSendSchema = z.object({
   communityId: z.string().min(1),
   roomId: z.string().min(1).optional(),
   clientMessageId: z.string().optional(),
