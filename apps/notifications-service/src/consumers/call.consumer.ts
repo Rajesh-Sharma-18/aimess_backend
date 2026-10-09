@@ -12,6 +12,7 @@ import { userIdentityClient } from "../grpc/user-identity.client.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { callCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
+import { pushTag } from "../lib/push-tags.js";
 import { pushToUser } from "../services/push.service.js";
 
 /**
@@ -99,6 +100,7 @@ interface CallMissedPayload {
   callerAvatar: string;
   callType: string;
   missedAt: number;
+  privateRoomId?: string;
 }
 
 interface CallCancelPayload {
@@ -325,6 +327,7 @@ async function sendMissedCallPush(data: {
   callType: string;
   missedAt: number;
   excludeSessionId?: string;
+  privateRoomId?: string;
 }): Promise<void> {
   if (
     !(await claimPushOnce(
@@ -358,7 +361,11 @@ async function sendMissedCallPush(data: {
     deepLink,
     // Distinct from the ring's `call:<id>` collapse key — the ring is long over
     // by the time this fires, no need to share/replace it.
-    collapseKey: `call:missed:${data.callId}`,
+    // Per ROOM when known: it is in `roomTags`, so reading the chat on any
+    // device closes it (AIMESS-43 S11b). Legacy per-call key otherwise.
+    collapseKey: data.privateRoomId
+      ? pushTag.missedCall(data.privateRoomId)
+      : `call:missed:${data.callId}`,
     // The device that just ended/declined the ring already knows it is over;
     // re-buzzing it is the stale-ring-resurfacing wake the cancel push also
     // guards against. Absent on the caller-cut/sweep path (no callee actor).
@@ -408,6 +415,7 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
     callerAvatar: data.callerAvatar,
     callType: data.callType,
     missedAt: data.missedAt,
+    privateRoomId: data.privateRoomId,
   });
 }
 
@@ -689,6 +697,7 @@ export async function handleCallActivity(
       callType,
       missedAt: data.endedAt,
       excludeSessionId: data.excludeSessionId,
+      privateRoomId: data.privateRoomId || undefined,
     });
   }
 

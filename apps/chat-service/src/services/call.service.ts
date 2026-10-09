@@ -3,6 +3,7 @@ import {
   callContentType,
   cancelCountsAsMissed,
   isTerminalCallStatus,
+  type CallEndReason,
 } from "@aimess/constants";
 import {
   BadRequestError,
@@ -472,7 +473,8 @@ export class CallService {
           // ways of reaching this outcome cannot drift.
           await this.fanOutUnansweredRing(
             { ...stale, status: CallStatus.MISSED, endedAt: now },
-            now
+            now,
+            "canceled"
           );
           continue;
         }
@@ -508,7 +510,10 @@ export class CallService {
       const calleeBusy = active.some(
         (c) => c.callerId === params.calleeId || c.calleeId === params.calleeId
       );
-      if (calleeBusy) throw new ConflictError("CALL_USER_BUSY");
+      if (calleeBusy) {
+        await this.postBusyCardSafe(params, room.roomId, now);
+        throw new ConflictError("CALL_USER_BUSY");
+      }
       const callerBusy = active.some(
         (c) => c.callerId === params.callerId || c.calleeId === params.callerId
       );
@@ -1367,7 +1372,7 @@ export class CallService {
      * still derived here from the persisted call (see `noAnswer` below), so a
      * client cannot fabricate one.
      */
-    reason?: "NO_ANSWER";
+    reason?: "NO_ANSWER" | "FAILED";
     /**
      * Auth session of the device that hung up. Push-exclusion only — see
      * {@link declineCall}. Note this ends the call for the OTHER party too, so
@@ -1456,11 +1461,16 @@ export class CallService {
       reason: params.reason,
     });
 
+    // A media failure while still ringing settles like an unanswered ring for
+    // the callee (missed card + push) but reads "Failed" for the caller.
+    const failed = params.reason === "FAILED";
+    const ringUnanswered = noAnswer || (failed && wasRinging);
+
     const { won } = await this.callRepo.claimStatusTransition(
       params.callId,
       call.status,
       {
-        status: noAnswer ? CallStatus.MISSED : CallStatus.ENDED,
+        status: ringUnanswered ? CallStatus.MISSED : CallStatus.ENDED,
         endedAt,
         durationSec,
         endedBy: params.userId,
@@ -1476,7 +1486,7 @@ export class CallService {
     this.closeMediaRoom(params.callId);
     const updated: Call = {
       ...call,
-      status: noAnswer ? CallStatus.MISSED : CallStatus.ENDED,
+      status: ringUnanswered ? CallStatus.MISSED : CallStatus.ENDED,
       endedAt,
       durationSec,
       endedBy: params.userId,
@@ -1501,8 +1511,14 @@ export class CallService {
     //    dismiss), and the caller-side sees a cancelled card rather than a fake
     //    connected one with a duration.
     //  - otherwise media really connected, so it ends with a duration.
-    if (noAnswer) {
-      await this.fanOutUnansweredRing(updated, endedAt);
+    if (ringUnanswered) {
+      await this.fanOutUnansweredRing(
+        updated,
+        endedAt,
+        failed
+          ? "failed"
+          : this.unansweredRingReason(call, endedAt, params.reason)
+      );
     } else if (cancelPath) {
       const targets = this.ringTargets(call);
       await this.publishToCallAndParticipants(
@@ -1537,7 +1553,13 @@ export class CallService {
         // The callee ending an unanswered ring is still a call they missed (the
         // CANCELLED row badges as such). Push it to their other devices, but
         // skip the one that just hung up.
-        params.sessionId
+        params.sessionId,
+        // Callee hanging up a ring is a decline; anything else here never connected.
+        failed
+          ? "failed"
+          : wasRinging && this.isCallee(call, params.userId)
+            ? "declined"
+            : "canceled"
       );
     } else {
       await this.publishToCallAndParticipants(
@@ -1558,7 +1580,10 @@ export class CallService {
         "ENDED",
         endedAt,
         durationSec,
-        params.userId
+        params.userId,
+        undefined,
+        // Spec §1 dropped rule: a failure with measurable duration is completed.
+        failed ? (durationSec >= 1 ? "completed" : "failed") : undefined
       );
     }
 
@@ -1875,6 +1900,51 @@ export class CallService {
    * How long this call actually rang, in whole seconds, derived from the call
    * record alone — never from anything a client sent.
    */
+  /**
+   * MISSED covers two caller-side endings the card must tell apart (spec §1):
+   * the ring ran out (no answer) or the caller hung up first (cancelled).
+   */
+  private unansweredRingReason(
+    call: Pick<Call, "initiatedAt">,
+    endedAt: Date,
+    reason?: string
+  ): CallEndReason {
+    if (reason === "NO_ANSWER") return "no_answer";
+    const rang = this.ringDurationSecOf(call, endedAt);
+    // ponytail: 5s slack for a client ring timer that fires just before the server sweep.
+    return rang !== null && rang >= env.CALL_RINGING_TIMEOUT_SEC - 5
+      ? "no_answer"
+      : "canceled";
+  }
+
+  /**
+   * Busy callee (spec S5): no call row exists, but both sides still get one
+   * settled card - "Busy" for the caller, a missed call for the callee.
+   */
+  private async postBusyCardSafe(
+    params: { callerId: string; calleeId: string; type?: string },
+    roomId: string,
+    at: Date
+  ): Promise<void> {
+    if (!this.callChatMessages) return;
+    try {
+      await this.callChatMessages.post({
+        callId: randomUUID(),
+        callerId: params.callerId,
+        calleeId: params.calleeId,
+        privateRoomId: roomId,
+        callType: params.type || CallType.AUDIO,
+        outcome: "BUSY",
+        durationSec: 0,
+        endedAt: at,
+        endedBy: "SYSTEM",
+        endReason: "busy",
+      });
+    } catch (error) {
+      logger.warn(`CallService|busy card failed: ${String(error)}`);
+    }
+  }
+
   private ringDurationSecOf(
     call: Pick<Call, "initiatedAt">,
     at: Date
@@ -1944,7 +2014,11 @@ export class CallService {
     return cancelCountsAsMissed(ringDurationSec);
   }
 
-  private async fanOutUnansweredRing(call: Call, at: Date): Promise<void> {
+  private async fanOutUnansweredRing(
+    call: Call,
+    at: Date,
+    endReason: CallEndReason = "no_answer"
+  ): Promise<void> {
     // Kicked off first so it overlaps the publishes below instead of adding to
     // the tail latency of the sweep loop.
     const snapshotPromise = this.getUserSnapshot(call.callerId).catch(() => ({
@@ -1974,13 +2048,22 @@ export class CallService {
         callerId: call.callerId,
       });
     }
-    await this.postCallChatMessageSafe(call, "MISSED", at, 0, "SYSTEM");
+    await this.postCallChatMessageSafe(
+      call,
+      "MISSED",
+      at,
+      0,
+      "SYSTEM",
+      undefined,
+      endReason
+    );
 
     const callerSnapshot = await snapshotPromise;
     for (const calleeId of targets) {
       publishCallMissedSafe({
         callId: call.callId,
         calleeId,
+        privateRoomId: call.privateRoomId ?? undefined,
         callerId: call.callerId,
         callerName: callerSnapshot.displayName,
         callerAvatar: callerSnapshot.avatarUrl,
@@ -2561,7 +2644,8 @@ export class CallService {
     // Session of the callee device that settled an unanswered ring (end/decline),
     // so the missed-call push skips it and buzzes only their other devices. Only
     // the callee-driven call sites pass it; server/caller settlements omit it.
-    endedBySessionId?: string
+    endedBySessionId?: string,
+    endReason?: CallEndReason
   ): Promise<void> {
     // GROUP calls land in the GroupMessage timeline instead — CallChatMessageService
     // is built around a single caller/callee pair and writes PrivateMessage rows.
@@ -2602,6 +2686,7 @@ export class CallService {
         durationSec,
         endedAt,
         endedBy,
+        endReason,
       });
     } catch (error) {
       // A chat-side effect must never prevent the authoritative call transition.

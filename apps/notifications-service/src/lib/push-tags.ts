@@ -22,6 +22,8 @@ export const pushTag = {
   live: (livestreamId: string) => `live:${livestreamId}`,
   /** "You were added to …" for one group or community. */
   added: (roomId: string) => `added:${roomId}`,
+  /** Missed 1:1 call(s) in one private room — closed when that chat is read. */
+  missedCall: (roomId: string) => `callmissed:${roomId}`,
   /** Incoming friend request. */
   friendRequest: (friendshipId: string) => `fr:${friendshipId}`,
 } as const;
@@ -37,5 +39,6 @@ export function roomTags(roomId: string): string[] {
     pushTag.mention(roomId),
     pushTag.live(roomId),
     pushTag.added(roomId),
+    pushTag.missedCall(roomId),
   ];
 }

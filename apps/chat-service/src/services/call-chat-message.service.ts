@@ -2,6 +2,8 @@ import {
   buildCallTimelineText,
   callContentType,
   isTerminalCallStatus,
+  resolveCallEndReason,
+  type CallEndReason,
   type CallTimelineStatus,
 } from "@aimess/constants";
 import { logger } from "@aimess/logger";
@@ -28,6 +30,8 @@ export interface PostCallChatMessageParams {
   /** Transition timestamp. NOT the row's timestamp — see `createdAt` below. */
   endedAt: Date;
   endedBy: string;
+  /** Overrides the status-derived reason where the status alone is ambiguous (MISSED = no answer OR caller cancel). */
+  endReason?: CallEndReason;
 }
 
 export type GetCallMessageUserSnapshotFn = (
@@ -157,6 +161,10 @@ export class CallChatMessageService {
     const systemEvent = isTerminalCallStatus(status)
       ? SystemEvent.CALL_ENDED
       : SystemEvent.CALL_STARTED;
+    const endReason = isTerminalCallStatus(status)
+      ? (params.endReason ??
+        resolveCallEndReason({ status, durationSec, endedBy: params.endedBy }))
+      : null;
     const systemData = {
       callId: params.callId,
       callType: callLabel,
@@ -165,6 +173,7 @@ export class CallChatMessageService {
       callerId: params.callerId,
       calleeId: params.calleeId,
       endedBy: params.endedBy,
+      ...(endReason ? { endReason } : {}),
     };
     const content = {
       text,
@@ -179,6 +188,7 @@ export class CallChatMessageService {
         durationSec,
         callerId: params.callerId,
         calleeId: params.calleeId,
+        ...(endReason ? { endReason } : {}),
       },
     };
     // NO call state raises the chat badge — MISSED included. A call row always

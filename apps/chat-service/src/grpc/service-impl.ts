@@ -2062,7 +2062,10 @@ export function createMessagingImpl(
             callId: req.callId ?? "",
             userId: req.userId ?? "",
             legId: req.legId || undefined,
-            reason: req.reason === "NO_ANSWER" ? "NO_ANSWER" : undefined,
+            reason:
+              req.reason === "NO_ANSWER" || req.reason === "FAILED"
+                ? req.reason
+                : undefined,
             sessionId: req.sessionId || undefined,
           });
           callback(null, {
