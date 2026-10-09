@@ -110,6 +110,7 @@ import {
 import { setCallTerminator } from "./events/call-terminator.js";
 import { reconcileCommunityRooms } from "./startup/reconcile-community-rooms.js";
 import { startChatSettingsInvalidationListener } from "./startup/chat-settings-invalidation.js";
+import { startUserBanCallTeardown } from "./startup/user-ban-call-teardown.js";
 import {
   ensureMongoIndex,
   dropMongoIndexIfExists,
@@ -1115,6 +1116,7 @@ const startServer = async () => {
     // so read receipts / typing stop (or resume) on the next event instead of
     // on the next cache expiry.
     startChatSettingsInvalidationListener();
+    startUserBanCallTeardown(callService);
 
     // Call sweepers — both multi-node safe (atomic per-row updateMany):
     //   1. RINGING  → MISSED after CALL_RINGING_TIMEOUT_SEC (never answered).

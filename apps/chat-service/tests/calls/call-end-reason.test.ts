@@ -27,6 +27,7 @@ function buildService() {
       findByCallId: jest.fn(),
       claimStatusTransition: jest.fn().mockResolvedValue({ won: true }),
       claimForMissed: jest.fn().mockResolvedValue({ won: true }),
+      findActiveByParticipant: jest.fn().mockResolvedValue([]),
     },
     redis: { publish: jest.fn().mockResolvedValue(1), set: jest.fn(), get: jest.fn(), del: jest.fn() },
     livekit: { deleteRoom: jest.fn().mockResolvedValue(undefined) },
@@ -106,6 +107,24 @@ describe("endReason on the settled card", () => {
     });
     await service.endCall({ callId: "call-1", userId: CALLER, reason: "FAILED" });
     expect(lastCard(stubs)).toMatchObject({ outcome: "ENDED", endReason: "completed" });
+  });
+});
+
+describe("platform ban mid-ring (S13b)", () => {
+  it("ends the banned user's live 1:1 call as failed and skips group calls", async () => {
+    const { service, stubs } = buildService();
+    const call = ringing(5);
+    stubs.callRepo.findActiveByParticipant.mockResolvedValue([
+      call,
+      { ...call, callId: "group-1", groupId: "g-1" },
+    ]);
+    stubs.callRepo.findByCallId.mockResolvedValue(call);
+
+    await service.terminateCallsForBannedUser(CALLEE);
+
+    expect(stubs.callRepo.findByCallId).toHaveBeenCalledTimes(1);
+    expect(stubs.callRepo.findByCallId).toHaveBeenCalledWith("call-1");
+    expect(lastCard(stubs).endReason).toBe("failed");
   });
 });
 

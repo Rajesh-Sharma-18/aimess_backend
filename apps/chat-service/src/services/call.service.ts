@@ -1736,6 +1736,31 @@ export class CallService {
    * Best-effort per call: one failure must not strand the others, and the
    * caller (an event consumer) must never nack over it.
    */
+  /**
+   * Platform ban (AIMESS-43 S13b): end every live 1:1 call the banned user is
+   * on. Settled as a media failure, so the peer gets a Failed card instead of a
+   * ring that runs out against a dead account. Group calls are left to their
+   * own roster — one banned member must not end the call for everyone.
+   */
+  async terminateCallsForBannedUser(userId: string): Promise<void> {
+    const now = new Date();
+    const active = await this.callRepo.findActiveByParticipant(
+      [userId],
+      new Date(now.getTime() - env.CALL_RINGING_TIMEOUT_SEC * 1000),
+      new Date(now.getTime() - env.CALL_MAX_DURATION_SEC * 1000)
+    );
+    for (const call of active) {
+      if (call.groupId) continue;
+      try {
+        await this.endCall({ callId: call.callId, userId, reason: "FAILED" });
+      } catch (err) {
+        logger.warn(
+          `CallService|terminateCallsForBannedUser|failed callId=${call.callId}: ${String(err)}`
+        );
+      }
+    }
+  }
+
   async terminateCallsBetween(
     userA: string,
     userB: string,
