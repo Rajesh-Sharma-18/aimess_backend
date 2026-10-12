@@ -41,7 +41,7 @@ describe("community moderation lines name the actor by role", () => {
     expect(ban("ADMIN", ACTOR)).not.toContain("Admin banned");
   });
 
-  it("member added: 'Admin added Tom Target to Devs'", () => {
+  it("member added names the person, not the role: 'Ana Admin added Tom Target to Devs'", () => {
     expect(
       buildCommunitySystemFallbackText(
         "MEMBER_ADDED",
@@ -55,7 +55,7 @@ describe("community moderation lines name the actor by role", () => {
         "Tom Target",
         VIEWER
       )
-    ).toBe("Moderator added Tom Target to Devs");
+    ).toBe("Ana Admin added Tom Target to Devs");
   });
 
   it("livestream ended by an admin names the role and the host", () => {

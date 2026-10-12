@@ -64,6 +64,18 @@ export function roleActorLabel(
 }
 
 /**
+ * Role label for a moderation line; null for MEMBER_ADDED — adding someone is
+ * not moderation, and the new member needs to know WHO added them.
+ */
+export function moderationActorLabel(
+  event: unknown,
+  role: unknown,
+  locale: SupportedLocale
+): string | null {
+  return event === "MEMBER_ADDED" ? null : roleActorLabel(role, locale);
+}
+
+/**
  * One side of the sentence from the reader's point of view: the reader's own
  * userId renders as "You", {@link SYSTEM_ACTOR_ID} as "System",
  * {@link PLATFORM_ADMIN_ACTOR_ID} as "Administrator", anyone else by

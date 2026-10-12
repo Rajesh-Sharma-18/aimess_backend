@@ -25,6 +25,7 @@ import {
   memberChangeText,
   personLabel,
   PLATFORM_ADMIN_ACTOR_ID,
+  moderationActorLabel,
   roleActorLabel,
   SYSTEM_ACTOR_ID,
   type MemberChange,
@@ -562,7 +563,7 @@ export const communityCopy = register("community", {
         ? memberChange(
             "ADDED",
             named(communityName, locale),
-            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
+            { id: actorId, name: moderationActorLabel("MEMBER_ADDED", actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
@@ -590,7 +591,7 @@ export const communityCopy = register("community", {
         ? memberChange(
             "ADDED",
             named(communityName, locale),
-            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
+            { id: actorId, name: moderationActorLabel("MEMBER_ADDED", actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
@@ -1034,7 +1035,7 @@ export const groupCopy = register("group", {
         ? memberChange(
             "ADDED",
             groupName || t("NOTIF_GROUP_UNNAMED", locale),
-            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
+            { id: actorId, name: moderationActorLabel("MEMBER_ADDED", actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
