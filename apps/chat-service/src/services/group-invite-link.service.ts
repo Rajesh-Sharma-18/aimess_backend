@@ -663,11 +663,9 @@ export class GroupInviteLinkService {
     roomId: string,
     userId: string
   ): Promise<GroupInviteLink[]> {
-    // Invite tokens grant group entry, so listing them must be restricted to an
-    // active ADMIN of the room — not any authenticated user (AUDIT H4).
-    await assertGroupMember(this.memberRepo, roomId, userId, {
-      roles: ["ADMIN"],
-    });
+    // Invite tokens grant group entry, so only an active member may list them —
+    // never any authenticated user (AUDIT H4). Every role shares the link, like community.
+    await assertGroupMember(this.memberRepo, roomId, userId);
     return this.inviteLinkRepo.findActiveByRoom(roomId);
   }
 
