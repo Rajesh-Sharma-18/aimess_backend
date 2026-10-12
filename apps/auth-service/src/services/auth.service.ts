@@ -124,6 +124,8 @@ export const authService = {
     // Verifying the credential first keeps both — the right answer for the
     // owner, an unchanged one for anybody else — so this is not an enumeration
     // oracle: without the password the response is byte-identical to before.
+    // AIMESS-62 (product, 2026-10-12): /accounts/validate purpose=login now
+    // discloses this state at the identifier step; login itself is unchanged.
     //
     // Deliberately BEFORE the locked/banned/status checks: a soft delete also
     // sets status to PENDING_DELETION, and reaching those would answer
