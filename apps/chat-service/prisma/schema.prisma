@@ -544,6 +544,9 @@ model GroupInviteLink {
   usedCount Int       @default(0)
   shareName String    @default("")
   createdAt DateTime  @default(now())
+  // = roomId while this is the group's shared link; null once revoked. Partial
+  // unique index (server.ts) => at most one shared ACTIVE link per group.
+  activeKey String?
 
   @@index([roomId, status, createdAt(sort: Desc)])
   @@map("group_invite_links")

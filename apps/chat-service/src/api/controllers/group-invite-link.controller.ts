@@ -26,6 +26,12 @@ export class GroupInviteLinkController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
+  reset = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const result = await this.service.reset(req.params.roomId as string, userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
   preview = asyncHandler(async (req: Request, res: Response) => {
     const token = req.params.token as string;
     // Optional-auth route: `req.auth` is unset for an anonymous preview.

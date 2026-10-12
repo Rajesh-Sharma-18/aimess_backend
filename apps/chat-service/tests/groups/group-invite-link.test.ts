@@ -274,7 +274,7 @@ describe("POST /api/chat/invite-links/join", () => {
       .send({ token: TOKEN });
 
     expect(res.status).toBe(200);
-    expect(mocks.groupInviteLinkRepo.incrementUsedCount).toHaveBeenCalledWith(
+    expect(mocks.groupInviteLinkRepo.claimUse).toHaveBeenCalledWith(
       TOKEN
     );
     // The invitation that admitted them is recorded on the member row: it is
@@ -663,7 +663,7 @@ describe("invite-link lifetime — a link lives until it is revoked", () => {
       .send({ token: TOKEN });
 
     expect(res.status).toBe(200);
-    expect(mocks.groupInviteLinkRepo.incrementUsedCount).toHaveBeenCalledWith(
+    expect(mocks.groupInviteLinkRepo.claimUse).toHaveBeenCalledWith(
       TOKEN
     );
   });

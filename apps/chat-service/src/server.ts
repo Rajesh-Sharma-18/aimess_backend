@@ -410,6 +410,18 @@ const startServer = async () => {
     // existing deployments pick it up without a `prisma db push`.
     // updatedAt trails the pair; [userId, status] is the prefix every
     // by-user read (unread summary, findSearchScope) is served by.
+    // One shared ACTIVE invite link per group - makes reset/create race-safe.
+    try {
+      await ensureMongoIndex(prisma, "group_invite_links", {
+        key: { activeKey: 1 },
+        name: "group_invite_links_active_unique",
+        unique: true,
+        partialFilterExpression: { activeKey: { $type: "string" } },
+      });
+    } catch (err) {
+      logger.warn("Failed to create group_invite_links_active_unique - continuing");
+      logger.warn(err);
+    }
     // One PENDING join request per (group, user) - makes requestViaLink race-safe.
     try {
       await ensureMongoIndex(prisma, "group_join_requests", {

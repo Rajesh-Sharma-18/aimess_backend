@@ -255,6 +255,15 @@ export function buildApp(): BuiltApp {
   groupInviteLinkRepo.findByToken = jest.fn((token: string) =>
     groupInviteLinkRepo.findActiveByToken(token)
   );
+  // No shared link yet unless a spec says otherwise.
+  groupInviteLinkRepo.findActiveByRoom = jest.fn(async () => []);
+  // A join claims a use on the ACTIVE row; mirror the decision off the row the
+  // spec already programs. A race spec overrides it.
+  groupInviteLinkRepo.claimUse = jest.fn(async (token: string) => {
+    const row = await groupInviteLinkRepo.findByToken(token);
+    return !!row && (row.status ?? "ACTIVE") === "ACTIVE";
+  });
+  groupInviteLinkRepo.releaseUse = jest.fn(async () => undefined);
   // Groups have an owner unless a spec says otherwise.
   groupMemberRepo.countActiveByRole = jest.fn(async () => 1);
   // Leave ends the membership with a conditional ACTIVE → LEFT write in
