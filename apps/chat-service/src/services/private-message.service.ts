@@ -2980,7 +2980,7 @@ if (!params.content?.text?.trim())
             ? await this.groupMemberRepo.findByRoomAndUser(groupId, viewerId)
             : null,
         ]);
-        const { state, room } = await loadGroupInviteState<
+        const { state, room, requiresApproval } = await loadGroupInviteState<
           { roomId: string; name: string; avatar: string; memberCount: number },
           { roomId: string },
           { status?: string | null }
@@ -3030,6 +3030,7 @@ if (!params.content?.text?.trim())
             alreadyJoined,
             status,
             state,
+            requiresApproval,
           })
         );
       }
