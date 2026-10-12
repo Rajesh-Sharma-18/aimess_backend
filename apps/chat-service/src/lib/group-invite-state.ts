@@ -58,6 +58,9 @@ export type GroupInviteState =
   | "GROUP_FULL"
   /** Removed or banned by staff — refused even with a live link and free room. */
   | "JOIN_BLOCKED"
+  /** Private group (settings.joinApproval) and the viewer already asked —
+   *  "Request sent". Only replaces CAN_JOIN. */
+  | "REQUEST_PENDING"
   /** Nothing in the way — "Join Group". */
   | "CAN_JOIN";
 
@@ -303,6 +306,10 @@ export interface GroupInviteStateDeps {
     ): Promise<GroupInviteStateInput["membership"]>;
     countActiveByRole(roomId: string, role: string): Promise<number>;
   };
+  /** Omit to skip the pending-request lookup (REQUEST_PENDING never produced). */
+  joinRequestRepo?: {
+    findPending(roomId: string, userId: string): Promise<{ id: string } | null>;
+  } | null;
 }
 
 export interface LoadedGroupInviteState<TRoom, TLink, TMember> {
@@ -310,6 +317,10 @@ export interface LoadedGroupInviteState<TRoom, TLink, TMember> {
   room: TRoom | null;
   link: TLink | null;
   membership: TMember | null;
+  /** Group is private: a link join becomes an admin-approved request. */
+  requiresApproval: boolean;
+  /** Viewer's PENDING join request for this group, if any. */
+  pendingRequestId: string | null;
 }
 
 /**
@@ -361,7 +372,7 @@ export async function loadGroupInviteState<
       ? await deps.memberRepo.countActiveByRole(roomId, "ADMIN")
       : undefined;
 
-  const state = resolveGroupInviteState({
+  let state = resolveGroupInviteState({
     room: room as GroupInviteStateInput["room"],
     link: link as GroupInviteStateInput["link"],
     membership: membership as GroupInviteStateInput["membership"],
@@ -370,8 +381,21 @@ export async function loadGroupInviteState<
     card: args.card,
   });
 
+  const requiresApproval =
+    (room as { settings?: { joinApproval?: unknown } | null } | null)?.settings
+      ?.joinApproval === true;
+  const pending =
+    roomId && args.viewerId && deps.joinRequestRepo && state !== "ALREADY_MEMBER"
+      ? await deps.joinRequestRepo.findPending(roomId, args.viewerId)
+      : null;
+  if (state === "CAN_JOIN" && requiresApproval && pending) {
+    state = "REQUEST_PENDING";
+  }
+
   return {
     state,
+    requiresApproval,
+    pendingRequestId: pending?.id ?? null,
     room: room as unknown as TRoom | null,
     link: link as unknown as TLink | null,
     membership: membership as unknown as TMember | null,

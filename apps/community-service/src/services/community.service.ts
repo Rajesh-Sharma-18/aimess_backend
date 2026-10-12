@@ -8146,7 +8146,7 @@ export const communityService = {
       communityId,
       callerId
     );
-    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    assertCommunityRole(membership, CommunityMemberRole.ADMIN);
 
     const status = params.status ?? CommunityJoinReqStatus.PENDING;
     const { rows, total } = await communityRepository.listCommunityJoinRequests(
@@ -8296,7 +8296,7 @@ export const communityService = {
       communityId,
       callerId
     );
-    assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
+    assertCommunityRole(callerMembership, CommunityMemberRole.ADMIN);
     communityAccessPolicy.assertWritable(community);
 
     const request = await communityRepository.findJoinRequestById(requestId);
@@ -8563,7 +8563,7 @@ export const communityService = {
       communityId,
       callerId
     );
-    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    assertCommunityRole(membership, CommunityMemberRole.ADMIN);
     // A closed community has no live requests to decide (closing expired
     // them), and a decline must not be able to rewrite that outcome.
     communityAccessPolicy.assertWritable(community);
@@ -8692,7 +8692,7 @@ export const communityService = {
       communityId,
       callerId
     );
-    assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
+    assertCommunityRole(callerMembership, CommunityMemberRole.ADMIN);
     communityAccessPolicy.assertWritable(community);
 
     const rows = await communityRepository.findJoinRequestsByIds(requestIds);
@@ -8896,7 +8896,7 @@ export const communityService = {
       communityId,
       callerId
     );
-    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    assertCommunityRole(membership, CommunityMemberRole.ADMIN);
     communityAccessPolicy.assertWritable(community);
 
     const rows = await communityRepository.findJoinRequestsByIds(requestIds);

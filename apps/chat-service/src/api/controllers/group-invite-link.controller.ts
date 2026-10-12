@@ -44,7 +44,13 @@ export class GroupInviteLinkController {
     const { userId } = req.auth;
     const { token } = req.body;
     const result = await this.service.join(token, userId, this.memberService);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        result.status === "PENDING"
+          ? new ApiResponse(result, t("CHAT_GROUP_JOIN_REQUEST_SENT", req.locale))
+          : new ApiResponse(result)
+      );
   });
 
   bulkSend = asyncHandler(async (req: Request, res: Response) => {

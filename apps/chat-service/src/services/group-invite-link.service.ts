@@ -47,6 +47,10 @@ import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { Redis, Cluster } from "ioredis";
 import type { GroupInviteLink, GroupRoom } from "../generated/prisma/index.js";
 import { GroupMemberService } from "./group-member.service.js";
+import type {
+  GroupJoinRequestDto,
+  GroupJoinRequestService,
+} from "./group-join-request.service.js";
 
 export interface GroupBulkInviteResult {
   userId: string;
@@ -83,8 +87,18 @@ export class GroupInviteLinkService {
     private readonly privateMessageRepo?: PrivateMessageRepository,
     private readonly userSnapshotService?: UserSnapshotService,
     private readonly cacheRepo?: CacheRepository,
-    private readonly redis?: Redis | Cluster | null
+    private readonly redis?: Redis | Cluster | null,
+    private readonly joinRequests?: GroupJoinRequestService
   ) {}
+
+  private get stateDeps() {
+    return {
+      inviteLinkRepo: this.inviteLinkRepo,
+      roomRepo: this.roomRepo,
+      memberRepo: this.memberRepo,
+      joinRequestRepo: this.joinRequests ?? null,
+    };
+  }
 
   async create(params: {
     roomId: string;
@@ -193,17 +207,16 @@ export class GroupInviteLinkService {
     expiresAt: string | null;
     isJoined: boolean;
     state: GroupInviteState;
+    requiresApproval: boolean;
+    pendingRequestId: string | null;
   }> {
-    const { state, room, link } = await loadGroupInviteState<
+    const { state, room, link, requiresApproval, pendingRequestId } =
+      await loadGroupInviteState<
       GroupRoom,
       GroupInviteLink,
       { status?: string | null }
     >(
-      {
-        inviteLinkRepo: this.inviteLinkRepo,
-        roomRepo: this.roomRepo,
-        memberRepo: this.memberRepo,
-      },
+      this.stateDeps,
       { token, viewerId: callerId }
     );
 
@@ -242,6 +255,8 @@ export class GroupInviteLinkService {
       expiresAt: null,
       isJoined: state === "ALREADY_MEMBER",
       state,
+      requiresApproval,
+      pendingRequestId,
     };
   }
 
@@ -249,28 +264,38 @@ export class GroupInviteLinkService {
     token: string,
     userId: string,
     memberService: GroupMemberService
-  ): Promise<{ room: GroupRoom }> {
+  ): Promise<
+    | { status: "JOINED"; room: GroupRoom }
+    | { status: "PENDING"; request: GroupJoinRequestDto }
+  > {
     // Same loader the card and the preview render from, so the refusal the
     // client gets always matches the button it just showed — and names the same
     // cause. `addMember` below is still the enforcement layer (it re-checks the
     // block and claims the capacity slot atomically); this decides WHICH error
     // is reported, and it covers the disbanded/closed room too, so no separate
     // writable guard is needed here any more.
-    const { state, room, link } = await loadGroupInviteState<
+    const { state, room, link, requiresApproval } = await loadGroupInviteState<
       GroupRoom,
       GroupInviteLink,
       { status?: string | null }
     >(
-      {
-        inviteLinkRepo: this.inviteLinkRepo,
-        roomRepo: this.roomRepo,
-        memberRepo: this.memberRepo,
-      },
+      this.stateDeps,
       { token, viewerId: userId }
     );
-    assertJoinableState(state);
+    if (state !== "REQUEST_PENDING") assertJoinableState(state);
     // CAN_JOIN implies both, but narrow for the type checker.
     if (!room || !link) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
+
+    // Private group: no membership — an ADMIN approves (idempotent on a re-tap).
+    if (requiresApproval && this.joinRequests) {
+      const request = await this.joinRequests.requestViaLink({
+        roomId: link.roomId,
+        userId,
+        inviteToken: link.token,
+        invitedBy: link.createdBy,
+      });
+      return { status: "PENDING", request };
+    }
 
     await memberService.addMember(
       {
@@ -292,7 +317,7 @@ export class GroupInviteLinkService {
 
     await this.inviteLinkRepo.incrementUsedCount(token);
 
-    return { room };
+    return { status: "JOINED", room };
   }
 
   /**

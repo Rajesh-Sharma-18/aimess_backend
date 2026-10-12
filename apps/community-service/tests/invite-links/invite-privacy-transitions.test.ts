@@ -996,7 +996,7 @@ describe("races end with one consistent outcome", () => {
 
   it("30a. reject first, then PUBLIC: the terminal REJECTED is not reopened", async () => {
     const rid = await pending(A);
-    await communityService.rejectJoinRequest(CID, MOD, rid);
+    await communityService.rejectJoinRequest(CID, ADMIN, rid);
     await setType("PUBLIC");
     expect(requestStatus(A)).toBe("REJECTED");
     expect(memberStatus(A)).toBeNull();
@@ -1082,12 +1082,24 @@ describe("regressions", () => {
     await communityService.redeemInviteLink(LINK_A, A);
     const res = await communityService.approveJoinRequest(
       CID,
-      MOD,
+      ADMIN,
       requests.get(A)!.id
     );
     expect(res.request.status).toBe("APPROVED");
     expect(approvedPub).toHaveBeenCalledTimes(1);
     expect(memberAddedFor(A)).toHaveLength(1);
+  });
+
+  it("only the ADMIN decides join requests — a moderator is refused", async () => {
+    await communityService.redeemInviteLink(LINK_A, A);
+    const rid = requests.get(A)!.id;
+    await expect(
+      communityService.approveJoinRequest(CID, MOD, rid)
+    ).rejects.toThrow("COMMUNITY_FORBIDDEN");
+    await expect(
+      communityService.rejectJoinRequest(CID, MOD, rid)
+    ).rejects.toThrow("COMMUNITY_FORBIDDEN");
+    expect(requests.get(A)!.status).toBe("PENDING");
   });
 
   it("40. public Join on the community page still joins directly", async () => {

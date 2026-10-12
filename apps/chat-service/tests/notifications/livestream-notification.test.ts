@@ -53,9 +53,9 @@ describe("livestream notification category", () => {
 
   it("COMMUNITY filter excludes livestream rows, so none is counted twice", () => {
     const where = categoryWhere("COMMUNITY") as {
-      AND: [unknown, { type: { notIn: string[] } }];
+      OR: [{ AND: [unknown, { type: { notIn: string[] } }] }, unknown];
     };
-    expect(where.AND[1].type.notIn).toEqual(expect.arrayContaining(LIVE));
+    expect(where.OR[0].AND[1].type.notIn).toEqual(expect.arrayContaining(LIVE));
     // Legacy token resolves to the same filter.
     expect(categoryWhere("COMMUNITIES")).toEqual(where);
   });

@@ -52,20 +52,34 @@ assert.equal(parseCategory(42), "ALL");
 assert.deepEqual(categoryWhere("ALL"), {});
 assert.deepEqual(categoryWhere("FRIENDS"), { type: { startsWith: "friend." } });
 assert.deepEqual(categoryWhere("COMMUNITIES"), {
-  AND: [
-    { type: { startsWith: "community." } },
+  OR: [
+    {
+      AND: [
+        { type: { startsWith: "community." } },
+        {
+          type: {
+            notIn: [
+              "chat.mention",
+              "community.mention",
+              "community.livestream_started",
+              "community.livestream_ended",
+            ],
+          },
+        },
+      ],
+    },
     {
       type: {
-        notIn: [
-          "chat.mention",
-          "community.mention",
-          "community.livestream_started",
-          "community.livestream_ended",
+        in: [
+          "GROUP_JOIN_REQUESTED",
+          "GROUP_JOIN_REQUEST_APPROVED",
+          "GROUP_JOIN_REQUEST_REJECTED",
         ],
       },
     },
   ],
 });
+assert.equal(categorize("GROUP_JOIN_REQUESTED"), "COMMUNITIES");
 assert.deepEqual(categoryWhere("MENTIONS"), {
   type: { in: ["chat.mention", "community.mention"] },
 });

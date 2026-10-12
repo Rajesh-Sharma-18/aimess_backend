@@ -14,6 +14,13 @@ export const ChatEvents = {
    */
   GROUP_MEMBER_MUTED: "chat.group_member_muted",
   GROUP_MEMBER_UNMUTED: "chat.group_member_unmuted",
+  // Private-group join requests. Values double as the notification row `type`
+  // (the client contract names them literally).
+  GROUP_JOIN_REQUESTED: "GROUP_JOIN_REQUESTED",
+  GROUP_JOIN_REQUEST_APPROVED: "GROUP_JOIN_REQUEST_APPROVED",
+  GROUP_JOIN_REQUEST_REJECTED: "GROUP_JOIN_REQUEST_REJECTED",
+  /** Data-only: deletes the admins' actionable card once the request is settled. */
+  GROUP_JOIN_REQUEST_RETRACTED: "GROUP_JOIN_REQUEST_RETRACTED",
 } as const;
 
 export type ChatEventType = (typeof ChatEvents)[keyof typeof ChatEvents];
@@ -49,5 +56,35 @@ export type ChatGroupMemberMutedPayload = GroupPushImage & {
   /** ISO-8601 expiry of a timed mute; null = indefinite (or unmute). */
   mutedUntil: string | null;
   /** ISO-8601 timestamp captured at emit time. */
+  eventAt: string;
+};
+
+export type ChatGroupJoinRequestedPayload = GroupPushImage & {
+  roomId: string;
+  groupName: string;
+  requestId: string;
+  requesterId: string;
+  /** ACTIVE ADMINs at emit time — never moderators. */
+  adminRecipientIds: string[];
+  eventAt: string;
+};
+
+export type ChatGroupJoinRequestRetractedPayload = {
+  roomId: string;
+  groupName?: string;
+  requestId: string;
+  requesterId: string;
+  adminRecipientIds: string[];
+  /** APPROVED | REJECTED | CANCELLED | AUTO_RESOLVED | SUPERSEDED */
+  resolution: string;
+  eventAt: string;
+};
+
+export type ChatGroupJoinRequestDecidedPayload = GroupPushImage & {
+  roomId: string;
+  groupName: string;
+  requestId: string;
+  requesterId: string;
+  decidedBy: string;
   eventAt: string;
 };

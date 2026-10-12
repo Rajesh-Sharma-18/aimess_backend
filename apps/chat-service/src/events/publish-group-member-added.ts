@@ -68,9 +68,9 @@ export function publishGroupMemberMuteSafe(
   publishGroupEventSafe(event, data);
 }
 
-function publishGroupEventSafe(
+export function publishGroupEventSafe(
   type: string,
-  data: { roomId: string; groupName?: string }
+  data: { roomId: string; groupName?: string; [key: string]: unknown }
 ): void {
   const url = env.RABBITMQ_URL;
   if (!url) return; // RabbitMQ not configured — skip (push is a fallback channel)

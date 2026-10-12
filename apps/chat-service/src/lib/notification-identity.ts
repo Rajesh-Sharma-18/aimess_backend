@@ -9,6 +9,7 @@ const DELETE_ON_ARRIVAL = new Set<string>([
   // action item, so it goes away with the action rather than being rewritten
   // into an outcome nobody needs to read.
   "community.join_request_retracted",
+  "GROUP_JOIN_REQUEST_RETRACTED",
   // The end actor's own "is live" card: they get no ended card (no self-notify),
   // and a live card for a stream that is over must not survive either.
   "community.livestream_retracted",
@@ -137,7 +138,10 @@ export function resolveTransition(
   // a card they had already seen. The producer retracts the previous card
   // first, so in practice there is nothing here to rewrite; this is what keeps
   // that true when a retraction is lost.
-  if (incomingType === "community.join_requested") {
+  if (
+    incomingType === "community.join_requested" ||
+    incomingType === "GROUP_JOIN_REQUESTED"
+  ) {
     return { action: "CREATE", resurface: true };
   }
   const explicit = nonEmpty(data.resurface);

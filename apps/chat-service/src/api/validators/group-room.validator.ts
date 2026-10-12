@@ -51,4 +51,6 @@ export const updateGroupSchema = z.object({
     .min(GROUP_MEMBER_MIN)
     .max(GROUP_MEMBER_MAX)
     .optional(),
+  // true = private group: invite-link joins become admin-approved requests.
+  joinApproval: z.boolean().optional(),
 });
