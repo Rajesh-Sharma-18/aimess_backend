@@ -683,6 +683,7 @@ export class GroupRoomService {
     avatar?: string;
     createdBy: string;
     memberLimit?: number;
+    joinApproval?: boolean;
   }): Promise<{ room: GroupRoom; member: GroupMember }> {
     const roomId = generateRoomId("grp");
 
@@ -695,6 +696,13 @@ export class GroupRoomService {
       createdBy: params.createdBy,
       memberLimit: params.memberLimit || MAX_GROUP_MEMBERS,
       memberCount: 1,
+      settings: {
+        allowMemberInviteLink: true,
+        allowMemberSendInviteLink: true,
+        allowReply: true,
+        allowPin: true,
+        joinApproval: params.joinApproval === true,
+      },
     });
 
     const member = await this.memberRepo.create({
