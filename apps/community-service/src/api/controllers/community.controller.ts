@@ -1389,6 +1389,18 @@ export const revokeCommunityInviteLink = asyncHandler(
   }
 );
 
+export const resetCommunityInviteLinks = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as { id: string };
+    const link = await communityService.resetInviteLinks(id, req.auth.userId);
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(link, t("COMMUNITY_INVITE_LINK_REVOKED", req.locale))
+      );
+  }
+);
+
 export const redeemCommunityInviteLink = asyncHandler(
   async (req: Request, res: Response) => {
     const { code } = req.params as InviteLinkCodeParams;

@@ -1588,13 +1588,6 @@ function generateInviteCode(): string {
  * when people get round to using it, and short enough that a leaked one stops
  * mattering on its own.
  */
-const INVITE_LINK_TTL_DAYS = 30;
-
-/** The expiry stamped on a link created now. */
-export function inviteLinkExpiryFromNow(): Date {
-  return new Date(Date.now() + INVITE_LINK_TTL_DAYS * 24 * 60 * 60 * 1000);
-}
-
 /**
  * Validates that an invite link is currently usable: not revoked, not
  * exhausted, and not expired.
@@ -1618,8 +1611,8 @@ function assertInviteLinkActive(link: {
     throw new GoneError("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
   if (link.maxUses !== null && link.usedCount >= link.maxUses)
     throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
-  if (link.expiresAt && link.expiresAt.getTime() <= Date.now())
-    throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
+  // No expiry check: links live until a reset. `expiresAt` stamped by the
+  // AIM-60 builds is ignored.
 }
 
 /**
@@ -3686,7 +3679,10 @@ export const communityService = {
         communityId,
         targetUserId
       );
-      if (mute && (!mute.mutedUntil || mute.mutedUntil.getTime() > Date.now())) {
+      if (
+        mute &&
+        (!mute.mutedUntil || mute.mutedUntil.getTime() > Date.now())
+      ) {
         await this._liftMemberMute(
           communityId,
           callerId,
@@ -4848,8 +4844,9 @@ export const communityService = {
     if (targetUserIds.length === 0) return;
     let actorRole: string | undefined;
     try {
-      actorRole = (await communityRepository.findMembership(community.id, actorId))
-        ?.role;
+      actorRole = (
+        await communityRepository.findMembership(community.id, actorId)
+      )?.role;
     } catch {
       actorRole = undefined;
     }
@@ -6325,7 +6322,9 @@ export const communityService = {
       systemMessageType: "MEMBER_UNBANNED",
       actorId: callerId,
       // Only an ADMIN may unban in-app; a Super Admin is "Administrator" via `source`.
-      ...(opts?.asPlatformAdmin ? {} : { actorRole: CommunityMemberRole.ADMIN }),
+      ...(opts?.asPlatformAdmin
+        ? {}
+        : { actorRole: CommunityMemberRole.ADMIN }),
       targetUserId,
       ...(opts?.asPlatformAdmin ? { extra: { source: "BO" } } : {}),
     });
@@ -10860,8 +10859,9 @@ export const communityService = {
     // Limited-use links untouched. `maxUses` is now the only parameter there is:
     // a body carrying only the retired `autoApprove` asks for nothing this
     // endpoint still does, so it reads as the bare call it has become.
+    // One shared link per community (public too): every bare call returns it.
     const isDefaultCall = input.maxUses == null;
-    if (isDefaultCall && community.type === CommunityType.PRIVATE) {
+    if (isDefaultCall) {
       const link = await this.resolveOrCreateShareableLink(
         community.id,
         callerId
@@ -10887,10 +10887,7 @@ export const communityService = {
           communityId,
           createdBy: callerId,
           maxUses,
-          // Links now lapse. One shared months ago used to still admit anyone
-          // who had it, with unlimited uses by default — a leaked link was a
-          // permanent door into a private community.
-          expiresAt: inviteLinkExpiryFromNow(),
+          expiresAt: null,
         });
         break;
       } catch (err) {
@@ -10966,18 +10963,53 @@ export const communityService = {
     if (link.revokedAt) {
       return toInviteLinkData(link, community); // idempotent
     }
-    const updated = await communityRepository.updateInviteLink(linkId, {
-      revokedAt: new Date(),
-    });
+    // Revoking any link is a reset: one live link per community, so killing
+    // only this row would leave every sibling still admitting people.
+    await this.resetInviteLinks(communityId, callerId);
+    const updated = await communityRepository.findInviteLinkById(linkId);
+    return toInviteLinkData(updated ?? link, community);
+  },
+
+  /**
+   * Reset: every live link of the community dies (plus the legacy permanent
+   * code) and one fresh shared link replaces them. MODERATOR+. The new link is
+   * returned only after it is committed; members get
+   * `community:invite_link:reset` (no code) so open screens refetch.
+   */
+  async resetInviteLinks(
+    communityId: string,
+    callerId: string
+  ): Promise<CommunityInviteLinkData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    // Checked before revoking so a frozen community is never left linkless.
+    communityAccessPolicy.assertWritable(community);
+
+    await communityRepository.revokeAllInviteLinks(communityId);
+    await communityRepository.clearInvitationCode(communityId);
+    const link = await this.resolveOrCreateShareableLink(communityId, callerId);
 
     await this.recordAudit({
       communityId,
       actorId: callerId,
       action: "INVITE_LINK_REVOKED",
-      metadata: { linkId },
+      metadata: { linkId: link.id, via: "reset" },
     });
+    void publishCommunityRoomEvent(
+      redis,
+      communityId,
+      "community:invite_link:reset",
+      { communityId, resetAt: Date.now() }
+    ).catch(() => undefined);
 
-    return toInviteLinkData(updated, community);
+    return toInviteLinkData(link, community);
   },
 
   /**
@@ -10998,10 +11030,8 @@ export const communityService = {
     communityId: string,
     callerId: string
   ): Promise<CommunityInviteLink> {
-    const live = await communityRepository.findLatestReusableInviteLink(
-      communityId,
-      callerId
-    );
+    const live =
+      await communityRepository.findLatestReusableInviteLink(communityId);
     if (live) return live;
 
     let created: CommunityInviteLink | null = null;
@@ -11012,14 +11042,17 @@ export const communityService = {
           communityId,
           createdBy: callerId,
           maxUses: null,
-          // The community's reusable share link expires too, and
-          // `findLatestReusableInviteLink` skips an expired one so the next
-          // share mints a fresh code rather than handing back a dead link.
-          expiresAt: inviteLinkExpiryFromNow(),
+          expiresAt: null,
+          activeKey: communityId,
         });
         break;
       } catch (err) {
-        if (!isUniqueConstraintError(err) || attempt === 2) throw err;
+        if (!isUniqueConstraintError(err)) throw err;
+        // Lost the one-shared-link race to a concurrent create/reset: use theirs.
+        const winner =
+          await communityRepository.findLatestReusableInviteLink(communityId);
+        if (winner) return winner;
+        if (attempt === 2) throw err;
       }
     }
     if (!created) throw new Error("Failed to allocate invite-link code");

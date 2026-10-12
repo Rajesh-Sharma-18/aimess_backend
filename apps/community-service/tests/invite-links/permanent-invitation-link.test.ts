@@ -64,6 +64,8 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findJoinRequestByCommunityAndUser: jest.fn(),
     countActiveInviteLinksByCreator: jest.fn(),
     createInviteLink: jest.fn(),
+    revokeAllInviteLinks: jest.fn(async () => ({ count: 0 })),
+    clearInvitationCode: jest.fn(async () => ({ count: 0 })),
     createAuditLog: jest.fn(),
   },
 }));
@@ -141,21 +143,16 @@ describe("getOrCreatePermanentInvitationLink — minting", () => {
    * unlimited uses by default, until an admin happened to remember it existed.
    * New links now lapse after 30 days.
    */
-  it("mints a link that expires, roughly 30 days out", async () => {
+  // 2026-10-12 product rule: no expiry anywhere; a link lives until a reset.
+  it("mints the shared link with NO expiry", async () => {
     repo.findById.mockResolvedValue(community());
 
-    const res = await communityService.getOrCreatePermanentInvitationLink(
-      CID,
-      CALLER
-    );
+    await communityService.getOrCreatePermanentInvitationLink(CID, CALLER);
 
     expect(repo.createInviteLink).toHaveBeenCalledTimes(1);
-    const written = repo.createInviteLink.mock.calls[0][0].expiresAt as Date;
-    expect(written).toBeInstanceOf(Date);
-
-    const daysOut = (written.getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-    expect(daysOut).toBeGreaterThan(29);
-    expect(daysOut).toBeLessThan(31);
+    const written = repo.createInviteLink.mock.calls[0][0];
+    expect(written.expiresAt).toBeNull();
+    expect(written.activeKey).toBe(CID);
   });
 
   it("mints a code with sufficient entropy (>= 20 url-safe chars)", async () => {
@@ -382,17 +379,17 @@ describe("redeemInviteLink — legacy permanent-code fallback", () => {
    * column was stamped by nothing and read by nobody, so a link was usable
    * forever. It is enforced again.
    */
-  it("refuses a row whose expiry has passed", async () => {
+  it("ignores an expiry stamped by an older build (links do not lapse)", async () => {
     repo.findInviteLinkByCode.mockResolvedValue(
       linkRow({
-        createdAt: new Date(Date.now() - 2 * HOUR_MS),
+        createdAt: new Date(Date.now() - 40 * 24 * HOUR_MS),
         expiresAt: new Date(Date.now() - HOUR_MS),
       })
     );
 
     await expect(
       communityService.redeemInviteLink(STORED_CODE, CALLER)
-    ).rejects.toThrow("COMMUNITY_INVITE_LINK_EXPIRED");
+    ).resolves.toBeDefined();
   });
 
   it("still redeems a link created before expiry existed (null = no expiry)", async () => {
@@ -490,13 +487,11 @@ describe("createInviteLink — parameterized call still creates a CUSTOM link", 
     expect(link.isPermanent).toBe(false);
   });
 
-  it("stamps an expiry on a parameterized link too", async () => {
-    // AIM-60: previously asserted `expiresAt` was null here, i.e. that a custom
-    // link also lived until someone revoked it.
+  it("a parameterized link has no expiry either, and is never the shared link", async () => {
     await communityService.createInviteLink(CID, CALLER, { maxUses: 5 });
 
     const written = repo.createInviteLink.mock.calls[0][0];
-    expect(written.expiresAt).toBeInstanceOf(Date);
-    expect((written.expiresAt as Date).getTime()).toBeGreaterThan(Date.now());
+    expect(written.expiresAt).toBeNull();
+    expect(written.activeKey).toBeUndefined();
   });
 });

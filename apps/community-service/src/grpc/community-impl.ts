@@ -997,11 +997,6 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                   link.usedCount >= link.maxUses
                 )
                   linkStatus = "REVOKED";
-                else if (
-                  link.expiresAt &&
-                  link.expiresAt.getTime() <= Date.now()
-                )
-                  linkStatus = "EXPIRED";
                 else linkStatus = "ACTIVE";
               } else if (community.invitationCode === code) {
                 // LEGACY permanent code: nothing mints these any more, but the
