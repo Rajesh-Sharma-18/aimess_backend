@@ -54,6 +54,15 @@ describe("inbox peer avatar under a block", () => {
     expect(row.displayName).toBe("Neel Sheth");
   });
 
+  it("hides the photo from the live block verdict when room.blockedBy was never written", async () => {
+    mocks.friendshipGrpcClient.checkFriendships.mockResolvedValue(
+      new Map([[PEER, { status: "NONE", blockedByPeer: true }]])
+    );
+    const row = await list([]);
+    expect(JSON.stringify(row)).not.toContain("avatars/neel.jpg");
+    expect(JSON.stringify(row)).toContain('"isAvatarHidden":true');
+  });
+
   it("keeps the photo when only the viewer blocked the peer", async () => {
     expect(JSON.stringify(await list([TEST_USER_ID]))).toContain("avatars/neel.jpg");
   });
