@@ -82,7 +82,7 @@ function isTransactionConflict(err: unknown): boolean {
 function openCommunityWhere(communityId: string): Prisma.CommunityWhereInput {
   return {
     id: communityId,
-    deletedAt: { isSet: false },
+    AND: [NOT_DELETED],
     status: { not: CommunityStatus.CLOSED },
     moderationStatus: { not: CommunityModerationStatus.SUSPENDED },
   };
@@ -116,7 +116,7 @@ function touchOpenCommunityOp(communityId: string) {
   return prisma.community.update({
     where: {
       id: communityId,
-      deletedAt: { isSet: false },
+      AND: [NOT_DELETED],
       status: { not: CommunityStatus.CLOSED },
       moderationStatus: { not: CommunityModerationStatus.SUSPENDED },
     },
@@ -359,6 +359,11 @@ function mineActivitySelect(userId: string) {
  * only rows where the field EXISTS and is null, and Prisma omits untouched
  * optional fields on insert — so every never-revoked link was invisible to it.
  */
+// Active rows have `deletedAt` unset OR explicitly null (legacy/imported); `isSet: false` alone misses null.
+const NOT_DELETED = {
+  OR: [{ deletedAt: { isSet: false } }, { deletedAt: null }],
+};
+
 const NOT_REVOKED: Prisma.CommunityInviteLinkWhereInput = {
   OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }],
 };
@@ -380,7 +385,7 @@ export const communityRepository = {
   // ---------------------------------------------------------------------------
   listActiveCategories() {
     return prisma.communityCategory.findMany({
-      where: { active: true, deletedAt: { isSet: false } },
+      where: { active: true, AND: [NOT_DELETED] },
       orderBy: [{ order: "asc" }, { name: "asc" }],
       select: { id: true, name: true, slug: true },
     });
@@ -388,7 +393,7 @@ export const communityRepository = {
 
   findActiveCategoryById(categoryId: string) {
     return prisma.communityCategory.findFirst({
-      where: { id: categoryId, active: true, deletedAt: { isSet: false } },
+      where: { id: categoryId, active: true, AND: [NOT_DELETED] },
       select: { id: true, name: true },
     });
   },
@@ -457,7 +462,7 @@ export const communityRepository = {
     sortDir?: "asc" | "desc";
   }) {
     const where: Prisma.CommunityCategoryWhereInput = {
-      deletedAt: { isSet: false },
+      AND: [NOT_DELETED],
     };
     if (params.search) {
       where.OR = [
@@ -540,7 +545,7 @@ export const communityRepository = {
       where: {
         categoryId: { in: categoryIds },
         status: CommunityStatus.ACTIVE,
-        deletedAt: { isSet: false },
+        AND: [NOT_DELETED],
       },
       _count: { _all: true },
     });
@@ -549,7 +554,7 @@ export const communityRepository = {
 
   findCategoryByIdAdmin(id: string) {
     return prisma.communityCategory.findFirst({
-      where: { id, deletedAt: { isSet: false } },
+      where: { id, AND: [NOT_DELETED] },
       select: {
         id: true,
         name: true,
@@ -566,7 +571,7 @@ export const communityRepository = {
     return prisma.communityCategory.findFirst({
       where: {
         name: { equals: name, mode: "insensitive" },
-        deletedAt: { isSet: false },
+        AND: [NOT_DELETED],
         ...(excludeId ? { id: { not: excludeId } } : {}),
       },
       select: { id: true },
@@ -617,7 +622,7 @@ export const communityRepository = {
   /**
    * Permanent soft-delete for a category still referenced by communities —
    * same idiom as `Community.deletedAt`. Hides the category from every
-   * category query (`deletedAt: { isSet: false }`) without breaking the
+   * category query (`NOT_DELETED`) without breaking the
    * `categoryId` FK on communities still pointing at it.
    */
   softDeleteCategoryById(id: string) {
@@ -630,7 +635,7 @@ export const communityRepository = {
 
   countCommunitiesWithCategory(categoryId: string) {
     return prisma.community.count({
-      where: { categoryId, deletedAt: { isSet: false } },
+      where: { categoryId, AND: [NOT_DELETED] },
     });
   },
 
@@ -643,7 +648,7 @@ export const communityRepository = {
       where: {
         categoryId,
         status: CommunityStatus.ACTIVE,
-        deletedAt: { isSet: false },
+        AND: [NOT_DELETED],
       },
     });
   },
@@ -670,12 +675,9 @@ export const communityRepository = {
   // ---------------------------------------------------------------------------
   // Communities
   // ---------------------------------------------------------------------------
-  // "Active" = deletedAt NOT set. Prisma omits unset optional fields on Mongo,
-  // and `{ deletedAt: null }` does NOT match a missing field — so we filter on
-  // `isSet: false`. Soft-delete sets a Date (never an explicit null).
   findById(id: string) {
     return prisma.community.findFirst({
-      where: { id, deletedAt: { isSet: false } },
+      where: { id, AND: [NOT_DELETED] },
       include: { category: { select: { id: true, name: true } } },
     });
   },
@@ -691,7 +693,7 @@ export const communityRepository = {
   // on adminId; deleted rows are skipped since there is nothing left to close.
   async findCommunityIdsByAdminId(userId: string): Promise<string[]> {
     const rows = await prisma.community.findMany({
-      where: { adminId: userId, deletedAt: { isSet: false } },
+      where: { adminId: userId, AND: [NOT_DELETED] },
       select: { id: true },
     });
     return rows.map((row) => row.id);
@@ -701,7 +703,7 @@ export const communityRepository = {
   findByName(name: string) {
     return prisma.community.findFirst({
       where: {
-        deletedAt: { isSet: false },
+        AND: [NOT_DELETED],
         name: { equals: name, mode: "insensitive" },
       },
       select: { id: true },
@@ -732,7 +734,7 @@ export const communityRepository = {
   findByHandleFull(handle: string) {
     return prisma.community.findFirst({
       where: {
-        deletedAt: { isSet: false },
+        AND: [NOT_DELETED],
         handle: { equals: handle, mode: "insensitive" },
       },
       include: { category: { select: { id: true, name: true } } },
@@ -898,7 +900,7 @@ export const communityRepository = {
           where: {
             id: communityId,
             adminId: fromUserId,
-            deletedAt: { isSet: false },
+            AND: [NOT_DELETED],
           },
           data: { adminId: toUserId },
         });
@@ -1056,17 +1058,15 @@ export const communityRepository = {
 
   /**
    * Count of active (non-soft-deleted) communities — admin dashboard aggregate.
-   * Mongo: a soft delete sets `deletedAt` to a Date and the field is unset on
-   * active rows, so `{ isSet: false }` matches active (NEVER `{ deletedAt: null }`).
    */
   countActiveCommunities() {
-    return prisma.community.count({ where: { deletedAt: { isSet: false } } });
+    return prisma.community.count({ where: { AND: [NOT_DELETED] } });
   },
 
   /** Non-deleted communities the user currently owns (closed/suspended still count). */
   countOwnedCommunities(userId: string) {
     return prisma.community.count({
-      where: { adminId: userId, deletedAt: { isSet: false } },
+      where: { adminId: userId, AND: [NOT_DELETED] },
     });
   },
 
@@ -1935,10 +1935,9 @@ export const communityRepository = {
       ...memberVisibilityFilter,
     };
     const where = {
-      deletedAt: { isSet: false },
       lastActivityAt: bound,
       members: { some: membershipSome },
-      AND: [visibleToViewerWhere(params.userId)],
+      AND: [NOT_DELETED, visibleToViewerWhere(params.userId)],
     };
 
     const [rows, total] = await Promise.all([
@@ -1950,9 +1949,8 @@ export const communityRepository = {
       }),
       prisma.community.count({
         where: {
-          deletedAt: { isSet: false },
           members: { some: membershipSome },
-          AND: [visibleToViewerWhere(params.userId)],
+          AND: [NOT_DELETED, visibleToViewerWhere(params.userId)],
         },
       }),
     ]);
@@ -2020,10 +2018,9 @@ export const communityRepository = {
       : {};
 
     const where: Prisma.CommunityWhereInput = {
-      deletedAt: { isSet: false },
       members: membershipSome,
       ...boundary,
-      AND: [visibleToViewerWhere(params.userId)],
+      AND: [NOT_DELETED, visibleToViewerWhere(params.userId)],
     };
 
     const [rows, total] = await Promise.all([
@@ -2035,9 +2032,8 @@ export const communityRepository = {
       }),
       prisma.community.count({
         where: {
-          deletedAt: { isSet: false },
           members: membershipSome,
-          AND: [visibleToViewerWhere(params.userId)],
+          AND: [NOT_DELETED, visibleToViewerWhere(params.userId)],
         },
       }),
     ]);
@@ -2524,8 +2520,7 @@ export const communityRepository = {
     }
 
     const where: Prisma.CommunityWhereInput = {
-      deletedAt: { isSet: false },
-      AND: and,
+      AND: [NOT_DELETED, ...and],
     };
 
     const [rows, total] = await Promise.all([
@@ -2661,7 +2656,7 @@ export const communityRepository = {
     const dir: Prisma.SortOrder = params.sortDir === "asc" ? "asc" : "desc";
 
     const where: Prisma.CommunityWhereInput = {
-      deletedAt: { isSet: false },
+      AND: [NOT_DELETED],
       ...(params.communityIds || params.excludeCommunityIds
         ? {
             id: {
@@ -2688,6 +2683,7 @@ export const communityRepository = {
     // composes with the search OR below without colliding.
     if (params.status === "ACTIVE") {
       where.AND = [
+        NOT_DELETED,
         { moderationStatus: { not: CommunityModerationStatus.SUSPENDED } },
         {
           OR: [
@@ -2708,6 +2704,7 @@ export const communityRepository = {
       // LAST_MEMBER_LEFT: closed when its last member (the admin) left —
       // listed as closed in Super Admin too (see backoffice adminRowStatus).
       where.AND = [
+        NOT_DELETED,
         {
           OR: [
             { moderationStatus: CommunityModerationStatus.SUSPENDED },
@@ -2875,7 +2872,7 @@ export const communityRepository = {
    */
   async adminGetCommunityDetail(communityId: string) {
     const community = await prisma.community.findFirst({
-      where: { id: communityId, deletedAt: { isSet: false } },
+      where: { id: communityId, AND: [NOT_DELETED] },
       include: { category: { select: { id: true, name: true, slug: true } } },
     });
     if (!community) return null;
@@ -3128,7 +3125,7 @@ export const communityRepository = {
     // OR an exact ObjectId match when the search term looks like a 24-hex id.
     const where: Prisma.CommunityWhereInput = {
       id: { in: communityIds },
-      deletedAt: { isSet: false },
+      AND: [NOT_DELETED],
     };
     if (params.search) {
       const searchOr: Prisma.CommunityWhereInput[] = [
@@ -3137,7 +3134,7 @@ export const communityRepository = {
       if (/^[a-fA-F0-9]{24}$/.test(params.search)) {
         searchOr.push({ id: params.search });
       }
-      where.AND = [{ OR: searchOr }];
+      where.AND = [NOT_DELETED, { OR: searchOr }];
     }
 
     // Sort mapping (DB-level on the Community collection). Default createdAt desc.
@@ -3217,7 +3214,7 @@ export const communityRepository = {
     errorCode: string;
   }> {
     const community = await prisma.community.findFirst({
-      where: { id: communityId, deletedAt: { isSet: false } },
+      where: { id: communityId, AND: [NOT_DELETED] },
       select: { id: true, moderationStatus: true },
     });
     if (!community) {
@@ -3878,7 +3875,7 @@ export const communityRepository = {
   findCommunitiesByIds(ids: string[]) {
     if (ids.length === 0) return Promise.resolve([]);
     return prisma.community.findMany({
-      where: { id: { in: ids }, deletedAt: { isSet: false } },
+      where: { id: { in: ids }, AND: [NOT_DELETED] },
       select: {
         id: true,
         name: true,
