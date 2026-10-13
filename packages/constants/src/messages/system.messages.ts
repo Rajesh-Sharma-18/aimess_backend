@@ -207,21 +207,6 @@ export const SYSTEM_MESSAGES = {
     en: "Video call",
     th: "วิดีโอคอล",
   },
-  // Title-cased twins, used ONLY where the label opens a standalone line rather
-  // than a sentence — the completed-call preview, which has to read exactly like
-  // the chat card's own heading ("Voice Call 00:05"). The lowercase labels above
-  // stay for every mid-sentence use ("Missed voice call", "Voice call, no
-  // answer"), where title case would be wrong.
-  SYS_CALL_TITLE_VOICE: {
-    vi: "Cuộc gọi thoại",
-    en: "Voice Call",
-    th: "สายสนทนา",
-  },
-  SYS_CALL_TITLE_VIDEO: {
-    vi: "Cuộc gọi video",
-    en: "Video Call",
-    th: "วิดีโอคอล",
-  },
   SYS_CALL_RINGING: {
     vi: "{{label}} đang đổ chuông",
     en: "{{label}} ringing",
@@ -281,9 +266,20 @@ export const SYSTEM_MESSAGES = {
   // ("Voice Call" over "00:05"). A prose form like "lasted 00:05" made one call
   // read as two different things in two places.
   SYS_CALL_ENDED: {
-    vi: "{{label}} {{duration}}",
-    en: "{{label}} {{duration}}",
-    th: "{{label}} {{duration}}",
+    vi: "{{label}} · {{duration}}",
+    en: "{{label}} · {{duration}}",
+    th: "{{label}} · {{duration}}",
+  },
+  // Call durations (contract §9.1); hours reuse SYS_STREAM_DURATION_HM.
+  SYS_CALL_DURATION_S: {
+    vi: "{{seconds}} giây",
+    en: "{{seconds}}s",
+    th: "{{seconds}} วินาที",
+  },
+  SYS_CALL_DURATION_MS: {
+    vi: "{{minutes}} phút {{seconds}} giây",
+    en: "{{minutes}}m {{seconds}}s",
+    th: "{{minutes}} นาที {{seconds}} วินาที",
   },
 
   // ── Group SYSTEM rows ───────────────────────────────────────────────────

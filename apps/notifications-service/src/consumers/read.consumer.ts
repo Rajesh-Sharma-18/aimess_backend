@@ -2,7 +2,8 @@ import { logger } from "@aimess/logger";
 import * as amqp from "amqplib";
 
 import { env } from "../config/env.js";
-import { roomTags } from "../lib/push-tags.js";
+import { clearMissedCalls } from "../lib/missed-calls.js";
+import { pushTag, roomTags } from "../lib/push-tags.js";
 import { liveStreamTags } from "../lib/live-streams.js";
 import { dismissTrayCards } from "../services/push-dismiss.js";
 
@@ -32,7 +33,7 @@ interface ConversationReadPayload {
  * Still typed `MESSAGE_READ` because shipped mobile builds already act on it;
  * `op` / `tags` are what newer clients close by.
  */
-async function handleConversationRead(
+export async function handleConversationRead(
   data: ConversationReadPayload
 ): Promise<void> {
   if (!data.readerId || !data.conversationId) {
@@ -40,11 +41,17 @@ async function handleConversationRead(
     return;
   }
 
+  const missedCaller =
+    data.conversationType === "PRIVATE"
+      ? await clearMissedCalls(data.readerId, data.conversationId)
+      : null;
+
   await dismissTrayCards({
     userId: data.readerId,
     type: "MESSAGE_READ",
     tags: [
       ...roomTags(data.conversationId),
+      ...(missedCaller ? [pushTag.missedCall(missedCaller)] : []),
       ...(data.conversationType === "COMMUNITY"
         ? await liveStreamTags(data.conversationId)
         : []),

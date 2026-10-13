@@ -57,6 +57,8 @@ interface SendPushParams {
    * Android clients draw their own from the data map.
    */
   actions?: ReadonlyArray<{ action: string; title: string }>;
+  /** Web: re-alert when this card replaces one with the same tag. */
+  renotify?: boolean;
 }
 
 /**
@@ -151,6 +153,7 @@ export async function sendPush({
   platform,
   apnsCategory,
   actions,
+  renotify,
 }: SendPushParams): Promise<SendPushResult> {
   // Merge deepLink into the data map so native clients can read it.
   const enrichedData: Record<string, string> = {
@@ -334,6 +337,7 @@ export async function sendPush({
                 // the same tag reaches the worker, which closes by tag rather
                 // than by matching the rendered text.
                 ...(collapseKey ? { tag: collapseKey } : {}),
+                ...(collapseKey && renotify ? { renotify: true } : {}),
               },
             }),
         fcmOptions: {

@@ -2,11 +2,13 @@ import {
   buildCallListPreviewText,
   buildCallTimelineText,
   buildGroupSystemFallbackText,
+  formatCallDurationText,
   personalizePrivateSystemMessageForViewer,
   resolveCallOutcome,
 } from "../src/chat/group-system-message-text.js";
 import {
   buildCallActivityText,
+  buildMissedCallPushText,
   isUnreadCallActivity,
 } from "../src/chat/call-activity-text.js";
 
@@ -70,7 +72,7 @@ describe("timeline / activity / preview per side", () => {
       expect(isUnreadCallActivity(p.status, OUT, 0, p.endReason, p.durationSec)).toBe(false);
     }
     expect(buildCallListPreviewText({ callType: "AUDIO", endReason: "failed", viewerIsCaller: false })).toBe("Missed voice call");
-    expect(buildCallActivityText({ callType: "AUDIO", status: "ENDED", durationSec: 134, direction: IN })).toBe("Voice call • 02:14");
+    expect(buildCallActivityText({ callType: "AUDIO", status: "ENDED", durationSec: 134, direction: IN })).toBe("Voice call · 2m 14s");
   });
 
   it("BUSY stored text is neutral, never 'Voice Call 00:00'", () => {
@@ -86,7 +88,7 @@ describe("timeline / activity / preview per side", () => {
     const declined = { callType: "AUDIO", status: "CANCELLED", endReason: "declined" };
     expect(buildCallActivityText({ ...declined, direction: IN, locale: "th" })).toBe("คุณปฏิเสธสายสนทนา");
     expect(buildCallActivityText({ ...declined, direction: OUT, locale: "vi" })).toBe("Cuộc gọi bị từ chối");
-    expect(buildCallActivityText({ callType: "VIDEO", status: "ENDED", durationSec: 90, direction: IN, locale: "th" })).toBe("วิดีโอคอล • 01:30");
+    expect(buildCallActivityText({ callType: "VIDEO", status: "ENDED", durationSec: 90, direction: IN, locale: "th" })).toBe("วิดีโอคอล · 1 นาที 30 วินาที");
   });
 });
 
@@ -133,6 +135,37 @@ describe("group call decliners", () => {
   });
   it("a connected call reads the duration for everyone", () => {
     const d = { ...row("ENDED", ["m1"]), durationSec: 65 };
-    expect(text(d, "m1")).toBe("Voice Call 01:05");
+    expect(text(d, "m1")).toBe("Voice call · 1m 5s");
+  });
+});
+
+describe("formatCallDurationText (§9.1)", () => {
+  it.each([
+    [45, "45s", "45 giây", "45 วินาที"],
+    [134, "2m 14s", "2 phút 14 giây", "2 นาที 14 วินาที"],
+    [3720, "1h 2m", "1 giờ 2 phút", "1 ชม. 2 นาที"],
+    [3725, "1h 2m", "1 giờ 2 phút", "1 ชม. 2 นาที"],
+  ])("%ss", (sec, en, vi, th) => {
+    expect(formatCallDurationText(sec, "en")).toBe(en);
+    expect(formatCallDurationText(sec, "vi")).toBe(vi);
+    expect(formatCallDurationText(sec, "th")).toBe(th);
+  });
+
+  it("drives the stored text and the Notification Center body", () => {
+    const done = { callType: "AUDIO", status: "ENDED", durationSec: 134 };
+    expect(buildCallTimelineText(done)).toBe("Voice call · 2m 14s");
+    expect(buildCallTimelineText({ ...done, locale: "th" })).toBe("สายสนทนา · 2 นาที 14 วินาที");
+    expect(buildCallActivityText({ ...done, direction: IN })).toBe("Voice call · 2m 14s");
+    expect(buildCallActivityText({ ...done, direction: OUT, locale: "vi" })).toBe("Cuộc gọi thoại · 2 phút 14 giây");
+  });
+});
+
+describe("buildMissedCallPushText (§9.1)", () => {
+  it("1 vs N, voice / video / mixed", () => {
+    expect(buildMissedCallPushText("VOICE", 1)).toBe("Missed voice call");
+    expect(buildMissedCallPushText("VIDEO", 1, "vi")).toBe("Cuộc gọi video nhỡ");
+    expect(buildMissedCallPushText("VOICE", 3)).toBe("3 missed voice calls");
+    expect(buildMissedCallPushText("VIDEO", 2, "th")).toBe("วิดีโอคอลที่ไม่ได้รับ 2 สาย");
+    expect(buildMissedCallPushText("MIXED", 4, "vi")).toBe("4 cuộc gọi nhỡ");
   });
 });

@@ -170,3 +170,23 @@ describe("sendPush — platform collapse/grouping headers", () => {
     expect(arg.apns.headers["apns-collapse-id"]).toBe(exact);
   });
 });
+
+describe("sendPush — missed-call web grouping (§9.1)", () => {
+  beforeEach(() => {
+    sendMock.mockReset();
+    sendMock.mockResolvedValue("msg-id-1");
+  });
+
+  it("sets webpush tag + renotify alongside android/apns collapse", async () => {
+    await sendPush({ token: "t", title: "Ann", body: "2 missed voice calls", collapseKey: "missed:u1", renotify: true });
+    const arg = sendMock.mock.calls[0][0];
+    expect(arg.webpush.notification).toMatchObject({ tag: "missed:u1", renotify: true });
+    expect(arg.android.collapseKey).toBe("missed:u1");
+    expect(arg.apns.headers["apns-collapse-id"]).toBe("missed:u1");
+  });
+
+  it("never renotifies without being asked", async () => {
+    await sendPush({ token: "t", title: "Ann", body: "hi", collapseKey: "conv:r1" });
+    expect(sendMock.mock.calls[0][0].webpush.notification.renotify).toBeUndefined();
+  });
+});

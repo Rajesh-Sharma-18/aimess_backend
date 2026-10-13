@@ -242,7 +242,7 @@ describe("call.consumer — missed-call push", () => {
     expect(channelMock.nack).not.toHaveBeenCalled();
   });
 
-  it("NEVER groups: three separate missed calls push three separate times", async () => {
+  it("three missed calls from one caller push three times onto ONE tray card (§9.1)", async () => {
     const onMessage = await setupConsumer();
 
     onMessage(missedMessage("call-1"));
@@ -258,8 +258,10 @@ describe("call.consumer — missed-call push", () => {
       "call-2",
       "call-3",
     ]);
-    // Distinct collapse keys, so the device stacks them instead of replacing.
-    expect(new Set(push.mock.calls.map((c) => c[0].collapseKey)).size).toBe(3);
+    // One tag per caller, so each push replaces the previous card.
+    expect(new Set(push.mock.calls.map((c) => c[0].collapseKey))).toEqual(
+      new Set(["missed:caller-1"])
+    );
   });
 
   // The claim is keyed on the RECIPIENT too. A group call fans one callId out

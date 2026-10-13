@@ -444,6 +444,22 @@ export const NOTIFICATION_MESSAGES = {
     en: "Missed video call",
     th: "วิดีโอคอลที่ไม่ได้รับ",
   },
+  // One push per caller for N unread missed calls (contract §9.1).
+  NOTIF_CALL_MISSED_MANY_VOICE: {
+    vi: "{{count}} cuộc gọi thoại nhỡ",
+    en: "{{count}} missed voice calls",
+    th: "สายสนทนาที่ไม่ได้รับ {{count}} สาย",
+  },
+  NOTIF_CALL_MISSED_MANY_VIDEO: {
+    vi: "{{count}} cuộc gọi video nhỡ",
+    en: "{{count}} missed video calls",
+    th: "วิดีโอคอลที่ไม่ได้รับ {{count}} สาย",
+  },
+  NOTIF_CALL_MISSED_MANY_MIXED: {
+    vi: "{{count}} cuộc gọi nhỡ",
+    en: "{{count}} missed calls",
+    th: "สายที่ไม่ได้รับ {{count}} สาย",
+  },
   // Call ACTIVITY copy — the Notification Center's call-history line. One row
   // per call (see buildCallActivityText), rendered from the canonical
   // CallTimelineStatus plus the reader's own direction, so the caller reads
@@ -488,17 +504,16 @@ export const NOTIFICATION_MESSAGES = {
     en: "Failed video call",
     th: "วิดีโอคอลที่ล้มเหลว",
   },
-  // Completed call WITH a known duration. `duration` is always the canonical
-  // mm:ss / hh:mm:ss from formatCallDuration — never a re-derived number.
+  // Completed call WITH a known duration, from formatCallDurationText.
   NOTIF_CALL_ENDED_VOICE: {
-    vi: "Cuộc gọi thoại • {{duration}}",
-    en: "Voice call • {{duration}}",
-    th: "สายสนทนา • {{duration}}",
+    vi: "Cuộc gọi thoại · {{duration}}",
+    en: "Voice call · {{duration}}",
+    th: "สายสนทนา · {{duration}}",
   },
   NOTIF_CALL_ENDED_VIDEO: {
-    vi: "Cuộc gọi video • {{duration}}",
-    en: "Video call • {{duration}}",
-    th: "วิดีโอคอล • {{duration}}",
+    vi: "Cuộc gọi video · {{duration}}",
+    en: "Video call · {{duration}}",
+    th: "วิดีโอคอล · {{duration}}",
   },
   // Completed call with NO duration recorded — never invent one.
   NOTIF_CALL_COMPLETED_VOICE: {

@@ -44,6 +44,7 @@ import {
 } from "./user/deleted-account.js";
 import {
   buildCallActivityText,
+  buildMissedCallPushText,
   type CallActivityDirection,
 } from "./chat/call-activity-text.js";
 import type { SupportedLocale } from "./locale.js";
@@ -1328,14 +1329,14 @@ export const callCopy = register("call", {
         locale
       ),
     }),
+  /** `callType` VOICE | VIDEO | MIXED; `count` = unread missed calls from this caller. */
   missed:
-    (callerName: string, callType: string): LocalizedCopy =>
+    (callerName: string, callType: string, count?: number): LocalizedCopy =>
     (locale) => ({
       title: callerName || "",
-      body: t(
-        callType === "VIDEO"
-          ? "NOTIF_CALL_MISSED_VIDEO"
-          : "NOTIF_CALL_MISSED_VOICE",
+      body: buildMissedCallPushText(
+        callType === "VIDEO" || callType === "MIXED" ? callType : "VOICE",
+        count ?? 1,
         locale
       ),
     }),
@@ -1577,7 +1578,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "group.joinRequestRejected": ["groupName"],
 
   "call.ringing": ["callerName", "callType"],
-  "call.missed": ["callerName", "callType"],
+  "call.missed": ["callerName", "callType", "count"],
   "call.cancelled": [],
   "call.activity": [
     "peerName",

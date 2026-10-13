@@ -1,7 +1,9 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
 import {
+  buildMissedCallPushText,
   isUnreadCallActivity,
+  resolveCallOutcome,
   t,
   type CallActivityDirection,
 } from "@aimess/constants";
@@ -12,7 +14,9 @@ import { userIdentityClient } from "../grpc/user-identity.client.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { callCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
+import { clearMissedCalls, countMissedCall } from "../lib/missed-calls.js";
 import { pushTag } from "../lib/push-tags.js";
+import { dismissTrayCards } from "../services/push-dismiss.js";
 import { pushToUser } from "../services/push.service.js";
 
 /**
@@ -344,6 +348,13 @@ async function sendMissedCallPush(data: {
   }
 
   const isVideo = String(data.callType).toUpperCase() === "VIDEO";
+  // One tray card per caller, counting this chat's unread missed calls (§9.1).
+  const tally = data.privateRoomId
+    ? await countMissedCall(data.calleeId, data.privateRoomId, data.callerId, isVideo)
+    : { voice: isVideo ? 0 : 1, video: isVideo ? 1 : 0 };
+  const count = tally.voice + tally.video;
+  const kind =
+    tally.voice > 0 && tally.video > 0 ? "MIXED" : isVideo ? "VIDEO" : "VOICE";
   const callerName = await callerNameFor(data.callerId, data.callerName);
   const caller = callerName || "Someone";
   // The DM, not the call. A missed call is over — there is nothing to open on
@@ -356,16 +367,14 @@ async function sendMissedCallPush(data: {
     userId: data.calleeId,
     category: "callEnabled",
     type: "CALL_MISSED",
-    copy: callCopy.missed(caller, isVideo ? "VIDEO" : "VOICE"),
+    copy: callCopy.missed(caller, kind, count),
     actorId: data.callerId,
     deepLink,
     // Distinct from the ring's `call:<id>` collapse key — the ring is long over
     // by the time this fires, no need to share/replace it.
-    // Per ROOM when known: it is in `roomTags`, so reading the chat on any
-    // device closes it (AIMESS-43 S11b). Legacy per-call key otherwise.
-    collapseKey: data.privateRoomId
-      ? pushTag.missedCall(data.privateRoomId)
-      : `call:missed:${data.callId}`,
+    // Per CALLER: each new missed call replaces the card; read/answer closes it.
+    collapseKey: pushTag.missedCall(data.callerId),
+    renotify: true,
     // The device that just ended/declined the ring already knows it is over;
     // re-buzzing it is the stale-ring-resurfacing wake the cancel push also
     // guards against. Absent on the caller-cut/sweep path (no callee actor).
@@ -379,10 +388,7 @@ async function sendMissedCallPush(data: {
     // row per call. Two writers for the same call produced two cards.
     skipInbox: true,
     showPreviewOverride: (locale) =>
-      t(
-        isVideo ? "NOTIF_CALL_MISSED_VIDEO" : "NOTIF_CALL_MISSED_VOICE",
-        locale
-      ),
+      buildMissedCallPushText(kind, count, locale),
     data: {
       type: "CALL_MISSED",
       callId: data.callId,
@@ -391,6 +397,7 @@ async function sendMissedCallPush(data: {
       callerAvatar: data.callerAvatar ?? "",
       callType: isVideo ? "VIDEO" : "AUDIO",
       missedAt: String(data.missedAt ?? ""),
+      missedCount: String(count),
       idempotencyKey: data.callId,
       deepLink,
     },
@@ -688,6 +695,20 @@ export async function handleCallActivity(
   // so badge and push never drift: unanswered (incl. busy) pushes, declined does
   // not (contract §9), the caller never does. `claimPushOnce` dedups against the
   // `call.missed` that the caller-cut/sweep paths also send.
+  // Answering a call from this caller resets their missed-call card (§9.1).
+  if (
+    data.privateRoomId &&
+    resolveCallOutcome({ status, endReason: data.endReason, durationSec }) ===
+      "connected" &&
+    (await clearMissedCalls(data.calleeId, data.privateRoomId))
+  ) {
+    await dismissTrayCards({
+      userId: data.calleeId,
+      tags: [pushTag.missedCall(data.callerId)],
+      reason: "ANSWERED",
+    });
+  }
+
   if (
     isUnreadCallActivity(status, "INCOMING", ringDurationSec, data.endReason, durationSec)
   ) {

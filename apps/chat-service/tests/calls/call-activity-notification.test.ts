@@ -13,7 +13,7 @@
  */
 import {
   buildCallActivityText,
-  formatCallDuration,
+  formatCallDurationText,
   isUnreadCallActivity,
   CALL_CANCEL_GRACE_SEC,
 } from "@aimess/constants";
@@ -202,7 +202,7 @@ describe("buildCallActivityText", () => {
         direction: "OUTGOING",
         durationSec: 734,
       })
-    ).toBe(`Voice call • ${formatCallDuration(734)}`);
+    ).toBe(`Voice call · ${formatCallDurationText(734)}`);
     expect(
       buildCallActivityText({
         ...video,
@@ -210,7 +210,7 @@ describe("buildCallActivityText", () => {
         direction: "INCOMING",
         durationSec: 65,
       })
-    ).toBe("Video call • 01:05");
+    ).toBe("Video call · 1m 5s");
   });
 
   it("never invents a duration when none was recorded", () => {

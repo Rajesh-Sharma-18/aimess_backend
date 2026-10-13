@@ -3,7 +3,7 @@ import { t } from "../i18n.js";
 import type { MessageKey } from "../messages/index.js";
 
 import {
-  formatCallDuration,
+  formatCallDurationText,
   resolveCallOutcome,
 } from "./group-system-message-text.js";
 
@@ -99,7 +99,7 @@ export function buildCallActivityText(params: {
       // No duration recorded → say "Voice call", never a fabricated 00:00.
       return seconds > 0
         ? t(key("NOTIF_CALL_ENDED"), locale, {
-            duration: formatCallDuration(seconds),
+            duration: formatCallDurationText(seconds, locale),
           })
         : t(key("NOTIF_CALL_COMPLETED"), locale);
     }
@@ -125,4 +125,19 @@ export function isUnreadCallActivity(
     String(status ?? "").toUpperCase() !== "CANCELLED" ||
     cancelCountsAsMissed(ringDurationSec)
   );
+}
+
+/** Missed-call push body for N unread missed calls from one caller (§9.1). */
+export function buildMissedCallPushText(
+  kind: "VOICE" | "VIDEO" | "MIXED",
+  count: number,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): string {
+  if (count <= 1) {
+    return t(
+      kind === "VIDEO" ? "NOTIF_CALL_MISSED_VIDEO" : "NOTIF_CALL_MISSED_VOICE",
+      locale
+    );
+  }
+  return t(`NOTIF_CALL_MISSED_MANY_${kind}`, locale, { count });
 }

@@ -473,16 +473,18 @@ export function buildGroupSystemFallbackText(
   }
 }
 
-export function formatCallDuration(durationSec: number): string {
-  const total = Math.max(0, Math.floor(durationSec));
+/** Call duration (contract §9.1): 45s / 2m 14s / 1h 2m, localized. */
+export function formatCallDurationText(
+  durationSec: number,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): string {
+  const total = Math.max(0, Math.floor(Number(durationSec) || 0));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
-  const mm = String(minutes).padStart(2, "0");
-  const ss = String(seconds).padStart(2, "0");
-  return hours > 0
-    ? `${String(hours).padStart(2, "0")}:${mm}:${ss}`
-    : `${mm}:${ss}`;
+  if (hours > 0) return t("SYS_STREAM_DURATION_HM", locale, { hours, minutes });
+  if (minutes > 0) return t("SYS_CALL_DURATION_MS", locale, { minutes, seconds });
+  return t("SYS_CALL_DURATION_S", locale, { seconds });
 }
 
 /**
@@ -688,15 +690,9 @@ export function buildCallTimelineText(params: {
       locale
     );
   }
-  // Title-cased label: this line stands alone as the card heading.
   return t("SYS_CALL_ENDED", locale, {
-    label: t(
-      String(params.callType ?? "").toUpperCase() === "VIDEO"
-        ? "SYS_CALL_TITLE_VIDEO"
-        : "SYS_CALL_TITLE_VOICE",
-      locale
-    ),
-    duration: formatCallDuration(Number(params.durationSec ?? 0)),
+    label,
+    duration: formatCallDurationText(Number(params.durationSec ?? 0), locale),
   });
 }
 

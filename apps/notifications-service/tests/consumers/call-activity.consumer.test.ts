@@ -99,8 +99,8 @@ describe("handleCallActivity", () => {
     // Only the callee (INCOMING) is ever badged missed — never the caller.
     expect(push.userId).toBe(CALLEE);
     expect(push.skipInbox).toBe(true);
-    // Per room, so reading the chat closes it (AIMESS-43 S11b).
-    expect(push.collapseKey).toBe("callmissed:prv_1");
+    // Per caller; reading the chat or answering closes it (§9.1).
+    expect(push.collapseKey).toBe("missed:" + CALLER);
     expect(push.data).toMatchObject({
       type: "CALL_MISSED",
       callId: "call-1",
