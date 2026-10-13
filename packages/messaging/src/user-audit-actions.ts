@@ -34,6 +34,7 @@ export const USER_AUDIT_ACTIONS = {
   COMMUNITY_UPDATED: "community.updated",
   COMMUNITY_DELETED: "community.deleted",
   COMMUNITY_MEMBER_JOINED: "community.member_joined",
+  COMMUNITY_MEMBER_ADDED: "community.member_added",
   COMMUNITY_MEMBER_LEFT: "community.member_left",
   COMMUNITY_MEMBER_REMOVED: "community.member_removed",
   COMMUNITY_MEMBER_BANNED: "community.member_banned",

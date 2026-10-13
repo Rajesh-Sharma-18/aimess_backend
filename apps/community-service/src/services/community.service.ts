@@ -292,6 +292,7 @@ export const ADMIN_ACTIVITY_BY_COMMUNITY_ACTION: Partial<
   MEMBER_LEFT: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_LEFT,
   ADMIN_TRANSFERRED: USER_AUDIT_ACTIONS.COMMUNITY_OWNERSHIP_TRANSFERRED,
   COMMUNITY_JOINED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_JOINED,
+  MEMBER_ADDED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_ADDED,
   INVITE_ACCEPTED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_JOINED,
   INVITE_LINK_REDEEMED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_JOINED,
   COMMUNITY_DELETED: USER_AUDIT_ACTIONS.COMMUNITY_DELETED,
@@ -5452,13 +5453,13 @@ export const communityService = {
     // A moderator adding members is a membership change like any other, but it never
     // went through recordAudit — so it was the one common way to grow a community that
     // left no audit row at all. One row per member actually added (skipped[] excluded).
-    // COMMUNITY_JOINED reads "{actor} joined": the actor is the joiner, the adder rides in metadata.
+    // MEMBER_ADDED: actor = the adder (role snapshotted), target = the added member.
     for (const member of added) {
       await this.recordAudit({
         communityId,
-        actorId: member.userId,
-        action: "COMMUNITY_JOINED",
-        metadata: { via: "add_members", addedBy: callerId },
+        actorId: callerId,
+        action: "MEMBER_ADDED",
+        targetUserId: member.userId,
       });
     }
 
