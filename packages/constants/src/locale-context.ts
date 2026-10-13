@@ -35,3 +35,15 @@ export function currentLocale(
 ): SupportedLocale {
   return localeStore.getStore() ?? fallback;
 }
+
+/** Viewer IANA time zone, same edge-to-render ride as the locale (`tz` / `x-timezone`). */
+const timeZoneStore = new AsyncLocalStorage<string>();
+
+export function runWithTimeZone<T>(timeZone: string, fn: () => T): T {
+  return timeZoneStore.run(timeZone, fn);
+}
+
+/** Time zone of the in-flight request; "UTC" outside any request. */
+export function currentTimeZone(): string {
+  return timeZoneStore.getStore() ?? "UTC";
+}

@@ -1,7 +1,9 @@
 import { logger } from "@aimess/logger";
 import {
   clearUserBanned,
+  clearUserSuspended,
   markUserBanned,
+  markUserSuspended,
   publishSessionRevokedEvent,
   publishUserBanEvent,
 } from "@aimess/redis";
@@ -181,6 +183,7 @@ export const accountBanService = {
     // the row stays BANNED, so a stale clear cannot become a backdoor unban
     // either, since login checks the status row independently.
     await clearUserBanned(redis, input.userId);
+    await clearUserSuspended(redis, input.userId);
 
     await prisma.authUser.update({
       where: { id: input.userId },
@@ -188,6 +191,7 @@ export const accountBanService = {
         status: AccountStatus.ACTIVE,
         suspendedAt: null,
         suspendedReason: null,
+        suspendedUntil: null,
         suspendedBy: null,
       },
     });
@@ -215,7 +219,42 @@ export const accountBanService = {
     return { status: AccountStatus.ACTIVE, revokedSessions: 0 };
   },
 
-  // Shared with the RabbitMQ consumer's suspend branch, which must kill
-  // sessions without touching the ban flag or the permanent status.
+  // Time-boxed suspension: flag first (same fail-closed order as `apply`), then the row, then sessions.
+  async suspend(input: ApplyBanInput & { until: Date }): Promise<BanResult> {
+    await markUserSuspended(redis, input.userId, input.until.getTime());
+    await prisma.authUser.update({
+      where: { id: input.userId },
+      data: {
+        status: AccountStatus.SUSPENDED,
+        suspendedAt: new Date(),
+        suspendedReason: input.reason ?? null,
+        suspendedUntil: input.until,
+        suspendedBy: null,
+      },
+    });
+    const revokedSessions = await revokeEverySession(input.userId, "terminated");
+    logger.info(
+      `Account suspended: user=${input.userId} until=${input.until.toISOString()} sessions=${String(revokedSessions)}`
+    );
+    return { status: AccountStatus.SUSPENDED, revokedSessions };
+  },
+
+  // Lazy auto-lift at sign-in. Conditional so it can never lift a newer, still-live suspension or a ban.
+  async liftExpiredSuspension(userId: string): Promise<void> {
+    await prisma.authUser.updateMany({
+      where: {
+        id: userId,
+        status: AccountStatus.SUSPENDED,
+        suspendedUntil: { lte: new Date() },
+      },
+      data: {
+        status: AccountStatus.ACTIVE,
+        suspendedAt: null,
+        suspendedReason: null,
+        suspendedUntil: null,
+      },
+    });
+  },
+
   revokeEverySession,
 };

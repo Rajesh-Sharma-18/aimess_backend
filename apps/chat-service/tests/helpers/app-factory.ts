@@ -568,7 +568,10 @@ export function buildApp(): BuiltApp {
     groupRoomRepo,
     groupMemberRepo,
     cacheRepo,
-    userSnapshotService
+    userSnapshotService,
+    undefined,
+    undefined,
+    groupSystemMessageService
   );
   const groupInviteLinkService = new GroupInviteLinkService(
     groupInviteLinkRepo,

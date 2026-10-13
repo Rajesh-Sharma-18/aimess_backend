@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 
 import { HTTP_STATUS, t, type MessageKey } from "@aimess/constants";
+import { GoneError } from "@aimess/errors";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import {
@@ -61,7 +62,6 @@ import type {
   UpdateCommunityInput,
   UpdateMemberRoleInput,
   WarningsQuery,
-  WarnMemberInput,
 } from "../validators/community.validator.js";
 
 export const createCommunity = asyncHandler(
@@ -647,23 +647,10 @@ export const listCommunityBannedMembers = asyncHandler(
   }
 );
 
-export const warnCommunityMember = asyncHandler(
-  async (req: Request, res: Response) => {
-    const { id, userId } = req.params as CommunityMemberParams;
-    const { note } = req.body as WarnMemberInput;
-
-    const data = await communityService.warnMember(
-      id,
-      req.auth.userId,
-      userId,
-      note
-    );
-
-    return res
-      .status(HTTP_STATUS.CREATED)
-      .json(new ApiResponse(data, t("COMMUNITY_MEMBER_WARNED", req.locale)));
-  }
-);
+// Warn is a platform (back-office) action now; the community route is retired.
+export const warnCommunityMember = asyncHandler(() => {
+  throw new GoneError("COMMUNITY_FEATURE_REMOVED");
+});
 
 export const listCommunityMemberWarnings = asyncHandler(
   async (req: Request, res: Response) => {

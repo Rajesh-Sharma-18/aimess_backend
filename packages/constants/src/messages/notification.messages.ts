@@ -39,7 +39,7 @@ export const NOTIFICATION_MESSAGES = {
   },
   NOTIF_FRIEND_REJECTED_SELF: {
     vi: "Bạn đã từ chối lời mời kết bạn của {{name}}",
-    en: "You declined {{name}}'s friend request",
+    en: "You declined {{name}}’s friend request",
     th: "คุณปฏิเสธคำขอเป็นเพื่อนของ{{name}}",
   },
   NOTIF_FRIEND_CANCELLED: {
@@ -77,7 +77,7 @@ export const NOTIFICATION_MESSAGES = {
 
   // ── Community ───────────────────────────────────────────────────────────
   NOTIF_COMMUNITY_JOIN_REQUESTED: {
-    vi: "{{name}} đã xin tham gia {{community}}",
+    vi: "{{name}} đã yêu cầu tham gia {{community}}",
     en: "{{name}} asked to join {{community}}",
     th: "{{name}}ขอเข้าร่วม{{community}}",
   },
@@ -108,47 +108,47 @@ export const NOTIFICATION_MESSAGES = {
   },
   NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST: {
     vi: "{{name}} đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}}",
-    en: "{{name}} ended {{host}}'s livestream in {{community}}",
+    en: "{{name}} ended {{host}}’s livestream in {{community}}",
     th: "{{name}}จบไลฟ์สตรีมของ{{host}}ใน{{community}}แล้ว",
   },
   NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST_DURATION: {
     vi: "{{name}} đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}} sau {{duration}}",
-    en: "{{name}} ended {{host}}'s livestream in {{community}} after {{duration}}",
+    en: "{{name}} ended {{host}}’s livestream in {{community}} after {{duration}}",
     th: "{{name}}จบไลฟ์สตรีมของ{{host}}ใน{{community}}หลังจาก {{duration}}",
   },
   NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN: {
-    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp trong {{community}}",
-    en: "Administrator ended the livestream in {{community}}",
-    th: "ผู้ดูแลระบบจบไลฟ์สตรีมใน{{community}}แล้ว",
+    vi: "AI Mess Administrator đã kết thúc buổi phát trực tiếp trong {{community}}",
+    en: "AI Mess Administrator ended the livestream in {{community}}",
+    th: "AI Mess Administrator จบไลฟ์สตรีมใน{{community}}แล้ว",
   },
   NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_DURATION: {
-    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp trong {{community}} sau {{duration}}",
-    en: "Administrator ended the livestream in {{community}} after {{duration}}",
-    th: "ผู้ดูแลระบบจบไลฟ์สตรีมใน{{community}}หลังจาก {{duration}}",
+    vi: "AI Mess Administrator đã kết thúc buổi phát trực tiếp trong {{community}} sau {{duration}}",
+    en: "AI Mess Administrator ended the livestream in {{community}} after {{duration}}",
+    th: "AI Mess Administrator จบไลฟ์สตรีมใน{{community}}หลังจาก {{duration}}",
   },
   NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST: {
-    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}}",
-    en: "Administrator ended {{host}}'s livestream in {{community}}",
-    th: "ผู้ดูแลระบบจบไลฟ์สตรีมของ{{host}}ใน{{community}}แล้ว",
+    vi: "AI Mess Administrator đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}}",
+    en: "AI Mess Administrator ended {{host}}’s livestream in {{community}}",
+    th: "AI Mess Administrator จบไลฟ์สตรีมของ{{host}}ใน{{community}}แล้ว",
   },
   NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST_DURATION: {
-    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}} sau {{duration}}",
-    en: "Administrator ended {{host}}'s livestream in {{community}} after {{duration}}",
-    th: "ผู้ดูแลระบบจบไลฟ์สตรีมของ{{host}}ใน{{community}}หลังจาก {{duration}}",
+    vi: "AI Mess Administrator đã kết thúc buổi phát trực tiếp của {{host}} trong {{community}} sau {{duration}}",
+    en: "AI Mess Administrator ended {{host}}’s livestream in {{community}} after {{duration}}",
+    th: "AI Mess Administrator จบไลฟ์สตรีมของ{{host}}ใน{{community}}หลังจาก {{duration}}",
   },
   NOTIF_COMMUNITY_JOIN_REQUEST_APPROVED: {
-    vi: "{{name}} đã chấp thuận yêu cầu tham gia {{community}} của bạn",
+    vi: "{{name}} đã chấp nhận yêu cầu tham gia {{community}} của bạn",
     en: "{{name}} approved your request to join {{community}}",
     th: "{{name}}อนุมัติคำขอเข้าร่วม{{community}}ของคุณ",
   },
   NOTIF_COMMUNITY_JOIN_REQUEST_REJECTED: {
     vi: "Yêu cầu tham gia {{community}} của bạn không được chấp thuận",
-    en: "Your request to join {{community}} wasn't approved",
+    en: "Your request to join {{community}} wasn’t approved",
     th: "คำขอเข้าร่วม{{community}}ของคุณไม่ได้รับการอนุมัติ",
   },
   NOTIF_COMMUNITY_MEMBER_JOINED: {
     vi: "Bạn hiện là thành viên của {{community}}",
-    en: "You're now a member of {{community}}",
+    en: "You’re now a member of {{community}}",
     th: "คุณเป็นสมาชิกของ{{community}}แล้ว",
   },
   // LEGACY rows only: a notification written before actor/target were carried.
@@ -165,12 +165,12 @@ export const NOTIFICATION_MESSAGES = {
   },
   NOTIF_COMMUNITY_ADMIN_TRANSFERRED: {
     vi: "Bạn hiện là quản trị viên của {{community}}",
-    en: "You're now the admin of {{community}}",
-    th: "คุณเป็นผู้ดูแลของ{{community}}แล้ว",
+    en: "You’re now the admin of {{community}}",
+    th: "ตอนนี้คุณเป็นแอดมินของ{{community}}",
   },
   NOTIF_COMMUNITY_ROLE_CHANGED: {
     vi: "Bạn hiện là {{role}} trong {{community}}",
-    en: "You're now {{role}} in {{community}}",
+    en: "You’re now {{role}} in {{community}}",
     th: "คุณเป็น{{role}}ใน{{community}}แล้ว",
   },
   // LEGACY rows only: a notification written before actor/target were carried.
@@ -194,18 +194,18 @@ export const NOTIFICATION_MESSAGES = {
   },
   NOTIF_COMMUNITY_MEMBER_MUTED_UNTIL: {
     vi: "Bạn bị cấm nói trong {{community}} đến {{until}}",
-    en: "You're muted in {{community}} until {{until}}",
+    en: "You’re muted in {{community}} until {{until}}",
     th: "คุณถูกปิดสิทธิ์พูดใน{{community}}จนถึง {{until}}",
   },
   NOTIF_COMMUNITY_MEMBER_MUTED: {
     vi: "Bạn bị cấm nói trong {{community}}",
-    en: "You're muted in {{community}}",
+    en: "You’re muted in {{community}}",
     th: "คุณถูกปิดสิทธิ์พูดใน{{community}}",
   },
   NOTIF_COMMUNITY_MEMBER_UNMUTED: {
-    vi: "Bạn có thể đăng bài trong {{community}} trở lại",
-    en: "You can post in {{community}} again",
-    th: "คุณสามารถส่งข้อความใน{{community}}ได้อีกครั้ง",
+    vi: "Bạn có thể trò chuyện trong {{community}} trở lại",
+    en: "You can chat in {{community}} again",
+    th: "คุณแชทใน{{community}}ได้อีกครั้งแล้ว",
   },
   NOTIF_COMMUNITY_MEMBER_WARNED: {
     vi: "Người kiểm duyệt đã cảnh cáo bạn trong {{community}}",
@@ -214,7 +214,7 @@ export const NOTIFICATION_MESSAGES = {
   },
   NOTIF_COMMUNITY_INVITE_SENT: {
     vi: "Bạn đã được mời tham gia {{community}}",
-    en: "You've been invited to join {{community}}",
+    en: "You’ve been invited to join {{community}}",
     th: "คุณได้รับคำเชิญให้เข้าร่วม{{community}}",
   },
   NOTIF_COMMUNITY_INVITE_ACCEPTED: {
@@ -228,9 +228,9 @@ export const NOTIFICATION_MESSAGES = {
     th: "มีรายงานใหม่ที่ต้องตรวจสอบ",
   },
   NOTIF_COMMUNITY_REPORT_ACTIONED: {
-    vi: "Người kiểm duyệt đã xem xét báo cáo của bạn trong {{community}}",
-    en: "A moderator reviewed your report in {{community}}",
-    th: "ผู้ช่วยดูแลตรวจสอบรายงานของคุณใน{{community}}แล้ว",
+    vi: "Chúng tôi đã xem xét báo cáo của bạn và đã xử lý",
+    en: "We reviewed your report and took action",
+    th: "เราได้ตรวจสอบรายงานของคุณและดำเนินการแล้ว",
   },
   NOTIF_COMMUNITY_REPORT_RESOLVED: {
     vi: "Báo cáo của bạn trong {{community}} đã được xử lý",
@@ -383,18 +383,18 @@ export const NOTIFICATION_MESSAGES = {
   },
   NOTIF_GROUP_MEMBER_MUTED_UNTIL: {
     vi: "Bạn bị cấm nói trong {{group}} đến {{until}}",
-    en: "You're muted in {{group}} until {{until}}",
+    en: "You’re muted in {{group}} until {{until}}",
     th: "คุณถูกปิดสิทธิ์พูดใน{{group}}จนถึง {{until}}",
   },
   NOTIF_GROUP_MEMBER_MUTED: {
     vi: "Bạn bị cấm nói trong {{group}}",
-    en: "You're muted in {{group}}",
+    en: "You’re muted in {{group}}",
     th: "คุณถูกปิดสิทธิ์พูดใน{{group}}",
   },
   NOTIF_GROUP_MEMBER_UNMUTED: {
-    vi: "Bạn có thể nhắn tin trong {{group}} trở lại",
-    en: "You can post in {{group}} again",
-    th: "คุณสามารถส่งข้อความใน{{group}}ได้อีกครั้ง",
+    vi: "Bạn có thể trò chuyện trong {{group}} trở lại",
+    en: "You can chat in {{group}} again",
+    th: "คุณแชทใน{{group}}ได้อีกครั้งแล้ว",
   },
   NOTIF_GROUP_JOIN_REQUESTED: {
     vi: "{{name}} đã xin tham gia {{group}}",
@@ -408,7 +408,7 @@ export const NOTIFICATION_MESSAGES = {
   },
   NOTIF_GROUP_JOIN_REQUEST_REJECTED: {
     vi: "Yêu cầu tham gia {{group}} của bạn không được chấp thuận",
-    en: "Your request to join {{group}} wasn't approved",
+    en: "Your request to join {{group}} wasn’t approved",
     th: "คำขอเข้าร่วม{{group}}ของคุณไม่ได้รับการอนุมัติ",
   },
 
@@ -427,14 +427,14 @@ export const NOTIFICATION_MESSAGES = {
   // user-facing "cancelled"/"declined" call in AiMess — see
   // buildCallActivityText for the single rule that produces this.
   NOTIF_CALL_NO_ANSWER_VOICE: {
-    vi: "Cuộc gọi thoại không trả lời",
-    en: "Voice call, no answer",
-    th: "สายสนทนา ไม่มีการรับสาย",
+    vi: "Không trả lời",
+    en: "No answer",
+    th: "ไม่มีผู้รับสาย",
   },
   NOTIF_CALL_NO_ANSWER_VIDEO: {
-    vi: "Cuộc gọi video không trả lời",
-    en: "Video call, no answer",
-    th: "สายวิดีโอ ไม่มีการรับสาย",
+    vi: "Không trả lời",
+    en: "No answer",
+    th: "ไม่มีผู้รับสาย",
   },
   NOTIF_CALL_MISSED_VOICE: {
     vi: "Cuộc gọi thoại nhỡ",
@@ -444,7 +444,7 @@ export const NOTIFICATION_MESSAGES = {
   NOTIF_CALL_MISSED_VIDEO: {
     vi: "Cuộc gọi video nhỡ",
     en: "Missed video call",
-    th: "สายวิดีโอที่ไม่ได้รับ",
+    th: "วิดีโอคอลที่ไม่ได้รับ",
   },
   // Call ACTIVITY copy — the Notification Center's call-history line. One row
   // per call (see buildCallActivityText), rendered from the canonical
@@ -461,14 +461,14 @@ export const NOTIFICATION_MESSAGES = {
     th: "สายวิดีโอออก",
   },
   NOTIF_CALL_DECLINED_VOICE: {
-    vi: "Cuộc gọi thoại bị từ chối",
-    en: "Declined voice call",
-    th: "สายสนทนาที่ถูกปฏิเสธ",
+    vi: "Cuộc gọi bị từ chối",
+    en: "Call declined",
+    th: "สายถูกปฏิเสธ",
   },
   NOTIF_CALL_DECLINED_VIDEO: {
-    vi: "Cuộc gọi video bị từ chối",
-    en: "Declined video call",
-    th: "สายวิดีโอที่ถูกปฏิเสธ",
+    vi: "Cuộc gọi bị từ chối",
+    en: "Call declined",
+    th: "สายถูกปฏิเสธ",
   },
   NOTIF_CALL_CANCELLED_VOICE: {
     vi: "Cuộc gọi thoại đã hủy",
@@ -534,12 +534,12 @@ export const NOTIFICATION_MESSAGES = {
   },
   NOTIF_AUTH_NEW_LOGIN: {
     vi: "Phát hiện đăng nhập mới trên {{device}}. Nếu không phải bạn, hãy Kết thúc phiên",
-    en: "New login detected on {{device}}. If this wasn't you, Terminate Session",
+    en: "New login detected on {{device}}. If this wasn’t you, Terminate Session",
     th: "ตรวจพบการเข้าสู่ระบบใหม่จาก{{device}} หากไม่ใช่คุณ กรุณายุติเซสชัน",
   },
   NOTIF_AUTH_NEW_LOGIN_LOCATION: {
     vi: "Phát hiện đăng nhập mới trên {{device}} từ {{location}}. Nếu không phải bạn, hãy Kết thúc phiên",
-    en: "New login detected on {{device}} from {{location}}. If this wasn't you, Terminate Session",
+    en: "New login detected on {{device}} from {{location}}. If this wasn’t you, Terminate Session",
     th: "ตรวจพบการเข้าสู่ระบบใหม่จาก{{device}} ที่ {{location}} หากไม่ใช่คุณ กรุณายุติเซสชัน",
   },
   // ── OTP emails ──────────────────────────────────────────────────────────
@@ -618,14 +618,14 @@ export const NOTIFICATION_MESSAGES = {
   // precisely why the copy has to be localized — it is the one notification the
   // user cannot have opted out of.
   NOTIF_ACCOUNT_BANNED_TITLE: {
-    vi: "Tài khoản đã bị đình chỉ",
-    en: "Account suspended",
-    th: "บัญชีถูกระงับ",
+    vi: "Tài khoản bị cấm",
+    en: "Account banned",
+    th: "บัญชีถูกแบน",
   },
   NOTIF_ACCOUNT_BANNED_BODY: {
-    vi: "Tài khoản này đã bị đình chỉ.",
-    en: "This account has been suspended.",
-    th: "บัญชีนี้ถูกระงับการใช้งาน",
+    vi: "Tài khoản của bạn đã bị cấm vĩnh viễn.",
+    en: "Your account has been permanently banned.",
+    th: "บัญชีของคุณถูกแบนถาวร",
   },
   NOTIF_ACCOUNT_SUSPENDED_TITLE: {
     vi: "Tài khoản đã bị tạm khóa",
@@ -653,9 +653,9 @@ export const NOTIFICATION_MESSAGES = {
     th: "อัปเดตบัญชีแล้ว",
   },
   NOTIF_ACCOUNT_UPDATED_BY_ADMIN_BODY: {
-    vi: "Quản trị viên đã cập nhật thông tin tài khoản của bạn",
-    en: "An administrator updated your account details",
-    th: "ผู้ดูแลระบบได้อัปเดตข้อมูลบัญชีของคุณ",
+    vi: "AI Mess Administrator đã cập nhật thông tin tài khoản của bạn",
+    en: "AI Mess Administrator updated your account details",
+    th: "AI Mess Administrator อัปเดตรายละเอียดบัญชีของคุณ",
   },
 
   NOTIF_AUTH_PASSWORD_CHANGED_TITLE: {
@@ -691,6 +691,107 @@ export const NOTIFICATION_MESSAGES = {
     vi: "Từ chối",
     en: "Decline",
     th: "ปฏิเสธ",
+  },
+  // ── System messages v2 (docs: SYSTEM_MESSAGES_V2_CONTRACT) ──
+  NOTIF_COMMUNITY_JOIN_REQUEST_DECLINED_BY: {
+    vi: "{{name}} đã từ chối yêu cầu tham gia {{community}} của bạn",
+    en: "{{name}} declined your request to join {{community}}",
+    th: "{{name}}ปฏิเสธคำขอเข้าร่วม{{community}}ของคุณ",
+  },
+  NOTIF_COMMUNITY_NOW_MODERATOR: {
+    vi: "Bạn hiện là người kiểm duyệt trong {{community}}",
+    en: "You’re now a moderator in {{community}}",
+    th: "ตอนนี้คุณเป็นผู้ช่วยดูแลใน{{community}}",
+  },
+  NOTIF_COMMUNITY_MADE_MODERATOR_BY: {
+    vi: "{{name}} đã đặt bạn làm người kiểm duyệt trong {{community}}",
+    en: "{{name}} made you a moderator in {{community}}",
+    th: "{{name}}แต่งตั้งคุณเป็นผู้ช่วยดูแลใน{{community}}",
+  },
+  NOTIF_COMMUNITY_REMOVED_MODERATOR_BY: {
+    vi: "{{name}} đã gỡ quyền kiểm duyệt của bạn trong {{community}}",
+    en: "{{name}} removed you as moderator in {{community}}",
+    th: "{{name}}ถอดคุณออกจากผู้ช่วยดูแลใน{{community}}",
+  },
+  NOTIF_COMMUNITY_ADMIN_INACTIVE_TO_MODERATOR: {
+    vi: "Bạn đã không hoạt động trong {{community}}. Quyền quản trị sẽ được chuyển cho một người kiểm duyệt sau {{days}} ngày",
+    en: "You haven’t been active in {{community}}. Admin will pass to a moderator in {{days}} days",
+    th: "คุณไม่ได้ใช้งานใน{{community}} สิทธิ์แอดมินจะถูกโอนให้ผู้ช่วยดูแลในอีก {{days}} วัน",
+  },
+  NOTIF_COMMUNITY_ADMIN_INACTIVE_TO_MEMBER: {
+    vi: "Bạn đã không hoạt động trong {{community}}. Quyền quản trị sẽ được chuyển cho một thành viên khác sau {{days}} ngày",
+    en: "You haven’t been active in {{community}}. Admin will pass to another member in {{days}} days",
+    th: "คุณไม่ได้ใช้งานใน{{community}} สิทธิ์แอดมินจะถูกโอนให้สมาชิกคนอื่นในอีก {{days}} วัน",
+  },
+  NOTIF_COMMUNITY_MEMBER_BANNED_BY: {
+    vi: "{{name}} đã cấm bạn khỏi {{community}}",
+    en: "{{name}} banned you from {{community}}",
+    th: "{{name}}แบนคุณจาก{{community}}",
+  },
+  NOTIF_COMMUNITY_MEMBER_UNBANNED_BY: {
+    vi: "{{name}} đã bỏ cấm bạn khỏi {{community}}",
+    en: "{{name}} unbanned you from {{community}}",
+    th: "{{name}}ปลดแบนคุณจาก{{community}}",
+  },
+  NOTIF_COMMUNITY_MEMBER_MUTED_UNTIL_BY: {
+    vi: "{{name}} đã cấm nói bạn trong {{community}} đến {{until}}",
+    en: "{{name}} muted you in {{community}} until {{until}}",
+    th: "{{name}}ปิดสิทธิ์พูดของคุณใน{{community}}จนถึง {{until}}",
+  },
+  NOTIF_COMMUNITY_MEMBER_MUTED_BY: {
+    vi: "{{name}} đã cấm nói bạn trong {{community}}",
+    en: "{{name}} muted you in {{community}}",
+    th: "{{name}}ปิดสิทธิ์พูดของคุณใน{{community}}",
+  },
+  NOTIF_COMMUNITY_CLOSED_BY: {
+    vi: "{{name}} đã đóng {{community}}",
+    en: "{{name}} closed {{community}}",
+    th: "{{name}}ปิด{{community}}",
+  },
+  NOTIF_COMMUNITY_REOPENED_BY: {
+    vi: "{{name}} đã mở lại {{community}}",
+    en: "{{name}} reopened {{community}}",
+    th: "{{name}}เปิด{{community}}อีกครั้ง",
+  },
+  NOTIF_GROUP_LEADER_NOW: {
+    vi: "Bạn hiện là trưởng nhóm của {{group}}",
+    en: "You’re now the group leader of {{group}}",
+    th: "ตอนนี้คุณเป็นหัวหน้ากลุ่มของ{{group}}",
+  },
+  NOTIF_CALL_YOU_DECLINED_VOICE: {
+    vi: "Bạn đã từ chối cuộc gọi thoại",
+    en: "You declined a voice call",
+    th: "คุณปฏิเสธสายสนทนา",
+  },
+  NOTIF_CALL_YOU_DECLINED_VIDEO: {
+    vi: "Bạn đã từ chối cuộc gọi video",
+    en: "You declined a video call",
+    th: "คุณปฏิเสธวิดีโอคอล",
+  },
+  NOTIF_ACCOUNT_WARNED_TITLE: {
+    vi: "Cảnh cáo",
+    en: "Warning",
+    th: "คำเตือน",
+  },
+  NOTIF_ACCOUNT_WARNED_BODY: {
+    vi: "AI Mess Administrator đã cảnh cáo bạn: {{note}}",
+    en: "AI Mess Administrator warned you: {{note}}",
+    th: "AI Mess Administrator ได้ตักเตือนคุณ: {{note}}",
+  },
+  NOTIF_REPORT_OUTCOME_TITLE: {
+    vi: "Cập nhật báo cáo",
+    en: "Report update",
+    th: "อัปเดตรายงาน",
+  },
+  NOTIF_REPORT_OUTCOME_ACTIONED: {
+    vi: "Chúng tôi đã xem xét báo cáo của bạn và đã xử lý",
+    en: "We reviewed your report and took action",
+    th: "เราได้ตรวจสอบรายงานของคุณและดำเนินการแล้ว",
+  },
+  NOTIF_REPORT_OUTCOME_NO_ACTION: {
+    vi: "Chúng tôi đã xem xét báo cáo của bạn. Không cần xử lý thêm",
+    en: "We reviewed your report. No action was needed",
+    th: "เราได้ตรวจสอบรายงานของคุณแล้ว ไม่จำเป็นต้องดำเนินการใดๆ",
   },
 } as const satisfies MessageCatalog;
 

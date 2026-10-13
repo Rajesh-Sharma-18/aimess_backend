@@ -30,7 +30,7 @@ import type { GroupSystemMessageService } from "./group-system-message.service.j
 import type { PinnedMessageSummary } from "./community-pin.service.js";
 import type { GroupMessagePin } from "../generated/prisma/index.js";
 
-const PIN_ROLES = ["ADMIN", "MODERATOR"];
+const PIN_ROLES = ["ADMIN"];
 
 /**
  * A pin is invisible to a member whose own history starts after it — and BOTH

@@ -17,6 +17,8 @@ export const deviceTokenService = {
     sessionId?: string | null;
     /** This device's push language; null falls back to the account setting. */
     locale?: SupportedLocale | null;
+    /** IANA zone for push copy times; null → UTC. */
+    timezone?: string | null;
   }): Promise<void> {
     return deviceTokenRepository.upsert(input);
   },

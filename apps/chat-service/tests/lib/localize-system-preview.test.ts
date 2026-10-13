@@ -36,7 +36,7 @@ describe("withLocalizedSystemPreview", () => {
   it("renders the group row in the reader's language", () => {
     expect(
       textOf(withLocalizedSystemPreview(GROUP_SNAPSHOT, "GROUP", "x", "en"))
-    ).toBe("Alex removed Jim from the group");
+    ).toBe("Alex removed Jim");
     expect(
       textOf(withLocalizedSystemPreview(GROUP_SNAPSHOT, "GROUP", "x", "vi"))
     ).toBe("Alex đã xóa Jim khỏi nhóm");

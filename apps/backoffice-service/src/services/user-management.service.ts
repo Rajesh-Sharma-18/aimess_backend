@@ -761,9 +761,12 @@ export const userManagementService = {
     // banned user with a stale membership is far better than a user who is not
     // banned at all. Every id is recorded on the audit row so an operator can
     // see (and re-run) what the ban actually took down.
-    const cascade = timeBoxed
-      ? emptyCascade()
-      : await applySpaceCascade(userId, ref.actorId, input.reason);
+    const cascade = await applySpaceCascade(
+      userId,
+      ref.actorId,
+      input.reason,
+      timeBoxed ? "ADMIN_SUSPENDED" : "ADMIN_BANNED"
+    );
 
     await moderationActionRepository.create({
       actorId: ref.actorId,
@@ -811,6 +814,7 @@ export const userManagementService = {
         reason: input.reason,
         suspendedUntil:
           result.suspendedUntil != null ? toIso(result.suspendedUntil) : null,
+        forceLogout: true,
         notifyUser: input.notifyUser,
         actorId: ref.actorId,
         at: toIso(ref.at),
@@ -884,11 +888,19 @@ export const userManagementService = {
 
     // Before the event that revokes sessions — see banUser.
     await streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
+    const cascade = await applySpaceCascade(
+      userId,
+      ref.actorId,
+      input.reason,
+      "ADMIN_SUSPENDED"
+    );
+    await recordCascadeAudits(ref.actorId, userId, cascade, ctx);
     publishUserSuspendedSafe({
       userId,
       reason: input.reason,
       suspendedUntil:
         result.suspendedUntil != null ? toIso(result.suspendedUntil) : null,
+      forceLogout: true,
       notifyUser: input.notifyUser,
       actorId: ref.actorId,
       at: toIso(ref.at),
@@ -1314,13 +1326,15 @@ function emptyCascade(): SpaceCascade {
 async function applySpaceCascade(
   userId: string,
   actorAdminId: string,
-  reason: string
+  reason: string,
+  reasonCode: "ADMIN_BANNED" | "ADMIN_SUSPENDED"
 ): Promise<SpaceCascade> {
   const cascade = emptyCascade();
+  const req = { userId, actorAdminId, reason, reasonCode };
 
   const [communities, groups] = await Promise.allSettled([
-    communityClient.adminApplySystemBan({ userId, actorAdminId, reason }),
-    chatClient.adminApplySystemBan({ userId, actorAdminId, reason }),
+    communityClient.adminApplySystemBan(req),
+    chatClient.adminApplySystemBan(req),
   ]);
 
   if (communities.status === "fulfilled") {

@@ -253,7 +253,7 @@ export interface RoomPolicyContext {
   conversationType: AutoDeleteConversationType;
   /** Monotonic per-room policy version — see `*RoomRepository.setAutoDelete`. */
   policyVersion: number;
-  /** May the CALLER change this policy? (private: always; group: ADMIN/MODERATOR.) */
+  /** May the CALLER change this policy? (private: always; group: leader only.) */
   canEdit: boolean;
 }
 

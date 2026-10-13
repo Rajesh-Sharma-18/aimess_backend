@@ -211,13 +211,6 @@ const envSchema = z.object({
     .positive()
     .default(60 * 60 * 24),
 
-  // Auto-unmute sweep for TIMED group moderation mutes. Enforcement itself is
-  // lazy (a lapsed `moderationMutedUntil` stops blocking immediately), so this
-  // sweep only delivers the realtime `group:member:unmuted` signal and clears
-  // the stale flag. Multi-node safe (atomic per-row claim).
-  GROUP_MUTE_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(60),
-  GROUP_MUTE_SWEEP_BATCH: z.coerce.number().positive().default(200),
-
   // Group @all pushes the whole roster, so it has its own sliding-window
   // ceiling per (room, sender), shared by REST and socket sends and edits.
   GROUP_MENTION_ALL_RATE_MAX: z.coerce.number().positive().default(5),

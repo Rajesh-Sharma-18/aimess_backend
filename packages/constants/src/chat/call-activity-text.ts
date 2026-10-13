@@ -39,6 +39,8 @@ type CallCopyBase =
   | "NOTIF_CALL_OUTGOING"
   | "NOTIF_CALL_NO_ANSWER"
   | "NOTIF_CALL_MISSED"
+  | "NOTIF_CALL_DECLINED"
+  | "NOTIF_CALL_YOU_DECLINED"
   | "NOTIF_CALL_ENDED"
   | "NOTIF_CALL_COMPLETED";
 
@@ -51,11 +53,9 @@ type CallCopyBase =
  * one call reads consistently in the DM, in the conversation list and in the
  * Notification Center.
  *
- * Every call that never connected collapses onto ONE viewer-relative pair: the
- * caller got no answer, the callee missed it. AiMess deliberately has no
- * user-facing "cancelled" or "declined" call — those are lifecycle states, and
- * surfacing them told each side the other's business. The canonical status
- * survives untouched on the call row and in `data.callStatus`.
+ * Declined reads "Call declined" / "You declined a … call" (v2 contract §6);
+ * every other call that never connected is "No answer" for the caller and
+ * "Missed … call" for the callee.
  */
 export function buildCallActivityText(params: {
   callType?: string | null;
@@ -85,15 +85,13 @@ export function buildCallActivityText(params: {
         key(outgoing ? "NOTIF_CALL_OUTGOING" : "NOTIF_CALL_INCOMING"),
         locale
       );
-    // EVERY call that never connected, whoever ended it. "Cancelled" and
-    // "declined" are LIFECYCLE facts, not user-facing outcomes: the person who
-    // PLACED the call got no answer, and the person who was RUNG missed it.
-    // Which side hung up first is not what either of them experienced, so it
-    // must never reach the copy. The canonical status is still on the row
-    // (`data.callStatus`) for anything that genuinely needs it.
+    case "DECLINED":
+      return t(
+        key(outgoing ? "NOTIF_CALL_DECLINED" : "NOTIF_CALL_YOU_DECLINED"),
+        locale
+      );
     case "MISSED":
     case "CANCELLED":
-    case "DECLINED":
     case "FAILED":
       return t(
         key(outgoing ? "NOTIF_CALL_NO_ANSWER" : "NOTIF_CALL_MISSED"),

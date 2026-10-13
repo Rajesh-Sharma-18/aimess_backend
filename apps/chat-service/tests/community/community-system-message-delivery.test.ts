@@ -144,10 +144,10 @@ beforeEach(() => {
 });
 
 describe("CommunitySystemMessageService — lastActivity eligibility", () => {
-  // Only the pure lifecycle churn is hidden outright. The five MODERATION
-  // subtypes (add/ban/unban/mute/unmute) ARE persisted and broadcast — just
+  // Only the pure lifecycle churn is hidden outright. The MODERATION subtypes
+  // (add/remove/ban/unban/mute/unmute, v2) ARE persisted and broadcast — just
   // scoped to owner/admin/moderators — which the cases below pin.
-  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"])(
+  it.each(["MEMBER_LEFT", "MEMBER_JOINED"])(
     "%s is a hidden membership line — never persisted or broadcast (post backstop)",
     async (type) => {
       const h = makeService({
@@ -171,7 +171,7 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
     }
   );
 
-  it("MEMBER_BANNED ignores a caller-supplied recipient — it has no companion copy, so it persists and delivers as the moderator-only audit line", async () => {
+  it.each(["MEMBER_BANNED", "MEMBER_REMOVED"])("%s ignores a caller-supplied recipient — it has no companion copy, so it persists and delivers as the moderator-only audit line", async (type) => {
     const h = makeService({
       withMemberRepo: true,
       snapshots: [[TARGET, { displayName: "John Doe" }]],
@@ -179,7 +179,7 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
 
     await h.service.post({
       communityId: COMMUNITY_ID,
-      systemMessageType: "MEMBER_BANNED",
+      systemMessageType: type as never,
       metadata: { targetUserId: TARGET },
       triggeredByUserId: ACTOR,
       // A caller cannot invent a companion copy for a subtype the registry says
@@ -365,7 +365,7 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
       expect(parsed.data.isPersonal).toBe(true);
     });
 
-    it("MEMBER_UNMUTED reaches moderators only — the unmuted member still gets no bubble, even if a recipient is passed", async () => {
+    it("MEMBER_UNMUTED keeps its v2 companion copy — 'You can chat in X again' goes to the unmuted member", async () => {
       const h = makeService({
         withMemberRepo: true,
         snapshots: [[TARGET, { displayName: "John Doe" }]],
@@ -380,22 +380,19 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
         eventAt: "2026-06-19T12:05:00.000Z",
       });
 
-      // Unmute has no companion copy: the member learns it from the
-      // `community:member:unmuted` event plus the retraction of the stale mute
-      // line, so the recipient is dropped and the row is the audit line.
       expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
       expect(
         (h.createSystemMessage.mock.calls[0][0] as { visibleToUserId: unknown })
           .visibleToUserId
-      ).toBe(null);
+      ).toBe(TARGET);
       expect(h.redis.publish.mock.calls.map((c: unknown[]) => c[0])).toEqual([
-        `user:${MODERATOR}`,
+        `user:${TARGET}`,
       ]);
       expect(pubActivity).not.toHaveBeenCalled();
       expect(pubListBump).not.toHaveBeenCalled();
     });
 
-    it("a mute → unmute → mute cycle keeps each line on its own channel — MUTE to the member, UNMUTE to the moderators", async () => {
+    it("a mute → unmute → mute cycle delivers each personal copy to the member", async () => {
       const h = makeService({
         withMemberRepo: true,
         snapshots: [[TARGET, { displayName: "John Doe" }]],
@@ -426,8 +423,7 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
         eventAt: "2026-06-19T12:10:00.000Z",
       });
 
-      // All three insert, but they are addressed differently: the two MUTE lines
-      // are the member's own notices, the UNMUTE between them is the audit line.
+      // All three are the member's own notices (v2: unmute has a personal copy).
       expect(h.createSystemMessage).toHaveBeenCalledTimes(3);
       expect(h.redis.publish).toHaveBeenCalledTimes(3);
       const delivered = h.redis.publish.mock.calls.map((call: unknown[]) => {
@@ -440,7 +436,7 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
       });
       expect(delivered).toEqual([
         [`user:${TARGET}`, "MEMBER_MUTED"],
-        [`user:${MODERATOR}`, "MEMBER_UNMUTED"],
+        [`user:${TARGET}`, "MEMBER_UNMUTED"],
         [`user:${TARGET}`, "MEMBER_MUTED"],
       ]);
     });

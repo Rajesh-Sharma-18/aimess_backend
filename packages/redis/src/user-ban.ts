@@ -59,14 +59,50 @@ export async function isUserBanned(
 // call time, not at module load.
 export function createBannedUserGuard(
   getRedis: () => Redis | Cluster
-): (userId: string) => Promise<boolean> {
+): (userId: string) => Promise<AccountBlock> {
   return async (userId: string) => {
     try {
-      return await isUserBanned(getRedis(), userId);
+      const redis = getRedis();
+      if (await isUserBanned(redis, userId)) return "ACCOUNT_BANNED";
+      return (await isUserSuspended(redis, userId)) ? "ACCOUNT_SUSPENDED" : false;
     } catch {
       return false;
     }
   };
+}
+
+export type AccountBlock = false | "ACCOUNT_BANNED" | "ACCOUNT_SUSPENDED";
+
+// Time-boxed suspension: the key expires with the suspension, so an elapsed one never blocks.
+const USER_SUSPENDED_PREFIX = "aimess:user:suspended:";
+
+export function userSuspendedKey(userId: string): string {
+  return `${USER_SUSPENDED_PREFIX}${userId}`;
+}
+
+export async function markUserSuspended(
+  redis: Redis | Cluster,
+  userId: string,
+  untilMs: number
+): Promise<void> {
+  const ttlMs = Math.floor(untilMs - Date.now());
+  if (ttlMs > 0) {
+    await redis.set(userSuspendedKey(userId), String(untilMs), "PX", ttlMs);
+  }
+}
+
+export async function clearUserSuspended(
+  redis: Redis | Cluster,
+  userId: string
+): Promise<void> {
+  await redis.del(userSuspendedKey(userId));
+}
+
+export async function isUserSuspended(
+  redis: Redis | Cluster,
+  userId: string
+): Promise<boolean> {
+  return (await redis.get(userSuspendedKey(userId))) != null;
 }
 
 // Batch variant for list/DTO paths (inbox rows, rosters) so marking a page of

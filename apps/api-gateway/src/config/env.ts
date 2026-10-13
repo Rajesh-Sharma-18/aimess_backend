@@ -170,7 +170,7 @@ const envSchema = z.object({
    * standard auth/content headers plus the `x-lang` locale header the web
    * client sends on every request.
    */
-  CORS_ALLOWED_HEADERS: z.string().default("Content-Type,Authorization,x-lang"),
+  CORS_ALLOWED_HEADERS: z.string().default("Content-Type,Authorization,x-lang,x-timezone"),
   /**
    * Escape hatch for dev tunnels (VS Code Dev Tunnels, ngrok), which mint a new
    * hostname per session so a static allowlist breaks on every rotation.

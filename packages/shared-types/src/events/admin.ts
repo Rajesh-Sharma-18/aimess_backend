@@ -72,6 +72,8 @@ export type AdminUserNotifyPayload = {
   type: string;
   title: string;
   body: string;
+  /** Verified address to also email (suspend/ban only). */
+  email?: string;
   data?: Record<string, string>;
 };
 

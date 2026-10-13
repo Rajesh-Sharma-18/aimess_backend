@@ -5,7 +5,11 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 
-import { filterBannedUserIds, publishChatUserEvent } from "@aimess/redis";
+import {
+  createBannedUserGuard,
+  filterBannedUserIds,
+  publishChatUserEvent,
+} from "@aimess/redis";
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
@@ -17,8 +21,8 @@ import {
   isGroupMemberMuted,
 } from "../lib/access-guard.js";
 import {
+  publishGroupEventSafe,
   publishGroupMemberAddedSafe,
-  publishGroupMemberMuteSafe,
 } from "../events/publish-group-member-added.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import { publishRoomCardsGoneSafe } from "../events/publish-conversation-read.js";
@@ -117,7 +121,7 @@ export class GroupMemberService {
       /**
        * Invite-link self-join: the joining user is authorized by possessing a
        * valid link, so skip the staff actor check. Default (false) means
-       * a direct add MUST be performed by an active ADMIN/MODERATOR.
+       * a direct add MUST be performed by the active group leader (ADMIN).
        */
       skipActorAuthz?: boolean;
       /**
@@ -136,23 +140,16 @@ export class GroupMemberService {
     // the roster of a frozen group needs its own gate.
     assertGroupRoomWritable(room);
 
-    // Authorize the actor: only active staff may add members. Without this, any
+    // Authorize the actor: only the leader may add members. Without this, any
     // authenticated user could inject themselves or others into a private group
-    // (AUDIT H3). MODERATOR is included — adding is a growth action, not a
-    // destructive one, so it stays below the updateRole bar (ADMIN only).
-    let actor: GroupMember | null = null;
+    // (AUDIT H3).
     if (!opts?.skipActorAuthz) {
       if (!params.invitedBy) {
         throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
-      actor = await assertGroupMember(
-        this.memberRepo,
-        params.roomId,
-        params.invitedBy,
-        {
-          roles: ["ADMIN", "MODERATOR"],
-        }
-      );
+      await assertGroupMember(this.memberRepo, params.roomId, params.invitedBy, {
+        roles: ["ADMIN"],
+      });
     }
 
     // Resolve the existing row BEFORE the capacity check: a re-add of someone
@@ -172,21 +169,14 @@ export class GroupMemberService {
     // one, not after re-login. The block lives on the member row, so it survives
     // everything a token can be rotated through.
     //
-    // The ONLY key is a manual add by the group ADMIN, which is exactly this
-    // branch: an authorized ADMIN add re-activates the row (and, for a ban,
-    // clears bannedAt/bannedBy below). MODERATOR keeps the old rule for bans —
-    // lifting one stays an ADMIN action (or `unban()`) — but may re-add a
-    // plain removal, the same bar as any other add.
+    // The ONLY key is a manual add by the group leader, which is exactly this
+    // branch: an authorized add re-activates the row (and, for a ban, clears
+    // bannedAt/bannedBy below).
     const blocked =
       existing?.status === "KICKED" || existing?.status === "BANNED";
-    if (blocked) {
-      if (opts?.skipActorAuthz) {
-        // Self-join through an invite link — never a way back in.
-        throw new ForbiddenError("CHAT_JOIN_BLOCKED");
-      }
-      if (existing?.status === "BANNED" && actor?.role !== "ADMIN") {
-        throw new ForbiddenError("CHAT_BANNED_FROM_ROOM");
-      }
+    if (blocked && opts?.skipActorAuthz) {
+      // Self-join through an invite link — never a way back in.
+      throw new ForbiddenError("CHAT_JOIN_BLOCKED");
     }
 
     // CAPACITY. Claimed atomically (filter + $inc in one document update) so
@@ -299,7 +289,6 @@ export class GroupMemberService {
         groupName: room.name,
         addedUserId: params.userId,
         actorId: opts?.actorId ?? params.invitedBy ?? params.userId,
-        ...(actor?.role ? { actorRole: actor.role } : {}),
         eventAt: new Date().toISOString(),
       });
     }
@@ -361,7 +350,7 @@ export class GroupMemberService {
     assertGroupRoomWritable(room);
     // Fail the whole request (not each member) when the caller may not add.
     await assertGroupMember(this.memberRepo, params.roomId, params.invitedBy, {
-      roles: ["ADMIN", "MODERATOR"],
+      roles: ["ADMIN"],
     });
 
     const added: GroupMember[] = [];
@@ -573,7 +562,9 @@ export class GroupMemberService {
     roomId: string,
     userId: string,
     reason?: string,
-    /** Internal: set on the one re-decision after a lost close race. */
+    /** Required when the leader leaves with other members still active. */
+    successorId?: string,
+    /** Internal: set on the one re-decision after a lost race. */
     isRetry = false
   ): Promise<GroupMember | null> {
     const member = await this.memberRepo.findActiveByRoomAndUser(
@@ -582,49 +573,78 @@ export class GroupMemberService {
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
+    let successor: string | null = null;
     if (member.role === "ADMIN") {
-      // Others remain → the ADMIN must hand the role over first, in any state.
       const activeMembers = await this.memberRepo.countActiveMembers(roomId);
-      if (activeMembers !== 1 || !this.groupDisbander) {
-        throw new BadRequestError("CHAT_OWNER_CANNOT_LEAVE");
-      }
-
-      // Last member of an ACTIVE group: leaving closes it (the same disband
-      // "Close group" runs), as one transaction that re-checks the roster at
-      // the write. A group already CLOSED by Super Admin is never closed a
-      // second time: the last member just leaves below and it stays CLOSED.
-      const room = await this.roomRepo.findActiveByRoomId(roomId);
-      if (room?.status !== "CLOSED") {
-        try {
-          await this.groupDisbander.disbandGroup(roomId, userId, {
-            asLastMember: true,
-          });
-        } catch (err: unknown) {
-          // The room stopped being ACTIVE between the read and the write (a
-          // Super Admin close, or a concurrent disband): decide once more on
-          // the fresh state.
-          const key = (err as { messageKey?: string } | null)?.messageKey;
-          if (!isRetry && key === "CHAT_GROUP_NOT_FOUND") {
-            return this.leave(roomId, userId, reason, true);
-          }
-          throw err;
+      if (activeMembers !== 1) {
+        if (!successorId || successorId === userId) {
+          throw new ConflictError("CHAT_LEADER_SUCCESSOR_REQUIRED");
         }
-        this.emitGroupRemoved(roomId, userId, "LEAVE");
-        return this.memberRepo.findByRoomAndUser(roomId, userId);
+        successor = successorId;
+      } else {
+        if (!this.groupDisbander) {
+          throw new BadRequestError("CHAT_OWNER_CANNOT_LEAVE");
+        }
+        // Last member of an ACTIVE group: leaving closes it (the same disband
+        // "Close group" runs), as one transaction that re-checks the roster at
+        // the write. A group already CLOSED by Super Admin is never closed a
+        // second time: the last member just leaves below and it stays CLOSED.
+        const room = await this.roomRepo.findActiveByRoomId(roomId);
+        if (room?.status !== "CLOSED") {
+          try {
+            await this.groupDisbander.disbandGroup(roomId, userId, {
+              asLastMember: true,
+            });
+          } catch (err: unknown) {
+            // The room stopped being ACTIVE between the read and the write (a
+            // Super Admin close, or a concurrent disband): decide once more on
+            // the fresh state.
+            const key = (err as { messageKey?: string } | null)?.messageKey;
+            if (!isRetry && key === "CHAT_GROUP_NOT_FOUND") {
+              return this.leave(roomId, userId, reason, successorId, true);
+            }
+            throw err;
+          }
+          this.emitGroupRemoved(roomId, userId, "LEAVE");
+          return this.memberRepo.findByRoomAndUser(roomId, userId);
+        }
       }
     }
 
-    // Conditional on the row still being ACTIVE: a double-submitted leave
-    // decrements memberCount and posts MEMBER_LEFT once; the loser gets the
-    // same CHAT_NOT_A_MEMBER a later retry would.
-    const updated = await this.memberRepo.leaveIfActive(
-      roomId,
-      userId,
-      new Date()
-    );
-    if (!updated) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    // Both writes are conditional (still ACTIVE, still this role), so a
+    // double-submitted leave, a concurrent handover or an automatic
+    // succession can never leave the group with zero or two leaders.
+    const leftAt = new Date();
+    const updated = successor
+      ? (await this.memberRepo.transferLeadership(
+          roomId,
+          userId,
+          successor,
+          leftAt
+        ))
+        ? await this.memberRepo.findByRoomAndUser(roomId, userId)
+        : null
+      : await this.memberRepo.leaveIfActive(roomId, userId, leftAt, member.role);
+    if (!updated) {
+      if (!isRetry) return this.leave(roomId, userId, reason, successorId, true);
+      throw successor
+        ? new ConflictError("CHAT_LEADER_SUCCESSOR_REQUIRED")
+        : new NotFoundError("CHAT_NOT_A_MEMBER");
+    }
     await this.roomRepo.incMemberCount(roomId, -1);
 
+    if (successor) {
+      await this.announceLeaderChanged(roomId, userId, userId, successor, false);
+    }
+    await this.announceLeft(roomId, userId, reason);
+    return updated;
+  }
+
+  private async announceLeft(
+    roomId: string,
+    userId: string,
+    reason?: string
+  ): Promise<void> {
     await this.sysMsg.post({
       roomId,
       actorId: userId,
@@ -642,8 +662,123 @@ export class GroupMemberService {
       actorId: userId,
       extra: { reason: "LEAVE" },
     });
+  }
 
-    return updated;
+  /**
+   * LEADER_CHANGED line + push to the new leader + roster updates. `actorId`
+   * null = automatic succession (`auto: true`, no actor).
+   */
+  private async announceLeaderChanged(
+    roomId: string,
+    actorId: string | null,
+    fromUserId: string,
+    toUserId: string,
+    fromStays: boolean
+  ): Promise<void> {
+    await this.sysMsg.post({
+      roomId,
+      actorId,
+      systemEvent: SystemEvent.LEADER_CHANGED,
+      systemData: {
+        targetUserId: toUserId,
+        targetId: toUserId,
+        ...(actorId ? {} : { auto: true }),
+      },
+    });
+    publishGroupEventSafe(ChatEvents.GROUP_LEADER_CHANGED, {
+      roomId,
+      groupName: "",
+      targetUserId: toUserId,
+      actorId: actorId ?? "",
+      auto: !actorId,
+      eventAt: new Date().toISOString(),
+    });
+    await this.publishRosterChange({
+      roomId,
+      event: "group:member:updated",
+      memberId: toUserId,
+      actorId: actorId ?? "",
+      extra: { role: "ADMIN", previousRole: "MEMBER" },
+    });
+    if (fromStays) {
+      await this.publishRosterChange({
+        roomId,
+        event: "group:member:updated",
+        memberId: fromUserId,
+        actorId: actorId ?? "",
+        extra: { role: "MEMBER", previousRole: "ADMIN" },
+      });
+    }
+  }
+
+  /**
+   * Automatic succession when the leader's account is deleted, suspended or
+   * banned: the longest-standing ACTIVE member becomes leader, the old leader
+   * a MEMBER (or LEFT when `leaderLeaves` — a deleted account). Suspended or
+   * banned accounts are skipped. true = handed over; false = `leaderId` no
+   * longer leads (someone else won the race); null = nobody to promote (caller
+   * keeps its last-member behaviour).
+   */
+  async autoSucceed(
+    roomId: string,
+    leaderId: string,
+    leaderLeaves = false
+  ): Promise<boolean | null> {
+    // ponytail: first 20 by tenure; a group whose 20 oldest are all blocked falls back to last-member behaviour.
+    const candidates = await this.memberRepo.findSuccessionCandidates(
+      roomId,
+      leaderId,
+      20
+    );
+    const isBlocked = createBannedUserGuard(() => this.redis);
+    let eligible = false;
+    for (const candidate of candidates) {
+      if (await isBlocked(candidate)) continue;
+      eligible = true;
+      const moved = leaderLeaves
+        ? await this.memberRepo.transferLeadership(
+            roomId,
+            leaderId,
+            candidate,
+            new Date()
+          )
+        : await this.memberRepo.transferLeadership(roomId, leaderId, candidate);
+      if (moved) {
+        if (leaderLeaves) await this.roomRepo.incMemberCount(roomId, -1);
+        await this.announceLeaderChanged(
+          roomId,
+          null,
+          leaderId,
+          candidate,
+          !leaderLeaves
+        );
+        if (leaderLeaves) await this.announceLeft(roomId, leaderId);
+        return true;
+      }
+    }
+    return eligible ? false : null;
+  }
+
+  /** {@link autoSucceed} for every group `userId` leads. Returns the groups with nobody to promote. */
+  async autoSucceedEverywhere(
+    userId: string,
+    leaderLeaves = false
+  ): Promise<string[]> {
+    const orphaned: string[] = [];
+    for (const roomId of await this.memberRepo.findRoomIdsByOwnerUserIds([
+      userId,
+    ])) {
+      try {
+        if ((await this.autoSucceed(roomId, userId, leaderLeaves)) === null) {
+          orphaned.push(roomId);
+        }
+      } catch (err) {
+        logger.error(
+          `GroupMemberService|autoSucceed failed room=${roomId} user=${userId}: ${String(err)}`
+        );
+      }
+    }
+    return orphaned;
   }
 
   /**
@@ -668,7 +803,7 @@ export class GroupMemberService {
         );
     if (!params.asPlatformAdmin) {
       if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-      if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
+      if (actor.role !== "ADMIN") {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
     }
@@ -679,12 +814,9 @@ export class GroupMemberService {
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    // Cannot kick someone with equal or higher role (in-group actors only).
-    if (actor) {
-      const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
-      if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
-        throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
-      }
+    // The leader cannot remove themselves (in-group actors only).
+    if (actor && target.role === "ADMIN") {
+      throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
     }
 
     const updated = await this.memberRepo.updateStatus(
@@ -732,258 +864,6 @@ export class GroupMemberService {
   }
 
   /**
-   * Broadcasts a moderation MUTE/UNMUTE state change to every consumer that
-   * needs it — the single source of truth for "this group member's mute
-   * changed", and the direct counterpart of community-service's
-   * `_publishMuteStateChange`:
-   *
-   *   1. `group:member:muted` / `group:member:unmuted` into `conv:<roomId>` so
-   *      every member's roster badge updates live, AND onto the affected
-   *      member's own `user:<id>` channel so EVERY logged-in device (web,
-   *      Android, iOS) enables/disables its composer with no refetch — the
-   *      `user:<id>` leg is what makes multi-device sync work for a member who
-   *      never called `conv:join` (sitting on the chat list, app backgrounded).
-   *   2. on MUTE only, a `typing:stop` / `recording:stop` for the target so a
-   *      member muted mid-keystroke does not leave a stuck indicator on every
-   *      peer's screen.
-   *
-   * Used by manual mute, manual unmute AND the auto-unmute sweep, so the wire
-   * payload is byte-identical regardless of trigger. Best-effort: a Redis
-   * hiccup never fails the originating moderation request.
-   *
-   * @param actorId the admin/moderator who acted; "" for an automatic expiry.
-   */
-  private async publishMuteStateChange(args: {
-    roomId: string;
-    targetUserId: string;
-    isMuted: boolean;
-    mutedUntil: Date | null;
-    actorId: string;
-  }): Promise<void> {
-    const { roomId, targetUserId, isMuted, mutedUntil, actorId } = args;
-    const event = isMuted ? "group:member:muted" : "group:member:unmuted";
-
-    // Out-of-socket leg, exactly as community does it: a target whose devices
-    // were ALL offline when the mute landed gets a push/inbox row instead of
-    // discovering the mute from a rejected send. Fire-and-forget; needs the
-    // room name for the copy, so the lookup failing just skips the push.
-    void Promise.resolve(this.roomRepo?.findActiveByRoomId?.(roomId) ?? null)
-      .then((room) => {
-        publishGroupMemberMuteSafe(
-          isMuted
-            ? ChatEvents.GROUP_MEMBER_MUTED
-            : ChatEvents.GROUP_MEMBER_UNMUTED,
-          {
-            roomId,
-            groupName: room?.name ?? "",
-            targetUserId,
-            actorId,
-            mutedUntil: isMuted && mutedUntil ? mutedUntil.toISOString() : null,
-            eventAt: new Date().toISOString(),
-          }
-        );
-      })
-      .catch(() => {});
-    // Epoch ms on the wire, matching community's mute payload exactly.
-    const payload = {
-      roomId,
-      conversationType: "GROUP" as const,
-      memberId: targetUserId,
-      isMuted,
-      mutedUntil: isMuted && mutedUntil ? mutedUntil.getTime() : null,
-      actorId,
-      updatedAt: Date.now(),
-    };
-
-    try {
-      await Promise.all([
-        this.redis.publish(
-          `conv:${roomId}`,
-          JSON.stringify({ event, data: payload })
-        ),
-        publishChatUserEvent(this.redis, targetUserId, event, payload),
-      ]);
-
-      // Scenario 1: muted mid-typing — retract the indicator immediately
-      // instead of waiting out the 6 s presence TTL.
-      if (isMuted) {
-        const stop = {
-          conversationId: roomId,
-          conversationType: "GROUP" as const,
-          userId: targetUserId,
-          timestamp: Date.now(),
-        };
-        await this.redis.publish(
-          `conv:${roomId}`,
-          JSON.stringify({ event: "recording:stop", data: stop })
-        );
-        const roster = await this.memberRepo.findActiveMembers(roomId, {
-          limit: 500,
-        });
-        await Promise.all(
-          roster
-            .filter((m) => m.userId !== targetUserId)
-            .map((m) =>
-              publishChatUserEvent(this.redis, m.userId, "typing:stop", stop)
-            )
-        );
-      }
-    } catch (err) {
-      logger.warn(
-        `GroupMemberService|${event} broadcast failed room=${roomId} target=${targetUserId}: ${String(err)}`
-      );
-    }
-  }
-
-  /**
-   * Moderator-imposed mute — same role gate as kick (ADMIN on anyone lower;
-   * MODERATOR on MEMBER only), so a muted member cannot send/react/edit/
-   * delete/pin (enforced across every group write path via
-   * `assertGroupMemberNotMuted`) while keeping full read access. Distinct from
-   * `muteRoom` (self-notification mute) — this is a moderation action performed
-   * BY someone else ON a member. Mirrors community-service's `muteMember`.
-   */
-  async muteMember(params: {
-    roomId: string;
-    targetUserId: string;
-    mutedBy: string;
-    mutedUntil?: Date | null;
-  }): Promise<GroupMember | null> {
-    // Parity with community's "you cannot mute yourself" rule; without it an
-    // ADMIN outranks nobody and would fall through the role-order check below.
-    if (params.mutedBy === params.targetUserId) {
-      throw new BadRequestError("CHAT_CANNOT_MUTE_SELF");
-    }
-
-    const actor = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.mutedBy
-    );
-    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
-      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
-    }
-
-    const target = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.targetUserId
-    );
-    if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-
-    const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
-    if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
-      throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
-    }
-
-    const mutedUntil = params.mutedUntil ?? null;
-    const updated = await this.memberRepo.setModerationMute(
-      params.roomId,
-      params.targetUserId,
-      { mutedBy: params.mutedBy, mutedUntil }
-    );
-
-    await this.publishMuteStateChange({
-      roomId: params.roomId,
-      targetUserId: params.targetUserId,
-      isMuted: true,
-      mutedUntil,
-      actorId: params.mutedBy,
-    });
-
-    logger.info(
-      `Group member muted: room=${params.roomId} by=${params.mutedBy} target=${params.targetUserId} until=${mutedUntil?.toISOString() ?? "(indefinite)"}`
-    );
-
-    return updated;
-  }
-
-  async unmuteMember(params: {
-    roomId: string;
-    targetUserId: string;
-    actorId: string;
-  }): Promise<GroupMember | null> {
-    const actor = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.actorId
-    );
-    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
-      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
-    }
-
-    const target = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.targetUserId
-    );
-    if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    // Community parity: unmuting someone who isn't muted is a 404, and a
-    // fully-expired timed mute counts as not muted (lazy expiry).
-    if (!isGroupMemberMuted(target)) {
-      throw new NotFoundError("CHAT_MEMBER_NOT_MUTED");
-    }
-
-    const updated = await this.memberRepo.clearModerationMute(
-      params.roomId,
-      params.targetUserId
-    );
-
-    await this.publishMuteStateChange({
-      roomId: params.roomId,
-      targetUserId: params.targetUserId,
-      isMuted: false,
-      mutedUntil: null,
-      actorId: params.actorId,
-    });
-
-    logger.info(
-      `Group member unmuted: room=${params.roomId} by=${params.actorId} target=${params.targetUserId}`
-    );
-
-    return updated;
-  }
-
-  /**
-   * Auto-unmute sweep — called on an interval by the group mute sweeper.
-   *
-   * Enforcement correctness does NOT depend on this: `isGroupMemberMuted`
-   * applies lazy expiry the instant `moderationMutedUntil` passes, so posting
-   * rights come back on their own. The sweep exists to deliver the REALTIME
-   * signal (`group:member:unmuted` → composer re-enables on every device with
-   * no refresh) and to clear the stale flag. Exactly-once across instances via
-   * the atomic per-row claim. Mirrors community's `expireDueMutes`.
-   *
-   * @returns how many mutes were actually expired this call (drain until short).
-   */
-  async expireDueModerationMutes(limit: number): Promise<number> {
-    const now = new Date();
-    const rows = await this.memberRepo.findExpiredModerationMutes({
-      now,
-      limit,
-    });
-    if (rows.length === 0) return 0;
-
-    let expired = 0;
-    for (const row of rows) {
-      // Only the instance that wins the claim fires the side-effects.
-      const claimed = await this.memberRepo.claimExpiredModerationMute(
-        row.id,
-        now
-      );
-      if (claimed !== 1) continue;
-      expired++;
-      // actorId "" — an automatic expiry has no acting moderator.
-      await this.publishMuteStateChange({
-        roomId: row.roomId,
-        targetUserId: row.userId,
-        isMuted: false,
-        mutedUntil: null,
-        actorId: "",
-      });
-    }
-    return expired;
-  }
-
-  /**
    * Ban a member: same permission/role-order rules as `kick`, but the target's
    * `status` becomes `"BANNED"` (not `"KICKED"`) and `bannedAt`/`bannedBy` are
    * populated — those two Prisma columns previously existed on the schema but
@@ -1013,7 +893,7 @@ export class GroupMemberService {
         );
     if (!params.asPlatformAdmin) {
       if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-      if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
+      if (actor.role !== "ADMIN") {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
     }
@@ -1024,12 +904,9 @@ export class GroupMemberService {
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    // Role-order gate for in-group actors only — a platform admin outranks everyone.
-    if (actor) {
-      const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
-      if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
-        throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
-      }
+    // In-group actors cannot target the leader — a platform admin outranks everyone.
+    if (actor && target.role === "ADMIN") {
+      throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
     }
 
     const updated = await this.memberRepo.updateStatus(
@@ -1078,7 +955,7 @@ export class GroupMemberService {
   }
 
   /**
-   * Lift a ban. Actor must be ADMIN/MODERATOR (same gate as `ban`). Does
+   * Lift a ban. Actor must be the leader (same gate as `ban`). Does
    * NOT re-add the user as a member — it only clears the ban so a future
    * add/invite-link redemption is no longer rejected by `addMember`'s check.
    */
@@ -1097,7 +974,7 @@ export class GroupMemberService {
         );
     if (!params.asPlatformAdmin) {
       if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-      if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
+      if (actor.role !== "ADMIN") {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
     }
@@ -1242,15 +1119,16 @@ export class GroupMemberService {
     return updated ?? member;
   }
 
+  /** Leader handover — the only role change groups have (leader + members). */
   async updateRole(params: {
     roomId: string;
     targetUserId: string;
     newRole: string;
     actorUserId: string;
   }): Promise<GroupMember | null> {
-    // Parity with muteMember's CHAT_CANNOT_MUTE_SELF — the caller is always
-    // the sole ADMIN by the gate below, so a self-target would be either a
-    // no-op or (for newRole="ADMIN") a pointless self-handoff.
+    if (params.newRole !== "ADMIN") {
+      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    }
     if (params.actorUserId === params.targetUserId) {
       throw new BadRequestError("CHAT_CANNOT_CHANGE_OWN_ROLE");
     }
@@ -1260,95 +1138,33 @@ export class GroupMemberService {
       params.actorUserId
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    // Only the sole ADMIN may change roles at all (mirrors community: a
-    // MODERATOR can never promote/demote/hand off admin).
     if (actor.role !== "ADMIN") {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
-
-    // Captured before the write so the system-message text can distinguish a
-    // promotion from a demotion (and an admin hand-off) instead of a
-    // generic "role changed to X" line.
     const target = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
       params.targetUserId
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    // "Make Admin" — full admin hand-off (this is also what used to be the
-    // separate "Transfer Ownership" action; there is exactly one ADMIN per
-    // group, so promoting anyone to ADMIN necessarily demotes the caller to
-    // MEMBER in the same call). Mirrors community-service's `transferAdmin`.
-    if (params.newRole === "ADMIN") {
-      await this.memberRepo.updateRole(
+    if (
+      !(await this.memberRepo.transferLeadership(
         params.roomId,
         params.actorUserId,
-        "MEMBER"
-      );
-      const updated = await this.memberRepo.updateRole(
-        params.roomId,
-        params.targetUserId,
-        "ADMIN"
-      );
-      await this.sysMsg.post({
-        roomId: params.roomId,
-        actorId: params.actorUserId,
-        systemEvent: SystemEvent.ROLE_CHANGED,
-        systemData: {
-          targetUserId: params.targetUserId,
-          oldRole: target.role,
-          newRole: "ADMIN",
-        },
-      });
-      // Two rows changed — the new ADMIN and the demoted-to-MEMBER old admin —
-      // so both need their own event or one side's permissions stay stale.
-      await this.publishRosterChange({
-        roomId: params.roomId,
-        event: "group:member:updated",
-        memberId: params.targetUserId,
-        actorId: params.actorUserId,
-        extra: { role: "ADMIN", previousRole: target.role },
-      });
-      await this.publishRosterChange({
-        roomId: params.roomId,
-        event: "group:member:updated",
-        memberId: params.actorUserId,
-        actorId: params.actorUserId,
-        extra: { role: "MEMBER", previousRole: "ADMIN" },
-      });
-      return updated;
+        params.targetUserId
+      ))
+    ) {
+      // Lost a race: the caller stopped leading, or the target stopped being a member.
+      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
-
-    const updated = await this.memberRepo.updateRole(
+    await this.announceLeaderChanged(
       params.roomId,
+      params.actorUserId,
+      params.actorUserId,
       params.targetUserId,
-      params.newRole
+      true
     );
-
-    await this.sysMsg.post({
-      roomId: params.roomId,
-      actorId: params.actorUserId,
-      systemEvent: SystemEvent.ROLE_CHANGED,
-      systemData: {
-        targetUserId: params.targetUserId,
-        oldRole: target?.role ?? "",
-        newRole: params.newRole,
-      },
-    });
-
-    // Realtime parity with community's `community:member:updated`: the system
-    // message alone only reaches clients currently sitting in the room, so
-    // without this the target's own permissions (and every other member's role
-    // badge) stay stale on the list view and on their other devices.
-    await this.publishRosterChange({
-      roomId: params.roomId,
-      event: "group:member:updated",
-      memberId: params.targetUserId,
-      actorId: params.actorUserId,
-      extra: { role: params.newRole, previousRole: target?.role ?? "" },
-    });
-
-    return updated;
+    return this.memberRepo.findByRoomAndUser(params.roomId, params.targetUserId);
   }
 
   /**
@@ -1384,20 +1200,6 @@ export class GroupMemberService {
     // `dismissedAt` is the member's own list state (a CLOSED group they
     // deleted) — never something the rest of the roster gets to see.
     return this.enrich(members.map((m) => ({ ...m, dismissedAt: null })));
-  }
-
-  /** Muted roster — expired mute windows are dropped, matching isGroupMemberMuted. */
-  async getMutedMembers(
-    roomId: string,
-    requesterId: string
-  ): Promise<Array<GroupMember | EnrichedGroupMember>> {
-    await assertGroupMember(this.memberRepo, roomId, requesterId, {
-      roles: ["ADMIN", "MODERATOR"],
-    });
-    const muted = (await this.memberRepo.findMutedMembers(roomId)).filter(
-      isGroupMemberMuted
-    );
-    return this.enrich(muted);
   }
 
   private async enrich(

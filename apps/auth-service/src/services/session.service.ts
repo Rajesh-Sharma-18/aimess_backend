@@ -21,7 +21,7 @@ import {
   markSessionRevoked,
   markSessionsRevoked,
 } from "../lib/session-active-cache.js";
-import { assertNotBanned, assertNotDeleted } from "../lib/account-guard.js";
+import { assertNotDeleted, assertNotRestricted } from "../lib/account-guard.js";
 import { toActiveSessionItem } from "../lib/session-serializer.js";
 import { env, accessTokenSigningKey } from "../config/env.js";
 import { redis } from "../config/redis.js";
@@ -285,9 +285,7 @@ export const sessionService = {
     // would otherwise mint a fresh 15-minute access token every time, and the
     // gateway's socket keep-alive re-arms a live connection off exactly this
     // endpoint.
-    assertNotBanned(stored.user.status);
-
-    if (stored.user.status !== AccountStatus.ACTIVE) {
+    if ((await assertNotRestricted(stored.user, true)) !== AccountStatus.ACTIVE) {
       throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
     }
 
@@ -376,9 +374,7 @@ export const sessionService = {
     // would otherwise mint a fresh 15-minute access token every time, and the
     // gateway's socket keep-alive re-arms a live connection off exactly this
     // endpoint.
-    assertNotBanned(stored.user.status);
-
-    if (stored.user.status !== AccountStatus.ACTIVE) {
+    if ((await assertNotRestricted(stored.user, true)) !== AccountStatus.ACTIVE) {
       throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
     }
 

@@ -18,6 +18,8 @@ import {
   localizeMessagePreview,
   localizeCategoryName,
   buildCommunitySystemFallbackText,
+  PLATFORM_ACTOR_NAME,
+  PLATFORM_ACTOR_ROLE,
   STORED_TEXT_LOCALE,
   t,
   type CommunitySystemMessageType,
@@ -25,6 +27,7 @@ import {
   type SupportedLocale,
 } from "@aimess/constants";
 import {
+  createBannedUserGuard,
   filterBannedUserIds,
   publishChatUserEvent,
   publishCommunityRoomEvent,
@@ -86,6 +89,7 @@ import {
   COMMUNITY_MEMBER_LIMIT,
 } from "../constants/index.js";
 import { isCommunityMuted } from "../lib/community-notification-pref.js";
+import { touchAdminActivity } from "../lib/admin-activity.js";
 import { env } from "../config/env.js";
 import {
   CommunityInviteStatus,
@@ -158,6 +162,7 @@ import type {
   UpdateCommunityInput,
 } from "../api/validators/community.validator.js";
 import {
+  publishCommunityAdminInactiveReminderSafe,
   publishCommunityAdminTransferredSafe,
   publishCommunityClosedSafe,
   publishCommunityDeletedSafe,
@@ -176,7 +181,6 @@ import {
   publishCommunityMemberMutedSafe,
   publishCommunityMemberUnbannedSafe,
   publishCommunityMemberUnmutedSafe,
-  publishCommunityMemberWarnedSafe,
   publishCommunityMemberRoleChangedSafe,
   publishCommunityReopenedSafe,
   publishCommunityReportActionedSafe,
@@ -196,6 +200,12 @@ import {
   publishCommunityVisibilityChangedForChatSafe,
 } from "../messaging/publish-community-chat.js";
 import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
+
+type AdminHandoverCause =
+  | "ADMIN_INACTIVE"
+  | "ADMIN_BANNED"
+  | "ADMIN_SUSPENDED"
+  | "ADMIN_DELETED";
 
 type CommunityWithCategory = Community & {
   category: { id: string; name: string };
@@ -1841,25 +1851,52 @@ function toPermanentLinkAsInviteLinkData(community: {
   };
 }
 
-function toAuditLogData(log: {
+type AuditLogRow = {
   id: string;
-  communityId: string;
   actorId: string;
   action: string;
   targetUserId: string | null;
+  actorName: string | null;
+  actorRole: string | null;
+  targetName: string | null;
   reason: string | null;
   metadata: unknown;
   createdAt: Date;
-}): CommunityAuditLogData {
+};
+
+function memberDisplayName(
+  m: { snapshotDisplayName: string; snapshotUsername: string } | undefined
+): string | null {
+  return m ? m.snapshotDisplayName || m.snapshotUsername || null : null;
+}
+
+// Write-time snapshot first; rows older than the snapshot columns fall back to `live`.
+function toAuditLogData(
+  log: AuditLogRow,
+  live: Map<string, { name: string | null; role: string }>
+): CommunityAuditLogData {
+  const liveActor = live.get(log.actorId);
+  const role = log.actorRole ?? liveActor?.role ?? null;
   return {
     id: log.id,
-    communityId: log.communityId,
-    actorId: log.actorId,
     action: log.action as CommunityAuditAction,
-    targetUserId: log.targetUserId,
-    reason: log.reason,
+    createdAt: log.createdAt.getTime(),
+    actor: {
+      id: log.actorId,
+      name:
+        role === PLATFORM_ACTOR_ROLE
+          ? PLATFORM_ACTOR_NAME
+          : (log.actorName ?? liveActor?.name ?? ""),
+      role,
+    },
+    target: log.targetUserId
+      ? {
+          id: log.targetUserId,
+          name: log.targetName ?? live.get(log.targetUserId)?.name ?? "",
+        }
+      : null,
+    ...(log.reason ? { reason: log.reason } : {}),
     metadata: log.metadata ?? null,
-    createdAt: log.createdAt.toISOString(),
   };
 }
 
@@ -2344,6 +2381,17 @@ export const communityService = {
         ? membership.role
         : null;
 
+    // Closed (owner or platform) = hidden from everyone but the admin, who keeps Reopen.
+    if (
+      community.adminId !== callerId &&
+      communityAccessPolicy.isEffectivelyClosed(community)
+    ) {
+      throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+    }
+    if (myRole === CommunityMemberRole.ADMIN) {
+      touchAdminActivity(id, callerId);
+    }
+
     // Fetch notification mute row, join request, live streams, caller's
     // moderation mute, and whether the caller is already streaming somewhere.
     const [
@@ -2635,6 +2683,7 @@ export const communityService = {
         communityName: community.name,
         actorUserId: creatorId,
         actorName: "",
+        actorRole: CommunityMemberRole.ADMIN,
       },
       triggeredByUserId: creatorId,
       eventAt: new Date().toISOString(),
@@ -2796,6 +2845,8 @@ export const communityService = {
      * moderator-visible trail must still record it.
      */
     skipAdminMirror?: boolean;
+    /** Override the snapshotted role (e.g. the pre-transfer ADMIN). Backoffice actions default to PLATFORM. */
+    actorRole?: string;
   }): Promise<void> {
     // Single funnel for every community moderation action, so mirroring the mapped
     // ones to the admin panel's audit log happens here instead of at ~29 call sites.
@@ -2826,8 +2877,44 @@ export const communityService = {
         },
       });
     }
+    const { skipAdminMirror, actorRole: roleOverride, ...row } = entry;
+    // Name/role snapshot; a failed lookup leaves them null for the read-time fallback.
+    let members: Awaited<
+      ReturnType<typeof communityRepository.findMembersByUserIds>
+    > = [];
     try {
-      await communityRepository.createAuditLog(entry);
+      members =
+        (await communityRepository.findMembersByUserIds(
+          entry.communityId,
+          entry.targetUserId
+            ? [entry.actorId, entry.targetUserId]
+            : [entry.actorId]
+        )) ?? [];
+    } catch (lookupError) {
+      logger.warn(
+        `Audit snapshot lookup failed: community=${entry.communityId}: ${String(lookupError)}`
+      );
+    }
+    const actor = members.find((m) => m.userId === entry.actorId);
+    const target = entry.targetUserId
+      ? members.find((m) => m.userId === entry.targetUserId)
+      : undefined;
+    const actorRole =
+      roleOverride ??
+      (skipAdminMirror ? PLATFORM_ACTOR_ROLE : (actor?.role ?? null));
+    if (actor?.role === CommunityMemberRole.ADMIN) {
+      touchAdminActivity(entry.communityId, entry.actorId);
+    }
+    try {
+      await communityRepository.createAuditLog({
+        ...row,
+        actorName:
+          actorRole === PLATFORM_ACTOR_ROLE
+            ? PLATFORM_ACTOR_NAME
+            : memberDisplayName(actor),
+        actorRole,
+        targetName: memberDisplayName(target),
+      });
     } catch (auditError) {
       logger.error(
         `Failed to record audit log: community=${entry.communityId} action=${entry.action} actor=${entry.actorId}`
@@ -3010,6 +3097,7 @@ export const communityService = {
         metadata: {
           actorUserId: callerId,
           actorName: "",
+          actorRole: CommunityMemberRole.ADMIN,
           oldVisibility: community.type,
           newVisibility: updated.type,
         },
@@ -3027,6 +3115,7 @@ export const communityService = {
         metadata: {
           actorUserId: callerId,
           actorName: "",
+          actorRole: CommunityMemberRole.ADMIN,
           changedFields: otherChangedFields,
           ...(systemMessageType === "COMMUNITY_NAME_UPDATED"
             ? { newName: nextName }
@@ -3450,6 +3539,7 @@ export const communityService = {
     }
 
     const { rows, total } = await communityRepository.listDiscoverable({
+      viewerId: userId,
       q: params.q,
       categoryId: params.categoryId,
       includeMemberCommunityIds,
@@ -3554,6 +3644,13 @@ export const communityService = {
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    if (
+      community.adminId !== callerId &&
+      communityAccessPolicy.isEffectivelyClosed(community)
+    ) {
+      throw new ForbiddenError("COMMUNITY_IS_CLOSED");
     }
 
     // PUBLIC communities: roster is visible to any caller. PRIVATE
@@ -3710,6 +3807,7 @@ export const communityService = {
       targetUserId,
       oldRole: target.role,
       newRole: role,
+      actorRole: CommunityMemberRole.ADMIN,
     });
     // ONE community-wide line, personalized PER VIEWER by the fallback-text
     // builder / client: the target sees "You are now a moderator" (viewer ===
@@ -3723,6 +3821,7 @@ export const communityService = {
       metadata: {
         actorUserId: callerId,
         actorName: "",
+        actorRole: CommunityMemberRole.ADMIN,
         targetUserId,
         targetName: target.snapshotDisplayName || target.snapshotUsername || "",
         oldRole: target.role as string,
@@ -3947,10 +4046,15 @@ export const communityService = {
         `community realtime broadcast failed kick community=${communityId}: ${String(err)}`
       );
     }
-    // NOTE: emitMemberSystemMessage("MEMBER_REMOVED") is NOT called here.
-    // Product rule: removal must be silent from the chat-message perspective.
-    // MEMBER_REMOVED is in HIDDEN_SYSTEM_MESSAGE_TYPES (packages/constants) as
-    // the authoritative policy. Moderation history lives in the audit log only.
+    // MODERATION line "Lan (Moderator) removed Binh" (Admin + Moderators only); the
+    // removed member learns it from the push.
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_REMOVED",
+      actorId: callerId,
+      actorRole: callerMembership.role,
+      targetUserId,
+    });
 
     // Best-effort: a kick removes ACTIVE membership the same as a ban — if the
     // target is currently broadcasting in this community, they no longer
@@ -4074,6 +4178,7 @@ export const communityService = {
       reason: reason ?? null,
       communityName: community.name,
       communityAvatarUrl: bannedCommunityAvatar?.url ?? null,
+      actorRole: callerMembership?.role,
     });
 
     // Best-effort: kick the target from any of their currently-LIVE stream
@@ -4180,6 +4285,15 @@ export const communityService = {
       // The removed member reads "Administrator removed You from …" — a Super Admin
       // is not an AIMess user, so no person is named.
       byPlatformAdmin: true,
+      actorRole: PLATFORM_ACTOR_ROLE,
+    });
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_REMOVED",
+      actorId: actorAdminId,
+      actorRole: PLATFORM_ACTOR_ROLE,
+      targetUserId,
+      extra: { source: "BO" },
     });
 
     try {
@@ -4304,6 +4418,7 @@ export const communityService = {
         targetUserId,
         // Distinguishes a platform/backoffice ban from a community admin's own.
         source: "BO",
+        actorRole: PLATFORM_ACTOR_ROLE,
         ...(reason ? { reason } : {}),
       },
       triggeredByUserId: actorAdminId,
@@ -4345,6 +4460,7 @@ export const communityService = {
       reason: reason ?? null,
       communityName: community.name,
       communityAvatarUrl: bannedCommunityAvatar?.url ?? null,
+      actorRole: PLATFORM_ACTOR_ROLE,
     });
 
     void getStreamClient().notifyMemberBanStatus(
@@ -4360,16 +4476,23 @@ export const communityService = {
       true
     );
 
-    // Banning a community's OWN admin leaves it with nobody who can run it —
-    // `adminId` still points at the banned account, so nothing can be renamed,
-    // moderated, reopened or transferred, and members would be left in a room
-    // that silently rejects every write with no explanation. So the community
-    // closes, exactly as it does when the owner is system-banned: still listed
-    // for every member, still readable, read-only, with the ADMIN_BANNED banner.
-    // Same reason code because it is the same fact to a member — the admin of
-    // this community was banned.
+    // Banning a community's OWN admin leaves it with nobody who can run it, so
+    // the seat goes to the successor; only with nobody left does it close
+    // (ADMIN_BANNED), exactly as when the owner is system-banned.
     let closedCommunity = false;
-    if (community.adminId === targetUserId) {
+    const handedOver =
+      community.adminId === targetUserId &&
+      (await this.autoHandOverAdmin(
+        communityId,
+        targetUserId,
+        "ADMIN_BANNED"
+      ).catch((error: unknown) => {
+        logger.error(
+          `Admin handover failed community=${communityId} after banning its admin: ${String(error)}`
+        );
+        return false;
+      }));
+    if (community.adminId === targetUserId && !handedOver) {
       closedCommunity = await this.closeCommunityForSystemBan(
         communityId,
         targetUserId,
@@ -6289,6 +6412,9 @@ export const communityService = {
       targetUserId,
       communityName: community.name,
       communityAvatarUrl: unbannedCommunityAvatar?.url ?? null,
+      actorRole: opts?.asPlatformAdmin
+        ? PLATFORM_ACTOR_ROLE
+        : CommunityMemberRole.ADMIN,
     });
 
     // Unban: BANNED→LEFT. Count is unchanged (BANNED was already excluded from
@@ -6322,9 +6448,9 @@ export const communityService = {
       systemMessageType: "MEMBER_UNBANNED",
       actorId: callerId,
       // Only an ADMIN may unban in-app; a Super Admin is "Administrator" via `source`.
-      ...(opts?.asPlatformAdmin
-        ? {}
-        : { actorRole: CommunityMemberRole.ADMIN }),
+      actorRole: opts?.asPlatformAdmin
+        ? PLATFORM_ACTOR_ROLE
+        : CommunityMemberRole.ADMIN,
       targetUserId,
       ...(opts?.asPlatformAdmin ? { extra: { source: "BO" } } : {}),
     });
@@ -6421,6 +6547,7 @@ export const communityService = {
       targetUserId,
       reason: reason ?? null,
       mutedUntil: mutedUntil?.toISOString() ?? null,
+      actorRole: callerMembership.role,
     });
 
     // Mirror into chat-service (write-path gate) + realtime socket fan-out.
@@ -6566,6 +6693,7 @@ export const communityService = {
       eventAt: new Date().toISOString(),
       actorId,
       targetUserId,
+      ...(actorRole ? { actorRole } : {}),
     });
 
     // Mirror unmute into chat-service (lifts the write-path gate) + realtime
@@ -6595,19 +6723,20 @@ export const communityService = {
       userId: targetUserId,
     });
 
-    // MODERATION AUDIT line only — no `visibleToUserId`, so nothing lands in the
-    // unmuted member's own history. They learn the mute is over from the
-    // `community:member:unmuted` socket event (composer re-enables) and from the
-    // retraction above; a "You were unmuted" bubble would be a second copy of the
-    // same fact. Ordinary members never see this line at all; the community's
-    // owner/admin/moderators do, so the mute→unmute pair reads as a trail.
-    this.emitMemberSystemMessage({
-      communityId,
-      systemMessageType: "MEMBER_UNMUTED",
-      actorId,
-      actorRole,
-      targetUserId,
-    });
+    // MODERATION line (Admin + Moderators) plus the member's PERSONAL
+    // "You can chat in X again" copy.
+    const eventAt = new Date().toISOString();
+    for (const visibleToUserId of [undefined, targetUserId]) {
+      this.emitMemberSystemMessage({
+        communityId,
+        systemMessageType: "MEMBER_UNMUTED",
+        actorId,
+        actorRole,
+        targetUserId,
+        visibleToUserId,
+        eventAt,
+      });
+    }
   },
 
   async listMutedMembers(
@@ -6747,15 +6876,14 @@ export const communityService = {
           communityId: row.communityId,
           userId: row.userId,
         });
+        // Expiry: the member's PERSONAL copy only, no actor, no push.
         this.emitMemberSystemMessage({
           communityId: row.communityId,
           systemMessageType: "MEMBER_UNMUTED",
-          // No human acted; the audit row above records the same actor. Reaches
-          // the client as metadata.actorUserId so a moderator's timeline can
-          // render "the mute expired" rather than naming someone who did nothing.
           actorId: "system",
           targetUserId: row.userId,
-          extra: { source: "auto" },
+          visibleToUserId: row.userId,
+          extra: { source: "auto", auto: true },
         });
       } catch (err) {
         // The row is already deleted (claim won), so the mute IS lifted and the
@@ -6854,53 +6982,6 @@ export const communityService = {
     }
 
     return buildPaginatedResponse(items, total, params.page, params.limit);
-  },
-
-  // ---------------------------------------------------------------------------
-  // Member warnings
-  // ---------------------------------------------------------------------------
-  async warnMember(
-    communityId: string,
-    callerId: string,
-    targetUserId: string,
-    note: string
-  ): Promise<CommunityMemberWarningData> {
-    await this._assertCanModerateMember(communityId, callerId, targetUserId);
-
-    const row = await communityRepository.createMemberWarning({
-      communityId,
-      userId: targetUserId,
-      warnedBy: callerId,
-      note,
-    });
-
-    await this.recordAudit({
-      communityId,
-      actorId: callerId,
-      action: "MEMBER_WARNED",
-      targetUserId,
-      metadata: { note },
-    });
-
-    logger.info(
-      `Community member warned: community=${communityId} by=${callerId} target=${targetUserId}`
-    );
-
-    publishCommunityMemberWarnedSafe({
-      communityId,
-      eventAt: new Date().toISOString(),
-      actorId: callerId,
-      targetUserId,
-      note,
-    });
-
-    return {
-      warningId: row.id,
-      userId: row.userId,
-      warnedBy: row.warnedBy,
-      note: row.note,
-      createdAt: row.createdAt.toISOString(),
-    };
   },
 
   async listMemberWarnings(
@@ -7260,120 +7341,275 @@ export const communityService = {
       throw new BadRequestError("COMMUNITY_MEMBER_CANNOT_MODIFY_ADMIN");
     }
 
-    // No $transaction (standalone Mongo). ORDER MATTERS so the community
-    // always has a valid admin:
-    // 1) promote target → ADMIN, 2) transfer ownership, 3) demote caller →
-    // MEMBER (caller stays ACTIVE — Telegram-style hand-off).
-    await communityRepository.updateMemberRole(
-      communityId,
-      targetUserId,
-      CommunityMemberRole.ADMIN
-    );
-    await communityRepository.setCommunityAdmin(communityId, targetUserId);
-    await communityRepository.updateMemberRole(
-      communityId,
-      callerId,
-      CommunityMemberRole.MEMBER
-    );
-
-    await this.recordAudit({
-      communityId,
-      actorId: callerId,
-      action: "ADMIN_TRANSFERRED",
-      targetUserId,
-      metadata: { reason: "explicit_transfer" },
-    });
+    if (
+      !(await communityRepository.handOverAdmin(
+        communityId,
+        callerId,
+        targetUserId
+      ))
+    ) {
+      // The seat moved (concurrent transfer/handover): the caller is no longer admin.
+      throw new ForbiddenError("COMMUNITY_FORBIDDEN");
+    }
 
     logger.info(
       `Community admin explicit-transfer: community=${communityId} from=${callerId} to=${targetUserId}`
     );
 
-    publishCommunityAdminTransferredSafe({
+    await this._announceAdminHandover({
       communityId,
-      eventAt: new Date().toISOString(),
-      actorId: callerId,
-      targetUserId,
+      communityName: community.name,
+      formerAdminId: callerId,
+      newAdminId: targetUserId,
+      newAdminName: target.snapshotDisplayName || target.snapshotUsername || "",
+      newAdminOldRole: target.role,
       reason: "explicit_transfer",
-    });
-
-    // Immutable timeline + list sync for the ownership hand-off. The hand-off was
-    // previously a "silent" role flip — it updated the DB and the member-roster
-    // socket but, unlike updateMemberRole(), posted NO chat SYSTEM message, so the
-    // community timeline and the /communities/mine list never recorded that admin
-    // changed (no last-activity bump, no live list reorder). Mirror the role-change
-    // fan-out via the SAME centralized, idempotent system-message path so the line
-    // is snapshot-immutable (each message stores its own oldRole/newRole + names;
-    // never re-derived from the member's CURRENT role on read).
-    //
-    // ONE community-wide ROLE_CHANGED line, personalized PER VIEWER by the fallback-
-    // text builder / client (exactly like updateMemberRole): the new admin sees
-    // "You are now the community admin" (viewer === targetUserId), while the
-    // outgoing admin and every other member see "<name> is now the community admin".
-    // Do NOT also emit PERSONAL ROLE_CHANGED_SELF lines — both the new admin and the
-    // outgoing admin are in the community room and already receive this single line,
-    // so a personal self-line duplicated the message for them (the new admin saw
-    // "You are now the community admin" twice; the outgoing admin saw the community
-    // line PLUS a separate "You are now a member").
-    const newAdminName =
-      target.snapshotDisplayName || target.snapshotUsername || "";
-
-    publishCommunitySystemMessageForChatSafe({
-      communityId,
-      systemMessageType: "ROLE_CHANGED",
-      metadata: {
-        actorUserId: callerId,
-        actorName: "",
-        targetUserId,
-        targetName: newAdminName,
-        oldRole: target.role as string,
-        newRole: CommunityMemberRole.ADMIN as string,
-      },
-      triggeredByUserId: callerId,
-      eventAt: new Date().toISOString(),
-    });
-
-    // Real-time roster sync: the hand-off flips TWO members — incoming admin and
-    // outgoing admin (now a plain member). Emit one community:member:updated per
-    // affected member so the Members page + chat header update live, no refetch.
-    const adminTransferredAt = Date.now();
-    void publishCommunityRoomEvent(
-      redis,
-      communityId,
-      "community:member:updated",
-      {
-        communityId,
-        userId: targetUserId,
-        role: CommunityMemberRole.ADMIN,
-        updatedAt: adminTransferredAt,
-      } satisfies CommunityMemberUpdatedPayload
-    ).catch((err: unknown) => {
-      logger.warn(
-        `community:member:updated broadcast failed (admin transfer, new admin) community=${communityId} user=${targetUserId}: ${String(err)}`
-      );
-    });
-    void publishCommunityRoomEvent(
-      redis,
-      communityId,
-      "community:member:updated",
-      {
-        communityId,
-        userId: callerId,
-        role: CommunityMemberRole.MEMBER,
-        updatedAt: adminTransferredAt,
-      } satisfies CommunityMemberUpdatedPayload
-    ).catch((err: unknown) => {
-      logger.warn(
-        `community:member:updated broadcast failed (admin transfer, prev admin) community=${communityId} user=${callerId}: ${String(err)}`
-      );
     });
 
     const refreshed = await communityRepository.findById(communityId);
     if (!refreshed) {
-      // Should not happen — soft-delete cannot race an admin-only operation.
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
-    // Caller is now a plain MEMBER in the refreshed community.
-    return toCommunityData(refreshed, CommunityMemberRole.MEMBER, null);
+    return toCommunityData(refreshed, CommunityMemberRole.MODERATOR, null);
+  },
+
+  /**
+   * Automatic handover when the admin is gone (account deleted, suspended,
+   * banned) or inactive 30 days: longest-serving MODERATOR, else
+   * longest-standing MEMBER. False when nobody can take the seat or it already
+   * moved (idempotent).
+   */
+  async autoHandOverAdmin(
+    communityId: string,
+    formerAdminId: string,
+    reason: AdminHandoverCause
+  ): Promise<boolean> {
+    const community = await communityRepository.findById(communityId);
+    if (!community || community.adminId !== formerAdminId) return false;
+    // Suspended / banned accounts can't take the seat: skip to the next one.
+    const isBlocked = createBannedUserGuard(() => redis);
+    const skip = [formerAdminId];
+    let moderator: Awaited<
+      ReturnType<typeof communityRepository.findOldestActiveModerator>
+    >;
+    let successor: typeof moderator;
+    for (;;) {
+      moderator = await communityRepository.findOldestActiveModerator(
+        communityId,
+        skip
+      );
+      successor =
+        moderator ??
+        (await communityRepository.findOldestActiveMember(communityId, skip));
+      if (!successor || !(await isBlocked(successor.userId))) break;
+      skip.push(successor.userId);
+    }
+    if (!successor) return false;
+    const formerLeaves = reason === "ADMIN_DELETED";
+    if (
+      !(await communityRepository.handOverAdmin(
+        communityId,
+        formerAdminId,
+        successor.userId,
+        formerLeaves
+      ))
+    ) {
+      return false;
+    }
+
+    logger.info(
+      `Community admin auto-handover: community=${communityId} from=${formerAdminId} to=${successor.userId} reason=${reason}`
+    );
+
+    await this._announceAdminHandover({
+      communityId,
+      communityName: community.name,
+      formerAdminId,
+      newAdminId: successor.userId,
+      newAdminName:
+        successor.snapshotDisplayName || successor.snapshotUsername || "",
+      newAdminOldRole: moderator
+        ? CommunityMemberRole.MODERATOR
+        : CommunityMemberRole.MEMBER,
+      reason,
+    });
+    if (formerLeaves) {
+      await this.announceMemberRemoval(
+        communityId,
+        formerAdminId,
+        CommunityMemberStatus.LEFT,
+        { eventAt: new Date().toISOString() }
+      );
+    }
+    return true;
+  },
+
+  /** Audit + push event + timeline line + roster sockets for a completed handover. */
+  async _announceAdminHandover(args: {
+    communityId: string;
+    communityName: string;
+    formerAdminId: string;
+    newAdminId: string;
+    newAdminName: string;
+    newAdminOldRole: CommunityMemberRole;
+    reason: "explicit_transfer" | AdminHandoverCause;
+  }): Promise<void> {
+    const { communityId, formerAdminId, newAdminId, reason } = args;
+    const auto = reason !== "explicit_transfer";
+    const eventAt = new Date().toISOString();
+
+    await this.recordAudit({
+      communityId,
+      actorId: auto ? "system" : formerAdminId,
+      ...(auto ? {} : { actorRole: CommunityMemberRole.ADMIN }),
+      action: "ADMIN_TRANSFERRED",
+      targetUserId: newAdminId,
+      metadata: { reason, formerAdminId },
+    });
+
+    // notifications-service: new admin "You're now the admin of X", former admin
+    // "You're now a moderator in X".
+    publishCommunityAdminTransferredSafe({
+      communityId,
+      eventAt,
+      actorId: formerAdminId,
+      targetUserId: newAdminId,
+      reason,
+      auto,
+      communityName: args.communityName,
+      formerAdminRole: CommunityMemberRole.MODERATOR,
+      ...(auto ? {} : { actorRole: CommunityMemberRole.ADMIN }),
+    });
+
+    // Manual: "Minh (Admin) made Hung the admin"; automatic: "Hung is now the admin".
+    publishCommunitySystemMessageForChatSafe({
+      communityId,
+      systemMessageType: "ROLE_CHANGED",
+      metadata: {
+        ...(auto
+          ? { actorUserId: null, auto: true, reason }
+          : {
+              actorUserId: formerAdminId,
+              actorName: "",
+              actorRole: CommunityMemberRole.ADMIN,
+            }),
+        targetUserId: newAdminId,
+        targetName: args.newAdminName,
+        oldRole: args.newAdminOldRole as string,
+        newRole: CommunityMemberRole.ADMIN as string,
+        formerAdminUserId: formerAdminId,
+        formerAdminNewRole: CommunityMemberRole.MODERATOR as string,
+      },
+      triggeredByUserId: auto ? "system" : formerAdminId,
+      eventAt,
+    });
+
+    const updatedAt = Date.now();
+    for (const [userId, role] of [
+      [newAdminId, CommunityMemberRole.ADMIN],
+      [formerAdminId, CommunityMemberRole.MODERATOR],
+    ] as const) {
+      void publishCommunityRoomEvent(
+        redis,
+        communityId,
+        "community:member:updated",
+        {
+          communityId,
+          userId,
+          role,
+          updatedAt,
+        } satisfies CommunityMemberUpdatedPayload
+      ).catch((err: unknown) => {
+        logger.warn(
+          `community:member:updated broadcast failed (admin handover) community=${communityId} user=${userId}: ${String(err)}`
+        );
+      });
+    }
+  },
+
+  /**
+   * Daily inactivity sweep: reminders on day 20 and 27 (claimed per idle
+   * streak, so restarts never double-send), handover on day 30.
+   */
+  async runAdminInactivitySweep(
+    now = new Date(),
+    pageSize = 200
+  ): Promise<{ reminded: number; handedOver: number }> {
+    const DAY_MS = 86_400_000;
+    await communityRepository.initMissingAdminActivity(now);
+
+    let reminded = 0;
+    let handedOver = 0;
+    let afterId: string | undefined;
+    for (;;) {
+      const rows = await communityRepository.findIdleAdmins(
+        new Date(now.getTime() - 20 * DAY_MS),
+        afterId,
+        pageSize
+      );
+      if (rows.length === 0) break;
+      afterId = rows[rows.length - 1].id;
+
+      const communityIds = [...new Set(rows.map((r) => r.communityId))];
+      const [communities, withModerator] = await Promise.all([
+        communityRepository.findManyByIds(communityIds),
+        communityRepository.findCommunityIdsWithModerator(communityIds),
+      ]);
+      const byId = new Map(communities.map((c) => [c.id, c]));
+
+      for (const row of rows) {
+        const community = byId.get(row.communityId);
+        if (
+          !community ||
+          community.deletedAt ||
+          community.adminId !== row.userId ||
+          community.memberCount <= 1 ||
+          communityAccessPolicy.isEffectivelyClosed(community)
+        ) {
+          continue;
+        }
+        const idleDays = Math.floor(
+          (now.getTime() - (row.lastActiveAt ?? now).getTime()) / DAY_MS
+        );
+        try {
+          if (idleDays >= 30) {
+            if (
+              await this.autoHandOverAdmin(
+                community.id,
+                row.userId,
+                "ADMIN_INACTIVE"
+              )
+            ) {
+              handedOver++;
+            }
+            continue;
+          }
+          const stage = idleDays >= 27 ? 27 : 20;
+          if (
+            !(await communityRepository.claimAdminInactiveStage(row.id, stage))
+          ) {
+            continue;
+          }
+          publishCommunityAdminInactiveReminderSafe({
+            communityId: community.id,
+            eventAt: now.toISOString(),
+            communityName: community.name,
+            adminId: row.userId,
+            daysLeft: 30 - stage,
+            successorKind: withModerator.has(community.id)
+              ? "MODERATOR"
+              : "MEMBER",
+          });
+          reminded++;
+        } catch (err) {
+          logger.warn(
+            `admin inactivity sweep failed community=${community.id} admin=${row.userId}: ${String(err)}`
+          );
+        }
+      }
+      if (rows.length < pageSize) break;
+    }
+    return { reminded, handedOver };
   },
 
   async deleteCommunity(communityId: string, callerId: string): Promise<void> {
@@ -7524,6 +7760,15 @@ export const communityService = {
       await communityRepository.findActiveMemberIds(communityId);
 
     const closedAt = new Date();
+    // "You closed this community" — the admin's own line; members get no line.
+    publishCommunitySystemMessageForChatSafe({
+      communityId,
+      systemMessageType: "COMMUNITY_CLOSED",
+      metadata: { actorUserId: callerId, actorRole: CommunityMemberRole.ADMIN },
+      triggeredByUserId: callerId,
+      eventAt: closedAt.toISOString(),
+      visibleToUserId: callerId,
+    });
     // Flip status only. No member/role/message/report/livestream data is
     // touched — closing is a write-lock, not a teardown.
     await communityRepository.updateCommunity(communityId, {
@@ -7626,6 +7871,8 @@ export const communityService = {
       communityId,
       eventAt: closedAt.toISOString(),
       actorId: callerId,
+      actorRole: CommunityMemberRole.ADMIN,
+      communityName: args.communityName,
       reason,
       memberIds,
     });
@@ -7652,7 +7899,8 @@ export const communityService = {
     communityId: string,
     bannedUserId: string,
     actorAdminId: string,
-    reason: string | null
+    reason: string | null,
+    reasonCode: string = CLOSE_REASON_ADMIN_BANNED
   ): Promise<boolean> {
     const community = await communityRepository.findById(communityId);
     if (!community || communityAccessPolicy.isOwnerClosed(community)) {
@@ -7670,7 +7918,7 @@ export const communityService = {
       statusClosedAt: closedAt,
       statusClosedBy: bannedUserId,
       statusClosedReason: reason,
-      statusClosedReasonCode: CLOSE_REASON_ADMIN_BANNED,
+      statusClosedReasonCode: reasonCode,
     });
     await communityRepository.captureClosureSnapshot(communityId, closedAt);
     await this.expireJoinRequestsOfUnavailableCommunity({
@@ -7686,7 +7934,7 @@ export const communityService = {
       action: "COMMUNITY_CLOSED",
       reason: reason ?? undefined,
       metadata: {
-        reasonCode: CLOSE_REASON_ADMIN_BANNED,
+        reasonCode,
         bannedUserId,
       },
       // backoffice-service writes the canonical admin audit row for the ban.
@@ -7703,9 +7951,12 @@ export const communityService = {
     // shared type still models `status` as the DB-level "CLOSED".
     const payload = {
       communityId,
-      status: "CLOSED_BY_SYSTEM_BAN",
+      status:
+        reasonCode === CLOSE_REASON_ADMIN_BANNED
+          ? "CLOSED_BY_SYSTEM_BAN"
+          : "CLOSED",
       closedAt: closedAt.getTime(),
-      reason: CLOSE_REASON_ADMIN_BANNED,
+      reason: reasonCode,
     };
     try {
       await publishCommunityRoomEvent(
@@ -7734,13 +7985,15 @@ export const communityService = {
       communityId,
       eventAt: closedAt.toISOString(),
       actorId: bannedUserId,
+      actorRole: PLATFORM_ACTOR_ROLE,
+      communityName: community.name,
       reason,
       memberIds,
     });
 
     void getStreamClient().forceEndStreamsByCommunity(
       communityId,
-      CLOSE_REASON_ADMIN_BANNED,
+      reasonCode,
       // Backoffice (Super Admin) action: "Administrator ended …".
       true
     );
@@ -7756,7 +8009,8 @@ export const communityService = {
   async adminApplySystemBan(
     userId: string,
     actorAdminId: string,
-    reason: string | null
+    reason: string | null,
+    cause: Exclude<AdminHandoverCause, "ADMIN_INACTIVE"> = "ADMIN_BANNED"
   ): Promise<{ closedCommunityIds: string[]; removedCommunityIds: string[] }> {
     const closedCommunityIds: string[] = [];
     const removedCommunityIds: string[] = [];
@@ -7765,11 +8019,13 @@ export const communityService = {
       await communityRepository.findCommunityIdsByAdminId(userId);
     for (const communityId of ownedIds) {
       try {
+        if (await this.autoHandOverAdmin(communityId, userId, cause)) continue;
         const closed = await this.closeCommunityForSystemBan(
           communityId,
           userId,
           actorAdminId,
-          reason
+          reason,
+          cause
         );
         if (closed) closedCommunityIds.push(communityId);
       } catch (error) {
@@ -7909,6 +8165,7 @@ export const communityService = {
     publishCommunityReopenedSafe({
       communityId,
       actorId: callerId,
+      actorRole: CommunityMemberRole.ADMIN,
       communityName: updated.name,
       eventAt: reopenedAt.toISOString(),
       memberIds,
@@ -7918,6 +8175,13 @@ export const communityService = {
     publishCommunityStatusChangedForChatSafe({
       communityId,
       communityStatus: "ACTIVE",
+    });
+    publishCommunitySystemMessageForChatSafe({
+      communityId,
+      systemMessageType: "COMMUNITY_REOPENED",
+      metadata: { actorUserId: callerId, actorRole: CommunityMemberRole.ADMIN },
+      triggeredByUserId: callerId,
+      eventAt: reopenedAt.toISOString(),
     });
 
     return toCommunityData(updated, CommunityMemberRole.ADMIN, null);
@@ -7933,12 +8197,14 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    // Admins and moderators may view the moderation audit trail.
     const membership = await communityRepository.findMembership(
       communityId,
       callerId
     );
     assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    if (membership.role !== CommunityMemberRole.ADMIN) {
+      throw new ForbiddenError("COMMUNITY_INSUFFICIENT_PERMISSIONS");
+    }
 
     const { rows, total } = await communityRepository.listAuditLogs({
       communityId,
@@ -7946,7 +8212,26 @@ export const communityService = {
       limit: params.limit,
     });
 
-    const logs: CommunityAuditLogData[] = rows.map(toAuditLogData);
+    // One batched lookup for legacy rows written before name/role snapshots.
+    const missing = new Set<string>();
+    for (const r of rows) {
+      if (r.actorName === null || r.actorRole === null) missing.add(r.actorId);
+      if (r.targetUserId && r.targetName === null) missing.add(r.targetUserId);
+    }
+    const live = new Map<string, { name: string | null; role: string }>();
+    if (missing.size > 0) {
+      const members = await communityRepository.findMembersByUserIds(
+        communityId,
+        [...missing]
+      );
+      for (const m of members) {
+        live.set(m.userId, { name: memberDisplayName(m), role: m.role });
+      }
+    }
+
+    const logs: CommunityAuditLogData[] = rows.map((r) =>
+      toAuditLogData(r, live)
+    );
 
     return buildPaginatedResponse(logs, total, params.page, params.limit);
   },
@@ -8524,6 +8809,7 @@ export const communityService = {
         username: callerSnapApprove?.username ?? null,
         displayName: callerSnapApprove?.displayName ?? "",
       },
+      actorRole: callerMembership?.role,
       decidedAt: new Date().toISOString(),
     });
 
@@ -8652,6 +8938,7 @@ export const communityService = {
         username: callerSnapReject?.username ?? null,
         displayName: callerSnapReject?.displayName ?? "",
       },
+      actorRole: membership?.role,
       decidedAt: new Date().toISOString(),
     });
 
@@ -8856,6 +9143,7 @@ export const communityService = {
             username: callerSnapBulk?.username ?? null,
             displayName: callerSnapBulk?.displayName ?? "",
           },
+          actorRole: callerMembership?.role,
           decidedAt: decidedAt.toISOString(),
         });
 
@@ -9006,6 +9294,7 @@ export const communityService = {
             username: callerSnapBulkReject?.username ?? null,
             displayName: callerSnapBulkReject?.displayName ?? "",
           },
+          actorRole: membership?.role,
           decidedAt: decidedAt.toISOString(),
         });
 
@@ -10581,9 +10870,20 @@ export const communityService = {
       // Fire-and-forget; a broadcast failure must not roll back the DB write.
       void (async () => {
         try {
-          const memberIds =
-            await communityRepository.findActiveMemberIds(communityId);
+          const [memberIds, community] = await Promise.all([
+            communityRepository.findActiveMemberIds(communityId),
+            communityRepository.findById(communityId),
+          ]);
+          const pushActor = {
+            communityId,
+            eventAt: new Date().toISOString(),
+            actorId: actorAdminId ?? "system",
+            actorRole: PLATFORM_ACTOR_ROLE,
+            communityName: community?.name ?? "",
+            memberIds,
+          };
           if (target === CommunityModerationStatus.SUSPENDED) {
+            publishCommunityClosedSafe({ ...pushActor, reason: reasonCode });
             const payload: CommunityClosedPayload = {
               communityId,
               status: "CLOSED",
@@ -10602,6 +10902,7 @@ export const communityService = {
               )
             );
           } else {
+            publishCommunityReopenedSafe(pushActor);
             const payload = { communityId };
             await publishCommunityRoomEvent(
               redis,

@@ -763,6 +763,17 @@ export const CHAT_MESSAGES = {
     en: "Internal server error",
     th: "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์",
   },
+  // v2 groups: leader + members only.
+  CHAT_LEADER_SUCCESSOR_REQUIRED: {
+    vi: "Hãy chọn trưởng nhóm mới trước khi rời nhóm",
+    en: "Choose a new group leader before you leave",
+    th: "โปรดเลือกหัวหน้ากลุ่มคนใหม่ก่อนออกจากกลุ่ม",
+  },
+  CHAT_GROUP_FEATURE_REMOVED: {
+    vi: "Tính năng này không còn khả dụng trong nhóm",
+    en: "This feature is no longer available in groups",
+    th: "ฟีเจอร์นี้ไม่มีในกลุ่มแล้ว",
+  },
 } as const satisfies MessageCatalog;
 
 export type ChatMessageKey = keyof typeof CHAT_MESSAGES;

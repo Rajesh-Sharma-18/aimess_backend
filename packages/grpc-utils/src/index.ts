@@ -6,10 +6,13 @@ import {
   AUDIT_SOURCES,
   currentAuditContext,
   currentLocale,
+  currentTimeZone,
   isAuditSource,
   resolveLocale,
+  resolveTimeZone,
   runWithAuditContext,
   runWithLocale,
+  runWithTimeZone,
   type AuditSource,
   type SupportedLocale,
 } from "@aimess/constants";
@@ -77,6 +80,7 @@ function serviceCallMetadata(locale?: SupportedLocale): grpc.Metadata {
   const token = serviceToken();
   if (token) metadata.set(SERVICE_TOKEN_METADATA_KEY, token);
   metadata.set(LOCALE_METADATA_KEY, locale ?? currentLocale());
+  metadata.set("x-timezone", currentTimeZone());
   const audit = currentAuditContext();
   if (audit) {
     metadata.set(AUDIT_SOURCE_METADATA_KEY, audit.source);
@@ -205,13 +209,18 @@ export function withServiceAuth<T extends grpc.UntypedServiceImplementation>(
       // awaits) so downstream serializers can localize without every signature
       // between here and them growing a `locale` parameter.
       runWithLocale(localeFromMetadata(call.metadata), () =>
-        runWithAuditContext(
-          {
-            source: auditSourceFromMetadata(call.metadata),
-            ip: metadataValue(call.metadata, "x-audit-ip"),
-            userAgent: metadataValue(call.metadata, "x-audit-user-agent"),
-          },
-          () => (handler as (c: unknown, cb?: unknown) => void)(call, callback)
+        runWithTimeZone(
+          resolveTimeZone(metadataValue(call.metadata, "x-timezone")),
+          () =>
+            runWithAuditContext(
+              {
+                source: auditSourceFromMetadata(call.metadata),
+                ip: metadataValue(call.metadata, "x-audit-ip"),
+                userAgent: metadataValue(call.metadata, "x-audit-user-agent"),
+              },
+              () =>
+                (handler as (c: unknown, cb?: unknown) => void)(call, callback)
+            )
         )
       );
     };

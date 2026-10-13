@@ -213,25 +213,27 @@ describe("communityRepository.listDiscoverable — search token building", () =>
     );
   });
 
-  // A CLOSED community keeps every member, so mine-search must still return it.
-  it("keeps CLOSED communities the caller belongs to in mine-search", async () => {
-    await communityRepository.listDiscoverable(
-      baseParams({ q: "text", includeMemberCommunityIds: ["m1"] })
-    );
-
-    expect(lastFindManyAnd()).toContainEqual({
-      OR: [{ status: { not: "CLOSED" } }, { id: { in: ["m1"] } }],
-    });
+  // Closed (owner or platform) is hidden from members — only its admin still finds it.
+  const visibleToViewer = (viewerId: string) => ({
+    OR: [
+      { status: { not: "CLOSED" }, moderationStatus: { not: "SUSPENDED" } },
+      { adminId: viewerId },
+    ],
   });
 
-  // Public discover has no membership widening, so CLOSED stays hidden there.
-  it("excludes CLOSED communities from public discover", async () => {
+  it("hides CLOSED/SUSPENDED communities from member mine-search, admin keeps them", async () => {
     await communityRepository.listDiscoverable(
-      baseParams({ q: "text", excludeCommunityIds: ["e1"] })
+      baseParams({ viewerId: "u1", q: "text", includeMemberCommunityIds: ["m1"] })
     );
 
-    expect(lastFindManyAnd()).toContainEqual({
-      OR: [{ status: { not: "CLOSED" } }],
-    });
+    expect(lastFindManyAnd()).toContainEqual(visibleToViewer("u1"));
+  });
+
+  it("excludes CLOSED/SUSPENDED communities from public discover", async () => {
+    await communityRepository.listDiscoverable(
+      baseParams({ viewerId: "u1", q: "text", excludeCommunityIds: ["e1"] })
+    );
+
+    expect(lastFindManyAnd()).toContainEqual(visibleToViewer("u1"));
   });
 });

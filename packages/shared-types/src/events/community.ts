@@ -38,6 +38,8 @@ export const CommunityEvents = {
   // events: these are the enriched, recipient-resolved notification triggers.
   LIVESTREAM_STARTED: "community.livestream_started",
   LIVESTREAM_ENDED: "community.livestream_ended",
+  /** Admin idle 20 / 27 days — notification type COMMUNITY_ADMIN_INACTIVE_REMINDER. */
+  ADMIN_INACTIVE_REMINDER: "community.admin_inactive_reminder",
 } as const;
 
 export type CommunityEventType =
@@ -92,6 +94,8 @@ export type CommunityMemberBannedPayload = CommunityEventBase & {
   /** Community display name — the ban notification must name the community, not say "You were banned." generically. */
   communityName: string;
   communityAvatarUrl: string | null;
+  /** Actor's role at action time: ADMIN | MODERATOR | PLATFORM. */
+  actorRole?: string;
 };
 
 /**
@@ -106,6 +110,8 @@ export type CommunityMemberUnbannedNotifyPayload = CommunityEventBase & {
   communityName: string;
   /** Resolved avatar URL — rendered as the push image. */
   communityAvatarUrl: string | null;
+  /** Actor's role at action time: ADMIN | MODERATOR | PLATFORM. */
+  actorRole?: string;
 };
 
 export type CommunityMemberMutedPayload = CommunityEventBase & {
@@ -114,11 +120,15 @@ export type CommunityMemberMutedPayload = CommunityEventBase & {
   reason: string | null;
   /** ISO-8601; null = indefinite mute. */
   mutedUntil: string | null;
+  /** Actor's role at action time: ADMIN | MODERATOR | PLATFORM. */
+  actorRole?: string;
 };
 
 export type CommunityMemberUnmutedPayload = CommunityEventBase & {
   actorId: string;
   targetUserId: string;
+  /** The unmuting Admin/Moderator's role at action time. */
+  actorRole?: string;
 };
 
 export type CommunityMemberWarnedPayload = CommunityEventBase & {
@@ -132,6 +142,8 @@ export type CommunityMemberRoleChangedPayload = CommunityEventBase & {
   targetUserId: string;
   oldRole: "ADMIN" | "MODERATOR" | "MEMBER";
   newRole: "ADMIN" | "MODERATOR" | "MEMBER";
+  /** Actor's role at action time: ADMIN | MODERATOR | PLATFORM. */
+  actorRole?: string;
 };
 
 export type CommunityJoinedPayload = CommunityEventBase & {
@@ -160,7 +172,28 @@ export type CommunityAdminTransferredPayload = CommunityEventBase & {
   actorId: string;
   /** Incoming admin. */
   targetUserId: string;
-  reason: "explicit_transfer" | "admin_left_auto_handover";
+  reason:
+    | "explicit_transfer"
+    | "admin_left_auto_handover"
+    | "ADMIN_INACTIVE"
+    | "ADMIN_BANNED"
+    | "ADMIN_SUSPENDED"
+    | "ADMIN_DELETED";
+  /** Automatic handover (no actor); the line reads "Hung is now the admin". */
+  auto?: boolean;
+  communityName?: string;
+  /** What the outgoing admin became (always MODERATOR). */
+  formerAdminRole?: "MODERATOR";
+  /** Manual transfer only: the outgoing admin's role (ADMIN). */
+  actorRole?: string;
+};
+
+export type CommunityAdminInactiveReminderPayload = CommunityEventBase & {
+  communityName: string;
+  /** Recipient: the idle admin. */
+  adminId: string;
+  daysLeft: number;
+  successorKind: "MODERATOR" | "MEMBER";
 };
 
 export type CommunityDeletedPayload = CommunityEventBase & {
@@ -181,6 +214,9 @@ export type CommunityDeletedPayload = CommunityEventBase & {
  */
 export type CommunityClosedNotifyPayload = CommunityEventBase & {
   actorId: string;
+  /** ADMIN (owner close) or PLATFORM (platform staff / system cascade). */
+  actorRole?: string;
+  communityName?: string;
   reason: string | null;
   /** All members that were active at close time — notify each. */
   memberIds: string[];
@@ -281,7 +317,7 @@ export type CommunityLivestreamEndedPayload = CommunityEventBase & {
    * carried); `SYSTEM` = the platform (moderation, account ban, timeouts). The
    * host stays in `hostUserId` either way. Absent on older producers ⇒ `USER`.
    */
-  endedReason?: "USER" | "ADMIN" | "SYSTEM";
+  endedReason?: "USER" | "ADMIN" | "SYSTEM" | "CONNECTION_LOST";
   /**
    * Set only when someone other than the host ended it (a community admin's
    * End for Everyone): the push names this user instead of the host.
@@ -345,6 +381,8 @@ export type CommunityJoinRequestApprovedPayload = CommunityEventBase & {
   decidedBy: { userId: string; username: string | null; displayName: string };
   /** ISO-8601. */
   decidedAt: string;
+  /** The decider's community role at action time. */
+  actorRole?: string;
 };
 
 export type CommunityJoinRequestRejectedPayload = CommunityEventBase & {
@@ -357,6 +395,8 @@ export type CommunityJoinRequestRejectedPayload = CommunityEventBase & {
   decidedBy: { userId: string; username: string | null; displayName: string };
   /** ISO-8601. */
   decidedAt: string;
+  /** The decider's community role at action time. */
+  actorRole?: string;
 };
 
 /**
@@ -458,6 +498,8 @@ export type CommunityMemberLeftPayload = CommunityEventBase & {
 export type CommunityReopenedNotifyPayload = CommunityEventBase & {
   /** Owner who triggered the reopen. */
   actorId: string;
+  /** ADMIN (owner) or PLATFORM (platform staff). */
+  actorRole?: string;
   communityName: string;
   /** All members currently active — notify each. */
   memberIds: string[];

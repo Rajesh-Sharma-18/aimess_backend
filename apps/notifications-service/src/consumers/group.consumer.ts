@@ -6,6 +6,7 @@ import {
   type ChatGroupJoinRequestDecidedPayload,
   type ChatGroupJoinRequestedPayload,
   type ChatGroupJoinRequestRetractedPayload,
+  type ChatGroupLeaderChangedPayload,
   type ChatGroupMemberAddedPayload,
   type ChatGroupMemberMutedPayload,
   type NotificationNavigation,
@@ -141,6 +142,31 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
           actorId: p.actorId,
           ...(p.groupAvatarUrl ? { conversationAvatar: p.groupAvatarUrl } : {}),
           mutedUntil: p.mutedUntil ?? "",
+          deepLink,
+          navigation: JSON.stringify({
+            screen: "GROUP_CHAT",
+            roomId: p.roomId,
+            conversationType: "GROUP",
+          } satisfies NotificationNavigation),
+        },
+      });
+      break;
+    }
+
+    case ChatEvents.GROUP_LEADER_CHANGED: {
+      const p = data as ChatGroupLeaderChangedPayload;
+      const deepLink = buildDeepLink("group", p.roomId);
+      await pushToUser({
+        userId: p.targetUserId,
+        category: "chatEnabled",
+        type,
+        actorId: p.actorId || undefined,
+        copy: groupCopy.leaderChanged(p.groupName),
+        deepLink,
+        data: {
+          roomId: p.roomId,
+          groupName: p.groupName,
+          ...(p.groupAvatarUrl ? { conversationAvatar: p.groupAvatarUrl } : {}),
           deepLink,
           navigation: JSON.stringify({
             screen: "GROUP_CHAT",

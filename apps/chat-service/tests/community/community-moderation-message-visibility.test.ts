@@ -122,17 +122,18 @@ describe("canViewSystemMessage — role/event visibility matrix", () => {
     }
   );
 
-  it("names exactly the two subtypes that keep a companion copy", () => {
+  it("names exactly the subtypes that keep a companion copy", () => {
     // Guards the split itself: widening it would hand a member a bubble the
     // product removed, narrowing it would strip a member's own mute/add notice.
     expect([...RESTRICTED_WITH_COMPANION]).toEqual([
       "MEMBER_ADDED",
       "MEMBER_MUTED",
+      "MEMBER_UNMUTED",
     ]);
     expect([...RESTRICTED_WITHOUT_COMPANION]).toEqual([
+      "MEMBER_REMOVED",
       "MEMBER_BANNED",
       "MEMBER_UNBANNED",
-      "MEMBER_UNMUTED",
     ]);
   });
 
@@ -213,7 +214,7 @@ describe("canViewSystemMessage — role/event visibility matrix", () => {
   });
 
   it("hidden subtypes stay hidden from EVERYONE, moderators included", () => {
-    for (const type of ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"]) {
+    for (const type of ["MEMBER_LEFT", "MEMBER_JOINED"]) {
       for (const viewerRole of [...PRIVILEGED, "member"]) {
         expect(
           canViewSystemMessage({
@@ -779,7 +780,7 @@ describe("socket fan-out for a moderation system line", () => {
     // the structured subtype + metadata, so each session still renders it in its
     // own language; the stored text is only the English fallback.
     expect(persisted[0]!.fallbackText).toBe(
-      "Ann Admin added You to the community"
+      "Ann Admin added you to the community"
     );
     expect(persisted[1]!.fallbackText).toBe(
       "Ann Admin added Bob Member to the community"

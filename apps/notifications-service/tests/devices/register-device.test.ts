@@ -81,7 +81,23 @@ describe("POST /v1/devices", () => {
       deviceId: "device-001",
       sessionId: TEST_SESSION_ID,
       locale: null,
+      timezone: null,
     });
+  });
+
+  it.each([
+    ["Asia/Ho_Chi_Minh", "Asia/Ho_Chi_Minh"],
+    ["Not/AZone", "UTC"],
+  ])("stores timezone %s as %s", async (timezone, expected) => {
+    const res = await request(app)
+      .post("/v1/devices")
+      .set(bearer(makeAccessToken()))
+      .send({ ...validBody, timezone });
+
+    expect(res.status).toBe(200);
+    expect(repo.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ timezone: expected })
+    );
   });
 
   // --- POSITIVE: per-device push language -----------------------------------

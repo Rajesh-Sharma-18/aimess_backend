@@ -160,7 +160,7 @@ describe("POST /api/auth/change-password", () => {
 
   it("returns 401 when the account is not active (guard throws)", async () => {
     repo.findByIdForAccountOps.mockResolvedValue(
-      activeUser({ status: "SUSPENDED" })
+      activeUser({ status: "PENDING_DELETION" })
     );
 
     const res = await request(app)

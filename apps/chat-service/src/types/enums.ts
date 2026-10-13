@@ -28,7 +28,6 @@ export type CommunityMessageType =
 /** Group member roles */
 export const GroupRole = {
   ADMIN: "ADMIN",
-  MODERATOR: "MODERATOR",
   MEMBER: "MEMBER",
 } as const;
 export type GroupRole = (typeof GroupRole)[keyof typeof GroupRole];
@@ -97,6 +96,8 @@ export const SystemEvent = {
   ADMIN_ASSIGNED: "ADMIN_ASSIGNED",
   ADMIN_REMOVED: "ADMIN_REMOVED",
   OWNERSHIP_TRANSFERRED: "OWNERSHIP_TRANSFERRED",
+  LEADER_CHANGED: "LEADER_CHANGED",
+  MESSAGE_DELETED: "MESSAGE_DELETED",
 
   DESCRIPTION_CHANGED: "DESCRIPTION_CHANGED",
 

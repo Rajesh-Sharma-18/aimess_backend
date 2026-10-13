@@ -33,7 +33,9 @@ jest.mock("@aimess/logger", () => {
 // --- Redis client: prevent real ioredis connection ------------------------
 jest.mock("../../src/config/redis.js", () => ({
   redis: {
-    get: jest.fn(),
+    // null = key absent (a bare jest.fn() resolves undefined, which the
+    // suspension guard reads as "suspended").
+    get: jest.fn().mockResolvedValue(null),
     set: jest.fn(),
     setex: jest.fn(),
     del: jest.fn(),
@@ -158,6 +160,18 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     // detail payload can carry isMemberMuted/memberMutedUntil.
     findActiveMemberMute: jest.fn().mockResolvedValue(null),
     findMuteByUserAndCommunity: jest.fn().mockResolvedValue(null),
+    // Admin handover + inactivity.
+    findCommunityIdsByAdminId: jest.fn().mockResolvedValue([]),
+    findOldestActiveModerator: jest.fn().mockResolvedValue(null),
+    findOldestActiveMember: jest.fn().mockResolvedValue(null),
+    handOverAdmin: jest.fn().mockResolvedValue(true),
+    touchAdminActivity: jest.fn().mockResolvedValue({ count: 0 }),
+    initMissingAdminActivity: jest.fn().mockResolvedValue({ count: 0 }),
+    findIdleAdmins: jest.fn().mockResolvedValue([]),
+    claimAdminInactiveStage: jest.fn().mockResolvedValue(true),
+    findCommunityIdsWithModerator: jest.fn().mockResolvedValue(new Set()),
+    findManyByIds: jest.fn().mockResolvedValue([]),
+    listAuditLogs: jest.fn().mockResolvedValue({ rows: [], total: 0 }),
     findCategories: jest.fn().mockResolvedValue([]),
     findCategory: jest.fn(),
     createCategory: jest.fn(),
@@ -179,6 +193,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityMemberRoleChangedSafe: jest.fn(),
   publishCommunityMemberLeftSafe: jest.fn(),
   publishCommunityAdminTransferredSafe: jest.fn(),
+  publishCommunityAdminInactiveReminderSafe: jest.fn(),
   publishCommunityClosedSafe: jest.fn(),
   publishCommunityReopenedSafe: jest.fn(),
   publishCommunityDeletedSafe: jest.fn(),

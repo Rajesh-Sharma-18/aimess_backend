@@ -268,6 +268,11 @@ model CommunityMember {
   // community is exactly these rows, whatever their status became later.
   // Cleared on reopen.
   closureRosterAt DateTime?
+  // ADMIN rows only: last activity in this community (send / open / admin action),
+  // written at most hourly. Drives the 30-day inactivity handover.
+  lastActiveAt DateTime?
+  // Last inactivity reminder sent for the current idle streak (20 | 27); unset on activity.
+  adminInactiveStage Int?
   joinedAt    DateTime              @default(now())
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
@@ -286,6 +291,7 @@ model CommunityMember {
   // OR (status=LEFT AND unbannedAt set AND dismissedAt unset).
   @@index([userId, status, dismissedAt])
   @@index([userId, status, unbannedAt, dismissedAt])
+  @@index([role, status, lastActiveAt])
   @@map("community_members")
 }
 
@@ -301,6 +307,10 @@ model CommunityAuditLog {
   actorId      String // AuthUser.id who performed the action
   action       String // see CommunityAuditAction union in code
   targetUserId String? // member acted upon (if any)
+  // Write-time snapshots; null on rows written before they existed (read falls back to a live lookup).
+  actorName    String?
+  actorRole    String? // ADMIN | MODERATOR | MEMBER | PLATFORM
+  targetName   String?
   reason       String?
   metadata     Json?
   createdAt    DateTime @default(now())

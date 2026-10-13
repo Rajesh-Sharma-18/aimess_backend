@@ -3,6 +3,16 @@ import type { UserPurgedPayload } from "@aimess/shared-types";
 
 import { prisma } from "../config/prisma.js";
 
+// Late-bound: the consumer starts before the service graph exists.
+let purgedLeaderSuccession: ((userId: string) => Promise<unknown>) | null =
+  null;
+
+export function setPurgedLeaderSuccession(
+  fn: (userId: string) => Promise<unknown>
+): void {
+  purgedLeaderSuccession = fn;
+}
+
 /**
  * Erase this service's copy of a purged user's personal data.
  *
@@ -20,6 +30,9 @@ import { prisma } from "../config/prisma.js";
  * Idempotent — a redelivered message writes the same placeholders.
  */
 export async function handleUserPurged(data: UserPurgedPayload): Promise<void> {
+  // Groups this account led pass to the longest-standing member (idempotent).
+  await purgedLeaderSuccession?.(data.userId);
+
   // Private, group and community-room messages each keep their own copy of the
   // snapshot, under slightly different column names.
   const [privateMessages, groupMessages, generalMessages, closureRows] =

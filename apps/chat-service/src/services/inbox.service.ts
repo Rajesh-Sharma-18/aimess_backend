@@ -456,10 +456,10 @@ export class InboxService {
       autoDelete: buildAutoDeleteWire(readRoomAutoDelete(room), {
         conversationType: "GROUP",
         policyVersion: readPolicyVersion(room),
-        // Only ADMIN/MODERATOR may change a group's timer — same rule the PUT
+        // Only the leader (ADMIN) may change a group's timer — same rule the PUT
         // enforces, surfaced so the client can grey out the picker rather than
         // discovering it via a 403.
-        canEdit: room.role === "ADMIN" || room.role === "MODERATOR",
+        canEdit: room.role === "ADMIN",
       }),
     };
   }

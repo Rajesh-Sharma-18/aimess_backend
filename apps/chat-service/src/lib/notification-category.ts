@@ -248,6 +248,11 @@ const SYSTEM_VERBATIM = [
   "ANNOUNCEMENT",
   "MAINTENANCE",
   "UPDATE_REQUIRED",
+  // Mandatory System-channel inbox rows (notifications-service MANDATORY_TYPES).
+  "ACCOUNT_WARNED",
+  "REPORT_OUTCOME",
+  "COMMUNITY_ADMIN_INACTIVE_REMINDER",
+  "chat.group_leader_changed",
 ] as const;
 
 /**

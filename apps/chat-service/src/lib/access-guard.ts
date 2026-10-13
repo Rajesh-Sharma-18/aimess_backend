@@ -12,6 +12,7 @@ import type {
   RoomMember,
 } from "../generated/prisma/index.js";
 import { getCommunityReconcileClient } from "../grpc/community.client.js";
+import { publishAdminActiveSafe } from "../events/publish-community-activity.js";
 
 /**
  * Centralized access guards for chat-service.
@@ -262,10 +263,9 @@ export async function getCommunityLiveRole(
 }
 
 /**
- * Moderation hierarchy for deleting SOMEONE ELSE's message, shared by groups
- * (`GroupMessageService.deleteMessage`, UPPERCASE roles) and communities
- * (`CommunityMessageService.deleteForAll`, lowercase live roles) — hence the
- * case-insensitive compare.
+ * Moderation hierarchy for deleting SOMEONE ELSE's community message
+ * (`CommunityMessageService.deleteForAll`, lowercase live roles) — the
+ * compare is case-insensitive.
  *
  * Both call sites previously asked only "is the actor ADMIN or MODERATOR?" and
  * never looked at the SENDER's role, so a MODERATOR could delete an ADMIN's
@@ -425,13 +425,25 @@ export async function assertCommunityMember(
  * @throws ForbiddenError `COMMUNITY_CHAT_DISABLED` when the room is missing/inactive.
  */
 export function assertCommunityRoomWritable(
-  room: { status: string } | null | undefined
+  room: { status: string } | null | undefined,
+  member?: Pick<RoomMember, "role"> | null
 ): void {
   if (room?.status === "active") return;
   if (room?.status === "suspended") {
+    assertCommunityOpenFor(room, member);
     throw new ForbiddenError("COMMUNITY_SUSPENDED");
   }
   throw new ForbiddenError("COMMUNITY_CHAT_DISABLED");
+}
+
+/** Closed/suspended community: only its admin may still open it (read-only). */
+export function assertCommunityOpenFor(
+  room: { status: string } | null | undefined,
+  member: Pick<RoomMember, "role"> | null | undefined
+): void {
+  if (room?.status === "suspended" && member?.role !== "admin") {
+    throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+  }
 }
 
 /**
@@ -499,8 +511,8 @@ export function assertCommunityMemberNotMuted(
  * (`communityType`, synced from community-service by the room provisioner, the
  * `community.visibility_changed` event, and the boot reconciler). A null/missing
  * value is treated as PRIVATE — conservative fail-closed so an unsynced room
- * never leaks a PRIVATE community's history to a non-member. The room is only
- * loaded for non-members; ACTIVE members short-circuit first.
+ * never leaks a PRIVATE community's history to a non-member. A closed room
+ * answers COMMUNITY_IS_CLOSED to everyone but its admin.
  *
  * @throws ForbiddenError `USER_BANNED` when the caller is banned from the
  *   community and `options.allowBannedReadCutoff` is not set.
@@ -518,7 +530,14 @@ export async function assertCommunityReadAccess(
   canRead: boolean;
   bannedAtCutoff?: Date;
 }> {
-  const member = await memberRepo.findByRoomAndUser(roomId, userId);
+  const [member, room] = await Promise.all([
+    memberRepo.findByRoomAndUser(roomId, userId),
+    roomRepo.findRoomById(roomId),
+  ]);
+  assertCommunityOpenFor(room, member?.status === "active" ? member : null);
+  if (member?.status === "active" && member.role === "admin") {
+    publishAdminActiveSafe(roomId, userId);
+  }
 
   // Banned: denied outright, even for a PUBLIC community — a ban revokes all
   // WRITE/realtime access, so this must NOT fall through to the "PUBLIC
@@ -542,7 +561,6 @@ export async function assertCommunityReadAccess(
   }
 
   // Non-members can read only if the community is PUBLIC (persisted on the room).
-  const room = await roomRepo.findRoomById(roomId);
   if (room?.communityType === "PUBLIC") {
     return { member: null, canRead: true };
   }

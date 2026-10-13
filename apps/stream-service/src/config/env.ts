@@ -92,9 +92,9 @@ const envSchema = z.object({
    * blip, network hiccup) may sit before the sweeper finalizes it ENDED. A
    * republish on the same streamKey within this window resumes LIVE instead.
    * Long enough to cover OBS's built-in reconnect and a browser remount.
-   * Default: 45 seconds.
+   * Default: 120 seconds.
    */
-  STREAM_RECONNECT_GRACE_MS: z.coerce.number().positive().default(45_000),
+  STREAM_RECONNECT_GRACE_MS: z.coerce.number().positive().default(120_000),
   /**
    * How long (ms) a PENDING stream (created but never went LIVE — abandoned
    * setup, crashed client, failed publish) may sit before the sweeper
@@ -245,9 +245,9 @@ const envSchema = z.object({
    * fresh start callback within this window; nothing else does — the status API
    * is NOT used to resume, so this no longer needs to absorb its ~30s lag.
    * 30s covers a typical OBS/mobile auto-reconnect after a brief blip while
-   * keeping an intentional stop from lingering. Default: 30s.
+   * keeping an intentional stop from lingering. Default: 120s.
    */
-  STREAM_CDN_RECONNECT_GRACE_MS: z.coerce.number().positive().default(30_000),
+  STREAM_CDN_RECONNECT_GRACE_MS: z.coerce.number().positive().default(120_000),
   /**
    * How long a CDN stream may stay LIVE while the status API says it is not
    * publishing before the reconciler ends it. Recovers a dropped end callback

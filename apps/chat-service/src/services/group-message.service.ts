@@ -79,8 +79,9 @@ import {
   assertGroupReadAccess,
   assertGroupMemberNotMuted,
   isGroupMemberMuted,
-  canDeleteOthersMessage,
 } from "../lib/access-guard.js";
+import { SystemEvent } from "../types/enums.js";
+import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import { allocateRoomSlot } from "../lib/room-lock.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import {
@@ -194,7 +195,9 @@ export class GroupMessageService {
     // Optional so unit tests that construct the service without these keep
     // working (delivery stays "sent" until the client ack lands).
     private readonly presenceService?: PresenceService,
-    private readonly redis?: Redis | Cluster | null
+    private readonly redis?: Redis | Cluster | null,
+    // Posts the MESSAGE_DELETED line when the leader deletes someone else's message.
+    private readonly sysMsg?: GroupSystemMessageService
   ) {}
 
   async sendMessage(params: {
@@ -1682,6 +1685,7 @@ export class GroupMessageService {
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
     let deletedType = "SELF_DELETE";
+    let ownerId = message.senderId ?? "";
     if (!bySystem) {
       const member = await this.memberRepo.findActiveByRoomAndUser(
         roomId,
@@ -1702,20 +1706,11 @@ export class GroupMessageService {
         : undefined;
       const isOwnMessage =
         message.senderId === userId || callCallerId === userId;
+      if (callCallerId) ownerId = callCallerId;
 
       if (!isOwnMessage) {
-        // Only admins/moderators can delete others' messages, and a MODERATOR
-        // may not delete an ADMIN's (or a peer MODERATOR's) message — same
-        // outrank rule kick/mute/ban enforce. A sender who has since left the
-        // group has no row: they rank as a plain MEMBER, so their leftover
-        // messages stay moderatable.
-        const senderMember = message.senderId
-          ? await this.memberRepo.findActiveByRoomAndUser(
-              roomId,
-              message.senderId
-            )
-          : null;
-        if (!canDeleteOthersMessage(member.role, senderMember?.role)) {
+        // Only the leader can delete others' messages.
+        if (member.role !== "ADMIN") {
           throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
         }
         deletedType = "ADMIN_DELETE";
@@ -1733,6 +1728,19 @@ export class GroupMessageService {
       userId,
       deletedType
     );
+    if (
+      deleted &&
+      deletedType === "ADMIN_DELETE" &&
+      !message.isDeleted &&
+      message.messageType !== "SYSTEM"
+    ) {
+      await this.sysMsg?.post({
+        roomId,
+        actorId: userId,
+        systemEvent: SystemEvent.MESSAGE_DELETED,
+        systemData: { senderId: ownerId, messageId },
+      });
+    }
     // Every group delete-for-everyone (REST, bulk, gRPC/socket via deleteDirect,
     // the auto-delete sweep) lands here, so the mention inbox rows go with it.
     if (deleted) {

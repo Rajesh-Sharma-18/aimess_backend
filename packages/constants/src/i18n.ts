@@ -76,7 +76,22 @@ export function t(
     return key;
   }
   const text = entry[locale] ?? entry[DEFAULT_LOCALE] ?? entry.en ?? key;
-  return interpolate(text, params);
+  return interpolate(text, params && localizeDeletedNames(params, locale));
+}
+
+// Keep in sync with DELETED_ACCOUNT_DISPLAY_NAME (user/deleted-account.ts; importing it here is a cycle).
+const DELETED_NAME = "Deleted Account";
+
+/** The stored deleted-account literal reads in the sentence's own language (v2 R6). */
+function localizeDeletedNames(
+  params: MessageParams,
+  locale: SupportedLocale
+): MessageParams {
+  if (!Object.values(params).includes(DELETED_NAME)) return params;
+  const name = MESSAGES.SYS_DELETED_ACCOUNT_NAME[locale];
+  return Object.fromEntries(
+    Object.entries(params).map(([k, v]) => [k, v === DELETED_NAME ? name : v])
+  );
 }
 
 /**

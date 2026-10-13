@@ -17,7 +17,7 @@ import {
   isEmailLoginIdentifier,
   normalizeLoginIdentifier,
 } from "../lib/login-identifier.js";
-import { assertNotBanned } from "../lib/account-guard.js";
+import { assertNotRestricted } from "../lib/account-guard.js";
 import {
   accountLockedError,
   lockedForSec,
@@ -153,9 +153,20 @@ export const authService = {
       throw accountLockedError(lockedForSec(user.lockedUntil));
     }
 
-    if (user.status === AccountStatus.BANNED) {
-      auditFailure("ACCOUNT_BANNED", user.id);
-      assertNotBanned(user.status);
+    if (
+      user.status === AccountStatus.BANNED ||
+      user.status === AccountStatus.SUSPENDED
+    ) {
+      // Reason and end time only for whoever proved the password.
+      const disclose =
+        !!user.passwordHash &&
+        (await bcrypt.compare(input.password, user.passwordHash));
+      try {
+        user.status = await assertNotRestricted(user, disclose);
+      } catch (error) {
+        auditFailure(`ACCOUNT_${user.status}`, user.id);
+        throw error;
+      }
     }
 
     if (user.status !== AccountStatus.ACTIVE) {

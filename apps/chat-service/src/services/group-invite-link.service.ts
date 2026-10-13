@@ -120,7 +120,7 @@ export class GroupInviteLinkService {
 
     // Check settings
     const settings = (room.settings ?? {}) as Record<string, unknown>;
-    if (!settings.allowMemberInviteLink && member.role === "MEMBER") {
+    if (!settings.allowMemberInviteLink && member.role !== "ADMIN") {
       throw new BadRequestError("CHAT_MEMBERS_CANNOT_CREATE_LINKS");
     }
 

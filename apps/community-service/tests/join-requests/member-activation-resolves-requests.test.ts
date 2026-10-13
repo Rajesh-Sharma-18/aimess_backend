@@ -550,8 +550,8 @@ describe("C. copy per path", () => {
     const added = publishChatUserEvent.mock.calls.find(
       ([, , evt]) => evt === "community:added"
     );
-    // Adding is not moderation: the new member is told WHO added them, never just "Admin".
-    expect(added?.[3].lastActivity.preview).toMatch(/added You to Secret Club$/);
+    // v2: the adder is named with their role — "Minh (Admin) added you".
+    expect(added?.[3].lastActivity.preview).toMatch(/\(Admin\) added you$/);
     expect(added?.[3].lastActivity.preview).not.toMatch(/^Admin /);
   });
 });

@@ -63,7 +63,7 @@ describe("emitPersonalizedSender — one broadcast, one language per recipient",
     const textOf = (s: FakeSocket): string =>
       (s.emit.mock.calls[0][1] as { contentText: string }).contentText;
 
-    expect(textOf(bystanderEn)).toBe("Alex removed Jim from the group");
+    expect(textOf(bystanderEn)).toBe("Alex removed Jim");
     expect(textOf(bystanderVi)).toBe("Alex đã xóa Jim khỏi nhóm");
     expect(textOf(bystanderTh)).toBe("Alex นำ Jim ออกจากกลุ่ม");
   });

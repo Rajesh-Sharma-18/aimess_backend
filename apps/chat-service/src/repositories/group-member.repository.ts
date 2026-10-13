@@ -138,14 +138,6 @@ export class GroupMemberRepository {
     });
   }
 
-  /** Rows flagged muted — callers still drop expired windows via isGroupMemberMuted. */
-  async findMutedMembers(roomId: string): Promise<GroupMember[]> {
-    return this.prisma.groupMember.findMany({
-      where: { roomId, status: "ACTIVE", moderationMuted: true },
-      orderBy: { joinedAt: "asc" },
-    });
-  }
-
   async getActiveRoomIds(userId: string): Promise<string[]> {
     const members = await this.prisma.groupMember.findMany({
       where: { userId, status: "ACTIVE" },
@@ -351,10 +343,12 @@ export class GroupMemberRepository {
   async leaveIfActive(
     roomId: string,
     userId: string,
-    leftAt: Date
+    leftAt: Date,
+    // Also require this role, so a member promoted mid-leave can't walk out as leader.
+    role?: string
   ): Promise<GroupMember | null> {
     const { count } = await this.prisma.groupMember.updateMany({
-      where: { roomId, userId, status: "ACTIVE" },
+      where: { roomId, userId, status: "ACTIVE", ...(role ? { role } : {}) },
       // unreadCount zeroed on the SAME write that ends the membership: the
       // group leaves this user's list, so a leftover counter could only come
       // back as a phantom badge if they are ever added again.
@@ -364,87 +358,61 @@ export class GroupMemberRepository {
     return this.findByRoomAndUser(roomId, userId);
   }
 
-  async updateRole(
-    roomId: string,
-    userId: string,
-    role: string
-  ): Promise<GroupMember | null> {
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: { role },
-    });
-  }
-
-  /** Moderator-imposed mute (distinct from `setMuted`'s self-notification mute). */
-  async setModerationMute(
-    roomId: string,
-    userId: string,
-    params: { mutedBy: string; mutedUntil: Date | null }
-  ): Promise<GroupMember | null> {
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: {
-        moderationMuted: true,
-        moderationMutedUntil: params.mutedUntil,
-        moderationMutedBy: params.mutedBy,
-      },
-    });
-  }
-
-  async clearModerationMute(
-    roomId: string,
-    userId: string
-  ): Promise<GroupMember | null> {
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: {
-        moderationMuted: false,
-        moderationMutedUntil: null,
-        moderationMutedBy: null,
-      },
-    });
-  }
-
   /**
-   * TIMED moderation mutes whose `moderationMutedUntil` has already passed —
-   * feeds the auto-unmute sweep. Indefinite mutes (`moderationMutedUntil: null`)
-   * are never returned. Mirrors community's `findExpiredMemberMutes`.
+   * Leader handover in one transaction: `fromUserId` must still be the ACTIVE
+   * ADMIN and `toUserId` an ACTIVE non-ADMIN, else nothing is written (false).
+   * `leftAt` also ends the outgoing membership (leave with successor).
    */
-  async findExpiredModerationMutes(params: {
-    now: Date;
-    limit: number;
-  }): Promise<Array<{ id: string; roomId: string; userId: string }>> {
-    return this.prisma.groupMember.findMany({
-      where: {
-        moderationMuted: true,
-        moderationMutedUntil: { not: null, lte: params.now },
-      },
-      select: { id: true, roomId: true, userId: true },
-      take: params.limit,
-    });
+  async transferLeadership(
+    roomId: string,
+    fromUserId: string,
+    toUserId: string,
+    leftAt?: Date
+  ): Promise<boolean> {
+    const aborted = new Error("LEADERSHIP_TRANSFER_ABORTED");
+    try {
+      return await withWriteConflictRetry(() =>
+        this.prisma.$transaction(async (tx) => {
+          const from = await tx.groupMember.updateMany({
+            where: { roomId, userId: fromUserId, status: "ACTIVE", role: "ADMIN" },
+            data: {
+              role: "MEMBER",
+              ...(leftAt ? { status: "LEFT", leftAt, unreadCount: 0 } : {}),
+            },
+          });
+          if (from.count !== 1) return false;
+          const to = await tx.groupMember.updateMany({
+            where: {
+              roomId,
+              userId: toUserId,
+              status: "ACTIVE",
+              role: { not: "ADMIN" },
+            },
+            data: { role: "ADMIN" },
+          });
+          if (to.count !== 1) throw aborted;
+          return true;
+        })
+      );
+    } catch (err) {
+      if (err === aborted) return false;
+      throw err;
+    }
   }
 
-  /**
-   * ATOMIC claim of one expired mute: clears the mute only while it is still
-   * expired-and-set, so exactly ONE sweeper instance (or RabbitMQ redelivery)
-   * runs the unmute side-effects. Returns the number of rows changed — 1 means
-   * this caller owns the expiry, 0 means someone else already handled it.
-   * Mirrors community's `claimExpiredMemberMute`.
-   */
-  async claimExpiredModerationMute(id: string, now: Date): Promise<number> {
-    const { count } = await this.prisma.groupMember.updateMany({
-      where: {
-        id,
-        moderationMuted: true,
-        moderationMutedUntil: { not: null, lte: now },
-      },
-      data: {
-        moderationMuted: false,
-        moderationMutedUntil: null,
-        moderationMutedBy: null,
-      },
+  /** ACTIVE members other than `excludeUserId`, longest-standing first (joinedAt, then userId). */
+  async findSuccessionCandidates(
+    roomId: string,
+    excludeUserId: string,
+    limit: number
+  ): Promise<string[]> {
+    const rows = await this.prisma.groupMember.findMany({
+      where: { roomId, status: "ACTIVE", userId: { not: excludeUserId } },
+      orderBy: [{ joinedAt: "asc" }, { userId: "asc" }],
+      select: { userId: true },
+      take: limit,
     });
-    return count;
+    return rows.map((row) => row.userId);
   }
 
   /**

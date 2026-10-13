@@ -858,14 +858,13 @@ export class GroupRoomService {
       // GET/PUT `/auto-delete` endpoints and the socket event return — so
       // opening a group renders the timer state (and whether THIS member may
       // change it) without a second request. `canEdit` mirrors the PUT's
-      // ADMIN/MODERATOR rule; `capabilities.supportsAfterViewing` is false for
+      // leader-only rule; `capabilities.supportsAfterViewing` is false for
       // every group.
       autoDelete: buildAutoDeleteWire(readRoomAutoDelete(room), {
         conversationType: "GROUP",
         policyVersion: readPolicyVersion(room),
         canEdit:
-          membership?.status === "ACTIVE" &&
-          (membership.role === "ADMIN" || membership.role === "MODERATOR"),
+          membership?.status === "ACTIVE" && membership.role === "ADMIN",
       }),
     };
   }

@@ -20,6 +20,9 @@ jest.mock("@aimess/redis", () => ({
   ...jest.requireActual("@aimess/redis"),
   publishSessionRevokedEvent: jest.fn(async () => 0),
 }));
+jest.mock("../../src/services/account-ban.service.js", () => ({
+  accountBanService: { liftExpiredSuspension: jest.fn(async () => undefined) },
+}));
 jest.mock("../../src/repositories/session.repository.js", () => ({
   sessionRepository: {
     listActiveSessionIds: jest.fn(async () => []),
@@ -33,6 +36,7 @@ import request from "supertest";
 
 import app from "../../src/app.js";
 import { refreshTokenRepository } from "../../src/repositories/refresh-token.repository.js";
+import { accountBanService } from "../../src/services/account-ban.service.js";
 
 const repo = refreshTokenRepository as unknown as Record<string, jest.Mock>;
 
@@ -140,16 +144,45 @@ describe("POST /api/auth/refresh", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 401 when the account is suspended", async () => {
+  it("returns 403 ACCOUNT_SUSPENDED while the suspension is live", async () => {
     repo.findByTokenHash.mockResolvedValue(
-      storedToken({ user: { deletedAt: null, status: "SUSPENDED" } })
+      storedToken({
+        user: {
+          deletedAt: null,
+          status: "SUSPENDED",
+          suspendedReason: "Spam",
+          suspendedUntil: new Date(Date.now() + 60_000),
+        },
+      })
     );
 
     const res = await request(app)
       .post("/api/auth/refresh")
       .send({ refreshToken: "suspended-account-token" });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("ACCOUNT_SUSPENDED");
+  });
+
+  it("lifts an elapsed suspension and rotates", async () => {
+    repo.findByTokenHash.mockResolvedValue(
+      storedToken({
+        user: {
+          id: "user-1",
+          deletedAt: null,
+          status: "SUSPENDED",
+          suspendedReason: "Spam",
+          suspendedUntil: new Date(Date.now() - 1000),
+        },
+      })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: "elapsed-suspension-token" });
+
+    expect(res.status).toBe(200);
+    expect(accountBanService.liftExpiredSuspension).toHaveBeenCalledWith("user-1");
   });
 
   // Refresh is the bypass a permanent ban has to close: a still-valid refresh

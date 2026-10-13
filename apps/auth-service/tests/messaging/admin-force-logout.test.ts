@@ -184,6 +184,57 @@ describe("admin.user consumer → ban application + device-token teardown", () =
     expect(markBanned).not.toHaveBeenCalled();
   });
 
+  it("a time-boxed suspend writes SUSPENDED + until + reason and revokes sessions", async () => {
+    const consume = await setup();
+    const until = new Date(Date.now() + 86_400_000).toISOString();
+    await emit(consume, AdminUserEvents.USER_SUSPENDED, {
+      userId: USER,
+      actorId: "admin-1",
+      reason: "Spam",
+      suspendedUntil: until,
+      forceLogout: true,
+      at: new Date().toISOString(),
+    });
+
+    expect(authUserMock.update).toHaveBeenCalledWith({
+      where: { id: USER },
+      data: expect.objectContaining({
+        status: "SUSPENDED",
+        suspendedReason: "Spam",
+        suspendedUntil: new Date(until),
+      }),
+    });
+    expect(sessions.revokeAllForUser).toHaveBeenCalledTimes(1);
+    expect(markBanned).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [true, "mind@example.com"],
+    [false, undefined],
+  ])("suspend/ban notify carries the email only when verified (%s)", async (verified, email) => {
+    const consume = await setup();
+    authUserMock.findUnique.mockResolvedValue({
+      id: USER,
+      status: "ACTIVE",
+      deletedAt: null,
+      updatedAt: new Date(0),
+      email: "mind@example.com",
+      emailVerified: verified,
+    } as never);
+    await emit(consume, AdminUserEvents.USER_BANNED, {
+      userId: USER,
+      actorId: "admin-1",
+      reason: "Spam",
+      notifyUser: true,
+    });
+
+    const { publishAdminUserNotifySafe } = jest.requireMock(
+      "../../src/messaging/publish-admin-user-notify.js"
+    );
+    expect(publishAdminUserNotifySafe).toHaveBeenCalledTimes(1);
+    expect(publishAdminUserNotifySafe.mock.calls[0][0].email).toBe(email);
+  });
+
   it("ignores forceLogout:false on a permanent ban", async () => {
     const consume = await setup();
     await emit(consume, AdminUserEvents.USER_BANNED, {

@@ -11,6 +11,9 @@
  */
 import request from "supertest";
 
+import { GroupMemberService } from "../../src/services/group-member.service.js";
+import { GroupSystemMessageService } from "../../src/services/group-system-message.service.js";
+import { UserSnapshotService } from "../../src/services/user-snapshot.service.js";
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 
@@ -246,40 +249,8 @@ describe("POST /api/chat/group-members/add", () => {
 });
 
 describe("POST /api/chat/group-members/role", () => {
-  it("REALTIME: group:member:updated carries the new role to the room and every member", async () => {
-    mocks.groupMemberRepo.updateRole.mockResolvedValue({
-      userId: TARGET,
-      role: "MODERATOR",
-    });
-
-    const res = await request(app)
-      .post("/api/chat/group-members/role")
-      .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: TARGET, role: "MODERATOR" });
-
-    expect(res.status).toBe(200);
-    expect(channelsFor("group:member:updated")).toEqual([
-      `conv:${ROOM}`,
-      `user:${TEST_USER_ID}`,
-      `user:${BYSTANDER}`,
-    ]);
-    expect(
-      publishes().find((p) => p.event === "group:member:updated")!.data
-    ).toMatchObject({
-      roomId: ROOM,
-      conversationType: "GROUP",
-      memberId: TARGET,
-      role: "MODERATOR",
-      previousRole: "MEMBER",
-      actorId: TEST_USER_ID,
-    });
-  });
-
-  it("REALTIME: an admin hand-off (Make Admin) announces BOTH changed rows", async () => {
-    mocks.groupMemberRepo.updateRole.mockResolvedValue({
-      userId: TARGET,
-      role: "ADMIN",
-    });
+  it("REALTIME: a leader hand-off announces BOTH changed rows", async () => {
+    mocks.groupMemberRepo.transferLeadership.mockResolvedValue(true);
 
     const res = await request(app)
       .post("/api/chat/group-members/role")
@@ -287,6 +258,9 @@ describe("POST /api/chat/group-members/role", () => {
       .send({ roomId: ROOM, userId: TARGET, role: "ADMIN" });
 
     expect(res.status).toBe(200);
+    expect(channelsFor("group:member:updated")).toEqual(
+      expect.arrayContaining([`conv:${ROOM}`, `user:${BYSTANDER}`])
+    );
     const updates = publishes().filter(
       (p) => p.event === "group:member:updated" && p.channel === `conv:${ROOM}`
     );
@@ -297,7 +271,7 @@ describe("POST /api/chat/group-members/role", () => {
   });
 });
 
-describe("POST /api/chat/group-members/ban", () => {
+describe("GroupMemberService.ban (backoffice)", () => {
   /**
    * The banned member must NEVER receive the room event/line announcing their
    * own ban. The room broadcast of both the roster event AND the MEMBER_BANNED
@@ -342,19 +316,28 @@ describe("POST /api/chat/group-members/ban", () => {
     });
   });
 
-  it("route is wired and returns 200", async () => {
-    const res = await request(app)
-      .post("/api/chat/group-members/ban")
-      .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: TARGET });
-    expect(res.status).toBe(200);
-  });
+  const ban = () =>
+    new GroupMemberService(
+      mocks.groupMemberRepo,
+      mocks.groupRoomRepo,
+      new GroupSystemMessageService(
+        mocks.groupMessageRepo,
+        mocks.groupRoomRepo,
+        mocks.groupMemberRepo,
+        mocks.cacheRepo,
+        new UserSnapshotService(),
+        mocks.redis
+      ),
+      mocks.redis
+    ).ban({
+      roomId: ROOM,
+      targetUserId: TARGET,
+      bannedBy: "bo-admin-1",
+      asPlatformAdmin: true,
+    });
 
   it("SECURITY: the banned target is excluded from both room broadcasts", async () => {
-    await request(app)
-      .post("/api/chat/group-members/ban")
-      .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: TARGET });
+    await ban();
 
     const envelopes = rawEnvelopes();
 
@@ -376,10 +359,7 @@ describe("POST /api/chat/group-members/ban", () => {
   });
 
   it("ORDERING: group:removed (eviction) is emitted before the ban system line", async () => {
-    await request(app)
-      .post("/api/chat/group-members/ban")
-      .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: TARGET });
+    await ban();
 
     const events = rawEnvelopes().map((p) => `${p.event}@${p.channel}`);
     const evictIdx = events.indexOf(`group:removed@user:${TARGET}`);

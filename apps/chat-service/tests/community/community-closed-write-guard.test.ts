@@ -19,9 +19,17 @@ describe("assertCommunityRoomWritable (the single write gate)", () => {
     ).not.toThrow();
   });
 
-  it("throws COMMUNITY_SUSPENDED for a suspended (closed) room", () => {
+  it("throws COMMUNITY_IS_CLOSED for a suspended (closed) room to anyone but its admin", () => {
+    for (const member of [{ role: "member" }, { role: "moderator" }, null]) {
+      expect(() =>
+        assertCommunityRoomWritable({ status: "suspended" }, member)
+      ).toThrow("COMMUNITY_IS_CLOSED");
+    }
+  });
+
+  it("throws COMMUNITY_SUSPENDED to the admin of a suspended (closed) room (read-only)", () => {
     try {
-      assertCommunityRoomWritable({ status: "suspended" });
+      assertCommunityRoomWritable({ status: "suspended" }, { role: "admin" });
       throw new Error("expected to throw");
     } catch (e) {
       expect(e).toBeInstanceOf(ForbiddenError);

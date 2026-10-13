@@ -21,6 +21,7 @@
 import { GeneralRoomMessageRepository } from "../../src/repositories/general-room-message.repository.js";
 import {
   HIDDEN_SYSTEM_MESSAGE_TYPES,
+  isModerationOnlySystemMessage,
   PERSONAL_JOIN_SESSION_TYPES,
 } from "@aimess/constants";
 
@@ -215,6 +216,9 @@ function isVisible(
   if (!(doc.visibleToUserId == null || doc.visibleToUserId === USER))
     return false;
   if ([...HIDDEN_SYSTEM_MESSAGE_TYPES].includes(doc.systemMessageType as never))
+    return false;
+  // v2: MEMBER_REMOVED is a moderator-only audit line; USER is a plain member.
+  if (doc.visibleToUserId == null && isModerationOnlySystemMessage(doc.systemMessageType))
     return false;
   if (
     !viewerActive &&

@@ -19,6 +19,8 @@ export interface UpsertDeviceTokenInput {
    * unsupported tag — the send path then falls back to the account language.
    */
   locale?: SupportedLocale | null;
+  /** IANA zone for push copy times; null → UTC. */
+  timezone?: string | null;
 }
 
 export interface DeviceTokenRow {
@@ -34,6 +36,8 @@ export interface DeviceTokenRow {
    * pushes. Null = fall back to the account language (see schema.prisma).
    */
   locale: string | null;
+  /** Device IANA zone for times in push copy; null → UTC. */
+  timezone: string | null;
   /**
    * Bumped on every re-registration and (throttled) on every accepted push, so
    * among several rows for the SAME device the largest value is the current
@@ -80,6 +84,7 @@ export const deviceTokenRepository = {
         deviceId: input.deviceId ?? null,
         sessionId: input.sessionId ?? null,
         locale: input.locale ?? null,
+        timezone: input.timezone ?? null,
         lastSeenAt: new Date(),
       },
       create: {
@@ -90,6 +95,7 @@ export const deviceTokenRepository = {
         deviceId: input.deviceId ?? null,
         sessionId: input.sessionId ?? null,
         locale: input.locale ?? null,
+        timezone: input.timezone ?? null,
       },
     });
 
@@ -151,6 +157,7 @@ export const deviceTokenRepository = {
         deviceId: true,
         sessionId: true,
         locale: true,
+        timezone: true,
         lastSeenAt: true,
       },
     });

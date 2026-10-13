@@ -133,3 +133,26 @@ export function publishCommunityActivitySafe(
     }
   })();
 }
+
+export const ADMIN_ACTIVE_TYPE = "admin_active";
+const ADMIN_ACTIVE_THROTTLE_MS = 3_600_000;
+const adminActiveAt = new Map<string, number>();
+
+/** Admin opened / marked read: lets community-service count it toward the inactivity handover. At most hourly per admin per community. */
+export function publishAdminActiveSafe(communityId: string, userId: string): void {
+  const key = `${communityId}:${userId}`;
+  const now = Date.now();
+  if (now - (adminActiveAt.get(key) ?? 0) < ADMIN_ACTIVE_THROTTLE_MS) return;
+  // ponytail: whole-map reset bounds memory, same as community-service touchAdminActivity.
+  if (adminActiveAt.size > 50_000) adminActiveAt.clear();
+  adminActiveAt.set(key, now);
+  publishCommunityActivitySafe({
+    communityId,
+    type: ADMIN_ACTIVE_TYPE,
+    senderUserId: userId,
+    lastMessageAt: new Date(now).toISOString(),
+    lastMessageId: "",
+    senderUsername: "",
+    messagePreview: "",
+  });
+}

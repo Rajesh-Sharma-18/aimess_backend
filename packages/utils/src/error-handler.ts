@@ -59,6 +59,7 @@ export interface ErrorHandlerOptions {
     messageKey?: string;
     fallbackMessage?: string;
     details?: ApiErrorDetails;
+    code?: string;
   } | null;
 }
 

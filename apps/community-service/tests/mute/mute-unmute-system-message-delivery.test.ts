@@ -21,6 +21,7 @@
  */
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import { communityService } from "../../src/services/community.service.js";
+import { publishCommunityMemberUnmutedSafe } from "../../src/messaging/publish-community.js";
 import {
   publishCommunitySystemMessageForChatSafe,
   publishCommunityMemberMuteRetractedForChatSafe,
@@ -96,22 +97,30 @@ describe("communityService.muteMember/unmuteMember — system message delivery",
     expect(audit).toHaveLength(1);
   });
 
-  it("unmuteMember posts the audit line ONLY — never a bubble in the member's own history", async () => {
+  it("unmuteMember posts the MODERATION line with actor + the member's PERSONAL copy, and pushes", async () => {
     await communityService.unmuteMember(CID, CALLER, TARGET);
 
-    expect(sysMsg).toHaveBeenCalledTimes(1);
-    const payload = sysMsg.mock.calls[0][0] as {
-      systemMessageType: string;
-      visibleToUserId?: string;
-      metadata: Record<string, unknown>;
-    };
-    expect(payload.systemMessageType).toBe("MEMBER_UNMUTED");
-    // No recipient ⇒ moderator-scoped audit line. The unmuted member sees
-    // nothing new in chat: the composer re-enables via the separate
-    // `community:member:unmuted` event and the stale mute line is retracted
-    // (asserted below), so a bubble would duplicate that.
-    expect(payload.visibleToUserId).toBeUndefined();
-    expect(payload.metadata.targetUserId).toBe(TARGET);
+    expect(sysMsg).toHaveBeenCalledTimes(2);
+    const payloads = sysMsg.mock.calls.map(
+      (c: unknown[]) =>
+        c[0] as {
+          systemMessageType: string;
+          visibleToUserId?: string;
+          metadata: Record<string, unknown>;
+        }
+    );
+    for (const p of payloads) {
+      expect(p.systemMessageType).toBe("MEMBER_UNMUTED");
+      expect(p.metadata).toMatchObject({
+        targetUserId: TARGET,
+        actorRole: "MODERATOR",
+      });
+    }
+    expect(payloads.filter((p) => p.visibleToUserId === TARGET)).toHaveLength(1);
+    expect(payloads.filter((p) => !p.visibleToUserId)).toHaveLength(1);
+    expect(publishCommunityMemberUnmutedSafe).toHaveBeenCalledWith(
+      expect.objectContaining({ targetUserId: TARGET, actorRole: "MODERATOR" })
+    );
   });
 
   it("unmuteMember retracts the mute's lines (personal + audit) — nothing is spared", async () => {

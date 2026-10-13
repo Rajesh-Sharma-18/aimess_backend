@@ -20,7 +20,7 @@ import {
   generateUniqueAccount,
 } from "../lib/social-account.util.js";
 import { resolveSocialProfileName } from "../lib/social-profile-name.js";
-import { assertNotBanned, assertNotDeleted } from "../lib/account-guard.js";
+import { assertNotDeleted, assertNotRestricted } from "../lib/account-guard.js";
 import { accountLockedError, lockedForSec } from "../lib/login-lockout.js";
 import { assertEmailAvailable } from "../lib/email-availability.js";
 import { buildSessionContext } from "../lib/session-context.js";
@@ -41,6 +41,8 @@ type AuthUserRow = {
   account: string;
   email: string | null;
   status: AccountStatus;
+  suspendedReason: string | null;
+  suspendedUntil: Date | null;
   lockedUntil: Date | null;
   deletedAt: Date | null;
   role: GlobalRole;
@@ -61,7 +63,7 @@ function isLinkedIdentityLimit(error: unknown): boolean {
   );
 }
 
-function assertUserCanLogin(user: AuthUserRow): void {
+async function assertUserCanLogin(user: AuthUserRow): Promise<void> {
   // The provider's signed token is the proven credential here, so naming the
   // deleted state leaks nothing: only whoever controls that Google/Apple
   // identity ever reaches this line.
@@ -73,9 +75,7 @@ function assertUserCanLogin(user: AuthUserRow): void {
 
   // Google and Apple sign-in both funnel through here, so a banned account is
   // rejected on the social paths exactly as on password login.
-  assertNotBanned(user.status);
-
-  if (user.status !== AccountStatus.ACTIVE) {
+  if ((await assertNotRestricted(user, true)) !== AccountStatus.ACTIVE) {
     throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
   }
 }
@@ -101,7 +101,7 @@ async function loginExistingLinkedUser(
   user: AuthUserRow,
   device: DeviceInfoInput | null | undefined
 ): Promise<SocialLoginResult> {
-  assertUserCanLogin(user);
+  await assertUserCanLogin(user);
 
   // Backfill, not a switch. Accounts created by a social sign-in before
   // primaryAccount was stamped at creation still carry null, and this is the
@@ -202,7 +202,7 @@ async function signInWithProvider(
   // email must never merge into an existing account (takeover risk).
   if (profile.email && profile.emailVerified) {
     if (existingUser) {
-      assertUserCanLogin(existingUser);
+      await assertUserCanLogin(existingUser);
 
       // Linking here is BEST-EFFORT, never a precondition of signing in.
       //

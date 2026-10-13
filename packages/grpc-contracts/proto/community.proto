@@ -587,6 +587,7 @@ message AdminApplySystemBanRequest {
   string user_id        = 1;
   string actor_admin_id = 2; // backoffice AdminUser.id
   string reason         = 3; // free text; recorded on the close + removal rows
+  string reason_code    = 4; // "ADMIN_BANNED" (default) | "ADMIN_SUSPENDED"
 }
 message AdminApplySystemBanResponse {
   bool            ok                    = 1;

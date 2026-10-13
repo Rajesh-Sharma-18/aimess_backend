@@ -368,6 +368,10 @@ export class AdminGroupService {
     );
     if (!member)
       return { ok: false, found: true, errorCode: "CHAT_NOT_A_MEMBER" };
+    // Removing the leader hands the group over first, so it never goes headless.
+    if (member.role === "ADMIN") {
+      await this.groupMemberService.autoSucceed(params.groupId, params.userId);
+    }
 
     await this.groupMemberService.kick({
       roomId: params.groupId,
@@ -386,12 +390,11 @@ export class AdminGroupService {
    * BANNED, `group:removed` BAN eviction, rejoin/invite block) exactly like the
    * in-group ban, minus the actor/role gate.
    *
-   * Banning the group OWNER (the `role: "ADMIN"` membership) instead CLOSES the
-   * whole group — same rule as the system-ban cascade (`adminApplySystemBan`):
-   * a group cannot outlive a banned owner, but it is NOT deleted. The room goes
-   * CLOSED (visible, readable, write-locked, `group:closed` ADMIN_BANNED banner)
-   * and the owner's own membership is marked BANNED so the ban is auditable and
-   * a later unban has a state to clear. Closing does NOT reopen on unban.
+   * Banning the group LEADER (the `role: "ADMIN"` membership) first hands the
+   * group to the longest-standing member, then bans them like anyone else. Only
+   * a leader with nobody to promote CLOSES the group (visible, readable,
+   * write-locked, `group:closed` ADMIN_BANNED banner) with their membership
+   * marked BANNED. Closing does NOT reopen on unban.
    */
   async banGroupMember(params: {
     groupId: string;
@@ -432,7 +435,13 @@ export class AdminGroupService {
         closedGroup: false,
       };
 
-    if (member.role === "ADMIN") {
+    // Leader ban → hand the group to the longest-standing member, then ban the
+    // former leader like anyone else. Nobody left → close as before.
+    if (
+      member.role === "ADMIN" &&
+      (await this.groupMemberService.autoSucceed(params.groupId, params.userId)) ===
+        null
+    ) {
       // Owner ban → close the group (idempotent), then mark the owner's own
       // membership BANNED without the evict/count churn of a member ban: the
       // room is already read-only for everyone, so eviction is moot and the
@@ -502,13 +511,12 @@ export class AdminGroupService {
   }
 
   /**
-   * Group-side cascade of a PERMANENT super-admin system ban.
+   * Group-side cascade of a super-admin system ban (or suspension).
    *
-   * Groups the user OWNS are CLOSED, not disbanded: a disband ends every
-   * membership and hides the room, punishing the members for the owner's ban —
-   * a close leaves the roster intact so the group stays in everyone's list,
-   * readable, write-refused, with a banner. Every OTHER membership is kept;
-   * `removedGroupIds` stays in the wire shape and is always empty.
+   * Groups the user LEADS pass to their longest-standing member. Only a group
+   * with nobody left to promote is CLOSED (never disbanded), as before. Every
+   * OTHER membership is kept; `removedGroupIds` stays in the wire shape and is
+   * always empty.
    *
    * Ownership is the `role: "ADMIN"` membership row, never `GroupRoom.createdBy`
    * — the creator can have transferred ownership or left long ago.
@@ -525,11 +533,10 @@ export class AdminGroupService {
     const removedGroupIds: string[] = [];
     if (!userId) return { closedGroupIds, removedGroupIds };
 
-    const ownedRoomIds = await this.groupMemberRepo.findRoomIdsByOwnerUserIds([
-      userId,
-    ]);
+    const orphanedRoomIds =
+      await this.groupMemberService.autoSucceedEverywhere(userId);
 
-    for (const roomId of ownedRoomIds) {
+    for (const roomId of orphanedRoomIds) {
       try {
         // Returns null when the room is not ACTIVE — already closed by a
         // previous run, or disbanded. Both are a no-op, so this is idempotent.

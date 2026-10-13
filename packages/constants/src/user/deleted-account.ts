@@ -1,3 +1,7 @@
+import { t } from "../i18n.js";
+import { currentLocale } from "../locale-context.js";
+import type { SupportedLocale } from "../locale.js";
+
 /**
  * The one display identity every service renders for a deleted account.
  *
@@ -18,3 +22,9 @@
  * off the flag and additionally suppress profile navigation / member actions.
  */
 export const DELETED_ACCOUNT_DISPLAY_NAME = "Deleted Account";
+
+/** v2: localized deleted-account name for surfaces that know the reader's locale. */
+// Outside a request this stays English: the stored literal, never DEFAULT_LOCALE ("vi" in prod).
+export const deletedAccountDisplayName = (
+  locale: SupportedLocale = currentLocale("en")
+): string => t("SYS_DELETED_ACCOUNT_NAME", locale);

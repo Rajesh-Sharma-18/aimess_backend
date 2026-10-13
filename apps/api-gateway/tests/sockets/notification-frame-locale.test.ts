@@ -255,8 +255,8 @@ describe("member-added frame is viewer-aware on every device", () => {
     const render = (locale: "en" | "vi") =>
       (localizeNotificationFrame(frame, "u-tom", locale) as { body: string })
         .body;
-    expect(render("en")).toBe("John Smith added You to Gokuldham Society");
-    expect(render("vi")).toBe("John Smith đã thêm Bạn vào Gokuldham Society");
+    expect(render("en")).toBe("John Smith added you to Gokuldham Society");
+    expect(render("vi")).toBe("John Smith đã thêm bạn vào Gokuldham Society");
     // A frame read by anyone else names the target.
     expect(
       (localizeNotificationFrame(frame, "u-mod", "en") as { body: string }).body

@@ -139,7 +139,6 @@ import {
   updateCommunitySchema,
   updateMemberRoleSchema,
   warningsQuerySchema,
-  warnMemberSchema,
 } from "../validators/community.validator.js";
 
 export const communityRoutes: IRouter = Router();
@@ -497,8 +496,6 @@ communityRoutes.delete(
 
 communityRoutes.post(
   "/:id/members/:userId/warn",
-  validateParams(communityMemberParamsSchema),
-  validateBody(warnMemberSchema),
   warnCommunityMember
 );
 

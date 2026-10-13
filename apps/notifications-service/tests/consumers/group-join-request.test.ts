@@ -101,7 +101,7 @@ it("GROUP_JOIN_REQUEST_RETRACTED: data-only delete to every admin", async () => 
 
 it.each([
   [ChatEvents.GROUP_JOIN_REQUEST_APPROVED, "Your request to join Devs was approved", "GROUP_CHAT"],
-  [ChatEvents.GROUP_JOIN_REQUEST_REJECTED, "Your request to join Devs wasn't approved", "NOTIFICATIONS"],
+  [ChatEvents.GROUP_JOIN_REQUEST_REJECTED, "Your request to join Devs wasn’t approved", "NOTIFICATIONS"],
 ])("%s → requester only", async (type, body, screen) => {
   await deliver(type, {
     roomId: "room-1",

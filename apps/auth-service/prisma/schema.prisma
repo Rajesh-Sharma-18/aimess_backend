@@ -56,6 +56,7 @@ model AuthUser {
   status               AccountStatus        @default(ACTIVE)
   suspendedAt          DateTime?            @db.Timestamptz(3)
   suspendedReason      String?
+  suspendedUntil       DateTime?            @db.Timestamptz(3) // null = no expiry
   suspendedBy          String?              @db.Uuid // ops user id
   // Soft delete with 30-day grace period (SOW §4)
   deletionRequestedAt  DateTime?            @db.Timestamptz(3)

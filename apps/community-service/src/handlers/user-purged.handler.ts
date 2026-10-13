@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 import type { UserPurgedPayload } from "@aimess/shared-types";
 
 import { prisma } from "../config/prisma.js";
+import { communityService } from "../services/community.service.js";
 
 /**
  * Erase this service's copy of a purged user's personal data.
@@ -36,4 +37,12 @@ export async function handleUserPurged(data: UserPurgedPayload): Promise<void> {
       `user.purged: erased ${String(members.count)} community member snapshot(s) for ${data.userId}`
     );
   }
+
+  // Owned communities go to the successor; nobody left → the existing close.
+  await communityService.adminApplySystemBan(
+    data.userId,
+    "system",
+    null,
+    "ADMIN_DELETED"
+  );
 }

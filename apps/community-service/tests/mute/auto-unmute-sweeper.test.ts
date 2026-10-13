@@ -97,15 +97,15 @@ describe("communityService.expireDueMutes — auto-unmute sweep", () => {
       communityId: CID,
       userId: U1,
     });
-    // … and posts the SAME moderator-only MEMBER_UNMUTED audit line, so the
-    // moderators' trail closes the mute whether a human or the timer ended it.
-    // No `visibleToUserId` ⇒ moderator-scoped, so the member still gets no
-    // "You were unmuted" bubble, and `source: "auto"` records which path won.
+    // … and posts ONLY the member's PERSONAL "You can chat in X again" copy
+    // (no moderator line, no actor).
     expect(systemMessage).toHaveBeenCalledTimes(2);
+    expect(
+      systemMessage.mock.calls.map(([p]) => p.visibleToUserId).sort()
+    ).toEqual([U1, U2].sort());
     for (const [payload] of systemMessage.mock.calls) {
       expect(payload.systemMessageType).toBe("MEMBER_UNMUTED");
-      expect(payload.visibleToUserId).toBeUndefined();
-      expect(payload.metadata).toMatchObject({ source: "auto" });
+      expect(payload.metadata).toMatchObject({ source: "auto", auto: true });
     }
     // Auto-unmute is SILENT — no push to the member.
     expect(pushUnmuted).not.toHaveBeenCalled();

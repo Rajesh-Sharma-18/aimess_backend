@@ -226,6 +226,32 @@ describe("ban", () => {
 });
 
 describe("suspend", () => {
+  // §7: suspension hands spaces over (reasonCode ADMIN_SUSPENDED) and revokes sessions.
+  it.each([
+    ["suspendUser", () =>
+      userManagementService.suspendUser(
+        USER_ID,
+        { reason: REASON, durationDays: 7, notifyUser: true, note: null } as SuspendUserInput,
+        ACTOR,
+        CTX
+      )],
+    ["time-boxed banUser", () =>
+      userManagementService.banUser(USER_ID, banInput({ durationDays: 3 }), ACTOR, CTX)],
+  ])("%s runs the space cascade as ADMIN_SUSPENDED and forces logout", async (_label, run) => {
+    const { communityClient } = jest.requireMock("../../src/grpc/community.client.js");
+    const { chatClient } = jest.requireMock("../../src/grpc/chat.client.js");
+    const { publishUserSuspendedSafe } = jest.requireMock(
+      "../../src/messaging/publish-admin-user-event.js"
+    );
+    await run();
+    const req = expect.objectContaining({ userId: USER_ID, reasonCode: "ADMIN_SUSPENDED" });
+    expect(communityClient.adminApplySystemBan).toHaveBeenCalledWith(req);
+    expect(chatClient.adminApplySystemBan).toHaveBeenCalledWith(req);
+    expect(publishUserSuspendedSafe).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: USER_ID, forceLogout: true })
+    );
+  });
+
   it("bumps", async () => {
     await userManagementService.suspendUser(
       USER_ID,

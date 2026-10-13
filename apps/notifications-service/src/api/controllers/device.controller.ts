@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 
-import { parseSupportedLocale } from "@aimess/constants";
+import { parseSupportedLocale, resolveTimeZone } from "@aimess/constants";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import { deviceTokenService } from "../../services/device-token.service.js";
@@ -43,6 +43,7 @@ export const registerDevice = asyncHandler(
       // which is `vi` in production) and the send path falls back to the
       // account setting.
       locale: parseSupportedLocale(body.lang),
+      timezone: body.timezone ? resolveTimeZone(body.timezone) : null,
     });
 
     return res.status(200).json(new ApiResponse(null, "Device registered"));

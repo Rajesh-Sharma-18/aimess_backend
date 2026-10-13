@@ -30,7 +30,7 @@ export interface AutoDeleteInput {
 }
 
 /** WhatsApp: only admins change a group's disappearing-messages timer. */
-const AUTO_DELETE_ROLES = ["ADMIN", "MODERATOR"];
+const AUTO_DELETE_ROLES = ["ADMIN"];
 
 /**
  * "Automatically Delete Messages" for GROUP chats — the group twin of
@@ -43,7 +43,7 @@ const AUTO_DELETE_ROLES = ["ADMIN", "MODERATOR"];
  * injected adapters rather than shared logic.
  *
  * What differs from private, and why:
- *   - ONE timer for the room, changeable only by ADMIN/MODERATOR, but every
+ *   - ONE timer for the room, changeable only by the leader (ADMIN), but every
  *     member's messages follow it.
  *   - "After Viewing" is NOT SUPPORTED and is rejected with a stable domain
  *     error. It used to arm on the FIRST recipient's read receipt — justified

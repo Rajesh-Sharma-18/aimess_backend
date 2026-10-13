@@ -20,7 +20,7 @@ describe("buildGroupSystemFallbackText — ROLE_CHANGED", () => {
       oldRole: "MEMBER",
       newRole: "ADMIN",
     });
-    expect(text).toBe("Peter Parker is now the group admin");
+    expect(text).toBe("Peter Parker is now the group leader");
   });
 
   it("POSITIVE: target viewer sees the self form of an admin hand-off", () => {
@@ -35,7 +35,7 @@ describe("buildGroupSystemFallbackText — ROLE_CHANGED", () => {
       },
       "target-1"
     );
-    expect(text).toBe("You are now the group admin");
+    expect(text).toBe("You’re now the group leader");
   });
 
   it("POSITIVE: member role change renders as resulting state", () => {
@@ -135,24 +135,24 @@ describe("buildGroupSystemFallbackText — MEMBER_REMOVED", () => {
   it("POSITIVE: the admin who removed the member reads it first-person", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "actor-1")
-    ).toBe("You removed Tom from the group");
+    ).toBe("You removed Tom");
   });
 
   it("POSITIVE: another member still reads the actor's name", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "bystander-1")
-    ).toBe("Smiley Creatures removed Tom from the group");
+    ).toBe("Smiley Creatures removed Tom");
   });
 
   it("POSITIVE: the removed member keeps the existing self copy", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL, "target-1")
-    ).toBe("Smiley Creatures removed You from the group");
+    ).toBe("Smiley Creatures removed you");
   });
 
   it("POSITIVE: the stored (viewer-less) text stays third-person", () => {
     expect(buildGroupSystemFallbackText("MEMBER_REMOVED", REMOVAL)).toBe(
-      "Smiley Creatures removed Tom from the group"
+      "Smiley Creatures removed Tom"
     );
   });
 
@@ -165,7 +165,7 @@ describe("buildGroupSystemFallbackText — MEMBER_REMOVED", () => {
         { actorId: null, targetUserId: "target-1", targetName: "Tom" },
         "bystander-1"
       )
-    ).toBe("Administrator removed Tom from the group");
+    ).toBe("AI Mess Administrator removed Tom");
   });
 
   it("POSITIVE: the actor line is localized, not English-only", () => {
@@ -182,7 +182,7 @@ describe("personalizeGroupSystemMessageForViewer — MEMBER_REMOVED", () => {
   // Realtime (socket fan-out) and history (REST serializer) both re-render the
   // stored row through this one function, so asserting it here is asserting
   // that the two surfaces cannot disagree.
-  const STORED = "Smiley Creatures removed Tom from the group";
+  const STORED = "Smiley Creatures removed Tom";
   const REMOVAL = {
     actorId: "actor-1",
     actorName: "Smiley Creatures",
@@ -198,7 +198,7 @@ describe("personalizeGroupSystemMessageForViewer — MEMBER_REMOVED", () => {
         STORED,
         "actor-1"
       )
-    ).toBe("You removed Tom from the group");
+    ).toBe("You removed Tom");
   });
 
   it("POSITIVE: leaves another member's row untouched", () => {
@@ -233,21 +233,21 @@ describe("buildGroupSystemFallbackText — Backoffice (Super Admin) actor", () =
     for (const row of [BO, LEGACY]) {
       for (const viewer of [undefined, "bystander-1"]) {
         expect(buildGroupSystemFallbackText("MEMBER_REMOVED", row, viewer)).toBe(
-          "Administrator removed Tom from the group"
+          "AI Mess Administrator removed Tom"
         );
         expect(buildGroupSystemFallbackText("MEMBER_BANNED", row, viewer)).toBe(
-          "Administrator banned Tom"
+          "AI Mess Administrator banned Tom"
         );
         expect(
           buildGroupSystemFallbackText("MEMBER_UNBANNED", row, viewer)
-        ).toBe("Administrator unbanned Tom");
+        ).toBe("AI Mess Administrator unbanned Tom");
       }
     }
   });
 
   it("POSITIVE: the removed member keeps the self copy", () => {
     expect(buildGroupSystemFallbackText("MEMBER_REMOVED", BO, "target-1")).toBe(
-      "Administrator removed You from the group"
+      "AI Mess Administrator removed you"
     );
   });
 
@@ -276,10 +276,10 @@ describe("buildGroupSystemFallbackText — Backoffice (Super Admin) actor", () =
   it("POSITIVE: localized through SYS_NAME_ADMINISTRATOR", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", BO, "bystander-1", "vi")
-    ).toBe("Quản trị viên đã xóa Tom khỏi nhóm");
+    ).toBe("AI Mess Administrator đã xóa Tom khỏi nhóm");
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", BO, "bystander-1", "th")
-    ).toBe("ผู้ดูแลระบบนำ Tom ออกจากกลุ่ม");
+    ).toBe("AI Mess Administrator นำ Tom ออกจากกลุ่ม");
   });
 
   // Realtime and history both re-render the stored row through this function.
@@ -291,7 +291,7 @@ describe("buildGroupSystemFallbackText — Backoffice (Super Admin) actor", () =
         "Rajesh Sharma banned Tom",
         "bystander-1"
       )
-    ).toBe("Administrator banned Tom");
+    ).toBe("AI Mess Administrator banned Tom");
   });
 
   it("NEGATIVE: an in-group admin is still named, never 'Administrator'", () => {
@@ -306,7 +306,7 @@ describe("buildGroupSystemFallbackText — Backoffice (Super Admin) actor", () =
     ).toBe("Group Owner banned Tom");
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", IN_GROUP, "actor-1")
-    ).toBe("You removed Tom from the group");
+    ).toBe("You removed Tom");
   });
 });
 
@@ -324,12 +324,12 @@ describe("buildGroupSystemFallbackText — historical actor resolution", () => {
   it("POSITIVE: an actor no longer in the group still resolves", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", HISTORIC, "bystander-1")
-    ).toBe("Viddhi Moneywala removed Spider Man from the group");
+    ).toBe("Viddhi Moneywala removed Spider Man");
   });
 
   it("POSITIVE: a target no longer in the group still resolves", () => {
     expect(
       buildGroupSystemFallbackText("MEMBER_ADDED", HISTORIC, "bystander-1")
-    ).toBe("Viddhi Moneywala added Spider Man to the group");
+    ).toBe("Viddhi Moneywala added Spider Man");
   });
 });

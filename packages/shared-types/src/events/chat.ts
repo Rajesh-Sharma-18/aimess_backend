@@ -14,6 +14,8 @@ export const ChatEvents = {
    */
   GROUP_MEMBER_MUTED: "chat.group_member_muted",
   GROUP_MEMBER_UNMUTED: "chat.group_member_unmuted",
+  /** Leadership handed over (manual or automatic) — pushed to the new leader only. */
+  GROUP_LEADER_CHANGED: "chat.group_leader_changed",
   // Private-group join requests. Values double as the notification row `type`
   // (the client contract names them literally).
   GROUP_JOIN_REQUESTED: "GROUP_JOIN_REQUESTED",
@@ -43,6 +45,17 @@ export type ChatGroupMemberAddedPayload = GroupPushImage & {
   /** The actor's group role at the add — an admin/moderator is named by it. */
   actorRole?: string;
   /** ISO-8601 timestamp captured at emit time. */
+  eventAt: string;
+};
+
+export type ChatGroupLeaderChangedPayload = GroupPushImage & {
+  roomId: string;
+  groupName: string;
+  /** The new leader — the only recipient. */
+  targetUserId: string;
+  /** Outgoing leader who handed over; "" when automatic. */
+  actorId: string;
+  auto: boolean;
   eventAt: string;
 };
 

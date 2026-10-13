@@ -37,7 +37,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     updateCommunity: jest.fn(),
     updateMemberRole: jest.fn(),
     findMemberMute: jest.fn().mockResolvedValue(null),
-    setCommunityAdmin: jest.fn(),
+    handOverAdmin: jest.fn(),
     findActiveMemberIds: jest.fn(),
     findActiveCategoryById: jest.fn(),
     countOwnedCommunities: jest.fn(async () => 0),
@@ -342,12 +342,11 @@ describe("transferAdmin() — dual community:member:updated", () => {
     repo.findById.mockResolvedValue(baseCommunity);
     repo.findMembership.mockResolvedValue({ role: "ADMIN", status: "ACTIVE" });
     repo.findMemberByUserId.mockResolvedValue(activeTarget);
-    repo.updateMemberRole.mockResolvedValue(undefined);
-    repo.setCommunityAdmin.mockResolvedValue(undefined);
+    repo.handOverAdmin.mockResolvedValue(true);
     repo.createAuditLog.mockResolvedValue(undefined);
   });
 
-  it("promotes the target to ADMIN and demotes the caller to MEMBER on the roster", async () => {
+  it("promotes the target to ADMIN and makes the former admin a MODERATOR on the roster", async () => {
     await communityService.transferAdmin(CID, ADMIN, TARGET);
 
     const memberCalls = pubRoom.mock.calls.filter(
@@ -359,7 +358,28 @@ describe("transferAdmin() — dual community:member:updated", () => {
       memberCalls.map(([, , , payload]) => [payload.userId, payload.role])
     );
     expect(byUser.get(TARGET)).toBe("ADMIN");
-    expect(byUser.get(ADMIN)).toBe("MEMBER");
+    expect(byUser.get(ADMIN)).toBe("MODERATOR");
+    expect(repo.handOverAdmin).toHaveBeenCalledWith(CID, ADMIN, TARGET);
+  });
+
+  it("returns the caller's community view as MODERATOR", async () => {
+    const data = await communityService.transferAdmin(CID, ADMIN, TARGET);
+    expect(data.role).toBe("MODERATOR");
+  });
+
+  it("loses a concurrent handover race with 403 and announces nothing", async () => {
+    repo.handOverAdmin.mockResolvedValue(false);
+    pubRoom.mockClear();
+    const sysMsg = publishCommunitySystemMessageForChatSafe as jest.Mock;
+    sysMsg.mockClear();
+
+    await expect(
+      communityService.transferAdmin(CID, ADMIN, TARGET)
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(sysMsg).not.toHaveBeenCalled();
+    expect(
+      pubRoom.mock.calls.filter(([, , evt]) => evt === "community:member:updated")
+    ).toHaveLength(0);
   });
 
   it("posts exactly ONE community-wide ROLE_CHANGED line and no personal ROLE_CHANGED_SELF (no duplicate bubbles for new/outgoing admin)", async () => {
@@ -378,7 +398,13 @@ describe("transferAdmin() — dual community:member:updated", () => {
       communityId: CID,
       systemMessageType: "ROLE_CHANGED",
       triggeredByUserId: ADMIN,
-      metadata: { targetUserId: TARGET, oldRole: "MEMBER", newRole: "ADMIN" },
+      metadata: {
+        targetUserId: TARGET,
+        oldRole: "MEMBER",
+        newRole: "ADMIN",
+        actorRole: "ADMIN",
+        formerAdminNewRole: "MODERATOR",
+      },
     });
     expect(community.visibleToUserId).toBeUndefined();
 

@@ -29,8 +29,8 @@ export function resolveApiErrorCode(
   return resolveErrorCode(statusCode);
 }
 
-/** Field-level validation failures, keyed by dotted path. */
-export type ApiErrorDetails = Record<string, string[]>;
+/** Field-level validation failures keyed by dotted path, or a domain error's structured context. */
+export type ApiErrorDetails = Record<string, unknown>;
 
 /**
  * The structured error envelope every HTTP surface answers with.

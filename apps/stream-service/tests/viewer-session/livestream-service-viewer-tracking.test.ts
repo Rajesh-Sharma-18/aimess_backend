@@ -962,7 +962,7 @@ describe("LivestreamService â€” publisher reconnect-grace (RECONNECTING)", 
       status: "RECONNECTING",
       disconnectedAt: new Date(Date.now() - 120_000),
     });
-    const { service, viewerSessionRepo, eventPublisher } = makeDeps({
+    const { service, streamRepo, viewerSessionRepo, eventPublisher } = makeDeps({
       streamRepo: {
         findStaleReconnectingStreams: jest.fn().mockResolvedValue([stream]),
         updateById: jest.fn().mockResolvedValue({
@@ -979,6 +979,10 @@ describe("LivestreamService â€” publisher reconnect-grace (RECONNECTING)", 
     expect(viewerSessionRepo.closeAllOpenForStream).toHaveBeenCalledWith(
       "stream-1",
       expect.any(Date)
+    );
+    expect(streamRepo.claimEnded).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({ endedReason: "CONNECTION_LOST", endedBy: null })
     );
     expect(eventPublisher).toHaveBeenCalledWith(
       "stream.ended",

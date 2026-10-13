@@ -418,7 +418,8 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     expect(messages.map((m) => m.id)).toEqual(["rolechg", "msg"]);
 
     // Same rows, moderator viewer: HIDDEN stays hidden (it is hidden from
-    // EVERYONE), but the MODERATION-restricted unban line is now readable.
+    // EVERYONE), but the MODERATION-restricted removal (v2) and unban lines are
+    // now readable.
     const asModerator = await repo.findByRoomIdTimeline({
       roomId: ROOM_ID,
       userId: USER_ID,
@@ -430,6 +431,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       viewerRole: "moderator",
     });
     expect(asModerator.messages.map((m) => m.id)).toEqual([
+      "removed",
       "unbanned",
       "rolechg",
       "msg",
@@ -490,7 +492,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       limit: 30,
       viewerIsActiveMember: true,
     });
-    expect(viewer.messages.map((m) => m.id)).toEqual(["muted-mine", "msg"]);
+    expect(viewer.messages.map((m) => m.id)).toEqual(["muted-mine", "unmuted-mine", "msg"]);
 
     // The other member reads the SAME room and sees only their own lines —
     // never USER_ID's mute/unmute lines.
@@ -505,6 +507,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     });
     expect(otherViewer.messages.map((m) => m.id)).toEqual([
       "muted-other",
+      "unmuted-other",
       "msg",
     ]);
   });
@@ -664,7 +667,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       limit: 20,
     });
 
-    expect(messages.map((m) => m.id)).toEqual(["muted-mine", "msg"]);
+    expect(messages.map((m) => m.id)).toEqual(["muted-mine", "unmuted-mine", "msg"]);
   });
 
   it("findLatestPersonalByRooms (community-list personal lastActivity overlay) surfaces the affected member's own MEMBER_MUTED row but excludes hidden MEMBER_UNMUTED", async () => {
@@ -687,7 +690,8 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     // hidden and must not win the preview slot.
     expect(match.visibleToUserId).toBe(USER_ID);
     expect(match.systemMessageType.$nin).not.toContain("MEMBER_MUTED");
-    expect(match.systemMessageType.$nin).toContain("MEMBER_UNMUTED");
+    // v2: the unmuted member's "You can chat in X again" copy is a real personal line.
+    expect(match.systemMessageType.$nin).not.toContain("MEMBER_UNMUTED");
   });
 
   it("findLatestPersonalByRooms excludes a legacy MEMBER_BANNED row — the list preview may not show what the timeline hides", async () => {
@@ -741,7 +745,7 @@ describe("assertCommunityReadAccess", () => {
       .mockResolvedValue({ id: ROOM_ID, status: "active", communityType }),
   });
 
-  it("allows an ACTIVE member without loading the room", async () => {
+  it("allows an ACTIVE member (room loaded once, for the closed-community gate)", async () => {
     const roomRepo = makeRoomRepo("PRIVATE");
     const res = await assertCommunityReadAccess(
       roomRepo as never,
@@ -751,8 +755,7 @@ describe("assertCommunityReadAccess", () => {
     );
     expect(res.canRead).toBe(true);
     expect(res.member).not.toBeNull();
-    // Members short-circuit — the room (visibility) is never loaded.
-    expect(roomRepo.findRoomById).not.toHaveBeenCalled();
+    expect(roomRepo.findRoomById).toHaveBeenCalledTimes(1);
   });
 
   it("allows a NON-member to read a PUBLIC community", async () => {
@@ -800,9 +803,9 @@ describe("assertCommunityReadAccess", () => {
         USER_ID
       )
     ).rejects.toMatchObject({ message: "USER_BANNED" });
-    // Denied on the membership row alone — never falls through to the
-    // PUBLIC non-member branch (an existing-but-banned member isn't one).
-    expect(roomRepo.findRoomById).not.toHaveBeenCalled();
+    // Never falls through to the PUBLIC non-member branch (an existing-but-banned
+    // member isn't one); the room is read once, for the closed-community gate.
+    expect(roomRepo.findRoomById).toHaveBeenCalledTimes(1);
   });
 
   // -------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import {
   startMuteSweeper,
   backfillActiveMutesToChat,
 } from "./jobs/mute-sweeper.js";
+import { startAdminInactivityJob } from "./jobs/admin-inactivity.js";
 
 function getRawCommandErrorMessage(error: unknown): string {
   if (!error || typeof error !== "object") return "";
@@ -220,6 +221,7 @@ async function start() {
     // migration backfill, best-effort) then start the per-minute expiry sweep.
     void backfillActiveMutesToChat();
     startMuteSweeper();
+    startAdminInactivityJob();
 
     app.listen(env.COMMUNITY_SERVICE_PORT, "0.0.0.0", () => {
       logger.info(

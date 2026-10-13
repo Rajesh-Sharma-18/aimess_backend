@@ -14,6 +14,8 @@ export const registerDeviceSchema = z.object({
   // narrows it via `parseSupportedLocale`, which returns null for anything
   // this build does not carry.
   lang: z.string().min(2).max(16).optional(),
+  // IANA zone for times inside push copy; invalid values are stored as "UTC".
+  timezone: z.string().min(1).max(64).optional(),
 });
 
 export type RegisterDeviceInput = z.infer<typeof registerDeviceSchema>;

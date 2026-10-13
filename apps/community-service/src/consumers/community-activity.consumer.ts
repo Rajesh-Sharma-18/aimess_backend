@@ -3,6 +3,7 @@ import amqp from "amqplib";
 
 import { env } from "../config/env.js";
 import { communityRepository } from "../repositories/community.repository.js";
+import { touchAdminActivity } from "../lib/admin-activity.js";
 
 /**
  * Consumes chat-service's community-activity events and bumps
@@ -61,6 +62,8 @@ interface CommunityActivityMessage {
 
 const REACTION_ADDED = "reaction_added";
 const REACTION_REMOVED = "reaction_removed";
+// chat-service: the admin opened / marked read — activity only, no list bump.
+const ADMIN_ACTIVE = "admin_active";
 
 export async function startCommunityActivityConsumer(): Promise<void> {
   const connection = await amqp.connect(env.RABBITMQ_URL);
@@ -92,7 +95,11 @@ export async function startCommunityActivityConsumer(): Promise<void> {
       try {
         if (parsed.type === ACTIVITY_EVENT) {
           const { communityId } = parsed.data;
-          if (parsed.data.type === REACTION_ADDED) {
+          if (parsed.data.type === ADMIN_ACTIVE) {
+            if (communityId && parsed.data.senderUserId) {
+              touchAdminActivity(communityId, parsed.data.senderUserId);
+            }
+          } else if (parsed.data.type === REACTION_ADDED) {
             if (
               communityId &&
               parsed.data.reactionMessageId &&
@@ -127,6 +134,14 @@ export async function startCommunityActivityConsumer(): Promise<void> {
             }
           } else {
             const at = new Date(parsed.data.lastMessageAt);
+            // A message the admin sent counts as admin activity (inactivity handover).
+            if (
+              communityId &&
+              parsed.data.senderUserId &&
+              !parsed.data.systemMessageType
+            ) {
+              touchAdminActivity(communityId, parsed.data.senderUserId);
+            }
             if (communityId && !Number.isNaN(at.getTime())) {
               const updatedCount = await communityRepository.updateLastActivity(
                 communityId,

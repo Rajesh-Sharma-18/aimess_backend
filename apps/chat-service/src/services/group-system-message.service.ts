@@ -50,6 +50,7 @@ export const ADMIN_ACTIVITY_BY_SYSTEM_EVENT: Partial<
   ADMIN_ASSIGNED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
   ADMIN_REMOVED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
   OWNERSHIP_TRANSFERRED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
+  LEADER_CHANGED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
 };
 
 /**
@@ -139,13 +140,6 @@ export interface PostSystemMessageParams {
  * badges. The whole operation is best-effort: failures are logged, never thrown,
  * so a lifecycle action never fails because its system message did.
  */
-const ROLE_NAMED_EVENTS = new Set<string>([
-  "MEMBER_ADDED",
-  "MEMBER_REMOVED",
-  "MEMBER_BANNED",
-  "MEMBER_UNBANNED",
-]);
-
 export class GroupSystemMessageService {
   constructor(
     private readonly messageRepo: GroupMessageRepository,
@@ -204,7 +198,9 @@ export class GroupSystemMessageService {
     }
 
     try {
-      const ids = [actorId, targetUserId, ...targetUserIds].filter(
+      const senderId =
+        typeof inData.senderId === "string" ? inData.senderId : null;
+      const ids = [actorId, targetUserId, senderId, ...targetUserIds].filter(
         (id): id is string => Boolean(id)
       );
       const snapshots = ids.length
@@ -224,23 +220,6 @@ export class GroupSystemMessageService {
 
       const targetNames = targetUserIds.map((id) => this.nameOf(snapshots, id));
 
-      // A moderation line names an admin/moderator by role ("Admin removed Tom …"),
-      // stamped at action time; a Backoffice line is already "Administrator".
-      let actorRole: string | undefined;
-      if (
-        ROLE_NAMED_EVENTS.has(systemEvent) &&
-        actorId &&
-        !params.skipAdminActivity &&
-        !inData.actorRole
-      ) {
-        try {
-          actorRole = (await this.memberRepo.findByRoomAndUser(roomId, actorId))
-            ?.role;
-        } catch {
-          // No role: the line names the person, as before.
-        }
-      }
-
       // Member added / removed read "{actor} added {target} to {group}", so the
       // group's name is captured with the line — the same event-time snapshot
       // the names above are. Best-effort: no row → the line reads "… the group".
@@ -258,8 +237,8 @@ export class GroupSystemMessageService {
         actorName,
         ...(targetUserId ? { targetUserId, targetName } : {}),
         ...(targetUserIds.length ? { targetUserIds, targetNames } : {}),
+        ...(senderId ? { senderName: this.nameOf(snapshots, senderId) } : {}),
         ...(groupName ? { groupName } : {}),
-        ...(actorRole && actorRole !== "MEMBER" ? { actorRole } : {}),
       };
 
       const text = buildGroupSystemFallbackText(systemEvent, systemData);
