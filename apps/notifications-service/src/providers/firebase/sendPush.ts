@@ -175,24 +175,9 @@ export async function sendPush({
   // icon" from a push payload. Every OS-drawn card therefore came out as the app launcher icon
   // beside the entity's avatar blown up to full width. The client puts it in the icon slot, but
   // only ever sees the push when it owns the rendering.
-  // CALL_MISSED is carved back out, and this is not cosmetic — it is a live production bug.
-  // Going data-only across the board relocated the copy into `pushTitle`/`pushBody` (below),
-  // but the Android parser that reads those keys shipped ~an hour AFTER this line changed, so
-  // every build in the field renders a missed call with a null title. Android's CALL-category
-  // fallback title is the literal string "Incoming call" — so hanging up an unanswered ring
-  // posts a vibrating, high-importance card on the callee's phone announcing an incoming call
-  // that does not exist, and the missed call itself is never reported.
-  //
-  // Restoring the `notification` block for this ONE type makes the OS draw the correct banner
-  // on every installed build immediately, with no client release. It also restores the
-  // pre-regression `androidPriority` (normal — a missed call is not time-critical; see the
-  // comment in call.consumer.ts's handleCallMissed).
-  //
-  // Widen this back to `isAndroid` only once a build containing the `pushTitle`/`pushBody`
-  // parser is measurably in the field. The cost of leaving it carved out is the one the
-  // comment above describes: the OS renders the avatar full-bleed rather than as a circular
-  // large icon. That is strictly better than announcing a phantom call.
-  const androidOwnsRendering = isAndroid && kind !== "CALL_MISSED";
+  // AIMESS-113: CALL_MISSED is app-drawn too (round caller icon); builds without the
+  // pushTitle/pushBody parser may show a missed call as "Incoming call".
+  const androidOwnsRendering = isAndroid;
   const omitNotification = dataOnly || androidOwnsRendering;
 
   // The localized copy lived in the `notification` block the client no longer receives, so carry
@@ -240,22 +225,9 @@ export async function sendPush({
         priority: androidPriority,
         ttl: ttl * 1000,
         ...(collapseKey ? { collapseKey } : {}),
-        // OS-drawn Android card MUST name its channel. Without `channelId` FCM
-        // falls back to `fcm_fallback_notification_channel` (low importance,
-        // silent) — a CALL_MISSED banner then never surfaces. The only
-        // OS-drawn call push today is CALL_MISSED (carved out above), which
-        // belongs on the CALLS channel; every other call-related push is
-        // data-only and rendered by the app on its own channel.
-        ...(omitNotification
+        ...(omitNotification || !image
           ? {}
-          : {
-              notification: {
-                ...(kind === "CALL_MISSED" ? { channelId: "calls_v2" } : {}),
-                // The OS draws this image full-bleed, never as a round icon, so a missed
-                // call's caller avatar turned into a stretched banner photo (AIMESS-113).
-                ...(image && kind !== "CALL_MISSED" ? { imageUrl: image } : {}),
-              },
-            }),
+          : { notification: { imageUrl: image } }),
       },
 
       // ── APNs (iOS) ───────────────────────────────────────────────────────

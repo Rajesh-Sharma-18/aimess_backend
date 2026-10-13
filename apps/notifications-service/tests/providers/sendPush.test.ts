@@ -110,23 +110,8 @@ describe("sendPush — platform collapse/grouping headers", () => {
     expect(arg.webpush.headers.Topic).toBe(oversized);
   });
 
-  // Regression guard for the Android missed-call: without `channelId`, FCM falls
-  // back to the silent low-importance channel and the user never sees or hears it.
-  it("stamps channelId=calls_v2 (the app's call channel) on the CALL_MISSED Android notification block", async () => {
-    await sendPush({
-      token: "tok1",
-      title: "Missed call",
-      body: "from Alice",
-      platform: "ANDROID",
-      collapseKey: "call:missed:call123",
-      data: { type: "CALL_MISSED", callId: "call123" },
-    });
-
-    const arg = sendMock.mock.calls[0][0];
-    expect(arg.android.notification.channelId).toBe("calls_v2");
-  });
-
-  it("keeps the caller avatar off the OS-drawn CALL_MISSED Android card (it renders full-bleed)", async () => {
+  // AIMESS-113: the app draws missed calls (round caller icon), so Android gets data-only + copy.
+  it("sends CALL_MISSED data-only on Android with pushTitle/pushBody and no image", async () => {
     await sendPush({
       token: "tok1",
       title: "Missed call",
@@ -137,8 +122,10 @@ describe("sendPush — platform collapse/grouping headers", () => {
     });
 
     const arg = sendMock.mock.calls[0][0];
-    expect(arg.android.notification.channelId).toBe("calls_v2");
-    expect(arg.android.notification.imageUrl).toBeUndefined();
+    expect(arg.notification).toBeUndefined();
+    expect(arg.android.notification).toBeUndefined();
+    expect(arg.data.pushTitle).toBe("Missed call");
+    expect(arg.data.pushBody).toBe("from Alice");
   });
 
   it("does not stamp channelId on non-CALL_MISSED Android notifications", async () => {
