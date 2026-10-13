@@ -116,11 +116,12 @@ describe("notification copy follows the reader's current language", () => {
       "AUDIO" | "VIDEO",
       Parameters<typeof t>[0],
     ][] = [
-      ["ENDED", "INCOMING", "AUDIO", "NOTIF_CALL_COMPLETED_VOICE"],
-      ["ENDED", "OUTGOING", "AUDIO", "NOTIF_CALL_COMPLETED_VOICE"],
+      // ENDED with 0s never connected: unanswered (contract §9).
+      ["ENDED", "INCOMING", "AUDIO", "NOTIF_CALL_MISSED_VOICE"],
+      ["ENDED", "OUTGOING", "AUDIO", "NOTIF_CALL_NO_ANSWER_VOICE"],
       ["MISSED", "INCOMING", "AUDIO", "NOTIF_CALL_MISSED_VOICE"],
-      ["ENDED", "INCOMING", "VIDEO", "NOTIF_CALL_COMPLETED_VIDEO"],
-      ["ENDED", "OUTGOING", "VIDEO", "NOTIF_CALL_COMPLETED_VIDEO"],
+      ["ENDED", "INCOMING", "VIDEO", "NOTIF_CALL_MISSED_VIDEO"],
+      ["ENDED", "OUTGOING", "VIDEO", "NOTIF_CALL_NO_ANSWER_VIDEO"],
       ["MISSED", "INCOMING", "VIDEO", "NOTIF_CALL_MISSED_VIDEO"],
     ];
     for (const [status, direction, callType, key] of cases) {

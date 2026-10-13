@@ -205,3 +205,59 @@ describe("handleCallActivity", () => {
     expect(missedPushes()).toHaveLength(1);
   });
 });
+
+describe("handleCallActivity — contract §9 outcomes", () => {
+  type Row = PushInput & {
+    copy: (locale: "en" | "vi" | "th") => { body: string };
+  };
+  const bodies = () => {
+    const rows = inboxRows() as Row[];
+    return {
+      caller: rows.find((r) => r.userId === CALLER)!,
+      callee: rows.find((r) => r.userId === CALLEE)!,
+    };
+  };
+
+  it("BUSY is unanswered: missed row + missed push for the callee", async () => {
+    await handleCallActivity({ ...payload, status: "BUSY", endReason: "busy", ringDurationSec: 0 });
+    const { caller, callee } = bodies();
+    expect(caller.copy("en").body).toBe("No answer");
+    expect(callee.copy("en").body).toBe("Missed voice call");
+    expect(callee.data.markRead).toBeUndefined();
+    expect(missedPushes()).toHaveLength(1);
+  });
+
+  it("DECLINED sends no push; the callee's row lands read", async () => {
+    await handleCallActivity({ ...payload, status: "DECLINED", endReason: "declined" });
+    const { caller, callee } = bodies();
+    expect(caller.copy("en").body).toBe("Call declined");
+    expect(callee.copy("en").body).toBe("You declined a voice call");
+    expect(callee.copy("th").body).toBe("คุณปฏิเสธสายสนทนา");
+    expect(callee.data.markRead).toBe("true");
+    expect(missedPushes()).toHaveLength(0);
+  });
+
+  it("callee rejecting a ring (CANCELLED + endReason declined) reads declined, no push", async () => {
+    await handleCallActivity({ ...payload, status: "CANCELLED", endReason: "declined", callType: "VIDEO" });
+    const { caller, callee } = bodies();
+    expect(caller.copy("en").body).toBe("Call declined");
+    expect(callee.copy("en").body).toBe("You declined a video call");
+    expect(callee.copy("vi").body).toBe("Bạn đã từ chối cuộc gọi video");
+    expect(callee.data.endReason).toBe("declined");
+    expect(missedPushes()).toHaveLength(0);
+  });
+
+  it("ENDED under 1s (failed) is unanswered: missed row + push, never 'Voice call'", async () => {
+    await handleCallActivity({ ...payload, status: "ENDED", durationSec: 0, endReason: "failed" });
+    const { caller, callee } = bodies();
+    expect(caller.copy("en").body).toBe("No answer");
+    expect(callee.copy("en").body).toBe("Missed voice call");
+    expect(missedPushes()).toHaveLength(1);
+  });
+
+  it("caller-cancelled ring still pushes missed", async () => {
+    await handleCallActivity({ ...payload, status: "CANCELLED", endReason: "canceled" });
+    expect(bodies().callee.copy("en").body).toBe("Missed voice call");
+    expect(missedPushes()).toHaveLength(1);
+  });
+});

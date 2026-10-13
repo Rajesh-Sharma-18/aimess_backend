@@ -6,6 +6,7 @@ import {
   personalizeCommunitySystemMessageForViewer,
   personalizeGroupSystemMessageForViewer,
   personalizePrivateSystemMessageForViewer,
+  isCallContentType,
   isPersonalizableSystemContentType,
   STORED_TEXT_LOCALE,
   type CommunitySystemMessageType,
@@ -174,7 +175,10 @@ function withRebuiltPreviewText(
   // English by the publisher for the same reason a SYSTEM sentence is: one
   // broadcast, many languages. Swap it for this socket's, then stop — there is
   // no `systemEvent` to rebuild from.
-  if (contentType !== "SYSTEM") {
+  if (
+    contentType !== "SYSTEM" &&
+    !(isCallContentType(contentType) && preview.systemEvent)
+  ) {
     const label = localizeMessagePreview(storedText, contentType, locale);
     return label === storedText
       ? d

@@ -340,7 +340,18 @@ export class InboxService {
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: room.peer,
-      lastActivity: room.lastActivity,
+      lastActivity:
+        room.lastActivity && room.lastMessage
+          ? {
+              ...room.lastActivity,
+              preview: localizedActivityPreview(
+                String(room.lastActivity.preview ?? ""),
+                room.lastMessage as Parameters<typeof localizedActivityPreview>[1],
+                "PRIVATE",
+                userId
+              ),
+            }
+          : room.lastActivity,
       lastActivityAt: effectiveAtOf(room.lastActivity, room.lastMessageAt),
       isFriend: rel.isFriend,
       relationshipStatus: rel.relationshipStatus,

@@ -205,7 +205,7 @@ export const SYSTEM_MESSAGES = {
   SYS_CALL_LABEL_VIDEO: {
     vi: "Cuộc gọi video",
     en: "Video call",
-    th: "สายวิดีโอ",
+    th: "วิดีโอคอล",
   },
   // Title-cased twins, used ONLY where the label opens a standalone line rather
   // than a sentence — the completed-call preview, which has to read exactly like
@@ -220,7 +220,7 @@ export const SYSTEM_MESSAGES = {
   SYS_CALL_TITLE_VIDEO: {
     vi: "Cuộc gọi video",
     en: "Video Call",
-    th: "สายวิดีโอ",
+    th: "วิดีโอคอล",
   },
   SYS_CALL_RINGING: {
     vi: "{{label}} đang đổ chuông",
@@ -247,11 +247,8 @@ export const SYSTEM_MESSAGES = {
     en: "{{label}} failed",
     th: "{{label}}ล้มเหลว",
   },
-  // Perspective pair for a call that never connected. AiMess has no
-  // user-facing "cancelled" or "declined" call: whoever hung up first, the
-  // person who PLACED the call got no answer and the person who was RUNG
-  // missed it. `SYS_CALL_MISSED` below stays as the neutral, direction-less
-  // fallback for the stored text, which is written once and read by both.
+  // Perspective pair for an unanswered call (contract §9; declined has its own
+  // pair below). `SYS_CALL_MISSED` is the neutral stored-text fallback.
   SYS_CALL_NO_ANSWER: {
     vi: "Không trả lời",
     en: "No answer",

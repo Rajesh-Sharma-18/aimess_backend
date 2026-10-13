@@ -421,11 +421,9 @@ export const NOTIFICATION_MESSAGES = {
   NOTIF_CALL_INCOMING_VIDEO: {
     vi: "Cuộc gọi video đến",
     en: "Incoming video call",
-    th: "สายวิดีโอเข้า",
+    th: "วิดีโอคอลเข้า",
   },
-  // The CALLER's side of any call that never connected. There is no
-  // user-facing "cancelled"/"declined" call in AiMess — see
-  // buildCallActivityText for the single rule that produces this.
+  // The CALLER's side of an unanswered call (no answer, cancelled, busy, failed).
   NOTIF_CALL_NO_ANSWER_VOICE: {
     vi: "Không trả lời",
     en: "No answer",
@@ -458,7 +456,7 @@ export const NOTIFICATION_MESSAGES = {
   NOTIF_CALL_OUTGOING_VIDEO: {
     vi: "Cuộc gọi video đi",
     en: "Outgoing video call",
-    th: "สายวิดีโอออก",
+    th: "วิดีโอคอลออก",
   },
   NOTIF_CALL_DECLINED_VOICE: {
     vi: "Cuộc gọi bị từ chối",
@@ -478,7 +476,7 @@ export const NOTIFICATION_MESSAGES = {
   NOTIF_CALL_CANCELLED_VIDEO: {
     vi: "Cuộc gọi video đã hủy",
     en: "Cancelled video call",
-    th: "สายวิดีโอที่ถูกยกเลิก",
+    th: "วิดีโอคอลที่ถูกยกเลิก",
   },
   NOTIF_CALL_FAILED_VOICE: {
     vi: "Cuộc gọi thoại thất bại",
@@ -488,7 +486,7 @@ export const NOTIFICATION_MESSAGES = {
   NOTIF_CALL_FAILED_VIDEO: {
     vi: "Cuộc gọi video thất bại",
     en: "Failed video call",
-    th: "สายวิดีโอที่ล้มเหลว",
+    th: "วิดีโอคอลที่ล้มเหลว",
   },
   // Completed call WITH a known duration. `duration` is always the canonical
   // mm:ss / hh:mm:ss from formatCallDuration — never a re-derived number.
@@ -500,7 +498,7 @@ export const NOTIFICATION_MESSAGES = {
   NOTIF_CALL_ENDED_VIDEO: {
     vi: "Cuộc gọi video • {{duration}}",
     en: "Video call • {{duration}}",
-    th: "สายวิดีโอ • {{duration}}",
+    th: "วิดีโอคอล • {{duration}}",
   },
   // Completed call with NO duration recorded — never invent one.
   NOTIF_CALL_COMPLETED_VOICE: {
@@ -511,7 +509,7 @@ export const NOTIFICATION_MESSAGES = {
   NOTIF_CALL_COMPLETED_VIDEO: {
     vi: "Cuộc gọi video",
     en: "Video call",
-    th: "สายวิดีโอ",
+    th: "วิดีโอคอล",
   },
 
   // ── Account / security ──────────────────────────────────────────────────

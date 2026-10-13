@@ -1354,13 +1354,15 @@ export const callCopy = register("call", {
       status: string,
       direction: CallActivityDirection,
       durationSec: number,
-      ringDurationSec?: number | null
+      ringDurationSec?: number | null,
+      endReason?: string | null
     ): LocalizedCopy =>
     (locale) => ({
       title: peerName || "",
       body: buildCallActivityText({
         callType,
         status,
+        endReason,
         direction,
         durationSec,
         ringDurationSec,
@@ -1584,6 +1586,7 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "direction",
     "durationSec",
     "ringDurationSec",
+    "endReason",
   ],
 
   "account.banned": ["reason"],

@@ -146,10 +146,15 @@ export class CallChatMessageService {
     const callLabel =
       params.callType.toUpperCase() === "VIDEO" ? "VIDEO" : "AUDIO";
     const durationSec = Math.max(0, Math.floor(params.durationSec ?? 0));
+    const endReason = isTerminalCallStatus(status)
+      ? (params.endReason ??
+        resolveCallEndReason({ status, durationSec, endedBy: params.endedBy }))
+      : null;
     const text = buildCallTimelineText({
       callType: callLabel,
       status,
       durationSec,
+      endReason,
     });
     // Kind is derived from the CALL's own metadata (`call.type`), never from the
     // rendered text — VOICE_CALL / VIDEO_CALL for every state, so a call row is
@@ -162,10 +167,6 @@ export class CallChatMessageService {
     const systemEvent = isTerminalCallStatus(status)
       ? SystemEvent.CALL_ENDED
       : SystemEvent.CALL_STARTED;
-    const endReason = isTerminalCallStatus(status)
-      ? (params.endReason ??
-        resolveCallEndReason({ status, durationSec, endedBy: params.endedBy }))
-      : null;
     const systemData = {
       callId: params.callId,
       callType: callLabel,

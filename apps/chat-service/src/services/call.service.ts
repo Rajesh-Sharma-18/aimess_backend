@@ -1302,27 +1302,11 @@ export class CallService {
       "DECLINED",
       endedAt,
       0,
-      params.calleeId,
-      // A declined ring badges as missed on the callee's OTHER devices (they did
-      // not act there); the missed push now follows that same row. The declining
-      // device is excluded so it is not re-buzzed for a call it just dismissed.
-      params.sessionId
+      params.calleeId
     );
 
-    // The missed-call push for a decline is now owned by the `call.activity`
-    // projection above, NOT emitted inline here. That projection fires on every
-    // terminal transition and pushes to the callee whenever the row badges as
-    // missed (`isUnreadCallActivity`), with the acting device excluded — so the
-    // decliner's OTHER devices get the "Missed call from X" banner that matches
-    // the DECLINED history row, while the device that tapped Decline is not
-    // re-buzzed. Consolidating the push there is what keeps the badge and the
-    // push in lockstep across every settle path (decline, callee-ended ring,
-    // caller cut, timeout sweep); emitting a second `call.missed` here would
-    // double-push on the paths where the fan-out already fires one.
-    //
-    // The ring on the callee's other devices is still dismissed by the
-    // `call.cancelled` push above (reason "declined"), which shares the ring's
-    // collapse key and replaces it — the missed banner then lands after it.
+    // No missed push for a decline (contract §9): the callee's other devices
+    // only lose the ring via the `call.cancelled` push above.
 
     return updated;
   }
@@ -1558,9 +1542,7 @@ export class CallService {
         endedAt,
         0,
         params.userId,
-        // The callee ending an unanswered ring is still a call they missed (the
-        // CANCELLED row badges as such). Push it to their other devices, but
-        // skip the one that just hung up.
+        // Skips the hanging-up device if this ring still pushes as missed.
         params.sessionId,
         // Callee hanging up a ring is a decline; anything else here never connected.
         failed
@@ -1951,31 +1933,24 @@ export class CallService {
   }
 
   /**
-   * Busy callee (spec S5): no call row exists, but both sides still get one
-   * settled card - "Busy" for the caller, a missed call for the callee.
+   * Busy callee (spec S5): no call row exists, but it settles like any other
+   * unanswered ring — card, call-history row and the callee's missed push.
    */
   private async postBusyCardSafe(
     params: { callerId: string; calleeId: string; type?: string },
     roomId: string,
     at: Date
   ): Promise<void> {
-    if (!this.callChatMessages) return;
-    try {
-      await this.callChatMessages.post({
-        callId: randomUUID(),
-        callerId: params.callerId,
-        calleeId: params.calleeId,
-        privateRoomId: roomId,
-        callType: params.type || CallType.AUDIO,
-        outcome: "BUSY",
-        durationSec: 0,
-        endedAt: at,
-        endedBy: "SYSTEM",
-        endReason: "busy",
-      });
-    } catch (error) {
-      logger.warn(`CallService|busy card failed: ${String(error)}`);
-    }
+    const call = {
+      callId: randomUUID(),
+      callerId: params.callerId,
+      calleeId: params.calleeId,
+      privateRoomId: roomId,
+      groupId: null,
+      type: params.type || CallType.AUDIO,
+      initiatedAt: at,
+    } as Call;
+    await this.postCallChatMessageSafe(call, "BUSY", at, 0, "SYSTEM", undefined, "busy");
   }
 
   private ringDurationSecOf(
@@ -2703,7 +2678,8 @@ export class CallService {
         outcome,
         endedAt,
         durationSec,
-        endedBySessionId
+        endedBySessionId,
+        endReason
       );
     }
 
@@ -2751,7 +2727,8 @@ export class CallService {
     outcome: CallChatMessageOutcome,
     endedAt: Date,
     durationSec: number,
-    endedBySessionId?: string
+    endedBySessionId?: string,
+    endReason?: CallEndReason
   ): Promise<void> {
     if (call.groupId) return;
     const empty = { displayName: "", avatarUrl: "" };
@@ -2776,6 +2753,7 @@ export class CallService {
       calleeId: call.calleeId,
       callType: String(call.type ?? "").toUpperCase() || CallType.AUDIO,
       status: outcome,
+      ...(endReason ? { endReason } : {}),
       durationSec: Math.max(0, Math.floor(durationSec)),
       // Derived from the call record, never from the client: how long this call
       // actually rang. Only CANCELLED reads it.
@@ -2839,6 +2817,7 @@ export class CallService {
           durationSec: seconds,
           callerId: call.callerId,
           endedBy,
+          declinedBy: call.declinedBy ?? [],
         },
         contentExtra: {
           call: {
@@ -2849,6 +2828,7 @@ export class CallService {
             outcome,
             durationSec: seconds,
             callerId: call.callerId,
+            declinedBy: call.declinedBy ?? [],
           },
         },
       });
