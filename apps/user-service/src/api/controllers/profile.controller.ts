@@ -75,6 +75,20 @@ export const getPublicProfile = asyncHandler(
   }
 );
 
+/** `GET /users/by-username/:username` — the chat `@handle` tap; same rules as `getPublicProfile`. */
+export const getPublicProfileByUsername = asyncHandler(
+  async (req: Request, res: Response) => {
+    const profile = await userProfileService.getPublicProfileByUsername(
+      req.auth.userId,
+      req.params.username as string
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(profile, t("USER_PROFILE_FETCHED", req.locale)));
+  }
+);
+
 export const setCustomStatus = asyncHandler(async (req: Request, res: Response) => {
   const result = await customStatusService.set(
     req.auth.userId,
