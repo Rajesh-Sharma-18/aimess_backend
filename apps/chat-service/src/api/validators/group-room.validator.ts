@@ -39,6 +39,7 @@ export const createGroupSchema = z.object({
     .min(GROUP_MEMBER_MIN)
     .max(GROUP_MEMBER_MAX)
     .default(GROUP_MEMBER_MAX),
+  joinApproval: z.boolean().optional(),
 });
 
 export const updateGroupSchema = z.object({
@@ -51,4 +52,6 @@ export const updateGroupSchema = z.object({
     .min(GROUP_MEMBER_MIN)
     .max(GROUP_MEMBER_MAX)
     .optional(),
+  // true = private group: invite-link joins become admin-approved requests.
+  joinApproval: z.boolean().optional(),
 });

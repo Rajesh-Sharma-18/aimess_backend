@@ -197,20 +197,42 @@ describe("POST /api/auth/accounts/validate — purpose: login", () => {
     expect(res.body.error.code).toBe("AUTH_ACCOUNT_TAKEN");
   });
 
-  // Login's precedence decides these; step 1 must not pre-empt it with "use Google".
+  // AIMESS-62: account state is resolved at step 1 with login's own status + code.
   it.each([
-    ["banned", { status: "BANNED" }],
-    ["suspended/inactive", { status: "SUSPENDED" }],
+    ["deleted (deletedAt)", { deletedAt: new Date(), status: "PENDING_DELETION" }, 401, "AUTH_ACCOUNT_DELETED"],
+    ["PENDING_DELETION", { status: "PENDING_DELETION" }, 401, "AUTH_ACCOUNT_DELETED"],
+    ["DELETED", { status: "DELETED" }, 401, "AUTH_ACCOUNT_DELETED"],
+    ["banned", { status: "BANNED" }, 403, "ACCOUNT_BANNED"],
+    ["suspended", { status: "SUSPENDED" }, 401, "AUTH_ACCOUNT_NOT_ACTIVE"],
+    ["locked", { lockedUntil: new Date(Date.now() + 60_000) }, 401, "AUTH_ACCOUNT_LOCKED"],
+    ["deleted Google-only", { deletedAt: new Date(), passwordHash: null, linkedAccounts: [{ provider: "GOOGLE" }] }, 401, "AUTH_ACCOUNT_DELETED"],
+    ["banned Google-only", { status: "BANNED", passwordHash: null, linkedAccounts: [{ provider: "GOOGLE" }] }, 403, "ACCOUNT_BANNED"],
+  ])("%s -> %i %s", async (_label, overrides, status, code) => {
+    repo.findByAccountForLogin.mockResolvedValue(loginUser(overrides));
+
+    const res = await probe({ account: "tom", purpose: "login" });
+
+    expect(res.status).toBe(status);
+    expect(res.body.error.code).toBe(code);
+    if (code === "AUTH_ACCOUNT_LOCKED") {
+      expect(res.body.error.retryAfter).toBeGreaterThan(55);
+    }
+  });
+
+  it.each([
     ["deleted", { deletedAt: new Date() }],
+    ["banned", { status: "BANNED" }],
+    ["suspended", { status: "SUSPENDED" }],
     ["locked", { lockedUntil: new Date(Date.now() + 60_000) }],
-  ])("%s Google-only account -> plain AUTH_ACCOUNT_TAKEN", async (_label, overrides) => {
-    repo.findByAccountForLogin.mockResolvedValue(
-      loginUser({ passwordHash: null, linkedAccounts: [{ provider: "GOOGLE" }], ...overrides })
-    );
+    ["Google-only", { passwordHash: null, linkedAccounts: [{ provider: "GOOGLE" }] }],
+  ])("without purpose, %s keeps 409 AUTH_ACCOUNT_TAKEN", async (_label, overrides) => {
+    repo.findByAccountForLogin.mockResolvedValue(loginUser(overrides));
 
-    const res = await probe({ account: "social_user_123", purpose: "login" });
+    const res = await probe({ account: "tom" });
 
+    expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("AUTH_ACCOUNT_TAKEN");
+    expect(repo.findByAccountForLogin).not.toHaveBeenCalled();
   });
 
   it("without purpose, a Google-only account keeps AUTH_ACCOUNT_TAKEN (signup / old clients)", async () => {

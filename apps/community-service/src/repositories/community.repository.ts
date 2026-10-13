@@ -4215,8 +4215,25 @@ export const communityRepository = {
     createdBy: string;
     maxUses: number | null;
     expiresAt: Date | null;
+    activeKey?: string | null;
   }) {
     return prisma.communityInviteLink.create({ data });
+  },
+
+  /** Revokes every live link of the community (the reset). */
+  revokeAllInviteLinks(communityId: string) {
+    return prisma.communityInviteLink.updateMany({
+      where: { communityId, ...NOT_REVOKED },
+      data: { revokedAt: new Date(), activeKey: null },
+    });
+  },
+
+  /** Kills the legacy permanent code too, so a reset leaves no old door open. */
+  clearInvitationCode(communityId: string) {
+    return prisma.community.updateMany({
+      where: { id: communityId, invitationCode: { isSet: true } },
+      data: { invitationCode: { unset: true } },
+    });
   },
 
   findInviteLinkById(linkId: string) {
@@ -4245,11 +4262,10 @@ export const communityRepository = {
    * Returns null when the caller has none — the caller then mints a fresh one,
    * which is what makes the link roll over after a reset.
    */
-  findLatestReusableInviteLink(communityId: string, createdBy: string) {
+  findLatestReusableInviteLink(communityId: string) {
     return prisma.communityInviteLink.findFirst({
       where: {
         communityId,
-        createdBy,
         // Both fields are OPTIONAL, so an untouched row simply omits them — and
         // on Mongo `field: null` matches only documents where the field EXISTS
         // and is null. Each needs its own `isSet: false` alternative, ANDed so
@@ -4257,17 +4273,6 @@ export const communityRepository = {
         AND: [
           { OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }] },
           { OR: [{ maxUses: null }, { maxUses: { isSet: false } }] },
-          // Links now lapse, so an expired one must not be handed back as the
-          // community's live share link — the Share sheet would show a code
-          // that fails on redeem. A null/absent expiresAt is a pre-expiry row,
-          // which never lapses; anything else must still be in the future.
-          {
-            OR: [
-              { expiresAt: null },
-              { expiresAt: { isSet: false } },
-              { expiresAt: { gt: new Date() } },
-            ],
-          },
         ],
       },
       orderBy: { createdAt: "desc" },
@@ -4327,11 +4332,8 @@ export const communityRepository = {
       where.AND = [NOT_REVOKED];
       where.expiresAt = { lt: now };
     } else if (params.status === "active") {
-      // ANDed, not two `OR` keys — the second would overwrite the first.
-      where.AND = [
-        NOT_REVOKED,
-        { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
-      ];
+      // Links do not expire: live = not revoked.
+      where.AND = [NOT_REVOKED];
     }
     const [rows, total] = await Promise.all([
       prisma.communityInviteLink.findMany({
@@ -4372,8 +4374,9 @@ export const communityRepository = {
       if (link.maxUses !== null && link.usedCount >= link.maxUses) {
         return { count: 0 };
       }
+      // Not revoked: a redeem whose claim lands after a reset is refused.
       const result = await prisma.communityInviteLink.updateMany({
-        where: { id: linkId, usedCount: link.usedCount },
+        where: { id: linkId, usedCount: link.usedCount, ...NOT_REVOKED },
         data: { usedCount: { increment: 1 } },
       });
       if (result.count === 1) return { count: 1 };

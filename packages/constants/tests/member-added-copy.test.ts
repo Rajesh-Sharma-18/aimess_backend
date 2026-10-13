@@ -53,6 +53,11 @@ describe("member-added copy", () => {
     expect(kicked("en", MOD).body).toBe("John Smith removed Tom Brown from C");
   });
 
+  it("an admin who ADDS someone is named, not labelled by role", () => {
+    const byAdmin = groupCopy.memberAdded("testgp", "Harshil Vekariya", "Tom", "u-h", "u-tom", "ADMIN");
+    expect(byAdmin("en", "u-tom").body).toBe("Harshil Vekariya added You to testgp");
+  });
+
   it("group: same rule", () => {
     expect(group("en", "u-boyd").body).toBe(
       "Kristi Noem added You to Weekend Trip"

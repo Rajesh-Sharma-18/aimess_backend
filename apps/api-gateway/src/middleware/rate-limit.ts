@@ -153,7 +153,7 @@ function makeHandler(rule: string, scope: LimitScope) {
       scopeKey: scopeKey(req, scope),
       ip: req.ip,
       method: req.method,
-      endpoint: req.originalUrl.split("?")[0],
+      endpoint: redactInviteSecrets(req.originalUrl.split("?")[0]),
       platform: req.headers["x-platform"],
       requestId: getRequestId(req),
       current: info?.used,
@@ -624,3 +624,11 @@ export const streamRateLimiter = createLimiter({
   scope: "session",
   skip: skipStreamRateLimit,
 });
+
+// Invite codes/tokens in a path grant group/community entry - never log them.
+export function redactInviteSecrets(path: string): string {
+  return path.replace(
+    /(invite-links\/(?:preview\/)?(?!room\/)|\/invites\/|\/g\/|\/join\/)[^/]+/g,
+    "$1[redacted]"
+  );
+}

@@ -38,6 +38,7 @@ export function createGroupInviteLinkRoutes(
     ctrl.join
   );
   router.get("/room/:roomId", authenticate, ctrl.getActiveLinks);
+  router.post("/room/:roomId/reset", authenticate, ctrl.reset);
   router.post(
     "/room/:roomId/bulk-send",
     authenticate,

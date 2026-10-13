@@ -8,7 +8,7 @@ import {
   groupedTargetLabels,
   memberChangeText,
   PLATFORM_ADMIN_ACTOR_ID,
-  roleActorLabel,
+  moderationActorLabel,
   SYSTEM_ACTOR_ID,
   systemActorLabel,
 } from "../member-change-text.js";
@@ -176,7 +176,7 @@ export function buildCommunitySystemFallbackText(
   // admins and moderators are named by that role, never by their name.
   const actor = byBackoffice
     ? administratorActorLabel(locale)
-    : roleActorLabel(metadata.actorRole, locale) ??
+    : moderationActorLabel(type, metadata.actorRole, locale) ??
       (actorName || t("SYS_NAME_SOMEONE", locale));
   const target =
     (metadata.targetName as string) ||

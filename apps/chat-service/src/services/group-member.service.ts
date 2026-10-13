@@ -84,7 +84,10 @@ export class GroupMemberService {
      *  absent the roster is returned bare, exactly as before. */
     private readonly userSnapshotService?: UserSnapshotService,
     private readonly cacheRepo?: CacheRepository,
-    private readonly groupDisbander?: GroupDisbander
+    private readonly groupDisbander?: GroupDisbander,
+    private readonly joinRequests?: {
+      autoResolve(roomId: string, userId: string): Promise<void>;
+    }
   ) {}
 
   /**
@@ -269,6 +272,13 @@ export class GroupMemberService {
         .catch(() => undefined);
       throw err;
     }
+
+    // Got in some other way (direct add, public link) — close a PENDING request.
+    void this.joinRequests
+      ?.autoResolve(params.roomId, params.userId)
+      .catch((err: unknown) =>
+        logger.warn(`join-request auto-resolve failed room=${params.roomId}: ${String(err)}`)
+      );
 
     const systemEvent = opts?.systemEvent ?? SystemEvent.MEMBER_ADDED;
     if (!opts?.deferAnnouncements) {

@@ -128,6 +128,7 @@ import type { CommunityReconcileClient } from "../grpc/community.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import type { GroupJoinRequestRepository } from "../repositories/group-join-request.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import {
   resolveDisplayName,
@@ -189,7 +190,8 @@ export class PrivateMessageService {
     // back to the message's own stored data (see enrichMessages).
     private readonly groupRoomRepo?: GroupRoomRepository,
     private readonly groupMemberRepo?: GroupMemberRepository,
-    private readonly groupInviteLinkRepo?: GroupInviteLinkRepository
+    private readonly groupInviteLinkRepo?: GroupInviteLinkRepository,
+    private readonly groupJoinRequestRepo?: GroupJoinRequestRepository
   ) {}
 
   /**
@@ -2968,6 +2970,7 @@ if (!params.content?.text?.trim())
           inviteLinkRepo: this.groupInviteLinkRepo ?? null,
           roomRepo: this.groupRoomRepo,
           memberRepo: this.groupMemberRepo,
+          joinRequestRepo: this.groupJoinRequestRepo ?? null,
         };
         const [linkRow, memberRow] = await Promise.all([
           token
@@ -2977,7 +2980,7 @@ if (!params.content?.text?.trim())
             ? await this.groupMemberRepo.findByRoomAndUser(groupId, viewerId)
             : null,
         ]);
-        const { state, room } = await loadGroupInviteState<
+        const { state, room, requiresApproval } = await loadGroupInviteState<
           { roomId: string; name: string; avatar: string; memberCount: number },
           { roomId: string },
           { status?: string | null }
@@ -3027,6 +3030,7 @@ if (!params.content?.text?.trim())
             alreadyJoined,
             status,
             state,
+            requiresApproval,
           })
         );
       }

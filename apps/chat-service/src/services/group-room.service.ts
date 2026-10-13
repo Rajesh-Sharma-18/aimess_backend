@@ -683,6 +683,7 @@ export class GroupRoomService {
     avatar?: string;
     createdBy: string;
     memberLimit?: number;
+    joinApproval?: boolean;
   }): Promise<{ room: GroupRoom; member: GroupMember }> {
     const roomId = generateRoomId("grp");
 
@@ -695,6 +696,13 @@ export class GroupRoomService {
       createdBy: params.createdBy,
       memberLimit: params.memberLimit || MAX_GROUP_MEMBERS,
       memberCount: 1,
+      settings: {
+        allowMemberInviteLink: true,
+        allowMemberSendInviteLink: true,
+        allowReply: true,
+        allowPin: true,
+        joinApproval: params.joinApproval === true,
+      },
     });
 
     const member = await this.memberRepo.create({
@@ -870,6 +878,7 @@ export class GroupRoomService {
       description?: string;
       avatar?: string;
       memberLimit?: number;
+      joinApproval?: boolean;
     }
   ): Promise<GroupRoom> {
     const member = await this.memberRepo.findActiveByRoomAndUser(
@@ -889,7 +898,19 @@ export class GroupRoomService {
     // would post a system line into a room nobody may write to.
     assertGroupRoomWritable(room);
 
-    const updated = await this.roomRepo.updateRoom(roomId, data);
+    const { joinApproval, ...fields } = data;
+    const updated = await this.roomRepo.updateRoom(
+      roomId,
+      joinApproval === undefined
+        ? fields
+        : {
+            ...fields,
+            settings: {
+              ...((room.settings ?? {}) as Record<string, unknown>),
+              joinApproval,
+            },
+          }
+    );
     if (!updated) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
 
     // One system message per changed presentational field (memberLimit is silent).

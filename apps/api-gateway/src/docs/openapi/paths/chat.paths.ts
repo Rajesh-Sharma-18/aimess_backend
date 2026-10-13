@@ -1976,13 +1976,65 @@ const inviteLinkJoin = {
       // 404 CHAT_INVITE_LINK_NOT_FOUND, CHAT_GROUP_NO_LONGER_EXISTS,
       //     CHAT_GROUP_DISBANDED, CHAT_GROUP_NO_ACTIVE_ADMIN;
       // 409 CHAT_ALREADY_MEMBER.
-      ...successResponse("Joined group"),
+      // data.status: "JOINED" (data.room) | "PENDING" (data.request, private group).
+      ...successResponse("Joined group, or join request created (private group)"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
       "404": notFound,
       "409": conflict,
     },
+  },
+};
+
+const pathRoomId = { name: "roomId", in: "path", required: true, schema: { type: "string" } };
+const pathRequestId = { name: "requestId", in: "path", required: true, schema: { type: "string" } };
+const groupJoinRequestAction = (operationId: string, summary: string) => ({
+  post: {
+    tags: ["Chat — Groups"],
+    operationId,
+    summary,
+    security: [{ bearerAuth: [] }],
+    parameters: [pathRequestId],
+    // 400 CHAT_GROUP_JOIN_REQUEST_NOT_PENDING; 403 CHAT_INSUFFICIENT_PERMISSIONS;
+    // 404 CHAT_GROUP_JOIN_REQUEST_NOT_FOUND. data: { request: GroupJoinRequestDto }
+    responses: {
+      ...successResponse(summary),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+});
+
+const groupJoinRequestsByRoom = {
+  get: {
+    tags: ["Chat — Groups"],
+    operationId: "listGroupJoinRequests",
+    summary: "List PENDING join requests for a private group (ADMIN only)",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      pathRoomId,
+      { name: "cursor", in: "query", required: false, schema: { type: "string" } },
+      { name: "limit", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 50 } },
+    ],
+    // data: { items: GroupJoinRequestDto[], nextCursor: string | null, total: number }
+    responses: {
+      ...successResponse("Pending join requests"),
+      "401": unauthorized,
+      "403": forbidden,
+    },
+  },
+};
+
+const groupJoinRequestsMine = {
+  get: {
+    tags: ["Chat — Groups"],
+    operationId: "listMyGroupJoinRequests",
+    summary: "List my PENDING group join requests",
+    security: [{ bearerAuth: [] }],
+    responses: { ...successResponse("My pending join requests"), "401": unauthorized },
   },
 };
 
@@ -4594,6 +4646,11 @@ export const chatPaths = {
   "/chat/invite-links/preview/{token}": inviteLinkPreview,
   "/chat/invite-links/join": inviteLinkJoin,
   "/chat/invite-links/room/{roomId}": inviteLinksByRoom,
+  "/chat/group-join-requests/room/{roomId}": groupJoinRequestsByRoom,
+  "/chat/group-join-requests/mine": groupJoinRequestsMine,
+  "/chat/group-join-requests/{requestId}/approve": groupJoinRequestAction("approveGroupJoinRequest", "Approve a group join request (ADMIN only)"),
+  "/chat/group-join-requests/{requestId}/reject": groupJoinRequestAction("rejectGroupJoinRequest", "Reject a group join request (ADMIN only)"),
+  "/chat/group-join-requests/{requestId}/cancel": groupJoinRequestAction("cancelGroupJoinRequest", "Cancel my group join request"),
 
   // Notifications
   "/chat/notifications": notifications,

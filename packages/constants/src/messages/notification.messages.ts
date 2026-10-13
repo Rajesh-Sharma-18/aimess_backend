@@ -396,6 +396,21 @@ export const NOTIFICATION_MESSAGES = {
     en: "You can post in {{group}} again",
     th: "คุณสามารถส่งข้อความใน{{group}}ได้อีกครั้ง",
   },
+  NOTIF_GROUP_JOIN_REQUESTED: {
+    vi: "{{name}} đã xin tham gia {{group}}",
+    en: "{{name}} asked to join {{group}}",
+    th: "{{name}}ขอเข้าร่วม{{group}}",
+  },
+  NOTIF_GROUP_JOIN_REQUEST_APPROVED: {
+    vi: "Yêu cầu tham gia {{group}} của bạn đã được chấp thuận",
+    en: "Your request to join {{group}} was approved",
+    th: "คำขอเข้าร่วม{{group}}ของคุณได้รับการอนุมัติแล้ว",
+  },
+  NOTIF_GROUP_JOIN_REQUEST_REJECTED: {
+    vi: "Yêu cầu tham gia {{group}} của bạn không được chấp thuận",
+    en: "Your request to join {{group}} wasn't approved",
+    th: "คำขอเข้าร่วม{{group}}ของคุณไม่ได้รับการอนุมัติ",
+  },
 
   // ── Calls ───────────────────────────────────────────────────────────────
   NOTIF_CALL_INCOMING_VOICE: {

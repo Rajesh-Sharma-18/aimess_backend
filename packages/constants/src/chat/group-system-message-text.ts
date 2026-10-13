@@ -8,7 +8,7 @@ import {
   formatNameList,
   groupedTargetLabels,
   memberChangeText,
-  roleActorLabel,
+  moderationActorLabel,
   SYSTEM_ACTOR_ID,
   systemActorLabel,
 } from "../member-change-text.js";
@@ -247,9 +247,9 @@ export function buildGroupSystemFallbackText(
   const historyLine = conversationHistoryText(event, locale);
   if (historyLine) return historyLine;
   // Same legacy invite aliasing as buildPrivateSystemFallbackText below. An
-  // admin acting in that role (`actorRole`) is named by the role.
+  // admin moderating in that role (`actorRole`) is named by the role.
   const actor =
-    roleActorLabel(data.actorRole, locale) ??
+    moderationActorLabel(event, data.actorRole, locale) ??
     ((data.actorName as string) ||
       (data.inviterName as string) ||
       t("SYS_NAME_SOMEONE", locale));

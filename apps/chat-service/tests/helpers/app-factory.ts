@@ -39,6 +39,7 @@ import { GroupSystemMessageService } from "../../src/services/group-system-messa
 import { GroupMessageService } from "../../src/services/group-message.service.js";
 import { GroupMemberService } from "../../src/services/group-member.service.js";
 import { GroupInviteLinkService } from "../../src/services/group-invite-link.service.js";
+import { GroupJoinRequestService } from "../../src/services/group-join-request.service.js";
 import { GroupPinService } from "../../src/services/group-pin.service.js";
 import { GroupAutoDeleteService } from "../../src/services/group-auto-delete.service.js";
 import { NotificationService } from "../../src/services/notification.service.js";
@@ -63,6 +64,7 @@ import { GroupRoomController } from "../../src/api/controllers/group-room.contro
 import { GroupMessageController } from "../../src/api/controllers/group-message.controller.js";
 import { GroupMemberController } from "../../src/api/controllers/group-member.controller.js";
 import { GroupInviteLinkController } from "../../src/api/controllers/group-invite-link.controller.js";
+import { GroupJoinRequestController } from "../../src/api/controllers/group-join-request.controller.js";
 import { NotificationController } from "../../src/api/controllers/notification.controller.js";
 import { NotificationCatalogueService } from "../../src/services/notification-catalogue.service.js";
 import { UnreadSummaryController } from "../../src/api/controllers/unread-summary.controller.js";
@@ -154,6 +156,7 @@ export interface BuiltMocks {
   groupMessageRepo: any;
   groupMemberRepo: any;
   groupInviteLinkRepo: any;
+  groupJoinRequestRepo: any;
   groupMessagePinRepo: any;
   communityMessagePinRepo: any;
   generalRoomRepo: any;
@@ -233,6 +236,7 @@ export function buildApp(): BuiltApp {
   const groupMessageRepo = repoMock();
   const groupMemberRepo = repoMock();
   const groupInviteLinkRepo = repoMock();
+  const groupJoinRequestRepo = repoMock();
   // Capacity is claimed with an atomic conditional update in production
   // (`reserveMemberSlot`). The mock reproduces its DECISION off the same room
   // the spec already programs, so a capacity spec keeps working by setting
@@ -251,6 +255,15 @@ export function buildApp(): BuiltApp {
   groupInviteLinkRepo.findByToken = jest.fn((token: string) =>
     groupInviteLinkRepo.findActiveByToken(token)
   );
+  // No shared link yet unless a spec says otherwise.
+  groupInviteLinkRepo.findActiveByRoom = jest.fn(async () => []);
+  // A join claims a use on the ACTIVE row; mirror the decision off the row the
+  // spec already programs. A race spec overrides it.
+  groupInviteLinkRepo.claimUse = jest.fn(async (token: string) => {
+    const row = await groupInviteLinkRepo.findByToken(token);
+    return !!row && (row.status ?? "ACTIVE") === "ACTIVE";
+  });
+  groupInviteLinkRepo.releaseUse = jest.fn(async () => undefined);
   // Groups have an owner unless a spec says otherwise.
   groupMemberRepo.countActiveByRole = jest.fn(async () => 1);
   // Leave ends the membership with a conditional ACTIVE → LEFT write in
@@ -512,7 +525,8 @@ export function buildApp(): BuiltApp {
     undefined,
     groupRoomRepo,
     groupMemberRepo,
-    groupInviteLinkRepo
+    groupInviteLinkRepo,
+    groupJoinRequestRepo
   );
 
   const groupSystemMessageService = new GroupSystemMessageService(
@@ -531,6 +545,13 @@ export function buildApp(): BuiltApp {
     redis,
     groupMessageRepo
   );
+  const groupJoinRequestService = new GroupJoinRequestService(
+    groupJoinRequestRepo,
+    groupRoomRepo,
+    groupMemberRepo,
+    redis,
+    groupInviteLinkRepo
+  );
   const groupMemberService = new GroupMemberService(
     groupMemberRepo,
     groupRoomRepo,
@@ -539,7 +560,8 @@ export function buildApp(): BuiltApp {
     undefined,
     undefined,
     undefined,
-    groupRoomService
+    groupRoomService,
+    groupJoinRequestService
   );
   const groupMessageService = new GroupMessageService(
     groupMessageRepo,
@@ -556,7 +578,8 @@ export function buildApp(): BuiltApp {
     privateMessageRepo,
     userSnapshotService,
     cacheRepo,
-    redis
+    redis,
+    groupJoinRequestService
   );
   const groupPinService = new GroupPinService(
     groupMessagePinRepo,
@@ -718,6 +741,10 @@ export function buildApp(): BuiltApp {
       groupInviteLinkService,
       groupMemberService
     ),
+    groupJoinRequestCtrl: new GroupJoinRequestController(
+      groupJoinRequestService,
+      groupMemberService
+    ),
     notificationCtrl: new NotificationController(
       notificationService,
       notificationCatalogueService
@@ -775,6 +802,7 @@ export function buildApp(): BuiltApp {
       groupMessageRepo,
       groupMemberRepo,
       groupInviteLinkRepo,
+      groupJoinRequestRepo,
       groupMessagePinRepo,
       communityMessagePinRepo,
       generalRoomRepo,

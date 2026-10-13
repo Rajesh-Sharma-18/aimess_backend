@@ -1,7 +1,11 @@
+import { UnauthorizedError } from "@aimess/errors";
+
+import { assertNotBanned } from "../lib/account-guard.js";
 import {
   isEmailLoginIdentifier,
   normalizeLoginIdentifier,
 } from "../lib/login-identifier.js";
+import { accountLockedError, lockedForSec } from "../lib/login-lockout.js";
 import { passwordUnavailableCode } from "../lib/sign-in-methods.js";
 import { AccountStatus } from "../generated/prisma/client.js";
 import { authRepository } from "../repositories/auth.repository.js";
@@ -23,19 +27,13 @@ export const accountAvailabilityService = {
    * and login has its own verification guard that answers with credentials, not
    * with account existence.
    *
-   * `purpose: "login"` (login step 1) additionally reports when the account
-   * cannot use a password at all, so the client sends the user to Google/Apple
-   * instead of a password field that can never succeed. It is decided by the
-   * credential the account has NOW (`passwordHash`), never by how it was
-   * founded, and only for an account that would reach that same branch of
-   * login: deleted, unverified-email, locked, banned or otherwise inactive
-   * accounts keep the plain "exists" answer, so login's own precedence
-   * (banned before "use Google", etc.) is what the user sees, unchanged.
+   * `purpose: "login"` (login step 1) resolves the account state here, before
+   * the password step, with the same status + code login returns for it:
+   * deleted, locked, banned, inactive, or which provider to use when the
+   * account has no password. Unverified email keeps the plain "exists" answer.
    *
-   * Enumeration: login already returns exactly these codes for any password
-   * sent to such an account, so this moves the same answer one step earlier
-   * rather than revealing anything new. Only a code is returned — no provider
-   * id, email, or credential detail.
+   * Enumeration: product decision 2026-10-12 (AIMESS-62) — account state is
+   * disclosed at the identifier step; the rate limiter is the only guard.
    */
   async validateAvailability(
     account: string,
@@ -58,17 +56,29 @@ export const accountAvailabilityService = {
     const user = isEmail
       ? await authRepository.findByEmailForLogin(normalized)
       : await authRepository.findByAccountForLogin(normalized);
-    const reachesPasswordCheck =
-      user &&
-      !user.deletedAt &&
-      (!isEmail || user.emailVerified) &&
-      !(user.lockedUntil && user.lockedUntil > new Date()) &&
-      user.status === AccountStatus.ACTIVE;
+    if (!user) return { account: normalized, available: false };
+    if (
+      user.deletedAt ||
+      user.status === AccountStatus.PENDING_DELETION ||
+      user.status === AccountStatus.DELETED
+    ) {
+      throw new UnauthorizedError("AUTH_ACCOUNT_DELETED");
+    }
+    if (isEmail && !user.emailVerified) {
+      return { account: normalized, available: false };
+    }
+    if (lockedForSec(user.lockedUntil) > 0) {
+      throw accountLockedError(lockedForSec(user.lockedUntil));
+    }
+    assertNotBanned(user.status);
+    if (user.status !== AccountStatus.ACTIVE) {
+      throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
+    }
 
     return {
       account: normalized,
       available: false,
-      ...(reachesPasswordCheck && !user.passwordHash
+      ...(!user.passwordHash
         ? { passwordUnavailableCode: passwordUnavailableCode(user) }
         : {}),
     };

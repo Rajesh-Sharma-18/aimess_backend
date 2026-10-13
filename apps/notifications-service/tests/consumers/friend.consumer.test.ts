@@ -4,7 +4,7 @@
  * Verifies:
  *   - FRIEND_REQUESTED pushes to the addressee with the requester's name
  *   - FRIEND_ACCEPTED pushes to BOTH parties with distinct copy
- *   - FRIEND_REJECTED pushes to the requester
+ *   - FRIEND_REJECTED never notifies the requester
  *   - FRIEND_CANCELLED pushes to the addressee
  *   - FRIEND_UNFRIENDED remains a no-op (silent policy unchanged)
  *   - missing display names fall back to "Someone" (bulk auto-connect never sends them)
@@ -134,19 +134,9 @@ describe("FRIEND_REJECTED", () => {
       rejectedAt: "2026-07-17T10:05:00.000Z",
     });
 
-    expect(push).toHaveBeenCalledTimes(2);
-
-    const toRequester = push.mock.calls.find(
-      (c) => c[0].userId === REQUESTER
-    )?.[0];
-    expect(toRequester.copy("en").title).toBe("Alex");
-    expect(toRequester.copy("en").body).toBe(
-      "Alex declined your friend request"
-    );
-    expect(toRequester.localizedData("en").resolution).toBe(
-      "Declined your friend request"
-    );
-    expect(toRequester.data.resolutionTone).toBe("danger");
+    // Spec (card 153): declining never notifies the requester — no push, no inbox row.
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls.some((c) => c[0].userId === REQUESTER)).toBe(false);
 
     // The decliner's own copy of the request must settle in place across their
     // devices rather than linger as a still-actionable card.
@@ -158,8 +148,6 @@ describe("FRIEND_REJECTED", () => {
       "You declined this friend request"
     );
     expect(toAddressee.skipPush).toBe(true);
-    // A declined request is recorded for the requester but never wakes a device.
-    expect(toRequester.skipPush).toBe(true);
   });
 });
 

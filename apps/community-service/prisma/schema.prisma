@@ -483,6 +483,9 @@ model CommunityInviteLink {
   expiresAt   DateTime?
   revokedAt   DateTime?
   createdAt   DateTime  @default(now())
+  // = communityId while this is the community's shared link; null once revoked.
+  // Partial unique index (server.ts) => at most one shared live link.
+  activeKey   String?
 
   @@index([communityId, revokedAt])
   @@map("community_invite_links")

@@ -229,6 +229,13 @@ const LIVE_TYPES = [
   "community.livestream_ended",
 ] as const;
 
+/** Private-group join requests — listed with the community join requests. */
+const GROUP_JOIN_TYPES = [
+  "GROUP_JOIN_REQUESTED",
+  "GROUP_JOIN_REQUEST_APPROVED",
+  "GROUP_JOIN_REQUEST_REJECTED",
+] as const;
+
 export const isLiveType = (type: string): boolean =>
   (LIVE_TYPES as readonly string[]).includes(type);
 
@@ -314,7 +321,11 @@ export function categorizeId(type: string): NotificationCategoryId {
   // `community.` prefix.
   if (isLiveType(type)) return "LIVE_NOW";
   if (type.startsWith("friend.")) return "FRIEND_REQUEST";
-  if (type.startsWith("community.")) return "COMMUNITY";
+  if (
+    type.startsWith("community.") ||
+    (GROUP_JOIN_TYPES as readonly string[]).includes(type)
+  )
+    return "COMMUNITY";
   if (
     type.startsWith("auth.") ||
     type.startsWith("admin.") ||
@@ -362,9 +373,14 @@ export function categoryWhere(
       // LIVE_NOW — exclude both so a row is counted / listed in exactly one
       // category.
       return {
-        AND: [
-          { type: { startsWith: "community." } },
-          { type: { notIn: [...MENTION_TYPES, ...LIVE_TYPES] } },
+        OR: [
+          {
+            AND: [
+              { type: { startsWith: "community." } },
+              { type: { notIn: [...MENTION_TYPES, ...LIVE_TYPES] } },
+            ],
+          },
+          { type: { in: [...GROUP_JOIN_TYPES] } },
         ],
       };
     case "MENTION":

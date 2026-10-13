@@ -8,6 +8,7 @@ import { createGroupRoomRoutes } from "./group-room.routes.js";
 import { createGroupMessageRoutes } from "./group-message.routes.js";
 import { createGroupMemberRoutes } from "./group-member.routes.js";
 import { createGroupInviteLinkRoutes } from "./group-invite-link.routes.js";
+import { createGroupJoinRequestRoutes } from "./group-join-request.routes.js";
 import { createNotificationRoutes } from "./notification.routes.js";
 import { createUnreadSummaryRoutes } from "./unread-summary.routes.js";
 import { createCommunityRoutes } from "./community.routes.js";
@@ -25,6 +26,7 @@ import type { GroupRoomController } from "../controllers/group-room.controller.j
 import type { GroupMessageController } from "../controllers/group-message.controller.js";
 import type { GroupMemberController } from "../controllers/group-member.controller.js";
 import type { GroupInviteLinkController } from "../controllers/group-invite-link.controller.js";
+import type { GroupJoinRequestController } from "../controllers/group-join-request.controller.js";
 import type { NotificationController } from "../controllers/notification.controller.js";
 import type { UnreadSummaryController } from "../controllers/unread-summary.controller.js";
 import type { CommunityController } from "../controllers/community.controller.js";
@@ -45,6 +47,7 @@ export interface Controllers {
   groupMessageCtrl: GroupMessageController;
   groupMemberCtrl: GroupMemberController;
   groupInviteLinkCtrl: GroupInviteLinkController;
+  groupJoinRequestCtrl: GroupJoinRequestController;
   notificationCtrl: NotificationController;
   unreadSummaryCtrl: UnreadSummaryController;
   communityCtrl: CommunityController;
@@ -91,9 +94,15 @@ export function createRoutes(controllers: Controllers): Router {
     `${basePath}/group-members`,
     createGroupMemberRoutes(controllers.groupMemberCtrl)
   );
+  const groupInviteLinkRoutes = createGroupInviteLinkRoutes(
+    controllers.groupInviteLinkCtrl
+  );
+  router.use(`${basePath}/invite-links`, groupInviteLinkRoutes);
+  // Alias: the group-privacy client contract names this base.
+  router.use(`${basePath}/group-invite-links`, groupInviteLinkRoutes);
   router.use(
-    `${basePath}/invite-links`,
-    createGroupInviteLinkRoutes(controllers.groupInviteLinkCtrl)
+    `${basePath}/group-join-requests`,
+    createGroupJoinRequestRoutes(controllers.groupJoinRequestCtrl)
   );
   router.use(
     `${basePath}/notifications`,

@@ -5,6 +5,7 @@ import {
 } from "@aimess/errors";
 import { nanoid } from "nanoid";
 import { logger } from "@aimess/logger";
+import { publishChatSelfEvent } from "@aimess/redis";
 
 import { env } from "../config/env.js";
 import { SystemEvent } from "../types/enums.js";
@@ -47,6 +48,10 @@ import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { Redis, Cluster } from "ioredis";
 import type { GroupInviteLink, GroupRoom } from "../generated/prisma/index.js";
 import { GroupMemberService } from "./group-member.service.js";
+import type {
+  GroupJoinRequestDto,
+  GroupJoinRequestService,
+} from "./group-join-request.service.js";
 
 export interface GroupBulkInviteResult {
   userId: string;
@@ -83,8 +88,18 @@ export class GroupInviteLinkService {
     private readonly privateMessageRepo?: PrivateMessageRepository,
     private readonly userSnapshotService?: UserSnapshotService,
     private readonly cacheRepo?: CacheRepository,
-    private readonly redis?: Redis | Cluster | null
+    private readonly redis?: Redis | Cluster | null,
+    private readonly joinRequests?: GroupJoinRequestService
   ) {}
+
+  private get stateDeps() {
+    return {
+      inviteLinkRepo: this.inviteLinkRepo,
+      roomRepo: this.roomRepo,
+      memberRepo: this.memberRepo,
+      joinRequestRepo: this.joinRequests ?? null,
+    };
+  }
 
   async create(params: {
     roomId: string;
@@ -109,18 +124,103 @@ export class GroupInviteLinkService {
       throw new BadRequestError("CHAT_MEMBERS_CANNOT_CREATE_LINKS");
     }
 
-    const token = nanoid(24);
-
-    return this.inviteLinkRepo.create({
-      roomId: params.roomId,
-      token,
-      createdBy: params.userId,
-      // Always null: an invitation link does not expire on a clock. It stays
-      // usable until an admin revokes it (or spends its `maxUses`).
-      expiresAt: null,
+    // One shared link per group: hand back the current one instead of minting.
+    // A maxUses link is a one-off, never the shared link.
+    if (!params.maxUses) {
+      const [current] = await this.inviteLinkRepo.findActiveByRoom(
+        params.roomId
+      );
+      if (current) return current;
+    }
+    return this.mint(params.roomId, params.userId, {
       maxUses: params.maxUses || null,
       shareName: params.shareName || "",
+      shared: !params.maxUses,
     });
+  }
+
+  /**
+   * Inserts a link. A shared link carries `activeKey = roomId`; the partial
+   * unique index lets only one exist, so a concurrent create/reset that loses
+   * the insert returns the winner's link instead of a second live token.
+   */
+  private async mint(
+    roomId: string,
+    userId: string,
+    opts: { maxUses?: number | null; shareName?: string; shared: boolean }
+  ): Promise<GroupInviteLink> {
+    try {
+      return await this.inviteLinkRepo.create({
+        roomId,
+        token: nanoid(24),
+        createdBy: userId,
+        // Always null: an invitation link does not expire on a clock. It stays
+        // usable until an admin resets it (or spends its `maxUses`).
+        expiresAt: null,
+        maxUses: opts.maxUses ?? null,
+        shareName: opts.shareName ?? "",
+        activeKey: opts.shared ? roomId : null,
+      });
+    } catch (err) {
+      if (opts.shared && (err as { code?: string })?.code === "P2002") {
+        const [winner] = await this.inviteLinkRepo.findActiveByRoom(roomId);
+        if (winner) return winner;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Reset: every ACTIVE link of the group dies (status REVOKED, checked on every
+   * preview/join, nothing cached) and one fresh shared link replaces them. ADMIN
+   * only. Revoked tokens are never reissued (`nanoid(24)`, `@unique`). Members
+   * get `group:invite_link:reset` (no token) so open screens refetch.
+   */
+  async reset(
+    roomId: string,
+    userId: string
+  ): Promise<{ revoked: GroupInviteLink | null; link: GroupInviteLink }> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member || member.role !== "ADMIN") {
+      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    }
+    const room = await this.roomRepo.findActiveByRoomId(roomId);
+    if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    // Checked before revoking so a frozen group is never left with no link.
+    assertGroupRoomWritable(room);
+
+    const [previous] = await this.inviteLinkRepo.findActiveByRoom(roomId);
+    await this.inviteLinkRepo.revokeAllForRoom(roomId, userId);
+    const link = await this.mint(roomId, userId, {
+      shareName: previous?.shareName ?? "",
+      shared: true,
+    });
+    this.announceReset(roomId);
+    return { revoked: previous ?? null, link };
+  }
+
+  private announceReset(roomId: string): void {
+    const redis = this.redis;
+    if (!redis) return;
+    const resetAt = Date.now();
+    void this.memberRepo
+      .findActiveMembers(roomId)
+      .then((members) =>
+        Promise.all(
+          members.map((m) =>
+            publishChatSelfEvent(redis, m.userId, "group:invite_link:reset", {
+              roomId,
+              resetAt,
+            }).catch(() => undefined)
+          )
+        )
+      )
+      .catch((err) =>
+        logger.warn("group:invite_link:reset publish failed", err)
+      );
   }
 
   /**
@@ -139,25 +239,8 @@ export class GroupInviteLinkService {
   ): Promise<{ revoked: GroupInviteLink; link: GroupInviteLink }> {
     const link = await this.inviteLinkRepo.findActiveByToken(token);
     if (!link) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
-
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      link.roomId,
-      userId
-    );
-    if (!member || member.role !== "ADMIN") {
-      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
-    }
-
-    const revoked = await this.inviteLinkRepo.revoke(token, userId);
-    if (!revoked) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
-    await this.inviteLinkRepo.revokeAllForRoom(link.roomId, userId);
-
-    const replacement = await this.create({
-      roomId: link.roomId,
-      userId,
-      shareName: link.shareName,
-    });
-    return { revoked, link: replacement };
+    const result = await this.reset(link.roomId, userId);
+    return { revoked: result.revoked ?? link, link: result.link };
   }
 
   /**
@@ -193,19 +276,15 @@ export class GroupInviteLinkService {
     expiresAt: string | null;
     isJoined: boolean;
     state: GroupInviteState;
+    requiresApproval: boolean;
+    pendingRequestId: string | null;
   }> {
-    const { state, room, link } = await loadGroupInviteState<
-      GroupRoom,
-      GroupInviteLink,
-      { status?: string | null }
-    >(
-      {
-        inviteLinkRepo: this.inviteLinkRepo,
-        roomRepo: this.roomRepo,
-        memberRepo: this.memberRepo,
-      },
-      { token, viewerId: callerId }
-    );
+    const { state, room, link, requiresApproval, pendingRequestId } =
+      await loadGroupInviteState<
+        GroupRoom,
+        GroupInviteLink,
+        { status?: string | null }
+      >(this.stateDeps, { token, viewerId: callerId });
 
     // Who is inviting — the preview screen names them. Same snapshot chokepoint
     // every other name goes through, so a deleted inviter reads "Deleted
@@ -242,6 +321,8 @@ export class GroupInviteLinkService {
       expiresAt: null,
       isJoined: state === "ALREADY_MEMBER",
       state,
+      requiresApproval,
+      pendingRequestId,
     };
   }
 
@@ -249,50 +330,72 @@ export class GroupInviteLinkService {
     token: string,
     userId: string,
     memberService: GroupMemberService
-  ): Promise<{ room: GroupRoom }> {
+  ): Promise<
+    | { status: "JOINED"; room: GroupRoom }
+    | { status: "PENDING"; request: GroupJoinRequestDto }
+  > {
     // Same loader the card and the preview render from, so the refusal the
     // client gets always matches the button it just showed — and names the same
     // cause. `addMember` below is still the enforcement layer (it re-checks the
     // block and claims the capacity slot atomically); this decides WHICH error
     // is reported, and it covers the disbanded/closed room too, so no separate
     // writable guard is needed here any more.
-    const { state, room, link } = await loadGroupInviteState<
+    const { state, room, link, requiresApproval } = await loadGroupInviteState<
       GroupRoom,
       GroupInviteLink,
       { status?: string | null }
-    >(
-      {
-        inviteLinkRepo: this.inviteLinkRepo,
-        roomRepo: this.roomRepo,
-        memberRepo: this.memberRepo,
-      },
-      { token, viewerId: userId }
-    );
-    assertJoinableState(state);
+    >(this.stateDeps, { token, viewerId: userId });
+    if (state !== "REQUEST_PENDING") assertJoinableState(state);
     // CAN_JOIN implies both, but narrow for the type checker.
     if (!room || !link) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
 
-    await memberService.addMember(
-      {
+    // Private group: no membership — an ADMIN approves (idempotent on a re-tap).
+    if (requiresApproval && this.joinRequests) {
+      const request = await this.joinRequests.requestViaLink({
         roomId: link.roomId,
         userId,
+        inviteToken: link.token,
         invitedBy: link.createdBy,
-        // Stamp the invitation that admitted them — the card for THIS token is
-        // the only one that may turn into "View Group".
-        joinedViaToken: link.token,
-      },
-      {
-        systemEvent: SystemEvent.MEMBER_JOINED,
-        actorId: userId,
-        // Self-join: the user is authorized by the valid invite link, not by an
-        // ADMIN role — skip the direct-add actor authorization.
-        skipActorAuthz: true,
-      }
-    );
+      });
+      return { status: "PENDING", request };
+    }
 
-    await this.inviteLinkRepo.incrementUsedCount(token);
+    // Deterministic vs a concurrent reset: the use is claimed on the ACTIVE row
+    // first, so a join whose claim lands after the revoke is refused.
+    if (!(await this.inviteLinkRepo.claimUse(token))) {
+      const fresh = await loadGroupInviteState<
+        GroupRoom,
+        GroupInviteLink,
+        { status?: string | null }
+      >(this.stateDeps, { token, viewerId: userId });
+      assertJoinableState(fresh.state);
+      throw new BadRequestError("CHAT_INVITE_LINK_REVOKED");
+    }
 
-    return { room };
+    try {
+      await memberService.addMember(
+        {
+          roomId: link.roomId,
+          userId,
+          invitedBy: link.createdBy,
+          // Stamp the invitation that admitted them — the card for THIS token is
+          // the only one that may turn into "View Group".
+          joinedViaToken: link.token,
+        },
+        {
+          systemEvent: SystemEvent.MEMBER_JOINED,
+          actorId: userId,
+          // Self-join: the user is authorized by the valid invite link, not by an
+          // ADMIN role — skip the direct-add actor authorization.
+          skipActorAuthz: true,
+        }
+      );
+    } catch (err) {
+      await this.inviteLinkRepo.releaseUse(token).catch(() => undefined);
+      throw err;
+    }
+
+    return { status: "JOINED", room };
   }
 
   /**
@@ -638,11 +741,9 @@ export class GroupInviteLinkService {
     roomId: string,
     userId: string
   ): Promise<GroupInviteLink[]> {
-    // Invite tokens grant group entry, so listing them must be restricted to an
-    // active ADMIN of the room — not any authenticated user (AUDIT H4).
-    await assertGroupMember(this.memberRepo, roomId, userId, {
-      roles: ["ADMIN"],
-    });
+    // Invite tokens grant group entry, so only an active member may list them —
+    // never any authenticated user (AUDIT H4). Every role shares the link, like community.
+    await assertGroupMember(this.memberRepo, roomId, userId);
     return this.inviteLinkRepo.findActiveByRoom(roomId);
   }
 

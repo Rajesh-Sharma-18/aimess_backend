@@ -589,6 +589,21 @@ export const CHAT_MESSAGES = {
     en: "Invite link not found or expired",
     th: "ไม่พบลิงก์เชิญหรือลิงก์หมดอายุแล้ว",
   },
+  CHAT_GROUP_JOIN_REQUEST_NOT_FOUND: {
+    vi: "Không tìm thấy yêu cầu tham gia nhóm",
+    en: "Group join request not found",
+    th: "ไม่พบคำขอเข้าร่วมกลุ่ม",
+  },
+  CHAT_GROUP_JOIN_REQUEST_NOT_PENDING: {
+    vi: "Yêu cầu tham gia này đã được xử lý",
+    en: "This join request has already been handled",
+    th: "คำขอเข้าร่วมนี้ได้รับการดำเนินการแล้ว",
+  },
+  CHAT_GROUP_JOIN_REQUEST_SENT: {
+    vi: "Đã gửi yêu cầu tham gia, đang chờ quản trị viên duyệt",
+    en: "Join request sent — waiting for an admin to approve",
+    th: "ส่งคำขอเข้าร่วมแล้ว กำลังรอผู้ดูแลอนุมัติ",
+  },
   CHAT_INVITE_LINK_EXPIRED: {
     vi: "Liên kết mời đã hết hạn",
     // Product-fixed copy — the client shows this verbatim on the invite screen.

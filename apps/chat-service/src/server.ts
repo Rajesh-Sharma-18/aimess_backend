@@ -21,6 +21,7 @@ import { GroupRoomRepository } from "./repositories/group-room.repository.js";
 import { GroupMessageRepository } from "./repositories/group-message.repository.js";
 import { GroupMemberRepository } from "./repositories/group-member.repository.js";
 import { GroupInviteLinkRepository } from "./repositories/group-invite-link.repository.js";
+import { GroupJoinRequestRepository } from "./repositories/group-join-request.repository.js";
 import { GroupMessagePinRepository } from "./repositories/group-message-pin.repository.js";
 import { CommunityMessagePinRepository } from "./repositories/community-message-pin.repository.js";
 import { GeneralRoomRepository } from "./repositories/general-room.repository.js";
@@ -54,6 +55,7 @@ import { GroupSystemMessageService } from "./services/group-system-message.servi
 import { GroupMessageService } from "./services/group-message.service.js";
 import { GroupMemberService } from "./services/group-member.service.js";
 import { GroupInviteLinkService } from "./services/group-invite-link.service.js";
+import { GroupJoinRequestService } from "./services/group-join-request.service.js";
 import { GroupPinService } from "./services/group-pin.service.js";
 import { CommunityPinService } from "./services/community-pin.service.js";
 import { NotificationService } from "./services/notification.service.js";
@@ -85,6 +87,7 @@ import { GroupRoomController } from "./api/controllers/group-room.controller.js"
 import { GroupMessageController } from "./api/controllers/group-message.controller.js";
 import { GroupMemberController } from "./api/controllers/group-member.controller.js";
 import { GroupInviteLinkController } from "./api/controllers/group-invite-link.controller.js";
+import { GroupJoinRequestController } from "./api/controllers/group-join-request.controller.js";
 import { NotificationController } from "./api/controllers/notification.controller.js";
 import { UnreadSummaryController } from "./api/controllers/unread-summary.controller.js";
 import { CommunityController } from "./api/controllers/community.controller.js";
@@ -407,6 +410,31 @@ const startServer = async () => {
     // existing deployments pick it up without a `prisma db push`.
     // updatedAt trails the pair; [userId, status] is the prefix every
     // by-user read (unread summary, findSearchScope) is served by.
+    // One shared ACTIVE invite link per group - makes reset/create race-safe.
+    try {
+      await ensureMongoIndex(prisma, "group_invite_links", {
+        key: { activeKey: 1 },
+        name: "group_invite_links_active_unique",
+        unique: true,
+        partialFilterExpression: { activeKey: { $type: "string" } },
+      });
+    } catch (err) {
+      logger.warn("Failed to create group_invite_links_active_unique - continuing");
+      logger.warn(err);
+    }
+    // One PENDING join request per (group, user) - makes requestViaLink race-safe.
+    try {
+      await ensureMongoIndex(prisma, "group_join_requests", {
+        key: { roomId: 1, userId: 1 },
+        name: "group_join_requests_pending_unique",
+        unique: true,
+        partialFilterExpression: { status: "PENDING" },
+      });
+    } catch (err) {
+      logger.warn("Failed to create group_join_requests_pending_unique - continuing");
+      logger.warn(err);
+    }
+
     try {
       await ensureMongoIndex(prisma, "room_members", {
         key: { userId: 1, status: 1, updatedAt: -1 },
@@ -528,6 +556,7 @@ const startServer = async () => {
     const groupMessageRepo = new GroupMessageRepository(prisma, groupRoomRepo);
     const groupMemberRepo = new GroupMemberRepository(prisma);
     const groupInviteLinkRepo = new GroupInviteLinkRepository(prisma);
+    const groupJoinRequestRepo = new GroupJoinRequestRepository(prisma);
     const groupMessagePinRepo = new GroupMessagePinRepository(prisma);
     const communityMessagePinRepo = new CommunityMessagePinRepository(prisma);
     const generalRoomRepo = new GeneralRoomRepository(prisma);
@@ -605,7 +634,8 @@ const startServer = async () => {
       redis,
       groupRoomRepo,
       groupMemberRepo,
-      groupInviteLinkRepo
+      groupInviteLinkRepo,
+      groupJoinRequestRepo
     );
 
     const groupSystemMessageService = new GroupSystemMessageService(
@@ -626,6 +656,15 @@ const startServer = async () => {
       userSnapshotService,
       cacheRepo
     );
+    const groupJoinRequestService = new GroupJoinRequestService(
+      groupJoinRequestRepo,
+      groupRoomRepo,
+      groupMemberRepo,
+      redis,
+      groupInviteLinkRepo,
+      userSnapshotService,
+      cacheRepo
+    );
     const groupMemberService = new GroupMemberService(
       groupMemberRepo,
       groupRoomRepo,
@@ -634,7 +673,8 @@ const startServer = async () => {
       userServiceClient,
       userSnapshotService,
       cacheRepo,
-      groupRoomService
+      groupRoomService,
+      groupJoinRequestService
     );
     // Admin Group Management (backoffice gRPC): reads plus the two moderation
     // writes, which delegate to the group services above so disband/remove keep
@@ -672,7 +712,8 @@ const startServer = async () => {
       privateMessageRepo,
       userSnapshotService,
       cacheRepo,
-      redis
+      redis,
+      groupJoinRequestService
     );
     const groupPinService = new GroupPinService(
       groupMessagePinRepo,
@@ -1021,6 +1062,10 @@ const startServer = async () => {
       groupMemberCtrl: new GroupMemberController(groupMemberService),
       groupInviteLinkCtrl: new GroupInviteLinkController(
         groupInviteLinkService,
+        groupMemberService
+      ),
+      groupJoinRequestCtrl: new GroupJoinRequestController(
+        groupJoinRequestService,
         groupMemberService
       ),
       notificationCtrl: new NotificationController(

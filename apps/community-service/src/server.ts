@@ -59,6 +59,18 @@ async function start() {
         ],
       });
       logger.info("Index ready: communities.invitationCode (sparse unique)");
+      // One shared live invite link per community - makes reset/create race-safe.
+      await prisma.$runCommandRaw({
+        createIndexes: "community_invite_links",
+        indexes: [
+          {
+            key: { activeKey: 1 },
+            name: "community_invite_links_active_unique",
+            unique: true,
+            partialFilterExpression: { activeKey: { $type: "string" } },
+          },
+        ],
+      });
     } catch (indexErr) {
       logger.warn(
         "Could not create invitationCode sparse index — permanent invite links may lack uniqueness enforcement"

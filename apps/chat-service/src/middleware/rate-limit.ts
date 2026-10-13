@@ -256,7 +256,7 @@ export function createRateLimit({
       // The user id is the app's own opaque identifier, not a credential.
       scopeKey: authData?.userId,
       method: req.method,
-      endpoint: req.originalUrl.split("?")[0],
+      endpoint: redactInviteSecrets(req.originalUrl.split("?")[0]),
       platform: req.headers["x-platform"],
       requestId: req.headers["x-request-id"],
       limit: maxRequests,
@@ -469,4 +469,12 @@ export async function mentionAllAllowed(
     });
   }
   return allowed;
+}
+
+// Invite codes/tokens in a path grant group/community entry - never log them.
+export function redactInviteSecrets(path: string): string {
+  return path.replace(
+    /(invite-links\/(?:preview\/)?(?!room\/)|\/invites\/|\/g\/|\/join\/)[^/]+/g,
+    "$1[redacted]"
+  );
 }

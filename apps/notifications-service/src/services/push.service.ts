@@ -9,6 +9,7 @@ import {
 import {
   AdminUserEvents,
   AuthEvents,
+  ChatEvents,
   CommunityEvents,
   FriendshipEvents,
 } from "@aimess/shared-types";
@@ -123,6 +124,10 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   CommunityEvents.JOIN_REQUEST_RETRACTED,
   // The requester's outcome card: their request was accepted and they are now a member.
   CommunityEvents.JOIN_REQUEST_APPROVED,
+  // Private-group join requests — same lifecycle as the community trio above.
+  ChatEvents.GROUP_JOIN_REQUESTED,
+  ChatEvents.GROUP_JOIN_REQUEST_RETRACTED,
+  ChatEvents.GROUP_JOIN_REQUEST_APPROVED,
   // Livestream — listed under LIVE_NOW (chat-service notification-category.ts).
   // Still gated like the push: liveStreamEnabled, the community's own
   // streamEnabled toggle, and ACTIVE membership.
@@ -177,6 +182,7 @@ const WEB_ACTIONABLE_DATA_ONLY_TYPES = new Set<string>([
   "CALL_HANDLED",
   "MESSAGE_DELETED",
   CommunityEvents.JOIN_REQUEST_RETRACTED,
+  ChatEvents.GROUP_JOIN_REQUEST_RETRACTED,
   // Tray dismissals (push-dismiss.ts). The worker closes cards by `tags`. They
   // only reach WEB when a card was actually shown (see tray-cards.ts), so they
   // do not burn the browser's silent-push budget on every read.

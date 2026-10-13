@@ -26,6 +26,12 @@ export class GroupInviteLinkController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
+  reset = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const result = await this.service.reset(req.params.roomId as string, userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
   preview = asyncHandler(async (req: Request, res: Response) => {
     const token = req.params.token as string;
     // Optional-auth route: `req.auth` is unset for an anonymous preview.
@@ -44,7 +50,13 @@ export class GroupInviteLinkController {
     const { userId } = req.auth;
     const { token } = req.body;
     const result = await this.service.join(token, userId, this.memberService);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        result.status === "PENDING"
+          ? new ApiResponse(result, t("CHAT_GROUP_JOIN_REQUEST_SENT", req.locale))
+          : new ApiResponse(result)
+      );
   });
 
   bulkSend = asyncHandler(async (req: Request, res: Response) => {

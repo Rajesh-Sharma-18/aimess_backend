@@ -202,6 +202,7 @@ export type NotificationScreen =
   | "COMMUNITY_LIST"
   | "PRIVATE_CHAT"
   | "GROUP_CHAT"
+  | "GROUP_REQUESTS"
   | "USER_PROFILE"
   | "FRIEND_REQUESTS"
   | "LINKED_DEVICES"

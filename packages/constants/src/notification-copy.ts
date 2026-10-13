@@ -25,6 +25,7 @@ import {
   memberChangeText,
   personLabel,
   PLATFORM_ADMIN_ACTOR_ID,
+  moderationActorLabel,
   roleActorLabel,
   SYSTEM_ACTOR_ID,
   type MemberChange,
@@ -562,7 +563,7 @@ export const communityCopy = register("community", {
         ? memberChange(
             "ADDED",
             named(communityName, locale),
-            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
+            { id: actorId, name: moderationActorLabel("MEMBER_ADDED", actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
@@ -590,7 +591,7 @@ export const communityCopy = register("community", {
         ? memberChange(
             "ADDED",
             named(communityName, locale),
-            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
+            { id: actorId, name: moderationActorLabel("MEMBER_ADDED", actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
@@ -1034,7 +1035,7 @@ export const groupCopy = register("group", {
         ? memberChange(
             "ADDED",
             groupName || t("NOTIF_GROUP_UNNAMED", locale),
-            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
+            { id: actorId, name: moderationActorLabel("MEMBER_ADDED", actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
@@ -1062,6 +1063,39 @@ export const groupCopy = register("group", {
       return {
         title: name,
         body: t("NOTIF_GROUP_MEMBER_UNMUTED", locale, { group: name }),
+      };
+    },
+  joinRequested:
+    (groupName: string, requesterName: string): LocalizedCopy =>
+    (locale) => {
+      const name = groupName || t("NOTIF_GROUP_THIS_GROUP", locale);
+      return {
+        title: name,
+        body: t("NOTIF_GROUP_JOIN_REQUESTED", locale, {
+          name: person(requesterName, locale),
+          group: name,
+        }),
+        inboxTitle: null,
+      };
+    },
+  joinRequestApproved:
+    (groupName: string): LocalizedCopy =>
+    (locale) => {
+      const name = groupName || t("NOTIF_GROUP_THIS_GROUP", locale);
+      return {
+        title: name,
+        body: t("NOTIF_GROUP_JOIN_REQUEST_APPROVED", locale, { group: name }),
+        inboxTitle: null,
+      };
+    },
+  joinRequestRejected:
+    (groupName: string): LocalizedCopy =>
+    (locale) => {
+      const name = groupName || t("NOTIF_GROUP_THIS_GROUP", locale);
+      return {
+        title: name,
+        body: t("NOTIF_GROUP_JOIN_REQUEST_REJECTED", locale, { group: name }),
+        inboxTitle: null,
       };
     },
 });
@@ -1278,6 +1312,9 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   ],
   "group.memberMuted": ["groupName", "mutedUntil"],
   "group.memberUnmuted": ["groupName"],
+  "group.joinRequested": ["groupName", "requesterName"],
+  "group.joinRequestApproved": ["groupName"],
+  "group.joinRequestRejected": ["groupName"],
 
   "call.ringing": ["callerName", "callType"],
   "call.missed": ["callerName", "callType"],

@@ -123,8 +123,30 @@ const fake = {
     Object.assign(l, data);
     return { ...l };
   },
+  revokeAllInviteLinks: async () => {
+    for (const l of links.values())
+      if (!l.revokedAt) Object.assign(l, { revokedAt: new Date(), activeKey: null });
+    return { count: links.size };
+  },
+  clearInvitationCode: async () => ({ count: 0 }),
+  findLatestReusableInviteLink: async () => {
+    const live = [...links.values()].filter((l) => !l.revokedAt && l.maxUses === null);
+    return live.length ? { ...live[live.length - 1] } : null;
+  },
+  createInviteLink: async (data: Record<string, unknown>) => {
+    const row = {
+      id: `link-${data.code}`,
+      usedCount: 0,
+      revokedAt: null,
+      createdAt: new Date(),
+      ...data,
+    };
+    links.set(data.code as string, row);
+    return { ...row };
+  },
   incrementInviteLinkUsageIfUnder: async (id: string) => {
     const l = [...links.values()].find((x) => x.id === id)!;
+    if (l.revokedAt) return { count: 0 };
     if (l.maxUses !== null && (l.usedCount as number) >= (l.maxUses as number))
       return { count: 0 };
     l.usedCount = (l.usedCount as number) + 1;
@@ -679,13 +701,17 @@ describe("invite link lifecycle", () => {
       (await communityService.lookupInviteLink(LINK_A, A)).communityType
     ).toBe("PRIVATE");
 
-    // Reset Link = revoke the current link; the next share mints a new code.
-    await communityService.revokeInviteLink(CID, ADMIN, `link-${LINK_A}`);
+    // A second live link (another member's, from an older build) must die too.
     seedLink(LINK_B);
+    // Reset = every live link dies and ONE fresh shared link replaces them.
+    const fresh = await communityService.resetInviteLinks(CID, ADMIN);
+    expect([LINK_A, LINK_B]).not.toContain(fresh.code);
 
-    await expect(communityService.redeemInviteLink(LINK_A, A)).rejects.toThrow(
-      "COMMUNITY_INVITE_LINK_REVOKED_ERROR"
-    );
+    for (const dead of [LINK_A, LINK_B]) {
+      await expect(communityService.redeemInviteLink(dead, A)).rejects.toThrow(
+        "COMMUNITY_INVITE_LINK_REVOKED_ERROR"
+      );
+    }
     await expect(communityService.lookupInviteLink(LINK_A, A)).rejects.toThrow(
       "COMMUNITY_INVITE_LINK_REVOKED_ERROR"
     );
@@ -693,13 +719,27 @@ describe("invite link lifecycle", () => {
     expect(memberStatus(A)).toBeNull();
 
     expect(
-      (await communityService.redeemInviteLink(LINK_B, A)).request?.status
+      (await communityService.redeemInviteLink(fresh.code, A)).request?.status
     ).toBe("PENDING");
     await setType("PUBLIC");
     expect(memberStatus(A)).toBe("ACTIVE");
     expect(
-      (await communityService.redeemInviteLink(LINK_B, B)).member?.userId
+      (await communityService.redeemInviteLink(fresh.code, B)).member?.userId
     ).toBe(B);
+    // Resetting never removes members.
+    expect(memberStatus(A)).toBe("ACTIVE");
+  });
+
+  it("17b. reset: a moderator may, a plain member may not; the old DELETE also resets every link", async () => {
+    seedLink(LINK_B);
+    await expect(communityService.resetInviteLinks(CID, A)).rejects.toBeDefined();
+    expect(links.get(LINK_A)!.revokedAt).toBeNull();
+
+    await communityService.revokeInviteLink(CID, MOD, `link-${LINK_A}`);
+    expect(links.get(LINK_A)!.revokedAt).not.toBeNull();
+    expect(links.get(LINK_B)!.revokedAt).not.toBeNull();
+    const live = [...links.values()].filter((l) => !l.revokedAt);
+    expect(live).toHaveLength(1);
   });
 
   it("31. PRIVATE→PUBLIC→PRIVATE→PUBLIC→PRIVATE: the link survives and each attempt follows the type of that moment", async () => {
@@ -771,13 +811,8 @@ describe("invite link lifecycle", () => {
     );
   });
 
-  it("35. expiry is the link's own clock (AIM-60) — a privacy change neither extends nor ends it", async () => {
+  it("35. links do not expire: an expiry stamped by an older build is ignored", async () => {
     seedLink(LINK_B, { expiresAt: new Date(Date.now() - 1000) });
-    await setType("PUBLIC");
-    await expect(communityService.redeemInviteLink(LINK_B, A)).rejects.toThrow(
-      "COMMUNITY_INVITE_LINK_EXPIRED"
-    );
-    seedLink(LINK_B, { expiresAt: new Date(Date.now() + 86_400_000) });
     await setType("PRIVATE");
     expect(
       (await communityService.redeemInviteLink(LINK_B, A)).request
@@ -996,7 +1031,7 @@ describe("races end with one consistent outcome", () => {
 
   it("30a. reject first, then PUBLIC: the terminal REJECTED is not reopened", async () => {
     const rid = await pending(A);
-    await communityService.rejectJoinRequest(CID, MOD, rid);
+    await communityService.rejectJoinRequest(CID, ADMIN, rid);
     await setType("PUBLIC");
     expect(requestStatus(A)).toBe("REJECTED");
     expect(memberStatus(A)).toBeNull();
@@ -1082,12 +1117,24 @@ describe("regressions", () => {
     await communityService.redeemInviteLink(LINK_A, A);
     const res = await communityService.approveJoinRequest(
       CID,
-      MOD,
+      ADMIN,
       requests.get(A)!.id
     );
     expect(res.request.status).toBe("APPROVED");
     expect(approvedPub).toHaveBeenCalledTimes(1);
     expect(memberAddedFor(A)).toHaveLength(1);
+  });
+
+  it("only the ADMIN decides join requests — a moderator is refused", async () => {
+    await communityService.redeemInviteLink(LINK_A, A);
+    const rid = requests.get(A)!.id;
+    await expect(
+      communityService.approveJoinRequest(CID, MOD, rid)
+    ).rejects.toThrow("COMMUNITY_FORBIDDEN");
+    await expect(
+      communityService.rejectJoinRequest(CID, MOD, rid)
+    ).rejects.toThrow("COMMUNITY_FORBIDDEN");
+    expect(requests.get(A)!.status).toBe("PENDING");
   });
 
   it("40. public Join on the community page still joins directly", async () => {
