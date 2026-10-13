@@ -289,10 +289,9 @@ message AdminGroupMemberRow {
   string avatar_url = 4;
   string role       = 5;
   int64  joined_at   = 6;
-  // Membership status: "ACTIVE" | "LEFT" | "KICKED" | "BANNED".
+  // Membership status: "ACTIVE" | "LEFT" | "KICKED" (groups have no ban).
   string status           = 7;
-  // EFFECTIVE moderation mute — a timed mute lazily expires, so this is not the
-  // raw column (see chat-service lib/access-guard.isGroupMemberMuted).
+  // Always false: groups have no moderation mute (field kept for wire compatibility).
   bool   moderation_muted = 8;
   // Epoch ms; 0 when unset.
   int64  kicked_at        = 9;

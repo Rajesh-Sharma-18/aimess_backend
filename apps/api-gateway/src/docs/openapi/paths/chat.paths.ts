@@ -1621,57 +1621,26 @@ const groupMemberKick = {
   },
 };
 
-const groupMemberBan = {
+// Groups are leader + members only (System Messages v2): ban and member-mute answer 410.
+const groupFeatureRemoved = (operationId: string, summary: string) => ({
   post: {
     tags: ["Chat — Groups"],
-    operationId: "banGroupMember",
-    summary: "Ban member from group",
+    operationId,
+    summary: `${summary} (removed)`,
+    deprecated: true,
     description:
-      "Owner/admin/moderator only (must outrank the target). Sets member status to BANNED. Optional `reason` is stored on the membership.",
+      "Removed: groups have only a leader and members. Always 410 `CHAT_GROUP_FEATURE_REMOVED`.",
     security: [{ bearerAuth: [] }],
-    requestBody: {
-      required: true,
-      content: {
-        "application/json": {
-          schema: { $ref: "#/components/schemas/ChatBanMemberRequest" },
-        },
-      },
-    },
     responses: {
-      ...successResponse("Member banned", "ChatGroupMember"),
-      "400": badRequest,
       "401": unauthorized,
-      "403": forbidden,
-      "404": notFound,
+      "410": { description: "CHAT_GROUP_FEATURE_REMOVED" },
     },
   },
-};
+});
 
-const groupMemberUnban = {
-  post: {
-    tags: ["Chat — Groups"],
-    operationId: "unbanGroupMember",
-    summary: "Unban member from group",
-    description:
-      "Owner/admin/moderator only. Clears the ban (status → LEFT). Does **not** re-add the user as an active member — they must rejoin via invite.",
-    security: [{ bearerAuth: [] }],
-    requestBody: {
-      required: true,
-      content: {
-        "application/json": {
-          schema: { $ref: "#/components/schemas/ChatUnbanMemberRequest" },
-        },
-      },
-    },
-    responses: {
-      ...successResponse("Member unbanned", "ChatGroupMember"),
-      "400": badRequest,
-      "401": unauthorized,
-      "403": forbidden,
-      "404": notFound,
-    },
-  },
-};
+const groupMemberBan = groupFeatureRemoved("banGroupMember", "Ban member from group");
+
+const groupMemberUnban = groupFeatureRemoved("unbanGroupMember", "Unban member from group");
 
 const groupMemberReport = {
   post: {
@@ -1755,77 +1724,17 @@ const groupMemberUnmute = {
   },
 };
 
-const groupMemberMuteMember = {
-  post: {
-    tags: ["Chat — Groups"],
-    operationId: "muteGroupMember",
-    summary: "Mute another member (moderation)",
-    description:
-      "Owner/admin/moderator only, and the caller must outrank the target (a moderator cannot mute another moderator). " +
-      "This is the MODERATION mute — the counterpart of `POST /communities/{id}/members/{userId}/mute` — and is entirely " +
-      "distinct from `POST /chat/group-members/{roomId}/mute`, which mutes the caller's OWN notifications. " +
-      "Omit or null `durationMinutes` to mute indefinitely; a minute count is added to the SERVER's clock (expiry is applied lazily, " +
-      "so posting rights return the instant it passes). A muted member keeps FULL read access — history, new messages, " +
-      "media downloads, member list, search, receipts — but every write is rejected with `CHAT_MUTED_IN_GROUP` (403): " +
-      "send (all content types), edit, delete-own, react, and pin. Typing and voice-recording indicators are dropped " +
-      "server-side too. " +
-      "Emits `group:member:muted` on `conv:<roomId>` (roster badges) AND on the target's own `user:<id>` channel, so every " +
-      "logged-in device disables its composer with no refresh, plus a `typing:stop`/`recording:stop` retraction for the target.",
-    security: [{ bearerAuth: [] }],
-    requestBody: {
-      required: true,
-      content: {
-        "application/json": {
-          schema: { $ref: "#/components/schemas/ChatMuteMemberRequest" },
-        },
-      },
-    },
-    responses: {
-      ...successResponse("Member muted", "ChatGroupMember"),
-      "400": badRequest,
-      "401": unauthorized,
-      "403": forbidden,
-      "404": notFound,
-    },
-  },
-};
+const groupMemberMuteMember = groupFeatureRemoved("muteGroupMember", "Mute another member");
 
-const groupMemberUnmuteMember = {
-  post: {
-    tags: ["Chat — Groups"],
-    operationId: "unmuteGroupMember",
-    summary: "Unmute another member (moderation)",
-    description:
-      "Owner/admin/moderator only. Lifts a moderation mute and restores sending, media, voice notes, reactions, pinning " +
-      "and typing immediately. 404 `CHAT_MEMBER_NOT_MUTED` when the member is not currently muted (a fully-expired timed " +
-      "mute counts as not muted). Emits `group:member:unmuted` to the room AND to the target's `user:<id>` channel, so " +
-      "every device re-enables its composer without a refetch. A timed mute that simply lapses emits the same event from " +
-      'the auto-unmute sweep, with `actorId: ""`.',
-    security: [{ bearerAuth: [] }],
-    requestBody: {
-      required: true,
-      content: {
-        "application/json": {
-          schema: { $ref: "#/components/schemas/ChatUnmuteMemberRequest" },
-        },
-      },
-    },
-    responses: {
-      ...successResponse("Member unmuted", "ChatGroupMember"),
-      "400": badRequest,
-      "401": unauthorized,
-      "403": forbidden,
-      "404": notFound,
-    },
-  },
-};
+const groupMemberUnmuteMember = groupFeatureRemoved("unmuteGroupMember", "Unmute another member");
 
 const groupMemberRole = {
   post: {
     tags: ["Chat — Groups"],
     operationId: "updateGroupMemberRole",
-    summary: "Update member role",
-    description: "Admin/owner only.",
+    summary: "Hand over group leadership",
+    description:
+      "Leader only. `role` must be `ADMIN` (any other value → 400); the caller becomes a MEMBER and a LEADER_CHANGED line is posted.",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,

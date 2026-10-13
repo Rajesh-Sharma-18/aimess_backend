@@ -53,28 +53,6 @@ export const ADMIN_ACTIVITY_BY_SYSTEM_EVENT: Partial<
   LEADER_CHANGED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
 };
 
-/**
- * ROLE_CHANGED covers moderator grants, admin hand-offs and plain demotions
- * alike. Moderator grants/removals are their own mandatory audit category, so
- * the `newRole`/`oldRole` the caller already puts in `systemData` splits them
- * out; everything else stays the generic role change.
- */
-function refineGroupAuditAction(
-  systemEvent: SystemEvent,
-  systemData: Record<string, unknown>
-): string | undefined {
-  const mirrored = ADMIN_ACTIVITY_BY_SYSTEM_EVENT[systemEvent];
-  if (mirrored !== USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED) return mirrored;
-
-  const newRole = String(systemData.newRole ?? "").toUpperCase();
-  const oldRole = String(systemData.oldRole ?? "").toUpperCase();
-  if (newRole === "MODERATOR")
-    return USER_AUDIT_ACTIONS.GROUP_MODERATOR_PROMOTED;
-  if (oldRole === "MODERATOR")
-    return USER_AUDIT_ACTIONS.GROUP_MODERATOR_DEMOTED;
-  return mirrored;
-}
-
 export interface PostSystemMessageParams {
   roomId: string;
   /** User who triggered the event (null for a pure-system event). */
@@ -179,7 +157,7 @@ export class GroupSystemMessageService {
     // the canonical row with the acting admin's identity on it.
     const mirrored = params.skipAdminActivity
       ? undefined
-      : refineGroupAuditAction(systemEvent, inData);
+      : ADMIN_ACTIVITY_BY_SYSTEM_EVENT[systemEvent];
     if (mirrored) {
       // A membership/role event is about the PERSON; a room-level event is about
       // the room. The other id stays in the metadata either way.

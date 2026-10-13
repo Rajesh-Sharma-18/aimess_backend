@@ -290,6 +290,7 @@ describe("POST /conversations/leave/bulk", () => {
         status: "ACTIVE",
         role: "ADMIN",
       });
+      mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue(["peer_1"]);
 
       const res = await call();
 
@@ -345,6 +346,7 @@ describe("POST /conversations/leave/bulk", () => {
       status: "ACTIVE",
       role: "ADMIN",
     });
+    mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue(["peer_1"]);
 
     const res = await request(app)
       .post("/api/chat/conversations/leave/bulk")
@@ -826,6 +828,7 @@ describe("Delete Conversation on a CLOSED group", () => {
         role: "ADMIN",
       });
       mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(4);
+      mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue(["peer_1"]);
       mocks.groupMemberRepo.setDismissed.mockResolvedValue(true);
 
       const res = await request(app)
@@ -914,6 +917,7 @@ describe("Delete Conversation on a CLOSED group", () => {
       role: "ADMIN",
     });
     mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(3);
+    mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue(["peer_1"]);
 
     const res = await request(app)
       .post("/api/chat/conversations/leave/bulk")

@@ -43,7 +43,6 @@ import {
   assertGroupReadAccess,
   assertGroupRoomWritable,
   groupReadCutoff,
-  isGroupMemberMuted,
 } from "../lib/access-guard.js";
 import {
   getGroupVisibilityCutoff,
@@ -832,28 +831,15 @@ export class GroupRoomService {
         : [found];
     // Resolve the room logo object key → download URL on read (never persisted).
     const avatar = await resolveMediaUrl(room.avatar);
-    // Caller's OWN moderation-mute state, so a client that reconnects (or opens
-    // the group cold) restores the disabled composer without waiting for a
-    // `group:member:muted` socket event it may have missed while offline —
-    // Scenario 4. Named exactly like community's detail payload
-    // (`isMemberMuted`/`memberMutedUntil`); distinct from `isMuted`, which is
-    // the caller's own NOTIFICATION mute.
-    const isMemberMuted = isGroupMemberMuted(membership);
     return {
       ...room,
       avatar,
       isJoined,
       membershipStatus: membership?.status ?? null,
-      isMemberMuted,
-      memberMutedUntil:
-        isMemberMuted && membership?.moderationMutedUntil
-          ? membership.moderationMutedUntil.toISOString()
-          : null,
-      // Epoch-ms mirror (§6). ISO string above kept for existing clients.
-      memberMutedUntilMs:
-        isMemberMuted && membership?.moderationMutedUntil
-          ? membership.moderationMutedUntil.getTime()
-          : null,
+      // Groups have no moderation mute; the fields stay on the wire for old clients.
+      isMemberMuted: false,
+      memberMutedUntil: null,
+      memberMutedUntilMs: null,
       // The effective auto-delete policy, in the SAME DTO the dedicated
       // GET/PUT `/auto-delete` endpoints and the socket event return — so
       // opening a group renders the timer state (and whether THIS member may
@@ -1562,7 +1548,6 @@ export class GroupRoomService {
       const isJoined = membership?.status === "ACTIVE";
       const hasLeft = false;
       const isRemoved = false;
-      const isMemberMuted = isGroupMemberMuted(membership);
       // Per-viewer effective activity, read off the SAME preview the per-user
       // passes above produced (delete-for-me override / clear-chat cap), so
       // preview and timestamp can never disagree.
@@ -1578,16 +1563,9 @@ export class GroupRoomService {
           Math.max(membership?.clearChatAt?.getTime() ?? 0, membership?.clearedAt?.getTime() ?? 0) || null,
         isRemoved,
         isMuted,
-        isMemberMuted,
-        memberMutedUntil:
-          isMemberMuted && membership?.moderationMutedUntil
-            ? membership.moderationMutedUntil.toISOString()
-            : null,
-        // Epoch-ms mirror (§6). ISO string above kept for existing clients.
-        memberMutedUntilMs:
-          isMemberMuted && membership?.moderationMutedUntil
-            ? membership.moderationMutedUntil.getTime()
-            : null,
+        isMemberMuted: false,
+        memberMutedUntil: null,
+        memberMutedUntilMs: null,
         unreadCount: membership?.unreadCount ?? 0,
         lastReadMessageId: membership?.lastReadMessageId ?? null,
         role: membership?.role ?? "MEMBER",

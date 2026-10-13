@@ -1520,11 +1520,9 @@ function mapCommunityScopeError(errorCode: string): Error {
   return new ConflictError(errorCode || "COMMUNITY_BAN_FAILED");
 }
 
-// Group-scoped ban: the exact community-scoped analogue. Delegates to
-// chat-service (owner of aimess_chat) over the AdminBanGroupMember RPC — a
-// normal member's membership goes BANNED (evicted, rejoin-blocked); the group
-// OWNER instead has the whole group CLOSED (ADMIN_BANNED banner, roster kept).
-// The ACCOUNT is never touched, so the caller sees back the unchanged status.
+// Legacy group-scoped ban. Groups have no ban: chat-service (AdminBanGroupMember)
+// REMOVES the member (KICKED, re-addable by the leader; a leader hands over first)
+// and posts "AI Mess Administrator removed X". The ACCOUNT is never touched.
 async function banFromGroup(
   userId: string,
   input: BanUserInput,
@@ -1563,8 +1561,7 @@ async function banFromGroup(
       reason: input.reason,
       note: input.note ?? null,
       permanent: true,
-      // Banning a group's own owner closes that group as a side effect; the
-      // audit row names it or the blast radius is invisible.
+      removedInstead: true,
       closedGroup: result.closedGroup ?? false,
     },
     ip: ctx.ip,
@@ -1608,8 +1605,7 @@ async function unbanFromGroup(
       banType: "GROUP",
       groupId,
       note: input.note ?? null,
-      // Same asymmetry as community/system unban: the membership stays LEFT (the
-      // user must rejoin), and a group CLOSED by an owner ban stays CLOSED.
+      // Groups have no ban: chat-service treats this as a no-op success.
       membershipRestored: false,
     },
     ip: ctx.ip,

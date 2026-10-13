@@ -112,6 +112,50 @@ function setupBanMocks(): void {
   repo.createAuditLog.mockResolvedValue(undefined);
 }
 
+// Groups lost their moderators; communities keep them (Admin / Moderator / Member).
+describe("community MODERATOR regression", () => {
+  beforeEach(() => {
+    setupKickMocks();
+    repo.findMembership.mockResolvedValue({ ...mockCallerMembership, role: "MODERATOR" });
+  });
+
+  it("a moderator can still remove a member, named by role", async () => {
+    await communityService.kickMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
+
+    expect(repo.updateMemberStatus).toHaveBeenCalled();
+    expect(publishSystemMsg.mock.calls[0][0]).toMatchObject({
+      systemMessageType: "MEMBER_REMOVED",
+      metadata: { actorRole: "MODERATOR" },
+    });
+  });
+
+  it("a moderator can still mute a member", async () => {
+    repo.upsertMemberMute.mockResolvedValue({
+      userId: TARGET_ID,
+      mutedBy: CALLER_ID,
+      mutedAt: new Date(),
+      mutedUntil: null,
+      reason: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await expect(
+      communityService.muteMember(COMMUNITY_ID, CALLER_ID, TARGET_ID, null)
+    ).resolves.toBeDefined();
+    expect(repo.upsertMemberMute).toHaveBeenCalled();
+  });
+
+  it("a moderator cannot remove a peer moderator (outrank rule)", async () => {
+    repo.findMemberByUserId.mockResolvedValue({ ...mockTargetMember, role: "MODERATOR" });
+
+    await expect(
+      communityService.kickMember(COMMUNITY_ID, CALLER_ID, TARGET_ID)
+    ).rejects.toBeDefined();
+    expect(repo.updateMemberStatus).not.toHaveBeenCalled();
+  });
+});
+
 // ─── kickMember ──────────────────────────────────────────────────────────────
 
 describe("kickMember — silent-chat policy", () => {

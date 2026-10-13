@@ -17,6 +17,7 @@ import { GroupMemberService } from "../../src/services/group-member.service.js";
 import { AdminGroupService } from "../../src/services/admin-group.service.js";
 import {
   BANNED_WHERE,
+  CLOSURE_BANNED_DATA,
   MODERATOR_DATA,
   MODERATOR_WHERE,
   MUTED_DATA,
@@ -146,6 +147,31 @@ describe("GroupMemberService.autoSucceed", () => {
     expect(memberRepo.transferLeadership).toHaveBeenCalledWith(ROOM, "lead", "ok");
   });
 
+  it("skips a deleted account too (same eligibility as leave-with-successor)", async () => {
+    const memberRepo = {
+      findSuccessionCandidates: jest.fn().mockResolvedValue(["gone", "ok"]),
+      transferLeadership: jest.fn().mockResolvedValue(true),
+      findActiveMembers: jest.fn().mockResolvedValue([]),
+    };
+    const service = new GroupMemberService(
+      memberRepo as never,
+      { findActiveByRoomId: jest.fn().mockResolvedValue(null) } as never,
+      { post: jest.fn().mockResolvedValue(undefined) } as never,
+      { publish: jest.fn().mockResolvedValue(0), get: jest.fn().mockResolvedValue(null) } as never,
+      undefined,
+      {
+        getUserSnapshotsMap: jest.fn().mockResolvedValue(
+          new Map([["gone", { userId: "gone", memberId: "", isDeletedUser: true }]])
+        ),
+      } as never,
+      {} as never
+    );
+
+    await expect(service.autoSucceed(ROOM, "lead")).resolves.toBe(true);
+    expect(memberRepo.transferLeadership).toHaveBeenCalledTimes(1);
+    expect(memberRepo.transferLeadership).toHaveBeenCalledWith(ROOM, "lead", "ok");
+  });
+
   it("only blocked candidates → null (nobody eligible)", async () => {
     const { service, memberRepo } = makeService(["banned"], [], {
       "aimess:user:banned:banned": "1",
@@ -218,6 +244,102 @@ describe("GroupMemberService.autoSucceed", () => {
   });
 });
 
+describe("GroupMemberService.leave — deleted accounts are not successors", () => {
+  function makeLeaveService(candidates: string[], deleted: string[]) {
+    const memberRepo = {
+      findActiveByRoomAndUser: jest.fn().mockResolvedValue({ userId: "lead", role: "ADMIN" }),
+      findSuccessionCandidates: jest.fn().mockResolvedValue(candidates),
+      countActiveMembers: jest.fn().mockResolvedValue(candidates.length + 1),
+      transferLeadership: jest.fn().mockResolvedValue(true),
+      findByRoomAndUser: jest.fn().mockResolvedValue({ status: "LEFT" }),
+      findActiveMembers: jest.fn().mockResolvedValue([]),
+    };
+    const disbander = { disbandGroup: jest.fn().mockResolvedValue({}) };
+    const service = new GroupMemberService(
+      memberRepo as never,
+      {
+        findActiveByRoomId: jest.fn().mockResolvedValue({ status: "ACTIVE" }),
+        incMemberCount: jest.fn(),
+      } as never,
+      { post: jest.fn().mockResolvedValue(undefined) } as never,
+      { publish: jest.fn().mockResolvedValue(0), get: jest.fn().mockResolvedValue(null) } as never,
+      undefined,
+      {
+        getUserSnapshotsMap: jest.fn().mockResolvedValue(
+          new Map(deleted.map((id) => [id, { userId: id, memberId: "", isDeletedUser: true }]))
+        ),
+      } as never,
+      {} as never,
+      disbander
+    );
+    return { service, memberRepo, disbander };
+  }
+
+  it("only deleted accounts left → no successor needed; leaving closes the group", async () => {
+    const { service, memberRepo, disbander } = makeLeaveService(["gone-1", "gone-2"], ["gone-1", "gone-2"]);
+
+    await service.leave(ROOM, "lead");
+
+    expect(disbander.disbandGroup).toHaveBeenCalledWith(ROOM, "lead", { asLastMember: false });
+    expect(memberRepo.transferLeadership).not.toHaveBeenCalled();
+  });
+
+  it("a deleted successor is refused with 409", async () => {
+    const { service, memberRepo } = makeLeaveService(["gone-1", "ok-1"], ["gone-1"]);
+
+    await expect(service.leave(ROOM, "lead", undefined, "gone-1")).rejects.toMatchObject({
+      messageKey: "CHAT_LEADER_SUCCESSOR_REQUIRED",
+    });
+    expect(memberRepo.transferLeadership).not.toHaveBeenCalled();
+  });
+
+  it("an eligible member remains → 409 without a successor", async () => {
+    const { service, disbander } = makeLeaveService(["gone-1", "ok-1"], ["gone-1"]);
+
+    await expect(service.leave(ROOM, "lead")).rejects.toMatchObject({
+      messageKey: "CHAT_LEADER_SUCCESSOR_REQUIRED",
+    });
+    expect(disbander.disbandGroup).not.toHaveBeenCalled();
+  });
+});
+
+describe("concurrent handovers", () => {
+  it("two handovers at once → exactly one leader, the loser is refused", async () => {
+    const roles: Record<string, string> = { lead: "ADMIN", a: "MEMBER", b: "MEMBER" };
+    const memberRepo = {
+      findActiveByRoomAndUser: jest.fn(async (_r: string, u: string) =>
+        roles[u] ? { userId: u, role: roles[u], status: "ACTIVE" } : null
+      ),
+      // The repository's conditional write: `from` must still lead, `to` must not.
+      transferLeadership: jest.fn(async (_r: string, from: string, to: string) => {
+        await Promise.resolve();
+        if (roles[from] !== "ADMIN" || roles[to] === "ADMIN") return false;
+        roles[from] = "MEMBER";
+        roles[to] = "ADMIN";
+        return true;
+      }),
+      findByRoomAndUser: jest.fn(async (_r: string, u: string) => ({ userId: u, role: roles[u] })),
+      findActiveMembers: jest.fn().mockResolvedValue([]),
+    };
+    const service = new GroupMemberService(
+      memberRepo as never,
+      { findActiveByRoomId: jest.fn().mockResolvedValue(null) } as never,
+      { post: jest.fn().mockResolvedValue(undefined) } as never,
+      { publish: jest.fn().mockResolvedValue(0) } as never
+    );
+    const handover = (target: string) =>
+      service.updateRole({ roomId: ROOM, targetUserId: target, newRole: "ADMIN", actorUserId: "lead" });
+
+    const results = await Promise.allSettled([handover("a"), handover("b")]);
+
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.find((r) => r.status === "rejected")).toMatchObject({
+      reason: { messageKey: "CHAT_INSUFFICIENT_PERMISSIONS" },
+    });
+    expect(Object.values(roles).filter((r) => r === "ADMIN")).toHaveLength(1);
+  });
+});
+
 describe("AdminGroupService.adminApplySystemBan", () => {
   it("hands groups over and closes only the ones with nobody left", async () => {
     const closeGroupForSystemBan = jest.fn(async (roomId: string) => ({ roomId }));
@@ -272,5 +394,9 @@ describe("migrate-group-leader-members mapping", () => {
     expect(
       bannedToKicked({ bannedAt: null, bannedBy: null, updatedAt }).kickedAt
     ).toBe(updatedAt);
+  });
+
+  it("closure snapshots: BANNED → KICKED with the ban stamp cleared", () => {
+    expect(CLOSURE_BANNED_DATA).toEqual({ status: "KICKED", bannedAt: null });
   });
 });

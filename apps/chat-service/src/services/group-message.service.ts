@@ -77,8 +77,6 @@ import {
   assertGroupMember,
   assertGroupWritable,
   assertGroupReadAccess,
-  assertGroupMemberNotMuted,
-  isGroupMemberMuted,
 } from "../lib/access-guard.js";
 import { SystemEvent } from "../types/enums.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
@@ -267,7 +265,6 @@ export class GroupMessageService {
     if (memberRes.status === "rejected") throw memberRes.reason;
     const member = memberRes.value;
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
-    assertGroupMemberNotMuted(member);
     if (writableRes.status === "rejected") throw writableRes.reason;
 
     // §2.2: stamp the sender's group role on the returned message (transient,
@@ -745,19 +742,14 @@ export class GroupMessageService {
     return ids.filter((id) => !deleted.has(id));
   }
 
-  /**
-   * {@link getActiveMemberIds} plus the subset currently moderation-muted, from
-   * the SAME query — the gateway's typing/recording gate needs both and would
-   * otherwise pay a second round trip per keystroke. Lazy expiry is applied
-   * (`isGroupMemberMuted`), so a lapsed timed mute never appears here.
-   */
+  // `mutedUserIds` stays on the wire for the gateway; groups have no moderation mute.
   async getActiveRoster(
     roomId: string
   ): Promise<{ userIds: string[]; mutedUserIds: string[] }> {
     const members = await this.memberRepo.findActiveMembers(roomId);
     return {
       userIds: members.map((m) => m.userId),
-      mutedUserIds: members.filter(isGroupMemberMuted).map((m) => m.userId),
+      mutedUserIds: [],
     };
   }
 
@@ -1545,9 +1537,6 @@ export class GroupMessageService {
     );
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
     assertWithinHistory(message.createdAt, member);
-    // Parity with CommunityMessageService.deleteForMe — a muted member cannot
-    // mutate their own view of room content either.
-    assertGroupMemberNotMuted(member);
     await assertGroupWritable(this.roomRepo, roomId);
 
     const hidden = await this.messageRepo.deleteForMe(messageId, userId);
@@ -1714,11 +1703,6 @@ export class GroupMessageService {
           throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
         }
         deletedType = "ADMIN_DELETE";
-      } else {
-        // Mirrors CommunityMessageService.deleteForAll: a muted member cannot
-        // delete their OWN message, but an admin/mod deleting someone else's is
-        // moderation and stays allowed even while that admin is muted.
-        assertGroupMemberNotMuted(member);
       }
     }
 
@@ -1830,9 +1814,6 @@ export class GroupMessageService {
       message,
       params.userId
     );
-    // A muted member cannot mutate room content (Telegram: editing needs send).
-    // Mirrors CommunityMessageService.editMessage.
-    assertGroupMemberNotMuted(editor);
     await assertGroupWritable(this.roomRepo, message.roomId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
@@ -2271,18 +2252,9 @@ if (!params.content?.text?.trim())
     await assertGroupMember(this.memberRepo, roomId, userId);
   }
 
-  /**
-   * {@link assertMember} plus the moderation-mute gate — for WRITE boundaries
-   * only (react / remove-reaction). Kept separate from `assertMember` because
-   * that one also guards pure READS (getMessageReactions, message context),
-   * which a muted member keeps full access to. Mirrors Community, where the
-   * react path calls `assertRoomMemberActive` + `assertCommunityMemberNotMuted`.
-   *
-   * @throws ForbiddenError `CHAT_MUTED_IN_GROUP` when the member is muted.
-   */
+  /** WRITE boundary for react / remove-reaction: ACTIVE member of a writable group. */
   async assertCanWrite(roomId: string, userId: string): Promise<void> {
-    const member = await assertGroupMember(this.memberRepo, roomId, userId);
-    assertGroupMemberNotMuted(member);
+    await assertGroupMember(this.memberRepo, roomId, userId);
     await assertGroupWritable(this.roomRepo, roomId);
   }
 
@@ -2633,9 +2605,6 @@ if (!params.content?.text?.trim())
       params.senderId
     );
     if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-    // A forward CREATES a message in the target room, so it is a send: a muted
-    // member must not be able to route around the mute by forwarding.
-    assertGroupMemberNotMuted(member);
     await assertGroupWritable(this.roomRepo, params.targetRoomId);
 
     // §2.2: stamp the forwarder's group role (transient) for parity with send.

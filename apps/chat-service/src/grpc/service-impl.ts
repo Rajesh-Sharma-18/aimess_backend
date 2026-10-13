@@ -1249,8 +1249,7 @@ export function createMessagingImpl(
           // react to (and re-broadcast) a message from room B. assertMessageInRoom
           // throws NotFound on mismatch (the catch below maps it to gRPC INTERNAL).
           if (reactConversationType === "GROUP") {
-            // Write boundary — also rejects a moderation-muted member
-            // (CHAT_MUTED_IN_GROUP), same as the community react path.
+            // Write boundary: ACTIVE member of a writable group.
             await deps.groupMessageService.assertCanWrite(
               req.conversationId,
               req.userId
@@ -2221,9 +2220,6 @@ export function createMessagingImpl(
           }
 
           if (String(req.conversationType ?? "").toUpperCase() === "GROUP") {
-            // Roster + the moderation-muted subset in ONE query, so the
-            // gateway can drop a muted member's typing/recording indicator
-            // without a second per-keystroke round trip.
             const roster =
               await deps.groupMessageService.getActiveRoster(conversationId);
             callback(null, roster);
@@ -2246,8 +2242,7 @@ export function createMessagingImpl(
             ? (room.blockedBy as string[])
             : [];
           if (!room) {
-            // Legacy-client group fallback — resolve the muted subset too, so
-            // an old client that omits conversationType is gated identically.
+            // Legacy-client group fallback (no conversationType).
             callback(
               null,
               await deps.groupMessageService.getActiveRoster(conversationId)
@@ -3274,20 +3269,6 @@ export function createMessagingImpl(
                 userId
               );
               if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-              // A BAN revokes media access outright. Kick and ban both KEEP the
-              // membership row and only mutate `status`, and this check was a
-              // bare row-existence test — so a banned member kept downloading
-              // every attachment in the group indefinitely. Mirrors the
-              // COMMUNITY_CHAT rule below, where a ban already outranks
-              // historical access.
-              //
-              // LEFT and KICKED are deliberately still allowed: group history is
-              // historical-read by design (a kicked member reads up to
-              // `kickedAt`), and revoking their media would break the history
-              // they can legitimately still see.
-              if (String(member.status).toUpperCase() === "BANNED") {
-                throw new ForbiddenError("USER_BANNED");
-              }
               // Membership is not the whole answer for a group: each member also
               // has a history boundary, and an attachment from before theirs
               // belongs to a message every other surface refuses them. Knowing

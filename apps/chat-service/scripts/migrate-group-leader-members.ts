@@ -3,6 +3,8 @@
  *
  *   MODERATOR → MEMBER, moderation mutes cleared, BANNED → KICKED (re-addable;
  *   the ban stamps move to the kick columns). Posts no system lines.
+ *   The closed-group roster snapshots (group_closure_members) get the same
+ *   role/status mapping, so the admin panel never lists a group MODERATOR/BANNED.
  *
  * Idempotent: every step only matches rows not yet migrated.
  *
@@ -30,6 +32,7 @@ export const MUTED_DATA = {
   moderationMutedBy: null,
 };
 export const BANNED_WHERE = { status: "BANNED" };
+export const CLOSURE_BANNED_DATA = { status: "KICKED", bannedAt: null };
 
 export function bannedToKicked(row: {
   bannedAt: Date | null;
@@ -76,8 +79,25 @@ async function main(): Promise<void> {
     }
   }
 
+  const closureModerators = apply
+    ? (
+        await prisma.groupClosureMember.updateMany({
+          where: MODERATOR_WHERE,
+          data: MODERATOR_DATA,
+        })
+      ).count
+    : await prisma.groupClosureMember.count({ where: MODERATOR_WHERE });
+  const closureBanned = apply
+    ? (
+        await prisma.groupClosureMember.updateMany({
+          where: BANNED_WHERE,
+          data: CLOSURE_BANNED_DATA,
+        })
+      ).count
+    : await prisma.groupClosureMember.count({ where: BANNED_WHERE });
+
   logger.info(
-    `migrate(group-leader-members)${tag}: MODERATOR→MEMBER ${String(moderators)}, mutes cleared ${String(muted)}, BANNED→KICKED ${String(banned.length)}`
+    `migrate(group-leader-members)${tag}: MODERATOR→MEMBER ${String(moderators)}, mutes cleared ${String(muted)}, BANNED→KICKED ${String(banned.length)}; closure snapshots MODERATOR→MEMBER ${String(closureModerators)}, BANNED→KICKED ${String(closureBanned)}`
   );
 }
 

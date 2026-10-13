@@ -120,14 +120,7 @@ export interface InboxItem {
    *  "ACTIVE" (the list's membership query admits nothing else). Null for
    *  PRIVATE rows. */
   membershipStatus: string | null;
-  /**
-   * GROUP-only: an admin/moderator has silenced the CALLER (read stays open,
-   * every write is rejected with CHAT_MUTED_IN_GROUP). Distinct from `isMuted`,
-   * the caller's own NOTIFICATION mute. `getInboxGroups` already computed this
-   * — the unified inbox simply dropped it on the floor, so a client that was
-   * offline when the mute landed had no way to restore its disabled composer
-   * on a cold start. Null for PRIVATE rows.
-   */
+  /** GROUP: always false (groups have no moderation mute; kept for old clients). Null for PRIVATE rows. */
   isMemberMuted: boolean | null;
   /** GROUP-only: ISO-8601 expiry of a timed member-mute; null = indefinite. */
   memberMutedUntil: string | null;

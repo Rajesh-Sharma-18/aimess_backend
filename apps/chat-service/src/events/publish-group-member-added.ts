@@ -4,7 +4,6 @@ import * as amqp from "amqplib";
 import {
   ChatEvents,
   type ChatGroupMemberAddedPayload,
-  type ChatGroupMemberMutedPayload,
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
@@ -50,22 +49,6 @@ export function publishGroupMemberAddedSafe(
   data: ChatGroupMemberAddedPayload
 ): void {
   publishGroupEventSafe(ChatEvents.GROUP_MEMBER_ADDED, data);
-}
-
-/**
- * Moderation mute/unmute notice for the TARGET member — the group counterpart
- * of community's MEMBER_MUTED / MEMBER_UNMUTED push. The `group:member:muted`
- * socket event already covers every LIVE device; this covers the member whose
- * devices were all offline when the mute landed, so the state is not first
- * discovered by a send being rejected. Same best-effort contract as the add.
- */
-export function publishGroupMemberMuteSafe(
-  event:
-    | typeof ChatEvents.GROUP_MEMBER_MUTED
-    | typeof ChatEvents.GROUP_MEMBER_UNMUTED,
-  data: ChatGroupMemberMutedPayload
-): void {
-  publishGroupEventSafe(event, data);
 }
 
 export function publishGroupEventSafe(

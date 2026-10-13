@@ -18,7 +18,6 @@ import {
   assertGroupMember,
   assertGroupReadAccess,
   assertGroupRoomWritable,
-  isGroupMemberMuted,
 } from "../lib/access-guard.js";
 import {
   publishGroupEventSafe,
@@ -27,7 +26,12 @@ import {
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import { publishRoomCardsGoneSafe } from "../events/publish-conversation-read.js";
 import { ChatEvents } from "@aimess/shared-types";
-import { BACKOFFICE_SOURCE, effectiveGroupMemberLimit } from "@aimess/constants";
+import {
+  BACKOFFICE_SOURCE,
+  MAX_GROUP_MEMBERS,
+  effectiveGroupMemberLimit,
+} from "@aimess/constants";
+import { collectDeletedUserIds } from "../lib/deleted-identity.js";
 import { publishUserReport } from "../lib/report-user.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -51,11 +55,11 @@ export type EnrichedGroupMember = GroupMember & {
   avatarUrl: string;
   isDeletedUser: boolean;
   /**
-   * Platform (Super Admin) ban — NOT the group-level `status: "BANNED"`. The
-   * member stays on the roster; clients close the profile, drop them from the
-   * mention picker, and offer admins/mods Remove only.
+   * Platform (Super Admin) ban. The member stays on the roster; clients close
+   * the profile, drop them from the mention picker, and offer the leader Remove only.
    */
   isUnavailable: boolean;
+  // Always false: groups have no moderation mute (kept on the wire for old clients).
   isMuted: boolean;
 };
 
@@ -164,17 +168,11 @@ export class GroupMemberService {
     if (existing && existing.status === "ACTIVE") {
       throw new ConflictError("CHAT_ALREADY_MEMBER");
     }
-    // REJOIN BLOCK. A member removed (KICKED) or banned (BANNED) by staff does
-    // not come back on their own — not with this link, not with a freshly minted
-    // one, not after re-login. The block lives on the member row, so it survives
-    // everything a token can be rotated through.
-    //
+    // REJOIN BLOCK. A removed (KICKED) member does not come back on their own —
+    // not with this link, not with a freshly minted one, not after re-login.
     // The ONLY key is a manual add by the group leader, which is exactly this
-    // branch: an authorized add re-activates the row (and, for a ban, clears
-    // bannedAt/bannedBy below).
-    const blocked =
-      existing?.status === "KICKED" || existing?.status === "BANNED";
-    if (blocked && opts?.skipActorAuthz) {
+    // branch: an authorized add re-activates the row.
+    if (existing?.status === "KICKED" && opts?.skipActorAuthz) {
       // Self-join through an invite link — never a way back in.
       throw new ForbiddenError("CHAT_JOIN_BLOCKED");
     }
@@ -235,11 +233,6 @@ export class GroupMemberService {
         kickedAt: null,
         kickedBy: null,
         kickReason: null,
-        // An ADMIN re-add is what lifts a ban (see the rejoin-block gate above);
-        // any other path never reaches here with a BANNED row.
-        ...(existing?.status === "BANNED"
-          ? { bannedAt: null, bannedBy: null }
-          : {}),
         // Re-add: stale clear/read state from the old membership must not cap or shift visibility.
         ...(existing
           ? {
@@ -575,9 +568,10 @@ export class GroupMemberService {
 
     let successor: string | null = null;
     if (member.role === "ADMIN") {
-      const activeMembers = await this.memberRepo.countActiveMembers(roomId);
-      if (activeMembers !== 1) {
-        if (!successorId || successorId === userId) {
+      // A successor is required only while someone could take over; it must be one of them.
+      const eligible = await this.eligibleSuccessors(roomId, userId);
+      if (successorId || eligible.length) {
+        if (!successorId || !eligible.includes(successorId)) {
           throw new ConflictError("CHAT_LEADER_SUCCESSOR_REQUIRED");
         }
         successor = successorId;
@@ -585,15 +579,18 @@ export class GroupMemberService {
         if (!this.groupDisbander) {
           throw new BadRequestError("CHAT_OWNER_CANNOT_LEAVE");
         }
-        // Last member of an ACTIVE group: leaving closes it (the same disband
-        // "Close group" runs), as one transaction that re-checks the roster at
-        // the write. A group already CLOSED by Super Admin is never closed a
-        // second time: the last member just leaves below and it stays CLOSED.
+        // Nobody can lead (alone, or only deleted/banned/suspended accounts
+        // left): leaving closes the group (the same disband "Close group"
+        // runs). Alone, the transaction re-checks the roster at the write. A
+        // group already CLOSED by Super Admin is never closed a second time:
+        // the last member just leaves below and it stays CLOSED.
         const room = await this.roomRepo.findActiveByRoomId(roomId);
         if (room?.status !== "CLOSED") {
+          // ponytail: with ineligible members left the sole-member re-check is skipped; an eligible join racing this leave is closed with the group.
+          const alone = (await this.memberRepo.countActiveMembers(roomId)) === 1;
           try {
             await this.groupDisbander.disbandGroup(roomId, userId, {
-              asLastMember: true,
+              asLastMember: alone,
             });
           } catch (err: unknown) {
             // The room stopped being ACTIVE between the read and the write (a
@@ -724,17 +721,8 @@ export class GroupMemberService {
     leaderId: string,
     leaderLeaves = false
   ): Promise<boolean | null> {
-    // ponytail: first 20 by tenure; a group whose 20 oldest are all blocked falls back to last-member behaviour.
-    const candidates = await this.memberRepo.findSuccessionCandidates(
-      roomId,
-      leaderId,
-      20
-    );
-    const isBlocked = createBannedUserGuard(() => this.redis);
-    let eligible = false;
-    for (const candidate of candidates) {
-      if (await isBlocked(candidate)) continue;
-      eligible = true;
+    const eligible = await this.eligibleSuccessors(roomId, leaderId);
+    for (const candidate of eligible) {
       const moved = leaderLeaves
         ? await this.memberRepo.transferLeadership(
             roomId,
@@ -756,7 +744,41 @@ export class GroupMemberService {
         return true;
       }
     }
-    return eligible ? false : null;
+    return eligible.length ? false : null;
+  }
+
+  /**
+   * ACTIVE members other than `leaderId` who may lead, longest-standing first:
+   * not a deleted, banned or suspended account. The one eligibility rule for
+   * leave-with-successor and automatic succession.
+   */
+  private async eligibleSuccessors(
+    roomId: string,
+    leaderId: string
+  ): Promise<string[]> {
+    const candidates =
+      (await this.memberRepo.findSuccessionCandidates(
+        roomId,
+        leaderId,
+        MAX_GROUP_MEMBERS
+      )) ?? [];
+    if (!candidates.length) return [];
+    const deleted =
+      this.userSnapshotService && this.cacheRepo
+        ? await collectDeletedUserIds(
+            candidates,
+            this.userSnapshotService,
+            this.cacheRepo
+          ).catch(() => new Set<string>())
+        : new Set<string>();
+    const isBlocked = createBannedUserGuard(() => this.redis);
+    const eligible: string[] = [];
+    for (const candidate of candidates) {
+      if (!deleted.has(candidate) && !(await isBlocked(candidate))) {
+        eligible.push(candidate);
+      }
+    }
+    return eligible;
   }
 
   /** {@link autoSucceed} for every group `userId` leads. Returns the groups with nobody to promote. */
@@ -833,9 +855,9 @@ export class GroupMemberService {
     );
     await this.roomRepo.incMemberCount(params.roomId, -1);
 
-    // Evict first (see ban() for the ordering rationale), then post the removal
-    // line and roster event with the target hard-excluded — a kicked member
-    // must not receive the "Admin removed X" line about themselves either.
+    // Evict first (shrinks the window a stale socket could still catch the
+    // line), then post the removal line and roster event with the target
+    // hard-excluded — a kicked member must not receive the line about themselves.
     this.emitGroupRemoved(params.roomId, params.targetUserId, "KICK");
     await this.sysMsg.post({
       roomId: params.roomId,
@@ -858,152 +880,6 @@ export class GroupMemberService {
       actorId: params.kickedBy,
       extra: { reason: "KICK" },
       excludeUserId: params.targetUserId,
-    });
-
-    return updated;
-  }
-
-  /**
-   * Ban a member: same permission/role-order rules as `kick`, but the target's
-   * `status` becomes `"BANNED"` (not `"KICKED"`) and `bannedAt`/`bannedBy` are
-   * populated — those two Prisma columns previously existed on the schema but
-   * were never written or checked anywhere, so a "banned" group member was
-   * functionally identical to an active one. `findActiveByRoomAndUser`'s
-   * `status: "ACTIVE"` filter (used by every send/read/access-guard check)
-   * already excludes non-ACTIVE members, so this closes both the write/read
-   * gate AND (via `addMember`'s new check above) the rejoin gate, matching
-   * community's hardened ban enforcement.
-   */
-  async ban(params: {
-    roomId: string;
-    targetUserId: string;
-    bannedBy: string;
-    reason?: string;
-    // Backoffice (platform-admin) ban — same bypass as `kick`: skip the in-group
-    // actor lookup and role-order check (`bannedBy` is then an AdminUser.id, not
-    // a member), post the system line actor-less, and skip the in-group admin
-    // activity mirror (backoffice already audited the action).
-    asPlatformAdmin?: boolean;
-  }): Promise<GroupMember | null> {
-    const actor = params.asPlatformAdmin
-      ? null
-      : await this.memberRepo.findActiveByRoomAndUser(
-          params.roomId,
-          params.bannedBy
-        );
-    if (!params.asPlatformAdmin) {
-      if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-      if (actor.role !== "ADMIN") {
-        throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
-      }
-    }
-
-    const target = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.targetUserId
-    );
-    if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-
-    // In-group actors cannot target the leader — a platform admin outranks everyone.
-    if (actor && target.role === "ADMIN") {
-      throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
-    }
-
-    const updated = await this.memberRepo.updateStatus(
-      params.roomId,
-      params.targetUserId,
-      "BANNED",
-      {
-        bannedAt: new Date(),
-        bannedBy: params.bannedBy,
-        kickReason: params.reason || null,
-        // See leave(): an ended membership carries no unread.
-        unreadCount: 0,
-      }
-    );
-    await this.roomRepo.incMemberCount(params.roomId, -1);
-
-    // Evict the target's sockets from conv:<roomId> FIRST (the gateway reacts
-    // to group:removed), so the window in which a concurrent normal message
-    // could still reach them is as small as possible. The ban system line and
-    // the roster event below are additionally hard-excluded from the target
-    // regardless of eviction timing (excludeUserId), so the target never sees
-    // its own ban announcement — remaining members still do.
-    this.emitGroupRemoved(params.roomId, params.targetUserId, "BAN");
-    await this.sysMsg.post({
-      roomId: params.roomId,
-      actorId: params.asPlatformAdmin ? null : params.bannedBy,
-      systemEvent: SystemEvent.MEMBER_BANNED,
-      systemData: {
-        targetUserId: params.targetUserId,
-        // Readers name a Backoffice actor "Administrator", never the admin.
-        ...(params.asPlatformAdmin ? { source: BACKOFFICE_SOURCE } : {}),
-      },
-      excludeUserId: params.targetUserId,
-      skipAdminActivity: params.asPlatformAdmin,
-    });
-    await this.publishRosterChange({
-      roomId: params.roomId,
-      event: "group:member:removed",
-      memberId: params.targetUserId,
-      actorId: params.bannedBy,
-      extra: { reason: "BAN" },
-      excludeUserId: params.targetUserId,
-    });
-
-    return updated;
-  }
-
-  /**
-   * Lift a ban. Actor must be the leader (same gate as `ban`). Does
-   * NOT re-add the user as a member — it only clears the ban so a future
-   * add/invite-link redemption is no longer rejected by `addMember`'s check.
-   */
-  async unban(params: {
-    roomId: string;
-    targetUserId: string;
-    unbannedBy: string;
-    // Backoffice (platform-admin) unban — same bypass as `ban`/`kick`.
-    asPlatformAdmin?: boolean;
-  }): Promise<GroupMember | null> {
-    const actor = params.asPlatformAdmin
-      ? null
-      : await this.memberRepo.findActiveByRoomAndUser(
-          params.roomId,
-          params.unbannedBy
-        );
-    if (!params.asPlatformAdmin) {
-      if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-      if (actor.role !== "ADMIN") {
-        throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
-      }
-    }
-
-    const target = await this.memberRepo.findByRoomAndUser(
-      params.roomId,
-      params.targetUserId
-    );
-    if (!target || target.status !== "BANNED") {
-      throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    }
-
-    const updated = await this.memberRepo.updateStatus(
-      params.roomId,
-      params.targetUserId,
-      "LEFT",
-      { bannedAt: null, bannedBy: null }
-    );
-
-    await this.sysMsg.post({
-      roomId: params.roomId,
-      actorId: params.asPlatformAdmin ? null : params.unbannedBy,
-      systemEvent: SystemEvent.MEMBER_UNBANNED,
-      systemData: {
-        targetUserId: params.targetUserId,
-        // Readers name a Backoffice actor "Administrator", never the admin.
-        ...(params.asPlatformAdmin ? { source: BACKOFFICE_SOURCE } : {}),
-      },
-      skipAdminActivity: params.asPlatformAdmin,
     });
 
     return updated;
@@ -1208,7 +1084,7 @@ export class GroupMemberService {
     if (!members.length || !this.userSnapshotService || !this.cacheRepo) {
       return members.map((member) => ({
         ...member,
-        isMuted: isGroupMemberMuted(member),
+        isMuted: false,
       }));
     }
     const userIds = members.map((m) => m.userId);
@@ -1236,7 +1112,7 @@ export class GroupMemberService {
         avatarUrl: urlFromMap(urlMap, (snap.avatar as string) || ""),
         isDeletedUser: snap.isDeletedUser === true,
         isUnavailable: unavailable.has(member.userId),
-        isMuted: isGroupMemberMuted(member),
+        isMuted: false,
       };
     });
   }

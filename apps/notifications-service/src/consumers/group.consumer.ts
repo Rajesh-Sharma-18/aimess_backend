@@ -8,7 +8,6 @@ import {
   type ChatGroupJoinRequestRetractedPayload,
   type ChatGroupLeaderChangedPayload,
   type ChatGroupMemberAddedPayload,
-  type ChatGroupMemberMutedPayload,
   type NotificationNavigation,
 } from "@aimess/shared-types";
 
@@ -107,41 +106,6 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
           // represents the conversation. push.service promotes this to the
           // FCM/APNs tray image; absent when the group has no avatar.
           ...(p.groupAvatarUrl ? { conversationAvatar: p.groupAvatarUrl } : {}),
-          deepLink,
-          navigation: JSON.stringify({
-            screen: "GROUP_CHAT",
-            roomId: p.roomId,
-            conversationType: "GROUP",
-          } satisfies NotificationNavigation),
-        },
-      });
-      break;
-    }
-
-    // Moderation mute/unmute — target only, mirroring community's
-    // MEMBER_MUTED / MEMBER_UNMUTED push. A member whose devices were all
-    // offline when the mute landed learns about it here instead of from a
-    // rejected send.
-    case ChatEvents.GROUP_MEMBER_MUTED:
-    case ChatEvents.GROUP_MEMBER_UNMUTED: {
-      const p = data as ChatGroupMemberMutedPayload;
-      const isMute = type === ChatEvents.GROUP_MEMBER_MUTED;
-      const deepLink = buildDeepLink("group", p.roomId);
-      await pushToUser({
-        userId: p.targetUserId,
-        category: "chatEnabled",
-        type,
-        actorId: p.actorId,
-        copy: isMute
-          ? groupCopy.memberMuted(p.groupName, p.mutedUntil)
-          : groupCopy.memberUnmuted(p.groupName),
-        deepLink,
-        data: {
-          roomId: p.roomId,
-          groupName: p.groupName,
-          actorId: p.actorId,
-          ...(p.groupAvatarUrl ? { conversationAvatar: p.groupAvatarUrl } : {}),
-          mutedUntil: p.mutedUntil ?? "",
           deepLink,
           navigation: JSON.stringify({
             screen: "GROUP_CHAT",
