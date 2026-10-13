@@ -145,6 +145,10 @@ describe("formatCallDurationText (§9.1)", () => {
     [134, "2m 14s", "2 phút 14 giây", "2 นาที 14 วินาที"],
     [3720, "1h 2m", "1 giờ 2 phút", "1 ชม. 2 นาที"],
     [3725, "1h 2m", "1 giờ 2 phút", "1 ชม. 2 นาที"],
+    [120, "2m", "2 phút", "2 นาที"],
+    [3600, "1h", "1 giờ", "1 ชม."],
+    [3660, "1h 1m", "1 giờ 1 phút", "1 ชม. 1 นาที"],
+    [0, "0s", "0 giây", "0 วินาที"],
   ])("%ss", (sec, en, vi, th) => {
     expect(formatCallDurationText(sec, "en")).toBe(en);
     expect(formatCallDurationText(sec, "vi")).toBe(vi);

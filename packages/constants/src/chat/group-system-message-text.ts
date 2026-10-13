@@ -482,8 +482,17 @@ export function formatCallDurationText(
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
-  if (hours > 0) return t("SYS_STREAM_DURATION_HM", locale, { hours, minutes });
-  if (minutes > 0) return t("SYS_CALL_DURATION_MS", locale, { minutes, seconds });
+  // Zero parts are dropped: 120s → "2m", 3600s → "1h".
+  if (hours > 0) {
+    return minutes > 0
+      ? t("SYS_STREAM_DURATION_HM", locale, { hours, minutes })
+      : t("SYS_STREAM_DURATION_H", locale, { hours });
+  }
+  if (minutes > 0) {
+    return seconds > 0
+      ? t("SYS_CALL_DURATION_MS", locale, { minutes, seconds })
+      : t("SYS_STREAM_DURATION_M", locale, { minutes });
+  }
   return t("SYS_CALL_DURATION_S", locale, { seconds });
 }
 
