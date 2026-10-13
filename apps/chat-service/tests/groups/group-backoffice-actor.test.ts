@@ -7,6 +7,8 @@
  * rows (an earlier build baked the admin's real name into `systemData.actorName`
  * and `senderName`) are scrubbed by `toWireMessage` on every read.
  */
+import { buildGroupSystemFallbackText } from "@aimess/constants";
+
 import { GroupSystemMessageService } from "../../src/services/group-system-message.service.js";
 import { GroupMemberService } from "../../src/services/group-member.service.js";
 import { toWireMessage } from "../../src/lib/chat-message.serializer.js";
@@ -264,6 +266,7 @@ describe("GroupMemberService.kick — Backoffice marker", () => {
         actorId: null,
         systemData: { targetUserId: "target-1", source: "BO" },
         excludeUserId: "target-1",
+        notifyUserId: "target-1",
       })
     );
   });
@@ -281,7 +284,26 @@ describe("GroupMemberService.kick — Backoffice marker", () => {
       expect.objectContaining({
         actorId: "actor-1",
         systemData: { targetUserId: "target-1" },
+        notifyUserId: "target-1",
       })
+    );
+  });
+
+  it("the removed member reads it in first person, in their language", () => {
+    const line = { actorId: "an", actorName: "An", targetUserId: "binh", targetName: "Binh" };
+    const bo = { targetUserId: "binh", targetName: "Binh", source: "BO" };
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", line, "binh")).toBe("An removed you");
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", line, "binh", "vi")).toBe(
+      "An đã xóa bạn khỏi nhóm"
+    );
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", line, "binh", "th")).toBe(
+      "An นำคุณออกจากกลุ่ม"
+    );
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", bo, "binh")).toBe(
+      "AI Mess Administrator removed you"
+    );
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", line, "someone")).toBe(
+      "An removed Binh"
     );
   });
 });

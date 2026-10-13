@@ -333,13 +333,33 @@ describe("GroupMemberService.kick (backoffice removal)", () => {
     expect(channelsFor("group:removed")).toEqual([`user:${TARGET}`]);
   });
 
-  it("ORDERING: group:removed (eviction) is emitted before the removal system line", async () => {
+  it("the removed member gets the line once, on their own channel", async () => {
+    await ban();
+
+    const own = rawEnvelopes().filter(
+      (p) => p.event === "message:new" && p.channel === `user:${TARGET}`
+    );
+    expect(own).toHaveLength(1);
+    expect(own[0].excludeUserId).toBeUndefined();
+    expect(own[0].data.systemEvent).toBe("MEMBER_REMOVED");
+    expect(own[0].data.systemData).toMatchObject({ targetUserId: TARGET, source: "BO" });
+  });
+
+  it("ORDERING: the removal line reaches everyone (target included) before group:removed", async () => {
     await ban();
 
     const events = rawEnvelopes().map((p) => `${p.event}@${p.channel}`);
     const evictIdx = events.indexOf(`group:removed@user:${TARGET}`);
-    const sysIdx = events.indexOf(`message:new@conv:${ROOM}`);
-    expect(evictIdx).toBeGreaterThanOrEqual(0);
-    expect(sysIdx).toBeGreaterThan(evictIdx);
+    expect(evictIdx).toBeGreaterThan(events.indexOf(`message:new@conv:${ROOM}`));
+    expect(evictIdx).toBeGreaterThan(events.indexOf(`message:new@user:${TARGET}`));
+    expect(events.indexOf(`message:new@user:${TARGET}`)).toBeGreaterThanOrEqual(0);
+  });
+
+  it("the removal line is created before kickedAt — inside the removed member's read boundary", async () => {
+    await ban();
+
+    const lineAt = mocks.groupMessageRepo.create.mock.invocationCallOrder[0];
+    const statusAt = mocks.groupMemberRepo.updateStatus.mock.invocationCallOrder[0];
+    expect(lineAt).toBeLessThan(statusAt);
   });
 });

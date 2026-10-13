@@ -229,16 +229,17 @@ describe("Backoffice per-group ban is a removal", () => {
       kick: jest.fn().mockResolvedValue({}),
       autoSucceed: jest.fn().mockResolvedValue(true),
     };
+    const groupRoomService = { disbandGroup: jest.fn().mockResolvedValue({}) };
     const service = new AdminGroupService(
       groupRoomRepo as never,
       groupMemberRepo as never,
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
+      groupRoomService as never,
       groupMemberService as never
     );
-    return { service, groupMemberRepo, groupMemberService };
+    return { service, groupMemberRepo, groupMemberService, groupRoomService };
   }
   const BAN = { groupId: ROOM, userId: "binh", actorAdminId: "bo-1", reason: "spam" };
 
@@ -270,6 +271,24 @@ describe("Backoffice per-group ban is a removal", () => {
 
     expect(groupMemberService.autoSucceed).toHaveBeenCalledWith(ROOM, "binh");
     expect(groupMemberService.kick).toHaveBeenCalled();
+  });
+
+  it("a sole leader (nobody to hand over to) → last-member close, never an empty active group", async () => {
+    const { service, groupMemberService, groupRoomService } = makeService({
+      role: "ADMIN",
+    });
+    groupMemberService.autoSucceed.mockResolvedValue(null);
+
+    for (const result of [
+      await service.removeGroupMember(BAN),
+      await service.banGroupMember(BAN),
+    ]) {
+      expect(result).toEqual({ ok: true, found: true, errorCode: "", closedGroup: true });
+    }
+    expect(groupRoomService.disbandGroup).toHaveBeenCalledWith(ROOM, "bo-1", {
+      asPlatformAdmin: true,
+    });
+    expect(groupMemberService.kick).not.toHaveBeenCalled();
   });
 
   it("not a member / closed group keep their error codes", async () => {

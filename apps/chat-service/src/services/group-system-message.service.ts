@@ -90,11 +90,12 @@ export interface PostSystemMessageParams {
   /**
    * When set, the real-time `message:new` fan-out to `conv:<roomId>` skips this
    * user's own sockets (the gateway honors an envelope-level `excludeUserId`).
-   * Used by ban/kick so the removed member never receives the room line
-   * announcing their own removal, while every other member still does. The row
-   * is still persisted for the remaining members' history.
+   * Kick pairs it with `notifyUserId`, so the removed member gets the line once,
+   * on their own channel.
    */
   excludeUserId?: string | null;
+  /** Also delivers the line on this user's own channel (the removed member's "An removed you"). */
+  notifyUserId?: string | null;
   /**
    * Self-only line (clear/delete conversation) — see the private twin. Persisted
    * hidden for every other member, stamped after this cutoff, never bumps the
@@ -349,41 +350,42 @@ export class GroupSystemMessageService {
         });
       }
 
-      this.redis
-        .publish(
-          selfOnly ? `user:${actorId}` : `conv:${roomId}`,
-          JSON.stringify({
-            event: "message:new",
-            ...(params.excludeUserId
-              ? { excludeUserId: params.excludeUserId }
-              : {}),
-            data: buildChatMessageEvent({
-              id: message.id,
-              roomId,
-              conversationType: "GROUP",
-              senderId: actorId ?? "",
-              senderName: actorName,
-              senderAvatar: actorAvatarUrl,
-              messageType,
-              content: message.content ?? content,
-              reactions: [],
-              serverTs: sysServerTs,
-              sequenceNumber: seq,
-              systemEvent,
-              systemData,
-              countInUnread: (
-                message as unknown as {
-                  countInUnread?: boolean | null;
-                }
-              ).countInUnread,
-            }),
-          })
-        )
-        .catch((err: unknown) => {
-          logger.warn(
-            `GroupSystemMessageService|publish failed room=${roomId}: ${String(err)}`
-          );
-        });
+      const liveData = buildChatMessageEvent({
+        id: message.id,
+        roomId,
+        conversationType: "GROUP",
+        senderId: actorId ?? "",
+        senderName: actorName,
+        senderAvatar: actorAvatarUrl,
+        messageType,
+        content: message.content ?? content,
+        reactions: [],
+        serverTs: sysServerTs,
+        sequenceNumber: seq,
+        systemEvent,
+        systemData,
+        countInUnread: (
+          message as unknown as {
+            countInUnread?: boolean | null;
+          }
+        ).countInUnread,
+      });
+      const publish = (channel: string, envelope: Record<string, unknown>) =>
+        this.redis
+          .publish(
+            channel,
+            JSON.stringify({ event: "message:new", ...envelope, data: liveData })
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `GroupSystemMessageService|publish failed room=${roomId}: ${String(err)}`
+            );
+          });
+      void publish(
+        selfOnly ? `user:${actorId}` : `conv:${roomId}`,
+        params.excludeUserId ? { excludeUserId: params.excludeUserId } : {}
+      );
+      if (params.notifyUserId) void publish(`user:${params.notifyUserId}`, {});
       return message.id;
     } catch (err) {
       logger.warn(

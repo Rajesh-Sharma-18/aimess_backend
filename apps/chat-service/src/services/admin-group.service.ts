@@ -356,20 +356,43 @@ export class AdminGroupService {
     userId: string;
     actorAdminId: string;
     reason?: string;
-  }): Promise<{ ok: boolean; found: boolean; errorCode: string }> {
+  }): Promise<{
+    ok: boolean;
+    found: boolean;
+    errorCode: string;
+    closedGroup: boolean;
+  }> {
     const row = await this.groupRoomRepo.adminFindByRoomId(params.groupId);
     if (!row)
-      return { ok: false, found: false, errorCode: "CHAT_GROUP_NOT_FOUND" };
+      return {
+        ok: false,
+        found: false,
+        errorCode: "CHAT_GROUP_NOT_FOUND",
+        closedGroup: false,
+      };
 
     const member = await this.groupMemberRepo.findActiveByRoomAndUser(
       params.groupId,
       params.userId
     );
     if (!member)
-      return { ok: false, found: true, errorCode: "CHAT_NOT_A_MEMBER" };
-    // Removing the leader hands the group over first, so it never goes headless.
-    if (member.role === "ADMIN") {
-      await this.groupMemberService.autoSucceed(params.groupId, params.userId);
+      return {
+        ok: false,
+        found: true,
+        errorCode: "CHAT_NOT_A_MEMBER",
+        closedGroup: false,
+      };
+    // Removing the leader hands the group over first, so it never goes headless;
+    // nobody to hand it to → the last-member close (never an empty ACTIVE group).
+    if (
+      member.role === "ADMIN" &&
+      (await this.groupMemberService.autoSucceed(params.groupId, params.userId)) ===
+        null
+    ) {
+      await this.groupRoomService.disbandGroup(params.groupId, params.actorAdminId, {
+        asPlatformAdmin: true,
+      });
+      return { ok: true, found: true, errorCode: "", closedGroup: true };
     }
 
     await this.groupMemberService.kick({
@@ -379,13 +402,14 @@ export class AdminGroupService {
       reason: params.reason,
       asPlatformAdmin: true,
     });
-    return { ok: true, found: true, errorCode: "" };
+    return { ok: true, found: true, errorCode: "", closedGroup: false };
   }
 
   /**
    * Legacy platform-admin GROUP ban. Groups have no ban: it is a removal
    * (KICKED, re-addable by the leader) with the "AI Mess Administrator removed X"
-   * line. The response shape is kept; `closedGroup` is always false.
+   * line. The response shape is kept; `closedGroup` is true only when a sole
+   * leader's removal closed the group.
    */
   async banGroupMember(params: {
     groupId: string;
@@ -406,7 +430,7 @@ export class AdminGroupService {
         errorCode: "CHAT_GROUP_NOT_ACTIVE",
         closedGroup: false,
       };
-    return { ...(await this.removeGroupMember(params)), closedGroup: false };
+    return this.removeGroupMember(params);
   }
 
   /** Legacy platform-admin GROUP unban: nothing to lift any more, so a no-op success. */

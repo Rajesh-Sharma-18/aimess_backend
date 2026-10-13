@@ -246,6 +246,27 @@ describe("/chat cross-user room isolation", () => {
     );
   });
 
+  it("honors an envelope excludeUserId on a conv:<room> message:new", async () => {
+    await ack(alice, "conv:join", { conversationId: ROOM });
+    await ack(bob, "conv:join", { conversationId: ROOM, conversationType: "private" });
+    const aliceEvents: string[] = [];
+    const onAlice = (event: string, payload: unknown) =>
+      aliceEvents.push(`${event}:${JSON.stringify(payload)}`);
+    alice.onAny(onAlice);
+    bobEvents.length = 0;
+
+    emitPmessage("conv:*", `conv:${ROOM}`, {
+      event: "message:new",
+      excludeUserId: BOB,
+      data: { id: "m-excl", roomId: ROOM, contentText: "REMOVAL_LINE" },
+    });
+    await settle();
+    alice.offAny(onAlice);
+
+    expect(aliceEvents.join()).toContain("REMOVAL_LINE");
+    expect(JSON.stringify(bobEvents)).not.toContain("REMOVAL_LINE");
+  });
+
   it("presence:list reports watched peers, and unsubscribe_all clears them", async () => {
     await expect(ack(eve, "presence:list", {})).resolves.toMatchObject({
       data: { peerIds: [BOB] },

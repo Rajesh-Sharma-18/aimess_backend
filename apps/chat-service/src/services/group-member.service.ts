@@ -841,6 +841,24 @@ export class GroupMemberService {
       throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
     }
 
+    // The line goes out BEFORE the status write and the eviction: the removed
+    // member gets it on their own channel ("An removed you") ahead of
+    // group:removed, and `kickedAt` (their read boundary) is stamped after it.
+    await this.sysMsg.post({
+      roomId: params.roomId,
+      actorId: params.asPlatformAdmin ? null : params.kickedBy,
+      systemEvent: SystemEvent.MEMBER_REMOVED,
+      systemData: {
+        targetUserId: params.targetUserId,
+        // Readers name a Backoffice actor "Administrator", never the admin.
+        ...(params.asPlatformAdmin ? { source: BACKOFFICE_SOURCE } : {}),
+      },
+      excludeUserId: params.targetUserId,
+      notifyUserId: params.targetUserId,
+      // backoffice-service already audited this removal against the admin who
+      // ordered it; mirroring here too would double the row.
+      skipAdminActivity: params.asPlatformAdmin,
+    });
     const updated = await this.memberRepo.updateStatus(
       params.roomId,
       params.targetUserId,
@@ -854,25 +872,7 @@ export class GroupMemberService {
       }
     );
     await this.roomRepo.incMemberCount(params.roomId, -1);
-
-    // Evict first (shrinks the window a stale socket could still catch the
-    // line), then post the removal line and roster event with the target
-    // hard-excluded — a kicked member must not receive the line about themselves.
     this.emitGroupRemoved(params.roomId, params.targetUserId, "KICK");
-    await this.sysMsg.post({
-      roomId: params.roomId,
-      actorId: params.asPlatformAdmin ? null : params.kickedBy,
-      systemEvent: SystemEvent.MEMBER_REMOVED,
-      systemData: {
-        targetUserId: params.targetUserId,
-        // Readers name a Backoffice actor "Administrator", never the admin.
-        ...(params.asPlatformAdmin ? { source: BACKOFFICE_SOURCE } : {}),
-      },
-      excludeUserId: params.targetUserId,
-      // backoffice-service already audited this removal against the admin who
-      // ordered it; mirroring here too would double the row.
-      skipAdminActivity: params.asPlatformAdmin,
-    });
     await this.publishRosterChange({
       roomId: params.roomId,
       event: "group:member:removed",
