@@ -96,7 +96,10 @@ import {
   isMentionAllSuppressed,
   mentionedUserIdsOf,
 } from "../lib/group-mentions.js";
-import { assertPrivateParticipant } from "../lib/access-guard.js";
+import {
+  assertPrivateParticipant,
+  groupReadCutoff,
+} from "../lib/access-guard.js";
 import {
   assertGroupMediaWithinHistory,
   assertMediaWithinHistory,
@@ -3269,6 +3272,10 @@ export function createMessagingImpl(
                 userId
               );
               if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+              // An ended membership reads only up to its cutoff (removal line).
+              const readTo = groupReadCutoff(member);
+              if (readTo && objectCreatedAtMs > readTo.getTime())
+                throw new ForbiddenError("CHAT_NOT_GROUP_MEMBER");
               // Membership is not the whole answer for a group: each member also
               // has a history boundary, and an attachment from before theirs
               // belongs to a message every other surface refuses them. Knowing
@@ -3462,24 +3469,23 @@ export function createMessagingImpl(
           const skip = Math.max(req.skip || 0, 0);
 
           // Same membership source the unified inbox lists a group from
-          // (ACTIVE only) — one query, no per-group lookup, so search
-          // visibility can never drift from what the user's conversation list
-          // actually shows. A group whose membership ended is not in that list
-          // and must not be findable through search either, so the "OTHER"
-          // mode below (non-active rooms still in the list) now has no
-          // candidates by construction.
+          // (ACTIVE + REMOVED read-only rows), so search visibility never drifts
+          // from the list. "OTHER" mode = the listed REMOVED rows.
           const memberships = viewerId
             ? await deps.groupMemberRepo.getInboxMemberships(viewerId)
             : [];
-          const activeRoomIds = memberships.map((m) => m.roomId);
+          const listedSet = new Set(memberships.map((m) => m.roomId));
+          const activeRoomIds = memberships
+            .filter((m) => m.status === "ACTIVE")
+            .map((m) => m.roomId);
           const activeSet = new Set(activeRoomIds);
 
           // Group existence — public, name-matching, previously joined,
-          // previously invited — never grants visibility. Active membership is
-          // the whole rule, and BY_IDS is held to it too rather than trusting
-          // the ids the caller sent.
+          // previously invited — never grants visibility. Being listed is the
+          // whole rule, and BY_IDS is held to it too rather than trusting the
+          // ids the caller sent.
           const isSearchable = (g: { roomId: string }) =>
-            activeSet.has(g.roomId);
+            listedSet.has(g.roomId);
 
           let rows;
           if (mode === "OTHER") {

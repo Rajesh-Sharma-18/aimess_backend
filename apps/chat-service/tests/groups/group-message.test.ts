@@ -363,14 +363,14 @@ describe("GET /:roomId/media (membership-gated)", () => {
     expect(res.body.data.items[0].messageType).toBeUndefined();
   });
 
-  it("SECURITY: 400 when the caller is not a member", async () => {
+  it("SECURITY: 403 (same read guard as history) when the caller is not a member", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
 
     const res = await request(app)
       .get(`${BASE}/${ROOM}/media`)
       .set(bearer(makeAccessToken()));
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
   });
 });
 

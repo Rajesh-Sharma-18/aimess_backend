@@ -18,6 +18,7 @@ import {
   assertGroupMember,
   assertGroupReadAccess,
   assertGroupRoomWritable,
+  groupWriteDeniedError,
 } from "../lib/access-guard.js";
 import {
   publishGroupEventSafe,
@@ -1013,7 +1014,13 @@ export class GroupMemberService {
       params.roomId,
       params.actorUserId
     );
-    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    if (!actor)
+      throw await groupWriteDeniedError(
+        this.memberRepo,
+        params.roomId,
+        params.actorUserId,
+        new NotFoundError("CHAT_NOT_A_MEMBER")
+      );
     if (actor.role !== "ADMIN") {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
@@ -1065,12 +1072,15 @@ export class GroupMemberService {
     requesterId?: string
   ): Promise<Array<GroupMember | EnrichedGroupMember>> {
     if (requesterId) {
-      await assertGroupReadAccess(
+      const { member } = await assertGroupReadAccess(
         this.memberRepo,
         roomId,
         requesterId,
         this.roomRepo
       );
+      // A removed member reads the transcript, not the live roster.
+      if (member.status === "KICKED")
+        throw new ForbiddenError("CHAT_NOT_GROUP_MEMBER");
     }
     const members = await this.memberRepo.findActiveMembers(roomId, params);
     // `dismissedAt` is the member's own list state (a CLOSED group they

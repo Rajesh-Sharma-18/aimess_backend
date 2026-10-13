@@ -454,7 +454,13 @@ export function selectListPreview(
   },
   viewerId: string
 ): string | null {
-  return localizeSystemPreview(pickListPreview(row, viewerId), row, viewerId);
+  const picked = pickListPreview(row, viewerId);
+  return localizeSystemPreview(
+    picked,
+    row,
+    viewerId,
+    picked === row.lastActivityPreview
+  );
 }
 
 /**
@@ -466,11 +472,10 @@ export function selectListPreview(
  * `systemMessageType` + `systemMetadata`; the list row did not, so switching
  * language translated the conversation and left the row above it in English.
  *
- * The swap happens ONLY while the stored text still equals the English
- * rendering of this row's own system event for THIS viewer — which is what
- * keeps the personal overlays honest: a delete-for-me `selfPreview` (some other
- * message's text) or a legacy row written before the params were carried never
- * matches, and is returned exactly as stored.
+ * The row's shared line is always re-rendered from its params (whatever wording
+ * it was stored in). A personal overlay is swapped only while it equals the
+ * English rendering of this event, so a delete-for-me `selfPreview` (another
+ * message's text) or a row stored without params is returned exactly as stored.
  */
 function localizeSystemPreview(
   preview: string | null,
@@ -478,7 +483,9 @@ function localizeSystemPreview(
     lastActivitySystemType?: string | null;
     lastActivitySystemMetadata?: unknown;
   },
-  viewerId: string
+  viewerId: string,
+  /** The row's own shared line (not a personal overlay): always this event, in any wording. */
+  shared = false
 ): string | null {
   const systemType = row.lastActivitySystemType;
   if (!preview || !systemType) return preview;
@@ -501,7 +508,9 @@ function localizeSystemPreview(
   // the shared third-person sentence (e.g. the moderation audit line the ACTOR
   // reads as "You added …"). Either one is this row's event → re-render for
   // the viewer; anything else is a personal overlay and stays as stored.
+  // `shared` also covers a row stored in an older wording (e.g. "… ended the livestream (51s)").
   const isThisEvent =
+    shared ||
     preview === render(STORED_TEXT_LOCALE, viewerId) ||
     preview === render(STORED_TEXT_LOCALE, "");
   return isThisEvent ? render(locale, viewerId) : preview;
@@ -3874,13 +3883,13 @@ export const communityService = {
    *   5. target is not the admin / an ADMIN (400 COMMUNITY_MEMBER_CANNOT_MODIFY_ADMIN)
    *   6. caller strictly outranks target (403 COMMUNITY_FORBIDDEN)
    *
-   * NOTE: intentionally NOT used by ban/unban — ban requires ADMIN, allows
-   * non-ACTIVE targets, and skips the strict-rank rule.
+   * Ban/unban use it with `anyTargetStatus` (a LEFT or BANNED row is a valid target).
    */
   async _assertCanModerateMember(
     communityId: string,
     callerId: string,
-    targetUserId: string
+    targetUserId: string,
+    opts?: { anyTargetStatus?: boolean }
   ): Promise<{
     community: NonNullable<
       Awaited<ReturnType<typeof communityRepository.findById>>
@@ -3912,7 +3921,10 @@ export const communityService = {
       communityId,
       targetUserId
     );
-    if (!target || target.status !== CommunityMemberStatus.ACTIVE) {
+    if (
+      !target ||
+      (!opts?.anyTargetStatus && target.status !== CommunityMemberStatus.ACTIVE)
+    ) {
       throw new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND");
     }
 
@@ -4077,37 +4089,11 @@ export const communityService = {
     targetUserId: string,
     reason?: string
   ): Promise<CommunityMemberData> {
-    const community = await communityRepository.findById(communityId);
-    if (!community) {
-      throw new NotFoundError("COMMUNITY_NOT_FOUND");
-    }
-
-    // Only an ACTIVE admin may ban members.
-    const callerMembership = await communityRepository.findMembership(
-      communityId,
-      callerId
-    );
-    assertCommunityRole(callerMembership, CommunityMemberRole.ADMIN);
-
-    if (callerId === targetUserId) {
-      throw new BadRequestError("COMMUNITY_MEMBER_CANNOT_MODIFY_SELF");
-    }
-
-    const target = await communityRepository.findMemberByUserId(
-      communityId,
-      targetUserId
-    );
-    if (!target) {
-      throw new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND");
-    }
-
-    // The community admin can never be banned.
-    if (
-      community.adminId === targetUserId ||
-      target.role === CommunityMemberRole.ADMIN
-    ) {
-      throw new BadRequestError("COMMUNITY_MEMBER_CANNOT_MODIFY_ADMIN");
-    }
+    // Same outrank rule as mute/remove: Admin bans anyone below, a Moderator only plain members.
+    const { community, target, callerMembership } =
+      await this._assertCanModerateMember(communityId, callerId, targetUserId, {
+        anyTargetStatus: true,
+      });
 
     // Idempotent: an already-banned member is returned unchanged (no write).
     if (target.status === CommunityMemberStatus.BANNED) {
@@ -5466,13 +5452,13 @@ export const communityService = {
     // A moderator adding members is a membership change like any other, but it never
     // went through recordAudit — so it was the one common way to grow a community that
     // left no audit row at all. One row per member actually added (skipped[] excluded).
+    // COMMUNITY_JOINED reads "{actor} joined": the actor is the joiner, the adder rides in metadata.
     for (const member of added) {
       await this.recordAudit({
         communityId,
-        actorId: callerId,
+        actorId: member.userId,
         action: "COMMUNITY_JOINED",
-        targetUserId: member.userId,
-        metadata: { via: "add_members" },
+        metadata: { via: "add_members", addedBy: callerId },
       });
     }
 
@@ -6348,19 +6334,16 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    // Only an ACTIVE admin may unban members.
-    if (!opts?.asPlatformAdmin) {
-      const callerMembership = await communityRepository.findMembership(
-        communityId,
-        callerId
-      );
-      assertCommunityRole(callerMembership, CommunityMemberRole.ADMIN);
-    }
-
-    const target = await communityRepository.findMemberByUserId(
-      communityId,
-      targetUserId
-    );
+    // Same outrank rule as ban; the backoffice path has no in-community role.
+    const gate = opts?.asPlatformAdmin
+      ? null
+      : await this._assertCanModerateMember(communityId, callerId, targetUserId, {
+          anyTargetStatus: true,
+        });
+    const target =
+      gate?.target ??
+      (await communityRepository.findMemberByUserId(communityId, targetUserId));
+    const actorRole = gate?.callerMembership.role ?? PLATFORM_ACTOR_ROLE;
     if (!target) {
       throw new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND");
     }
@@ -6412,9 +6395,7 @@ export const communityService = {
       targetUserId,
       communityName: community.name,
       communityAvatarUrl: unbannedCommunityAvatar?.url ?? null,
-      actorRole: opts?.asPlatformAdmin
-        ? PLATFORM_ACTOR_ROLE
-        : CommunityMemberRole.ADMIN,
+      actorRole,
     });
 
     // Unban: BANNED→LEFT. Count is unchanged (BANNED was already excluded from
@@ -6447,10 +6428,8 @@ export const communityService = {
       communityId,
       systemMessageType: "MEMBER_UNBANNED",
       actorId: callerId,
-      // Only an ADMIN may unban in-app; a Super Admin is "Administrator" via `source`.
-      actorRole: opts?.asPlatformAdmin
-        ? PLATFORM_ACTOR_ROLE
-        : CommunityMemberRole.ADMIN,
+      // A Super Admin is "Administrator" via `source`.
+      actorRole,
       targetUserId,
       ...(opts?.asPlatformAdmin ? { extra: { source: "BO" } } : {}),
     });
@@ -7259,7 +7238,6 @@ export const communityService = {
         communityId,
         actorId: callerId,
         action: "COMMUNITY_JOINED",
-        targetUserId: callerId,
         metadata: { reactivated },
       });
 
@@ -9860,7 +9838,6 @@ export const communityService = {
       communityId: invite.communityId,
       actorId: callerId,
       action: "INVITE_ACCEPTED",
-      targetUserId: callerId,
       metadata: { inviteId },
     });
 
@@ -11097,7 +11074,6 @@ export const communityService = {
         communityId: community.id,
         actorId: callerId,
         action: "INVITE_LINK_REDEEMED",
-        targetUserId: callerId,
         metadata: { code, isPermanentLink: true },
       });
     }
@@ -11764,7 +11740,6 @@ export const communityService = {
         communityId: community.id,
         actorId: callerId,
         action: "INVITE_LINK_REDEEMED",
-        targetUserId: callerId,
         metadata: { linkId: link.id, code: link.code },
       });
     };

@@ -527,6 +527,11 @@ export const CHAT_MESSAGES = {
     en: "You are not a member of this group",
     th: "คุณไม่ได้เป็นสมาชิกของกลุ่มนี้",
   },
+  CHAT_NOT_GROUP_MEMBER: {
+    vi: "Bạn không thể gửi tin nhắn trong nhóm này vì bạn đã bị xóa khỏi nhóm.",
+    en: "You can't send messages to this group because you were removed.",
+    th: "คุณไม่สามารถส่งข้อความในกลุ่มนี้ได้ เนื่องจากคุณถูกนำออกจากกลุ่มแล้ว",
+  },
   CHAT_ALREADY_MEMBER: {
     vi: "Đã là thành viên",
     en: "Already a member",

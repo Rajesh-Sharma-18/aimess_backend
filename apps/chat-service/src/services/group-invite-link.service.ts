@@ -12,6 +12,7 @@ import { SystemEvent } from "../types/enums.js";
 import {
   assertGroupMember,
   assertGroupRoomWritable,
+  groupWriteDeniedError,
 } from "../lib/access-guard.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 import {
@@ -116,7 +117,13 @@ export class GroupInviteLinkService {
       params.roomId,
       params.userId
     );
-    if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+    if (!member)
+      throw await groupWriteDeniedError(
+        this.memberRepo,
+        params.roomId,
+        params.userId,
+        new BadRequestError("CHAT_NOT_A_MEMBER")
+      );
 
     // Check settings
     const settings = (room.settings ?? {}) as Record<string, unknown>;

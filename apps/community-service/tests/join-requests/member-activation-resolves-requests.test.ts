@@ -286,6 +286,17 @@ describe("A. addMembers while B has a PENDING join request", () => {
     ]);
   });
 
+  it("AUDIT: the added member is the COMMUNITY_JOINED actor (no target); the adder rides in metadata", async () => {
+    repo.createAuditLog.mockResolvedValue(undefined);
+    await communityService.addMembers(CID, ADMIN, [B]);
+    const joined = repo.createAuditLog.mock.calls
+      .map((c) => c[0])
+      .filter((r) => r.action === "COMMUNITY_JOINED");
+    expect(joined).toHaveLength(1);
+    expect(joined[0]).toMatchObject({ actorId: B, metadata: { via: "add_members", addedBy: ADMIN } });
+    expect(joined[0].targetUserId).toBeUndefined();
+  });
+
   it("A1: hands the membership write the caller id, so the SAME transaction resolves B's request", async () => {
     await communityService.addMembers(CID, ADMIN, [B]);
 

@@ -73,21 +73,38 @@ export function privateRoomPeerId(
  * Group: the caller MUST be an ACTIVE member. When `roles` is supplied the
  * member's role must be one of them (e.g. ADMIN for management actions).
  *
+ * @throws ForbiddenError `CHAT_NOT_GROUP_MEMBER` when the caller was removed (KICKED).
  * @throws ForbiddenError `CHAT_NOT_A_MEMBER` when the caller isn't an active member.
  * @throws ForbiddenError `CHAT_INSUFFICIENT_PERMISSIONS` when the role is too low.
  */
 export async function assertGroupMember(
-  memberRepo: Pick<GroupMemberRepository, "findActiveByRoomAndUser">,
+  memberRepo: Pick<GroupMemberRepository, "findActiveByRoomAndUser"> &
+    Partial<Pick<GroupMemberRepository, "findByRoomAndUser">>,
   roomId: string,
   userId: string,
   opts?: { roles?: readonly string[] }
 ): Promise<GroupMember> {
   const member = await memberRepo.findActiveByRoomAndUser(roomId, userId);
-  if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+  if (!member) throw await groupWriteDeniedError(memberRepo, roomId, userId);
   if (opts?.roles && !opts.roles.includes(member.role)) {
     throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
   }
   return member;
+}
+
+/** The error for a non-ACTIVE group writer: a removed (KICKED) member gets 403 `CHAT_NOT_GROUP_MEMBER`, anyone else `fallback`. */
+export async function groupWriteDeniedError(
+  memberRepo: Partial<Pick<GroupMemberRepository, "findByRoomAndUser">>,
+  roomId: string,
+  userId: string,
+  fallback: Error = new ForbiddenError("CHAT_NOT_A_MEMBER")
+): Promise<Error> {
+  const row = await Promise.resolve(
+    memberRepo.findByRoomAndUser?.(roomId, userId)
+  ).catch(() => null);
+  return row?.status === "KICKED"
+    ? new ForbiddenError("CHAT_NOT_GROUP_MEMBER")
+    : fallback;
 }
 
 /**
@@ -127,15 +144,11 @@ export async function assertGroupWritable(
 }
 
 /**
- * Group READ access: an ACTIVE member reads everything. Anyone whose
- * membership has ENDED — LEFT, KICKED or BANNED — is denied outright, so the
- * group they no longer belong to cannot be opened, paged, searched or probed
- * by holding onto its roomId. This guard used to widen LEFT/KICKED to a
- * cutoff-capped read (WhatsApp-style read-only history); it no longer does,
- * matching the inbox, which stopped listing those rooms at all
- * (`getInboxMemberships`).
+ * Group READ access: an ACTIVE member reads everything. A REMOVED (KICKED)
+ * member keeps a read-only chat up to and including their removal line
+ * (`readCutoffBefore` = `kickedAt`, contract §8). A voluntary leaver is denied.
  *
- * The ONE surviving widening is a DISBANDED room, where the ROOM is the thing
+ * The other widening is a DISBANDED room, where the ROOM is the thing
  * that died rather than the membership: the disband ends every membership at
  * exactly the room's `disbandedAt`, and an open client has to keep rendering
  * the history it already holds. So a LEFT row is admitted only when its
@@ -161,6 +174,9 @@ export async function assertGroupReadAccess(
   const member = await memberRepo.findByRoomAndUser(roomId, userId);
   if (member?.status === "ACTIVE") return { member };
   const cutoff = groupReadCutoff(member);
+  if (cutoff && member?.status === "KICKED") {
+    return { member, readCutoffBefore: cutoff };
+  }
   if (cutoff && member?.status === "LEFT") {
     const room = await roomRepo.findByRoomId(roomId);
     if (
@@ -178,10 +194,8 @@ export async function assertGroupReadAccess(
  * row carries no historical read access at all (ACTIVE, BANNED, missing, or a
  * LEFT/KICKED row whose timestamp was never written).
  *
- * Since a removal now ends access entirely, this is reached only on the
- * DISBANDED path (see {@link assertGroupReadAccess}) and by the detail preview
- * cap that mirrors it, so the preview and the timeline can never disagree
- * about how far a disbanded room may be read.
+ * Shared by {@link assertGroupReadAccess} and the list/detail preview cap, so the
+ * preview and the timeline never disagree about how far a row may be read.
  */
 export function groupReadCutoff(
   member:

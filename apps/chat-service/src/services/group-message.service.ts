@@ -77,6 +77,8 @@ import {
   assertGroupMember,
   assertGroupWritable,
   assertGroupReadAccess,
+  groupReadCutoff,
+  groupWriteDeniedError,
 } from "../lib/access-guard.js";
 import { SystemEvent } from "../types/enums.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
@@ -264,7 +266,13 @@ export class GroupMessageService {
     ]);
     if (memberRes.status === "rejected") throw memberRes.reason;
     const member = memberRes.value;
-    if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+    if (!member)
+      throw await groupWriteDeniedError(
+        this.memberRepo,
+        params.roomId,
+        params.senderId,
+        new BadRequestError("CHAT_NOT_A_MEMBER")
+      );
     if (writableRes.status === "rejected") throw writableRes.reason;
 
     // §2.2: stamp the sender's group role on the returned message (transient,
@@ -1324,12 +1332,10 @@ export class GroupMessageService {
     cursor?: string | null;
     limit: number;
   }): Promise<GroupMessage[]> {
-    // Enforce active membership first.
-    const member = await this.memberRepo.findActiveByRoomAndUser(
+    const { member, readCutoffBefore } = await this.readAccess(
       params.roomId,
       params.userId
     );
-    if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
 
     return this.messageRepo.listMedia({
       roomId: params.roomId,
@@ -1338,6 +1344,7 @@ export class GroupMessageService {
       cursor: params.cursor,
       limit: params.limit,
       cutoff: getGroupVisibilityCutoff(member),
+      readCutoffBefore,
     });
   }
 
@@ -1535,9 +1542,18 @@ export class GroupMessageService {
       roomId,
       userId
     );
-    if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
-    assertWithinHistory(message.createdAt, member);
-    await assertGroupWritable(this.roomRepo, roomId);
+    if (member) {
+      assertWithinHistory(message.createdAt, member);
+      await assertGroupWritable(this.roomRepo, roomId);
+    } else {
+      // A personal hide, not a room write: a removed member may tidy their readable history.
+      const row = await this.memberRepo.findByRoomAndUser(roomId, userId);
+      const cut = row?.status === "KICKED" ? groupReadCutoff(row) : null;
+      if (!row || !cut) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+      if (message.createdAt > cut)
+        throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+      assertWithinHistory(message.createdAt, row);
+    }
 
     const hidden = await this.messageRepo.deleteForMe(messageId, userId);
     // Mirror of PrivateMessageService.deleteForMe: hiding a still-unread message
@@ -1680,7 +1696,13 @@ export class GroupMessageService {
         roomId,
         userId
       );
-      if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+      if (!member)
+        throw await groupWriteDeniedError(
+          this.memberRepo,
+          roomId,
+          userId,
+          new BadRequestError("CHAT_NOT_A_MEMBER")
+        );
       // Only the human paths are gated — the auto-delete sweeper (bySystem)
       // must keep purging a frozen room's expired messages.
       await assertGroupWritable(this.roomRepo, roomId);
@@ -2330,14 +2352,14 @@ if (!params.content?.text?.trim())
     nextRevisionCursor: string | null;
     items: Awaited<ReturnType<GroupMessageService["enrichForWire"]>>;
   }> {
-    const member = await assertGroupMember(
-      this.memberRepo,
+    const { member, readCutoffBefore } = await this.readAccess(
       params.roomId,
       params.userId
     );
     const changes = await this.resolveChanges({
       ...params,
       cutoff: getGroupVisibilityCutoff(member),
+      readCutoffBefore,
     });
     const items = await this.enrichForWire(changes.messages, params.userId);
 
@@ -2364,6 +2386,7 @@ if (!params.content?.text?.trim())
     sinceRevision: number;
     limit: number;
     cutoff?: Date;
+    readCutoffBefore?: Date;
   }): Promise<{
     roomRevision: number;
     resetRequired: boolean;
@@ -2393,6 +2416,7 @@ if (!params.content?.text?.trim())
         sinceRevision: params.sinceRevision,
         limit: params.limit,
         cutoff: params.cutoff,
+        readCutoffBefore: params.readCutoffBefore,
       });
 
     return {
@@ -2409,9 +2433,13 @@ if (!params.content?.text?.trim())
     messageId: string,
     userId: string
   ): Promise<GroupMessage> {
-    const member = await assertGroupMember(this.memberRepo, roomId, userId);
+    const { member, readCutoffBefore } = await this.readAccess(roomId, userId);
     const message = await this.messageRepo.findById(messageId);
-    if (!message || message.roomId !== roomId)
+    if (
+      !message ||
+      message.roomId !== roomId ||
+      (readCutoffBefore && message.createdAt > readCutoffBefore)
+    )
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
     // Membership boundary first: a message from before this member's own
@@ -2461,7 +2489,13 @@ if (!params.content?.text?.trim())
       message.roomId,
       userId
     );
-    if (!member) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (!member)
+      throw await groupWriteDeniedError(
+        this.memberRepo,
+        message.roomId,
+        userId,
+        new NotFoundError("CHAT_MESSAGE_NOT_FOUND")
+      );
     // Membership is not the whole answer. The forward path READS
     // `source.content` and republishes it elsewhere, so a member could forward
     // a message from before they joined — content the room itself refuses them
@@ -2471,6 +2505,16 @@ if (!params.content?.text?.trim())
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     }
     return member;
+  }
+
+  /** ACTIVE member on the hot path (one lookup); otherwise the read guard — a removed member reads up to their cutoff. */
+  private async readAccess(
+    roomId: string,
+    userId: string
+  ): Promise<{ member: GroupMember; readCutoffBefore?: Date }> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(roomId, userId);
+    if (member) return { member };
+    return assertGroupReadAccess(this.memberRepo, roomId, userId, this.roomRepo);
   }
 
   /** `resolveGroupMentions` bound to this service's roster + snapshot deps. */
@@ -2604,7 +2648,12 @@ if (!params.content?.text?.trim())
       params.targetRoomId,
       params.senderId
     );
-    if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    if (!member)
+      throw await groupWriteDeniedError(
+        this.memberRepo,
+        params.targetRoomId,
+        params.senderId
+      );
     await assertGroupWritable(this.roomRepo, params.targetRoomId);
 
     // §2.2: stamp the forwarder's group role (transient) for parity with send.
@@ -2753,10 +2802,9 @@ if (!params.content?.text?.trim())
     roomRevision: number;
     resetRequired: boolean;
   }> {
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      p.roomId,
-      p.userId
-    );
+    const access = await this.readAccess(p.roomId, p.userId).catch(() => null);
+    const member = access?.member;
+    const readCutoffBefore = access?.readCutoffBefore;
     if (!member) {
       return {
         authorized: false,
@@ -2778,6 +2826,7 @@ if (!params.content?.text?.trim())
         sinceRevision: p.sinceRevision,
         limit: p.limit,
         cutoff,
+        readCutoffBefore,
       });
       return {
         authorized: true,
@@ -2797,8 +2846,11 @@ if (!params.content?.text?.trim())
       p.sinceSeq,
       p.limit
     );
-    const hasMore = rows.length > p.limit;
-    const rawEvents = hasMore ? rows.slice(0, p.limit) : rows;
+    const rawEvents = rows.length > p.limit ? rows.slice(0, p.limit) : rows;
+    // A removed member's stream ends at their removal line.
+    const pastRemoval = (m: GroupMessage) =>
+      !!readCutoffBefore && m.createdAt > readCutoffBefore;
+    const hasMore = rows.length > p.limit && !rawEvents.some(pastRemoval);
 
     // Exclude messages the requesting user hid with "delete for me", and
     // anything at/before their "delete conversation" cutoff.
@@ -2808,6 +2860,7 @@ if (!params.content?.text?.trim())
       const deletedForUserIds = (raw.deletedForUserIds ?? []) as string[];
       if (deletedForUserIds.includes(p.userId)) return false;
       if (cutoff && m.createdAt <= cutoff) return false;
+      if (pastRemoval(m)) return false;
       return true;
     });
 
@@ -3046,7 +3099,20 @@ if (!params.content?.text?.trim())
       params.roomId,
       params.userId
     );
-    if (!member) return { readToSeq: 0, remainingUnread: 0 };
+    if (!member) {
+      // Removed member: reading up to the removal line is a no-op, past it is a write they lost.
+      const row = await this.memberRepo.findByRoomAndUser?.(
+        params.roomId,
+        params.userId
+      );
+      const cut = row?.status === "KICKED" ? groupReadCutoff(row) : null;
+      const target = cut
+        ? await this.messageRepo.findById(params.upToMessageId)
+        : null;
+      if (cut && target && target.createdAt > cut)
+        throw new ForbiddenError("CHAT_NOT_GROUP_MEMBER");
+      return { readToSeq: 0, remainingUnread: 0 };
+    }
 
     const message = await this.messageRepo.findById(params.upToMessageId);
     if (!message || message.roomId !== params.roomId)

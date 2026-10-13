@@ -227,7 +227,7 @@ export class GroupMemberRepository {
       where: {
         roomId,
         userId,
-        status: "ACTIVE",
+        status: { in: ["ACTIVE", "KICKED"] },
         dismissedAt: { isSet: false },
       },
       data: { dismissedAt: new Date(), unreadCount: 0 },
@@ -267,15 +267,10 @@ export class GroupMemberRepository {
   }
 
   /**
-   * The membership rows the unified inbox lists a group from: ACTIVE only.
+   * The membership rows the unified inbox lists a group from: ACTIVE, plus a
+   * removed (KICKED) member's read-only row (contract §8).
    *
-   * A membership that has ended — LEFT, KICKED or BANNED — takes the group out
-   * of that user's list immediately, and keeps it out across reloads and
-   * re-logins. This used to widen to LEFT + KICKED so an ex-member kept a
-   * read-only row WhatsApp-style; the product rule is now that the end of a
-   * membership is the end of the conversation for that user. Enforced here —
-   * the ONE query behind the list, the list count and cross-room search —
-   * rather than per surface, so no listing can drift back to the old behavior.
+   * The ONE query behind the list, the list count and cross-room group search.
    *
    * Selects more than {@link getActiveMemberships} because an inbox row also
    * renders moderation-mute state and the caller's own read watermark.
@@ -298,7 +293,15 @@ export class GroupMemberRepository {
   > {
     return normalizeAll(await this.prisma.groupMember.findMany({
       // A dismissed row is a CLOSED group the member deleted from their list.
-      where: { userId, status: "ACTIVE", dismissedAt: { isSet: false } },
+      // A removed (KICKED) member keeps a read-only row (contract §8).
+      where: {
+        userId,
+        dismissedAt: { isSet: false },
+        OR: [
+          { status: "ACTIVE" },
+          { status: "KICKED", kickedAt: { not: null } },
+        ],
+      },
       select: {
         roomId: true,
         role: true,
@@ -346,7 +349,7 @@ export class GroupMemberRepository {
   async setClearChatAt(roomId: string, userId: string): Promise<Date> {
     const cutoff = new Date();
     await this.prisma.groupMember.updateMany({
-      where: { roomId, userId, status: "ACTIVE" },
+      where: { roomId, userId, status: { in: ["ACTIVE", "KICKED"] } },
       data: {
         clearChatAt: cutoff,
         unreadCount: 0,

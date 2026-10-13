@@ -1316,6 +1316,7 @@ export class GroupMessageRepository {
     sinceRevision: number;
     limit: number;
     cutoff?: Date;
+    readCutoffBefore?: Date;
   }): Promise<{
     messages: GroupMessage[];
     hasMore: boolean;
@@ -1339,6 +1340,8 @@ export class GroupMessageRepository {
         .deletedForUserIds ?? []) as string[];
       if (hidden.includes(params.userId)) return false;
       if (params.cutoff && msg.createdAt <= params.cutoff) return false;
+      if (params.readCutoffBefore && msg.createdAt > params.readCutoffBefore)
+        return false;
       return true;
     });
 
@@ -1439,11 +1442,13 @@ export class GroupMessageRepository {
     cursor?: string | null;
     limit: number;
     cutoff?: Date;
+    readCutoffBefore?: Date;
   }): Promise<GroupMessage[]> {
     const mediaTypes = MEDIA_MESSAGE_TYPES;
-    const createdAt: { lt?: Date; gt?: Date } = {};
+    const createdAt: { lt?: Date; gt?: Date; lte?: Date } = {};
     if (params.cursor) createdAt.lt = new Date(params.cursor);
     if (params.cutoff) createdAt.gt = params.cutoff;
+    if (params.readCutoffBefore) createdAt.lte = params.readCutoffBefore;
     // Resolve composite aliases (mirrors PrivateMessageRepository). Without
     // this a `type=media` filter would try to match the literal string "media"
     // and silently return zero rows for group chats.

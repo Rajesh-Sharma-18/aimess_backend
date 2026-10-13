@@ -104,22 +104,14 @@ export interface InboxItem {
   role: string | null;
   /** GROUP-only: true when the caller is an active member; null for PRIVATE rows. */
   isJoined: boolean | null;
-  /**
-   * GROUP-only, and always `false` on a row this list can produce.
-   *
-   * A membership that ends — voluntary leave (`hasLeft`) or admin removal
-   * (`isRemoved`) — now takes the group out of the caller's list entirely, so
-   * there is no ex-member row left for either flag to describe. Both stay on
-   * the wire for clients that still read them; neither is a state the server
-   * can report any more. Null for PRIVATE rows.
-   */
+  /** GROUP-only: always false (a leaver has no row). Null for PRIVATE rows. */
   hasLeft: boolean | null;
-  /** GROUP-only: see {@link InboxItem.hasLeft} — always false. Null for PRIVATE rows. */
+  /** GROUP-only: true on a REMOVED (read-only) row. Null for PRIVATE rows. */
   isRemoved: boolean | null;
-  /** GROUP-only: raw `GroupMember.status`, which on a listed row is always
-   *  "ACTIVE" (the list's membership query admits nothing else). Null for
-   *  PRIVATE rows. */
+  /** GROUP-only: "ACTIVE" | "REMOVED" (read-only, contract §8). Null for PRIVATE rows. */
   membershipStatus: string | null;
+  /** GROUP-only: epoch ms of the caller's removal; null unless REMOVED. */
+  removedAt: number | null;
   /** GROUP: always false (groups have no moderation mute; kept for old clients). Null for PRIVATE rows. */
   isMemberMuted: boolean | null;
   /** GROUP-only: ISO-8601 expiry of a timed member-mute; null = indefinite. */
@@ -364,6 +356,7 @@ export class InboxService {
       hasLeft: null,
       isRemoved: null,
       membershipStatus: null,
+      removedAt: null,
       isMemberMuted: null,
       memberMutedUntil: null,
       memberMutedUntilMs: null,
@@ -439,6 +432,7 @@ export class InboxService {
       hasLeft: room.hasLeft,
       isRemoved: room.isRemoved ?? false,
       membershipStatus: room.membershipStatus ?? null,
+      removedAt: room.removedAt ?? null,
       isMemberMuted: room.isMemberMuted ?? false,
       memberMutedUntil: room.memberMutedUntil ?? null,
       memberMutedUntilMs: room.memberMutedUntilMs ?? null,

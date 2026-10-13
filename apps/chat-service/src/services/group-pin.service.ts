@@ -1,7 +1,10 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
-import { assertGroupWritable } from "../lib/access-guard.js";
+import {
+  assertGroupWritable,
+  groupWriteDeniedError,
+} from "../lib/access-guard.js";
 import {
   resolvePinsMedia,
   resolveContentFiles,
@@ -90,7 +93,13 @@ export class GroupPinService {
       roomId,
       userId
     );
-    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    if (!member)
+      throw await groupWriteDeniedError(
+        this.memberRepo,
+        roomId,
+        userId,
+        new NotFoundError("CHAT_NOT_A_MEMBER")
+      );
     if (!PIN_ROLES.includes(member.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
@@ -233,7 +242,13 @@ export class GroupPinService {
       roomId,
       userId
     );
-    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    if (!member)
+      throw await groupWriteDeniedError(
+        this.memberRepo,
+        roomId,
+        userId,
+        new NotFoundError("CHAT_NOT_A_MEMBER")
+      );
     if (!PIN_ROLES.includes(member.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }

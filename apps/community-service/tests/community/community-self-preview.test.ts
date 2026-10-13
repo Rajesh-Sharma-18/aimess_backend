@@ -350,3 +350,33 @@ describe("selectListPreview — actor reads first person", () => {
     ).toBe("Bạn đã thêm Mind Flayer vào cộng đồng");
   });
 });
+
+describe("selectListPreview — a row stored in an older wording", () => {
+  // QA: vi showed "Lan ended the livestream (51s)" — the pre-v2 English that no
+  // longer equals today's rendering, so the exact-match swap skipped it.
+  const legacyLive = {
+    lastActivityType: "system",
+    lastActivityPreview: "Lan ended the livestream (51s)",
+    lastActivityUserId: "u-lan",
+    lastActivitySystemType: "LIVE_STREAM_ENDED",
+    lastActivitySystemMetadata: {
+      actorUserId: "u-lan",
+      actorName: "Lan",
+      hostUserId: "u-lan",
+      duration: "51s",
+      durationSeconds: 51,
+      endedReason: "USER",
+    },
+  };
+
+  it("re-renders the shared line from its params in the reader's language", () => {
+    const vi = runWithLocale("vi", () => selectListPreview(legacyLive, "u-other"));
+    expect(vi).not.toContain("ended the livestream");
+    expect(vi).toContain("Lan");
+  });
+
+  it("NEGATIVE: a personal delete-for-me overlay is still returned as stored", () => {
+    const overlay = { ...legacyLive, lastActivityUserId: "u-me", lastActivitySelfPreview: "older message text" };
+    expect(runWithLocale("vi", () => selectListPreview(overlay, "u-me"))).toBe("older message text");
+  });
+});

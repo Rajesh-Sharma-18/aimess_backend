@@ -43,6 +43,7 @@ import {
   assertGroupReadAccess,
   assertGroupRoomWritable,
   groupReadCutoff,
+  groupWriteDeniedError,
 } from "../lib/access-guard.js";
 import {
   getGroupVisibilityCutoff,
@@ -89,7 +90,7 @@ export type GroupRoomMembership = GroupRoom & {
   /** Epoch-ms mirror of `memberMutedUntil` (§6). null = not muted / indefinite. */
   memberMutedUntilMs?: number | null;
   /**
-   * The caller's raw `GroupMember.status` — `"ACTIVE" | "LEFT" | "KICKED"`, or
+   * The caller's membership — `"ACTIVE" | "REMOVED"` (KICKED) | `"LEFT"` (disbanded), or
    * null for an internal/unauthenticated read. This is what lets a client
    * distinguish ACTIVE / left / removed-by-an-admin WITHOUT inferring it from
    * `isJoined === false`, so a hard reload or a cold open restores the correct
@@ -97,6 +98,8 @@ export type GroupRoomMembership = GroupRoom & {
    * (BANNED never reaches a client here — the read guard rejects it.)
    */
   membershipStatus?: string | null;
+  /** Epoch ms of the caller's removal when `membershipStatus` is "REMOVED". */
+  removedAt?: number | null;
   /** Epoch ms of the caller's latest Clear Chat / Delete Conversation cutoff, null if never. */
   clearChatAtMs?: number | null;
 };
@@ -204,6 +207,8 @@ export type EnrichedGroupRoom = GroupRoomMembership & {
    *  treatment as {@link hasLeft} — the row stays, history stays, every write
    *  is denied — only the notice wording and the absence of a rejoin differ. */
   isRemoved: boolean;
+  /** Epoch ms of the caller's removal (`kickedAt`); null unless REMOVED. */
+  removedAt?: number | null;
   /**
    * Telegram-style tick for the last message, but ONLY meaningful when the
    * CALLER sent it (null otherwise). Three tiers, matching Telegram/WhatsApp:
@@ -339,9 +344,8 @@ export class GroupRoomService {
    * without it the shared `GroupRoom.lastMessagePreview` (which ISN'T
    * per-viewer) would leak the group's real last message text.
    *
-   * Now reached only through {@link getRoom} on a DISBANDED room — the one
-   * place a non-ACTIVE membership still reads anything. Leave and removal end
-   * access outright, so the inbox has no capped rows left to build.
+   * A removed (KICKED) row always previews its own last readable line — the
+   * removal line — since that line does not bump the shared snapshot.
    */
   private async applyLeftMemberPreviewCap<T extends GroupRoom>(
     rooms: T[],
@@ -353,11 +357,13 @@ export class GroupRoomService {
   ): Promise<T[]> {
     if (!rooms.length) return rooms;
     const stale = rooms.filter((room) => {
-      const cutoff = groupReadCutoff(membershipByRoom.get(room.roomId));
+      const member = membershipByRoom.get(room.roomId);
+      const cutoff = groupReadCutoff(member);
       return (
         cutoff != null &&
-        room.lastMessageAt != null &&
-        room.lastMessageAt.getTime() > cutoff.getTime()
+        (member?.status === "KICKED" ||
+          (room.lastMessageAt != null &&
+            room.lastMessageAt.getTime() > cutoff.getTime()))
       );
     });
     if (!stale.length) return rooms;
@@ -369,7 +375,8 @@ export class GroupRoomService {
         if (!leftAt) return;
         const [prev] = await this.messageRepo.findByRoomIdWithTime(
           room.roomId,
-          leftAt.toISOString(),
+          // `lt` bound: +1ms keeps the line stamped at the cutoff instant itself.
+          new Date(leftAt.getTime() + 1).toISOString(),
           1,
           userId
         );
@@ -382,6 +389,8 @@ export class GroupRoomService {
                 senderName: prev.senderName ?? "",
                 messageType: prev.messageType,
                 createdAt: prev.createdAt,
+                systemEvent: prev.systemEvent ?? null,
+                systemData: prev.systemData ?? null,
                 ...listRowIdentity(prev),
               }
             : null,
@@ -791,9 +800,8 @@ export class GroupRoomService {
   > {
     const found = await this.roomRepo.findActiveByRoomId(roomId);
     if (!found) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
-    // Same read rule as the timeline and the roster: ACTIVE members only (plus
-    // a past member of a DISBANDED room, which is the guard's one widening).
-    // Leavers, kicked, banned and never-members are all rejected — this
+    // Same read rule as the timeline: ACTIVE, a removed member (read-only), or a
+    // past member of a DISBANDED room. Leavers and never-members are rejected — this
     // endpoint previously had NO gate at all, so anyone holding a roomId could
     // read the group's name, settings, member count AND the live
     // `lastMessagePreview` text. Unauthenticated internal callers (no userId)
@@ -835,7 +843,12 @@ export class GroupRoomService {
       ...room,
       avatar,
       isJoined,
-      membershipStatus: membership?.status ?? null,
+      membershipStatus:
+        membership?.status === "KICKED" ? "REMOVED" : (membership?.status ?? null),
+      removedAt:
+        membership?.status === "KICKED"
+          ? (membership.kickedAt?.getTime() ?? null)
+          : null,
       // Groups have no moderation mute; the fields stay on the wire for old clients.
       isMemberMuted: false,
       memberMutedUntil: null,
@@ -870,7 +883,13 @@ export class GroupRoomService {
       roomId,
       userId
     );
-    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    if (!member)
+      throw await groupWriteDeniedError(
+        this.memberRepo,
+        roomId,
+        userId,
+        new NotFoundError("CHAT_NOT_A_MEMBER")
+      );
     if (member.role !== "ADMIN") {
       throw new BadRequestError("CHAT_ONLY_OWNER_ADMIN_UPDATE");
     }
@@ -985,7 +1004,13 @@ export class GroupRoomService {
         roomId,
         userId
       );
-      if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+      if (!member)
+        throw await groupWriteDeniedError(
+          this.memberRepo,
+          roomId,
+          userId,
+          new NotFoundError("CHAT_NOT_A_MEMBER")
+        );
       if (member.role !== "ADMIN") {
         throw new BadRequestError("CHAT_ONLY_OWNER_DISBAND");
       }
@@ -1170,12 +1195,13 @@ export class GroupRoomService {
     if (!member || !["ACTIVE", "LEFT", "KICKED"].includes(member.status)) {
       throw new NotFoundError("CHAT_NOT_A_MEMBER");
     }
-    // Deleting a CLOSED group's conversation takes the row out of the list
-    // (it can never get a new message to come back with).
+    // Deleting a CLOSED group's, or a removed member's, conversation takes the
+    // row out of the list (neither can get a new message to come back with).
     if (
-      member.status === "ACTIVE" &&
+      member.status === "KICKED" ||
+      (member.status === "ACTIVE" &&
       (await this.roomRepo.findActiveByRoomId(roomId))?.status ===
-        GroupRoomStatus.CLOSED
+        GroupRoomStatus.CLOSED)
     ) {
       await this.dismissClosedConversation(roomId, userId);
       return;
@@ -1216,11 +1242,11 @@ export class GroupRoomService {
   ): Promise<void> {
     const wrote = await this.memberRepo.setDismissed(roomId, userId);
     if (!wrote) {
-      const member = await this.memberRepo.findActiveByRoomAndUser(
-        roomId,
-        userId
-      );
-      if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+      const member =
+        (await this.memberRepo.findActiveByRoomAndUser(roomId, userId)) ??
+        (await this.memberRepo.findByRoomAndUser(roomId, userId));
+      if (member?.status !== "ACTIVE" && member?.status !== "KICKED")
+        throw new NotFoundError("CHAT_NOT_A_MEMBER");
       return; // already dismissed
     }
     // setDismissed zeroed the stored unread: recompute the nav badge, close
@@ -1239,11 +1265,12 @@ export class GroupRoomService {
    * clear (see PrivateRoomService.clearChat).
    */
   async clearChat(roomId: string, userId: string): Promise<boolean> {
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      roomId,
-      userId
-    );
-    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    // Personal, so a removed member may clear their read-only chat too.
+    const member =
+      (await this.memberRepo.findActiveByRoomAndUser(roomId, userId)) ??
+      (await this.memberRepo.findByRoomAndUser(roomId, userId));
+    if (member?.status !== "ACTIVE" && member?.status !== "KICKED")
+      throw new NotFoundError("CHAT_NOT_A_MEMBER");
     const clearable = await this.messageRepo.hasClearableAfter({
       roomId,
       userId,
@@ -1506,11 +1533,14 @@ export class GroupRoomService {
     });
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
-    // No ex-member preview cap here any more — every row this list can produce
-    // is an ACTIVE membership, so there is no cutoff to cap against.
+    // A removed member's row is then capped at their removal line.
     const rooms = await this.enrichLastMessageSenderNames(
       this.applyHistoryBoundaryPreviewCap(
-        await this.applyPerUserPreview(rawRooms, params.userId),
+        await this.applyLeftMemberPreviewCap(
+          await this.applyPerUserPreview(rawRooms, params.userId),
+          membershipByRoom,
+          params.userId
+        ),
         membershipByRoom,
         params.userId
       )
@@ -1541,13 +1571,10 @@ export class GroupRoomService {
         settings.mute === true &&
         (settings.muteUntil == null ||
           new Date(settings.muteUntil).getTime() > now);
-      // `getInboxMemberships` returns ACTIVE rows only, so every row this list
-      // produces is a live membership. The three membership flags below are
-      // kept on the wire (clients still read them) but can now only ever say
-      // "joined" — a leaver or a removed member has no row here at all.
+      // Rows are ACTIVE or REMOVED (KICKED, read-only, contract §8); a leaver has no row.
       const isJoined = membership?.status === "ACTIVE";
       const hasLeft = false;
-      const isRemoved = false;
+      const isRemoved = membership?.status === "KICKED";
       // Per-viewer effective activity, read off the SAME preview the per-user
       // passes above produced (delete-for-me override / clear-chat cap), so
       // preview and timestamp can never disagree.
@@ -1558,7 +1585,8 @@ export class GroupRoomService {
         lastActivity,
         lastActivityAt: lastActivity.dateTime,
         avatar: urlFromMap(avatarUrls, room.avatar),
-        membershipStatus: membership?.status ?? null,
+        membershipStatus: isRemoved ? "REMOVED" : (membership?.status ?? null),
+        removedAt: isRemoved ? (membership?.kickedAt?.getTime() ?? null) : null,
         clearChatAtMs:
           Math.max(membership?.clearChatAt?.getTime() ?? 0, membership?.clearedAt?.getTime() ?? 0) || null,
         isRemoved,
@@ -1566,7 +1594,7 @@ export class GroupRoomService {
         isMemberMuted: false,
         memberMutedUntil: null,
         memberMutedUntilMs: null,
-        unreadCount: membership?.unreadCount ?? 0,
+        unreadCount: isRemoved ? 0 : (membership?.unreadCount ?? 0),
         lastReadMessageId: membership?.lastReadMessageId ?? null,
         role: membership?.role ?? "MEMBER",
         isJoined,
