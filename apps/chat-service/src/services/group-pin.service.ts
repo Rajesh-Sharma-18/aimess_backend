@@ -2,8 +2,8 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
 import {
-  assertGroupMemberNotMuted,
   assertGroupWritable,
+  groupWriteDeniedError,
 } from "../lib/access-guard.js";
 import {
   resolvePinsMedia,
@@ -30,7 +30,7 @@ import type { GroupSystemMessageService } from "./group-system-message.service.j
 import type { PinnedMessageSummary } from "./community-pin.service.js";
 import type { GroupMessagePin } from "../generated/prisma/index.js";
 
-const PIN_ROLES = ["ADMIN", "MODERATOR"];
+const PIN_ROLES = ["ADMIN"];
 
 /**
  * A pin is invisible to a member whose own history starts after it — and BOTH
@@ -93,13 +93,16 @@ export class GroupPinService {
       roomId,
       userId
     );
-    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    if (!member)
+      throw await groupWriteDeniedError(
+        this.memberRepo,
+        roomId,
+        userId,
+        new NotFoundError("CHAT_NOT_A_MEMBER")
+      );
     if (!PIN_ROLES.includes(member.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
-    // A muted moderator/admin cannot pin — pinning writes into the room
-    // (it posts a MESSAGE_PINNED system line). Mirrors CommunityPinService.
-    assertGroupMemberNotMuted(member);
     await assertGroupWritable(this.roomRepo, roomId);
 
     const msg = await this.messageRepo.findById(messageId);
@@ -239,11 +242,16 @@ export class GroupPinService {
       roomId,
       userId
     );
-    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    if (!member)
+      throw await groupWriteDeniedError(
+        this.memberRepo,
+        roomId,
+        userId,
+        new NotFoundError("CHAT_NOT_A_MEMBER")
+      );
     if (!PIN_ROLES.includes(member.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
-    assertGroupMemberNotMuted(member);
     await assertGroupWritable(this.roomRepo, roomId);
 
     const activePinForMessage =

@@ -1,5 +1,6 @@
 import { logger } from "@aimess/logger";
 import {
+  accountCopy,
   PLATFORM_ADMIN_ACTOR_ID,
   t,
   type SupportedLocale,
@@ -8,6 +9,7 @@ import { publishUserSocketEvent } from "@aimess/redis";
 import amqp from "amqplib";
 import {
   CommunityEvents,
+  type CommunityAdminInactiveReminderPayload,
   type CommunityAdminTransferredPayload,
   type CommunityClosedNotifyPayload,
   type CommunityDeletedPayload,
@@ -271,6 +273,10 @@ async function communityIdentityFor(
  * "" when neither source knows the name, so the copy layer renders its
  * localized "Someone" rather than a fabricated name.
  */
+// Platform staff are never named (copy reads "AI Mess Administrator").
+const namedActor = (actorId: string, actorRole?: string): Promise<string> =>
+  actorRole === "PLATFORM" ? Promise.resolve("") : actorNameFor(actorId);
+
 async function actorNameFor(
   userId: string | undefined,
   carriedName?: string | null
@@ -538,9 +544,12 @@ async function handleCommunityEvent(
       // The actor of the End Live — never pushed about their own action: the
       // community admin on End for Everyone (the host IS told), else the host.
       // A Super Admin end (ADMIN) has no AIMess actor, so the host is told too.
+      // A connection-loss end has no actor: the host gets the row too.
       const endActorId =
         p.endedByUserId ??
-        (p.endedReason === "ADMIN" ? undefined : p.hostUserId);
+        (p.endedReason === "ADMIN" || p.endedReason === "CONNECTION_LOST"
+          ? undefined
+          : p.hostUserId);
       await redis
         .set(liveEndedKey(p.livestreamId), "1", "EX", 86_400)
         .catch(() => undefined);
@@ -579,7 +588,11 @@ async function handleCommunityEvent(
         // bans) "System" — neither names the host; the host still rides in
         // data/actorSnapshot as the stream owner.
         copy:
-          p.endedReason === "ADMIN"
+          p.endedReason === "CONNECTION_LOST"
+            ? userId === p.hostUserId
+              ? communityCopy.livestreamEndedForHost(identity.name, "CONNECTION_LOST")
+              : communityCopy.livestreamEnded(identity.name, resolvedHostName, p.duration)
+            : p.endedReason === "ADMIN"
             ? communityCopy.livestreamEndedByAdmin(
                 identity.name,
                 p.duration,
@@ -668,7 +681,11 @@ async function handleCommunityEvent(
       };
       await pushToUser({
         userId: p.userId,
-        copy: communityCopy.joinRequestApproved(identity.name, decidedByName),
+        copy: communityCopy.joinRequestApproved(
+          identity.name,
+          decidedByName,
+          p.actorRole
+        ),
         ...base(
           type,
           identity,
@@ -726,7 +743,11 @@ async function handleCommunityEvent(
       };
       await pushToUser({
         userId: p.userId,
-        copy: communityCopy.joinRequestRejected(identity.name),
+        copy: communityCopy.joinRequestRejected(
+          identity.name,
+          decidedByName,
+          p.actorRole
+        ),
         ...base(
           type,
           identity,
@@ -883,14 +904,54 @@ async function handleCommunityEvent(
     case CommunityEvents.ADMIN_TRANSFERRED: {
       const p = data as CommunityAdminTransferredPayload;
       const identity = await communityIdentityFor(p.communityId);
-      await pushToUser({
-        userId: p.targetUserId,
-        copy: communityCopy.adminTransferred(identity.name),
-        ...base(
-          type,
-          identity,
+      const pushTo = (userId: string, copy: PushInput["copy"], actorId?: string) =>
+        pushToUser({
+          userId,
+          copy,
+          ...base(
+            type,
+            identity,
+            actorId,
+            { reason: p.reason },
+            buildDeepLink("community", p.communityId),
+            "communityEnabled",
+            { screen: "COMMUNITY_DETAILS" },
+            generateEventThreadId(type)
+          ),
+        });
+      await pushTo(
+        p.targetUserId,
+        communityCopy.adminTransferred(identity.name),
+        p.actorId
+      );
+      // Automatic handover: the outgoing admin did not act, so they are told too.
+      if (p.auto && p.formerAdminRole) {
+        await pushTo(
           p.actorId,
-          { reason: p.reason },
+          communityCopy.formerAdminNowModerator(identity.name)
+        );
+      }
+      break;
+    }
+
+    case CommunityEvents.ADMIN_INACTIVE_REMINDER: {
+      const p = data as CommunityAdminInactiveReminderPayload;
+      const identity = await communityIdentityFor(
+        p.communityId,
+        p.communityName
+      );
+      await pushToUser({
+        userId: p.adminId,
+        copy: communityCopy.adminInactiveReminder(
+          identity.name,
+          p.daysLeft,
+          p.successorKind
+        ),
+        ...base(
+          "COMMUNITY_ADMIN_INACTIVE_REMINDER",
+          identity,
+          undefined,
+          { daysLeft: String(p.daysLeft), successorKind: p.successorKind },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
           { screen: "COMMUNITY_DETAILS" },
@@ -902,10 +963,19 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_ROLE_CHANGED: {
       const p = data as CommunityMemberRoleChangedPayload;
-      const identity = await communityIdentityFor(p.communityId);
+      const [identity, actorName] = await Promise.all([
+        communityIdentityFor(p.communityId),
+        namedActor(p.actorId, p.actorRole),
+      ]);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.roleChanged(p.newRole, identity.name),
+        copy: communityCopy.roleChanged(
+          p.newRole,
+          identity.name,
+          actorName,
+          p.actorRole,
+          p.oldRole
+        ),
         ...base(
           type,
           identity,
@@ -964,14 +1034,13 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_BANNED: {
       const p = data as CommunityMemberBannedPayload;
-      const identity = await communityIdentityFor(
-        p.communityId,
-        p.communityName,
-        p.communityAvatarUrl
-      );
+      const [identity, actorName] = await Promise.all([
+        communityIdentityFor(p.communityId, p.communityName, p.communityAvatarUrl),
+        namedActor(p.actorId, p.actorRole),
+      ]);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberBanned(identity.name),
+        copy: communityCopy.memberBanned(identity.name, actorName, p.actorRole),
         bypassSettings: true,
         ...base(
           type,
@@ -992,14 +1061,13 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_UNBANNED: {
       const p = data as CommunityMemberUnbannedNotifyPayload;
-      const identity = await communityIdentityFor(
-        p.communityId,
-        p.communityName,
-        p.communityAvatarUrl
-      );
+      const [identity, actorName] = await Promise.all([
+        communityIdentityFor(p.communityId, p.communityName, p.communityAvatarUrl),
+        namedActor(p.actorId, p.actorRole),
+      ]);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberUnbanned(identity.name),
+        copy: communityCopy.memberUnbanned(identity.name, actorName, p.actorRole),
         ...base(
           type,
           identity,
@@ -1016,10 +1084,18 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_MUTED: {
       const p = data as CommunityMemberMutedPayload;
-      const identity = await communityIdentityFor(p.communityId);
+      const [identity, actorName] = await Promise.all([
+        communityIdentityFor(p.communityId),
+        namedActor(p.actorId, p.actorRole),
+      ]);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberMuted(p.mutedUntil, identity.name),
+        copy: communityCopy.memberMuted(
+          p.mutedUntil,
+          identity.name,
+          actorName,
+          p.actorRole
+        ),
         ...base(
           type,
           identity,
@@ -1180,22 +1256,15 @@ async function handleCommunityEvent(
       const identity = await communityIdentityFor(p.communityId);
       await pushToUser({
         userId: p.reporterId,
-        copy: communityCopy.reportActioned(identity.name),
+        copy: accountCopy.reportOutcome("ACTIONED"),
         ...base(
           type,
           identity,
           p.actorId,
-          {
-            reportId: p.reportId,
-            targetUserId: p.targetUserId ?? "",
-          },
+          { reportId: p.reportId, outcome: "ACTIONED" },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          {
-            screen: "COMMUNITY_REPORTS",
-            reportId: p.reportId,
-            ...(p.targetUserId ? { userId: p.targetUserId } : {}),
-          },
+          { screen: "COMMUNITY_REPORTS", reportId: p.reportId },
           generateEventThreadId(type)
         ),
       });
@@ -1205,25 +1274,18 @@ async function handleCommunityEvent(
     case CommunityEvents.REPORT_RESOLVED: {
       const p = data as CommunityReportResolvedPayload;
       const identity = await communityIdentityFor(p.communityId);
+      const outcome = p.resolution === "ACTIONED" ? "ACTIONED" : "NO_ACTION";
       await pushToUser({
         userId: p.reporterId,
-        copy: communityCopy.reportResolved(identity.name),
+        copy: accountCopy.reportOutcome(outcome),
         ...base(
           type,
           identity,
           p.actorId,
-          {
-            reportId: p.reportId,
-            targetUserId: p.targetUserId ?? "",
-            resolution: p.resolution,
-          },
+          { reportId: p.reportId, outcome },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          {
-            screen: "COMMUNITY_REPORTS",
-            reportId: p.reportId,
-            ...(p.targetUserId ? { userId: p.targetUserId } : {}),
-          },
+          { screen: "COMMUNITY_REPORTS", reportId: p.reportId },
           generateEventThreadId(type)
         ),
       });
@@ -1263,10 +1325,13 @@ async function handleCommunityEvent(
         "CLOSED",
         await liveStreamTags(p.communityId)
       );
-      const identity = await communityIdentityFor(p.communityId);
+      const [identity, actorName] = await Promise.all([
+        communityIdentityFor(p.communityId, p.communityName),
+        namedActor(p.actorId, p.actorRole),
+      ]);
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        copy: communityCopy.closed(identity.name),
+        copy: communityCopy.closed(identity.name, actorName, p.actorRole),
         ...base(
           type,
           identity,
@@ -1285,13 +1350,13 @@ async function handleCommunityEvent(
       // Members are never evicted on close, so `memberIds` is the same full
       // roster the CLOSED push reached — notify all of them, mirroring CLOSED.
       const p = data as CommunityReopenedNotifyPayload;
-      const identity = await communityIdentityFor(
-        p.communityId,
-        p.communityName
-      );
+      const [identity, actorName] = await Promise.all([
+        communityIdentityFor(p.communityId, p.communityName),
+        namedActor(p.actorId, p.actorRole),
+      ]);
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        copy: communityCopy.reopened(identity.name),
+        copy: communityCopy.reopened(identity.name, actorName, p.actorRole),
         ...base(
           type,
           identity,

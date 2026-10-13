@@ -1005,6 +1005,11 @@ export function registerCommunityNamespace(
             } else {
               closedCommunityIds.delete(communityId);
             }
+            // Closed: only its admin may still open it (read-only).
+            if (m.isCommunityClosed && !(m.isMember && m.role === "ADMIN")) {
+              ackError(callback, "FORBIDDEN", locale, "COMMUNITY_IS_CLOSED");
+              return;
+            }
           } catch (err) {
             logger.warn(
               `/community join membership check failed (fail-closed) community=${communityId} user=${userId}: ${String(err)}`

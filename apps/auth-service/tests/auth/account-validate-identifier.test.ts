@@ -12,6 +12,7 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
   authRepository: {
     findByAccount: jest.fn(),
     findByEmail: jest.fn(),
+    findByEmailForLogin: jest.fn(),
   },
 }));
 
@@ -83,5 +84,25 @@ describe("POST /api/auth/accounts/validate", () => {
     expect(res.status).toBe(400);
     expect(repo.findByAccount).not.toHaveBeenCalled();
     expect(repo.findByEmail).not.toHaveBeenCalled();
+  });
+
+  it("purpose login: an unverified email keeps 409 AUTH_ACCOUNT_TAKEN", async () => {
+    repo.findByEmail.mockResolvedValue({ id: "user-1" });
+    repo.findByEmailForLogin.mockResolvedValue({
+      id: "user-1",
+      passwordHash: null,
+      deletedAt: null,
+      emailVerified: false,
+      lockedUntil: null,
+      status: "SUSPENDED",
+      linkedAccounts: [{ provider: "GOOGLE" }],
+    });
+
+    const res = await request(app)
+      .post("/api/auth/accounts/validate")
+      .send({ account: "someone@example.com", purpose: "login" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("AUTH_ACCOUNT_TAKEN");
   });
 });

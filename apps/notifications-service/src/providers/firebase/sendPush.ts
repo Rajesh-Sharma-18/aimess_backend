@@ -248,7 +248,9 @@ export async function sendPush({
           : {
               notification: {
                 ...(kind === "CALL_MISSED" ? { channelId: "calls_v2" } : {}),
-                ...(image ? { imageUrl: image } : {}),
+                // The OS draws this image full-bleed, never as a round icon, so a missed
+                // call's caller avatar turned into a stretched banner photo (AIMESS-113).
+                ...(image && kind !== "CALL_MISSED" ? { imageUrl: image } : {}),
               },
             }),
       },

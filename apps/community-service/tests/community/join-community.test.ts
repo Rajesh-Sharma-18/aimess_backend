@@ -268,6 +268,15 @@ describe("joinCommunity — PUBLIC community", () => {
     expect(dto).toMatchObject({ userId: CALLER, role: "MEMBER" });
   });
 
+  it("AUDIT: a self-join is recorded with the joiner as actor and no target", async () => {
+    await communityService.joinCommunity(CID, CALLER);
+    const joined = repo.createAuditLog.mock.calls
+      .map((c) => c[0])
+      .find((r) => r.action === "COMMUNITY_JOINED");
+    expect(joined).toMatchObject({ actorId: CALLER });
+    expect(joined.targetUserId).toBeUndefined();
+  });
+
   it("1.1 fresh join — emits ONLY the PERSONAL COMMUNITY_JOINED to the joiner (no community-wide join line)", async () => {
     await communityService.joinCommunity(CID, CALLER);
 

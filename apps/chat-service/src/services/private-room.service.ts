@@ -297,6 +297,8 @@ export interface PrivateRoomPeer {
   /** Flattened presigned URL (additive; mirrors community's `avatarUrl`). */
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
+  /** The peer blocked the viewer: photo withheld, clients draw the generic blocked avatar. */
+  isAvatarHidden: boolean;
   isDeletedUser: boolean;
   /**
    * The peer was permanently banned from the platform by a super admin. The DM
@@ -381,6 +383,8 @@ export interface PrivateConversationListItem extends PeerFriendshipRelationship 
   avatar: MediaObject;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
+  /** See `PrivateRoomPeer.isAvatarHidden`. */
+  isAvatarHidden: boolean;
   isDeletedUser: boolean;
   /** Peer permanently banned by a super admin — see `PrivateRoomPeer.isBanned`. */
   isBanned: boolean;
@@ -411,6 +415,7 @@ function toConversationListItem(
     avatar: room.peer.avatar,
     avatarUrl: room.peer.avatarUrl,
     avatarUrlExpiresIn: room.peer.avatarUrlExpiresIn,
+    isAvatarHidden: room.peer.isAvatarHidden,
     isDeletedUser: room.peer.isDeletedUser,
     isBanned: room.peer.isBanned,
     isOnline: room.peer.isOnline,
@@ -949,16 +954,6 @@ export class PrivateRoomService {
     const peerIds = rooms
       .map((room) => (room.participants || []).find((p) => p !== userId) || "")
       .filter(Boolean);
-    // A peer who blocked the viewer keeps their name but not their photo.
-    const avatarHiddenPeers = new Set(
-      rooms.flatMap((room) => {
-        const peer = (room.participants || []).find((p) => p !== userId) || "";
-        return Array.isArray(room.blockedBy) &&
-          (room.blockedBy as string[]).includes(peer)
-          ? [peer]
-          : [];
-      })
-    );
 
     // Corrupt rooms (a group/community id stored as the peer) still exist until
     // the audit script's findings are acted on. Every lookup below tolerates
@@ -1020,6 +1015,19 @@ export class PrivateRoomService {
     const friendshipByPeer = await this.friendshipsOrUnavailable(
       userId,
       peerIds
+    );
+    // A peer who blocked the viewer keeps their name but not their photo. The live
+    // friendship verdict decides it: the room's denormalized `blockedBy` is only
+    // written by the block consumer and can lag or miss the real block.
+    const avatarHiddenPeers = new Set(
+      rooms.flatMap((room) => {
+        const peer = (room.participants || []).find((p) => p !== userId) || "";
+        const blockedByPeer =
+          friendshipByPeer.get(peer)?.blockedByPeer === true ||
+          (Array.isArray(room.blockedBy) &&
+            (room.blockedBy as string[]).includes(peer));
+        return blockedByPeer ? [peer] : [];
+      })
     );
 
     // Real-time presence — reuses PresenceService (the same canonical Redis
@@ -1428,6 +1436,8 @@ export class PrivateRoomService {
             : urlFromMap(avatarUrls, (snapshot.avatar as string) || "") ||
               null,
           avatarUrlExpiresIn: avatarMedia?.downloadUrlExpiresIn ?? null,
+          // The peer blocked the viewer: clients draw the generic blocked avatar.
+          isAvatarHidden: avatarHiddenPeers.has(peerId),
           isDeletedUser: isDeletedPeer,
           isBanned: isBannedPeer,
           // A deleted account has no presence to report. Its sockets were

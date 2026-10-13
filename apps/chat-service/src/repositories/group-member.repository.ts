@@ -7,6 +7,35 @@
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 import { isObjectId } from "../lib/object-id.js";
 
+// Groups are leader + members: a pre-migration MODERATOR / BANNED / moderation-muted row reads as MEMBER / KICKED / unmuted.
+export function normalizeGroupMember<
+  T extends { role?: string; status?: string; moderationMuted?: boolean } | null,
+>(row: T): T {
+  if (!row || (row.role !== "MODERATOR" && row.status !== "BANNED" && !row.moderationMuted)) {
+    return row;
+  }
+  return {
+    ...row,
+    ...(row.role === "MODERATOR" ? { role: "MEMBER" } : {}),
+    ...(row.status === "BANNED" ? { status: "KICKED" } : {}),
+    ...(row.moderationMuted
+      ? { moderationMuted: false, moderationMutedUntil: null, moderationMutedBy: null }
+      : {}),
+  } as T;
+}
+
+const normalizeAll = <T extends { role?: string; status?: string }>(rows: T[]): T[] =>
+  rows.map(normalizeGroupMember);
+
+// Admin filters match the stale spellings normalizeGroupMember reads them as.
+const STALE_ALIASES: Record<string, string[]> = {
+  MEMBER: ["MEMBER", "MODERATOR"],
+  KICKED: ["KICKED", "BANNED"],
+  BANNED: ["KICKED", "BANNED"],
+};
+const matchStale = (value: string): string | { in: string[] } =>
+  STALE_ALIASES[value] ? { in: STALE_ALIASES[value] } : value;
+
 export class GroupMemberRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -81,18 +110,22 @@ export class GroupMemberRepository {
     roomId: string,
     userId: string
   ): Promise<GroupMember | null> {
-    return this.prisma.groupMember.findUnique({
-      where: { roomId_userId: { roomId, userId } },
-    });
+    return normalizeGroupMember(
+      await this.prisma.groupMember.findUnique({
+        where: { roomId_userId: { roomId, userId } },
+      })
+    );
   }
 
   async findActiveByRoomAndUser(
     roomId: string,
     userId: string
   ): Promise<GroupMember | null> {
-    return this.prisma.groupMember.findFirst({
-      where: { roomId, userId, status: "ACTIVE" },
-    });
+    return normalizeGroupMember(
+      await this.prisma.groupMember.findFirst({
+        where: { roomId, userId, status: "ACTIVE" },
+      })
+    );
   }
 
   /** Which of `userIds` are ACTIVE members of `roomId`, in ONE query (mention resolution). */
@@ -125,25 +158,19 @@ export class GroupMemberRepository {
     roomId: string,
     params?: { limit?: number; cursor?: string | null }
   ): Promise<GroupMember[]> {
-    return this.prisma.groupMember.findMany({
-      where: {
-        roomId,
-        status: "ACTIVE",
-        ...(params?.cursor
-          ? { joinedAt: { gt: new Date(params.cursor) } }
-          : {}),
-      },
-      orderBy: { joinedAt: "asc" },
-      ...(params?.limit ? { take: params.limit } : {}),
-    });
-  }
-
-  /** Rows flagged muted — callers still drop expired windows via isGroupMemberMuted. */
-  async findMutedMembers(roomId: string): Promise<GroupMember[]> {
-    return this.prisma.groupMember.findMany({
-      where: { roomId, status: "ACTIVE", moderationMuted: true },
-      orderBy: { joinedAt: "asc" },
-    });
+    return normalizeAll(
+      await this.prisma.groupMember.findMany({
+        where: {
+          roomId,
+          status: "ACTIVE",
+          ...(params?.cursor
+            ? { joinedAt: { gt: new Date(params.cursor) } }
+            : {}),
+        },
+        orderBy: { joinedAt: "asc" },
+        ...(params?.limit ? { take: params.limit } : {}),
+      })
+    );
   }
 
   async getActiveRoomIds(userId: string): Promise<string[]> {
@@ -172,7 +199,7 @@ export class GroupMemberRepository {
       dismissedAt: Date | null;
     }>
   > {
-    return this.prisma.groupMember.findMany({
+    return normalizeAll(await this.prisma.groupMember.findMany({
       where: { userId, status: "ACTIVE" },
       select: {
         roomId: true,
@@ -185,7 +212,7 @@ export class GroupMemberRepository {
         clearChatAt: true,
         dismissedAt: true,
       },
-    });
+    }));
   }
 
   /**
@@ -200,7 +227,7 @@ export class GroupMemberRepository {
       where: {
         roomId,
         userId,
-        status: "ACTIVE",
+        status: { in: ["ACTIVE", "KICKED"] },
         dismissedAt: { isSet: false },
       },
       data: { dismissedAt: new Date(), unreadCount: 0 },
@@ -240,15 +267,10 @@ export class GroupMemberRepository {
   }
 
   /**
-   * The membership rows the unified inbox lists a group from: ACTIVE only.
+   * The membership rows the unified inbox lists a group from: ACTIVE, plus a
+   * removed (KICKED) member's read-only row (contract §8).
    *
-   * A membership that has ended — LEFT, KICKED or BANNED — takes the group out
-   * of that user's list immediately, and keeps it out across reloads and
-   * re-logins. This used to widen to LEFT + KICKED so an ex-member kept a
-   * read-only row WhatsApp-style; the product rule is now that the end of a
-   * membership is the end of the conversation for that user. Enforced here —
-   * the ONE query behind the list, the list count and cross-room search —
-   * rather than per surface, so no listing can drift back to the old behavior.
+   * The ONE query behind the list, the list count and cross-room group search.
    *
    * Selects more than {@link getActiveMemberships} because an inbox row also
    * renders moderation-mute state and the caller's own read watermark.
@@ -269,9 +291,17 @@ export class GroupMemberRepository {
       lastReadMessageId: string | null;
     }>
   > {
-    return this.prisma.groupMember.findMany({
+    return normalizeAll(await this.prisma.groupMember.findMany({
       // A dismissed row is a CLOSED group the member deleted from their list.
-      where: { userId, status: "ACTIVE", dismissedAt: { isSet: false } },
+      // A removed (KICKED) member keeps a read-only row (contract §8).
+      where: {
+        userId,
+        dismissedAt: { isSet: false },
+        OR: [
+          { status: "ACTIVE" },
+          { status: "KICKED", kickedAt: { not: null } },
+        ],
+      },
       select: {
         roomId: true,
         role: true,
@@ -290,7 +320,7 @@ export class GroupMemberRepository {
         moderationMuted: true,
         moderationMutedUntil: true,
       },
-    });
+    }));
   }
 
   /**
@@ -319,7 +349,7 @@ export class GroupMemberRepository {
   async setClearChatAt(roomId: string, userId: string): Promise<Date> {
     const cutoff = new Date();
     await this.prisma.groupMember.updateMany({
-      where: { roomId, userId, status: "ACTIVE" },
+      where: { roomId, userId, status: { in: ["ACTIVE", "KICKED"] } },
       data: {
         clearChatAt: cutoff,
         unreadCount: 0,
@@ -335,12 +365,14 @@ export class GroupMemberRepository {
     status: string,
     extra?: Record<string, unknown>
   ): Promise<GroupMember | null> {
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: { status, ...extra } as Parameters<
-        typeof this.prisma.groupMember.update
-      >[0]["data"],
-    });
+    return normalizeGroupMember(
+      await this.prisma.groupMember.update({
+        where: { roomId_userId: { roomId, userId } },
+        data: { status, ...extra } as Parameters<
+          typeof this.prisma.groupMember.update
+        >[0]["data"],
+      })
+    );
   }
 
   /**
@@ -351,10 +383,12 @@ export class GroupMemberRepository {
   async leaveIfActive(
     roomId: string,
     userId: string,
-    leftAt: Date
+    leftAt: Date,
+    // Also require this role, so a member promoted mid-leave can't walk out as leader.
+    role?: string
   ): Promise<GroupMember | null> {
     const { count } = await this.prisma.groupMember.updateMany({
-      where: { roomId, userId, status: "ACTIVE" },
+      where: { roomId, userId, status: "ACTIVE", ...(role ? { role } : {}) },
       // unreadCount zeroed on the SAME write that ends the membership: the
       // group leaves this user's list, so a leftover counter could only come
       // back as a phantom badge if they are ever added again.
@@ -364,87 +398,61 @@ export class GroupMemberRepository {
     return this.findByRoomAndUser(roomId, userId);
   }
 
-  async updateRole(
-    roomId: string,
-    userId: string,
-    role: string
-  ): Promise<GroupMember | null> {
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: { role },
-    });
-  }
-
-  /** Moderator-imposed mute (distinct from `setMuted`'s self-notification mute). */
-  async setModerationMute(
-    roomId: string,
-    userId: string,
-    params: { mutedBy: string; mutedUntil: Date | null }
-  ): Promise<GroupMember | null> {
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: {
-        moderationMuted: true,
-        moderationMutedUntil: params.mutedUntil,
-        moderationMutedBy: params.mutedBy,
-      },
-    });
-  }
-
-  async clearModerationMute(
-    roomId: string,
-    userId: string
-  ): Promise<GroupMember | null> {
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: {
-        moderationMuted: false,
-        moderationMutedUntil: null,
-        moderationMutedBy: null,
-      },
-    });
-  }
-
   /**
-   * TIMED moderation mutes whose `moderationMutedUntil` has already passed —
-   * feeds the auto-unmute sweep. Indefinite mutes (`moderationMutedUntil: null`)
-   * are never returned. Mirrors community's `findExpiredMemberMutes`.
+   * Leader handover in one transaction: `fromUserId` must still be the ACTIVE
+   * ADMIN and `toUserId` an ACTIVE non-ADMIN, else nothing is written (false).
+   * `leftAt` also ends the outgoing membership (leave with successor).
    */
-  async findExpiredModerationMutes(params: {
-    now: Date;
-    limit: number;
-  }): Promise<Array<{ id: string; roomId: string; userId: string }>> {
-    return this.prisma.groupMember.findMany({
-      where: {
-        moderationMuted: true,
-        moderationMutedUntil: { not: null, lte: params.now },
-      },
-      select: { id: true, roomId: true, userId: true },
-      take: params.limit,
-    });
+  async transferLeadership(
+    roomId: string,
+    fromUserId: string,
+    toUserId: string,
+    leftAt?: Date
+  ): Promise<boolean> {
+    const aborted = new Error("LEADERSHIP_TRANSFER_ABORTED");
+    try {
+      return await withWriteConflictRetry(() =>
+        this.prisma.$transaction(async (tx) => {
+          const from = await tx.groupMember.updateMany({
+            where: { roomId, userId: fromUserId, status: "ACTIVE", role: "ADMIN" },
+            data: {
+              role: "MEMBER",
+              ...(leftAt ? { status: "LEFT", leftAt, unreadCount: 0 } : {}),
+            },
+          });
+          if (from.count !== 1) return false;
+          const to = await tx.groupMember.updateMany({
+            where: {
+              roomId,
+              userId: toUserId,
+              status: "ACTIVE",
+              role: { not: "ADMIN" },
+            },
+            data: { role: "ADMIN" },
+          });
+          if (to.count !== 1) throw aborted;
+          return true;
+        })
+      );
+    } catch (err) {
+      if (err === aborted) return false;
+      throw err;
+    }
   }
 
-  /**
-   * ATOMIC claim of one expired mute: clears the mute only while it is still
-   * expired-and-set, so exactly ONE sweeper instance (or RabbitMQ redelivery)
-   * runs the unmute side-effects. Returns the number of rows changed — 1 means
-   * this caller owns the expiry, 0 means someone else already handled it.
-   * Mirrors community's `claimExpiredMemberMute`.
-   */
-  async claimExpiredModerationMute(id: string, now: Date): Promise<number> {
-    const { count } = await this.prisma.groupMember.updateMany({
-      where: {
-        id,
-        moderationMuted: true,
-        moderationMutedUntil: { not: null, lte: now },
-      },
-      data: {
-        moderationMuted: false,
-        moderationMutedUntil: null,
-        moderationMutedBy: null,
-      },
+  /** ACTIVE members other than `excludeUserId`, longest-standing first (joinedAt, then userId). */
+  async findSuccessionCandidates(
+    roomId: string,
+    excludeUserId: string,
+    limit: number
+  ): Promise<string[]> {
+    const rows = await this.prisma.groupMember.findMany({
+      where: { roomId, status: "ACTIVE", userId: { not: excludeUserId } },
+      orderBy: [{ joinedAt: "asc" }, { userId: "asc" }],
+      select: { userId: true },
+      take: limit,
     });
-    return count;
+    return rows.map((row) => row.userId);
   }
 
   /**
@@ -463,15 +471,17 @@ export class GroupMemberRepository {
       where: { roomId_userId: { roomId, userId } },
     });
     if (!existing) return null;
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: {
-        notificationSettings: {
-          mute: true,
-          muteUntil: muteUntil ? muteUntil.toISOString() : null,
+    return normalizeGroupMember(
+      await this.prisma.groupMember.update({
+        where: { roomId_userId: { roomId, userId } },
+        data: {
+          notificationSettings: {
+            mute: true,
+            muteUntil: muteUntil ? muteUntil.toISOString() : null,
+          },
         },
-      },
-    });
+      })
+    );
   }
 
   async setUnmuted(
@@ -482,10 +492,12 @@ export class GroupMemberRepository {
       where: { roomId_userId: { roomId, userId } },
     });
     if (!existing) return null;
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: { notificationSettings: { mute: false, muteUntil: null } },
-    });
+    return normalizeGroupMember(
+      await this.prisma.groupMember.update({
+        where: { roomId_userId: { roomId, userId } },
+        data: { notificationSettings: { mute: false, muteUntil: null } },
+      })
+    );
   }
 
   /**
@@ -633,20 +645,20 @@ export class GroupMemberRepository {
   }
 
   /**
-   * Live roster size for the admin group detail — ACTIVE + BANNED, matching
+   * Live roster size for the admin group detail — ACTIVE rows, matching
    * exactly what {@link adminListMembers} shows by default. The denormalized
    * GroupRoom.memberCount drifts (a LEFT/KICKED owner is still counted), so the
    * detail header must count the real rows instead of trusting that field.
    */
   async countRosterMembers(roomId: string): Promise<number> {
     return this.prisma.groupMember.count({
-      where: { roomId, status: { in: ["ACTIVE", "BANNED"] } },
+      where: { roomId, status: "ACTIVE" },
     });
   }
 
   /**
    * Batched {@link countRosterMembers} for the admin group list — one grouped
-   * query for a page of rooms. Rooms with no ACTIVE/BANNED rows are absent from
+   * query for a page of rooms. Rooms with no ACTIVE rows are absent from
    * the map (caller defaults to 0).
    */
   async countRosterMembersForRooms(
@@ -656,7 +668,7 @@ export class GroupMemberRepository {
     if (!ids.length) return new Map();
     const grouped = await this.prisma.groupMember.groupBy({
       by: ["roomId"],
-      where: { roomId: { in: ids }, status: { in: ["ACTIVE", "BANNED"] } },
+      where: { roomId: { in: ids }, status: "ACTIVE" },
       _count: { _all: true },
     });
     return new Map(grouped.map((g) => [g.roomId, g._count._all]));
@@ -726,17 +738,15 @@ export class GroupMemberRepository {
 
     const and: Array<Record<string, unknown>> = [{ roomId }];
     if (excludeUserId) and.push({ userId: { not: excludeUserId } });
-    // Default (no explicit status) shows the meaningful roster — ACTIVE members
-    // PLUS BANNED ones (so a group-banned member, incl. a banned owner of a
-    // CLOSED group, stays visible and can be unbanned). LEFT/KICKED are still
-    // excluded. "ALL" drops the filter entirely; any explicit status is exact.
+    // Default (no explicit status) is the ACTIVE roster. "ALL" drops the filter
+    // entirely; any explicit status is exact (a removed member is KICKED).
     const statusFilter = (status || "").toUpperCase();
     if (statusFilter === "") {
-      and.push({ status: { in: ["ACTIVE", "BANNED"] } });
+      and.push({ status: "ACTIVE" });
     } else if (statusFilter !== "ALL") {
-      and.push({ status: statusFilter });
+      and.push({ status: matchStale(statusFilter) });
     }
-    if (role) and.push({ role });
+    if (role) and.push({ role: matchStale(role) });
     if (userIdsFromSearch || qExactUserId) {
       const dedup = [
         ...new Set([
@@ -761,7 +771,7 @@ export class GroupMemberRepository {
       this.prisma.groupMember.count({ where }),
     ]);
 
-    return { rows, total };
+    return { rows: normalizeAll(rows), total };
   }
 
   /**
@@ -795,8 +805,8 @@ export class GroupMemberRepository {
     const status = (params.status || "").toUpperCase();
     const where: Prisma.GroupClosureMemberWhereInput = {
       roomId,
-      ...(status && status !== "ALL" ? { status } : {}),
-      ...(role ? { role } : {}),
+      ...(status && status !== "ALL" ? { status: matchStale(status) } : {}),
+      ...(role ? { role: matchStale(role) } : {}),
       ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
     };
     if (q) {
@@ -821,19 +831,7 @@ export class GroupMemberRepository {
       }),
       this.prisma.groupClosureMember.count({ where }),
     ]);
-    return { rows, total };
-  }
-
-  /** The owner ban that closed a room is part of that closure — mirror it. */
-  async markClosureMemberBanned(
-    roomId: string,
-    userId: string,
-    bannedAt: Date
-  ): Promise<void> {
-    await this.prisma.groupClosureMember.updateMany({
-      where: { roomId, userId },
-      data: { status: "BANNED", bannedAt },
-    });
+    return { rows: normalizeAll(rows), total };
   }
 
   async upsert(
@@ -841,7 +839,7 @@ export class GroupMemberRepository {
     userId: string,
     data: Record<string, unknown>
   ): Promise<GroupMember> {
-    return this.prisma.groupMember.upsert({
+    return normalizeGroupMember(await this.prisma.groupMember.upsert({
       where: { roomId_userId: { roomId, userId } },
       create: {
         roomId,
@@ -860,6 +858,6 @@ export class GroupMemberRepository {
       update: {
         ...data,
       } as Parameters<typeof this.prisma.groupMember.update>[0]["data"],
-    });
+    }));
   }
 }

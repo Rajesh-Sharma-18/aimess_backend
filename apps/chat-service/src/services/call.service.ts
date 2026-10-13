@@ -20,6 +20,7 @@ import type { CallRepository } from "../repositories/call.repository.js";
 import type { FriendshipRepository } from "../repositories/friendship.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import { groupWriteDeniedError } from "../lib/access-guard.js";
 import type { LiveKitCredentials, LiveKitService } from "./livekit.service.js";
 import type {
   CallChatMessageService,
@@ -159,7 +160,8 @@ export class CallService {
     private readonly groupMemberRepo?: Pick<
       GroupMemberRepository,
       "findActiveByRoomAndUser" | "findActiveMembers"
-    >,
+    > &
+      Partial<Pick<GroupMemberRepository, "findByRoomAndUser">>,
     /**
      * Group-call timeline audit rows. Same role CallChatMessageService plays for
      * 1:1, but a group call's row belongs in the GroupMessage timeline, so it
@@ -704,7 +706,13 @@ export class CallService {
       params.groupId,
       params.callerId
     );
-    if (!caller) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    if (!caller)
+      throw await groupWriteDeniedError(
+        this.groupMemberRepo,
+        params.groupId,
+        params.callerId,
+        new ForbiddenError("CHAT_NOT_A_MEMBER")
+      );
 
     const members = await this.groupMemberRepo.findActiveMembers(
       params.groupId

@@ -45,22 +45,40 @@ export const PLATFORM_ADMIN_ACTOR_ID = "platform_admin";
  */
 export const BACKOFFICE_SOURCE = "BO";
 
-/** "Administrator" — see {@link PLATFORM_ADMIN_ACTOR_ID}. */
-export const administratorActorLabel = (locale: SupportedLocale): string =>
-  t("SYS_NAME_ADMINISTRATOR", locale);
+/** Platform staff in every chat and notification, never translated (contract §2). */
+export const PLATFORM_ACTOR_NAME = "AI Mess Administrator";
+
+/** `systemMetadata.actorRole` stamped on a platform-staff action. */
+export const PLATFORM_ACTOR_ROLE = "PLATFORM";
+
+/** {@link PLATFORM_ACTOR_NAME} — see {@link PLATFORM_ADMIN_ACTOR_ID}. */
+export const administratorActorLabel = (_locale?: SupportedLocale): string =>
+  PLATFORM_ACTOR_NAME;
 
 /**
- * "Admin" / "Moderator" for an actor who acted in that role (an owner is the
- * admin), null for anyone else, so the caller keeps the person's name.
+ * A community actor from the `actorRole` snapshot: "Minh (Admin)", "Lan
+ * (Moderator)", a plain name for MEMBER, {@link PLATFORM_ACTOR_NAME} for
+ * PLATFORM. Null when no role was stamped (legacy row) so the caller keeps
+ * today's wording.
  */
-export function roleActorLabel(
+export function namedActorLabel(
+  name: string | null | undefined,
   role: unknown,
   locale: SupportedLocale
 ): string | null {
   const r = String(role ?? "").trim().toUpperCase();
-  if (r === "ADMIN" || r === "OWNER") return t("SYS_NAME_ROLE_ADMIN", locale);
-  if (r === "MODERATOR") return t("SYS_NAME_ROLE_MODERATOR", locale);
-  return null;
+  if (!r) return null;
+  if (r === PLATFORM_ACTOR_ROLE) return PLATFORM_ACTOR_NAME;
+  const who = name?.trim() || t("SYS_NAME_SOMEONE", locale);
+  const roleKey =
+    r === "ADMIN" || r === "OWNER"
+      ? "SYS_NAME_ROLE_ADMIN"
+      : r === "MODERATOR"
+        ? "SYS_NAME_ROLE_MODERATOR"
+        : null;
+  return roleKey
+    ? t("SYS_ACTOR_WITH_ROLE", locale, { name: who, role: t(roleKey, locale) })
+    : who;
 }
 
 /**
@@ -152,7 +170,8 @@ export function formatNameList(labels: string[], locale: SupportedLocale): strin
 export function groupedTargetLabels(
   data: Record<string, unknown>,
   viewer: string,
-  locale: SupportedLocale
+  locale: SupportedLocale,
+  selfLabel: string = t("SYS_SENDER_YOU", locale)
 ): string[] | null {
   const rawIds = data.targetUserIds;
   if (!Array.isArray(rawIds) || rawIds.length < 2) return null;
@@ -166,7 +185,7 @@ export function groupedTargetLabels(
     : -1;
   if (viewerIndex >= 0) {
     const [self] = entries.splice(viewerIndex, 1);
-    self!.label = t("SYS_SENDER_YOU", locale);
+    self!.label = selfLabel;
     entries.unshift(self!);
   }
   return entries.map((entry) => entry.label);

@@ -172,7 +172,7 @@ describe("JOIN_REQUEST_REJECTED branch", () => {
     expect(arg.userId).toBe(REQUESTER);
     expect(arg.copy("en").title).toBe("Cool Community");
     expect(arg.copy("en").body).toBe(
-      "Your request to join Cool Community wasn't approved"
+      "Your request to join Cool Community wasn’t approved"
     );
     expect(arg.data).toMatchObject({ requestId: RID, status: "REJECTED" });
   });
@@ -395,7 +395,7 @@ describe("MEMBER_ADDED branch", () => {
     expect(arg.copy("en").title).toBe("Your community");
     // The actual actor (a moderator here) and "You" for the target reading it.
     expect(arg.copy("en", REQUESTER).body).toBe(
-      "Sarah Jones added You to Your community"
+      "Sarah Jones added you to Your community"
     );
   });
 
@@ -545,7 +545,7 @@ describe("community name resolution", () => {
     expect(arg.userId).toBe(REQUESTER);
     expect(arg.copy("en").title).toBe("Vasundhara Community");
     expect(arg.copy("en").body).toBe(
-      "You're now a moderator in Vasundhara Community"
+      "You’re now a moderator in Vasundhara Community"
     );
     // The FCM data payload + navigation object carry it too, for the tap target.
     expect(arg.data.communityName).toBe("Vasundhara Community");
@@ -571,7 +571,7 @@ describe("community name resolution", () => {
     await deliver(CommunityEvents.MEMBER_ROLE_CHANGED, roleChange(CID));
 
     expect(push.mock.calls[0][0].copy("en").body).toBe(
-      "You're now a moderator in Renamed Community"
+      "You’re now a moderator in Renamed Community"
     );
   });
 
@@ -877,7 +877,7 @@ describe("actor name resolution", () => {
 
     const copy = push.mock.calls[0][0].copy;
     expect(copy("vi").body).toBe(
-      "Smiley Creatures đã chấp thuận yêu cầu tham gia Cool Community của bạn"
+      "Smiley Creatures đã chấp nhận yêu cầu tham gia Cool Community của bạn"
     );
     expect(copy("th").body).toBe(
       "Smiley Creatures อนุมัติคำขอเข้าร่วม Cool Community ของคุณ"
@@ -974,7 +974,7 @@ describe("MEMBER_KICKED branch — who removed the member", () => {
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(REQUESTER);
     expect(arg.copy("en", REQUESTER).body).toBe(
-      "Sarah Jones removed You from Mission AIMess"
+      "Sarah Jones removed you from Mission AIMess"
     );
   });
 
@@ -992,10 +992,10 @@ describe("MEMBER_KICKED branch — who removed the member", () => {
     const arg = push.mock.calls[0][0];
     // Push and inbox body render from this one copy, in every locale.
     expect(arg.copy("en", REQUESTER).body).toBe(
-      "Administrator removed You from Mission AIMess"
+      "AI Mess Administrator removed you from Mission AIMess"
     );
-    expect(arg.copy("vi", REQUESTER).body).toContain("Quản trị viên");
-    expect(arg.copy("th", REQUESTER).body).toContain("ผู้ดูแลระบบ");
+    expect(arg.copy("vi", REQUESTER).body).toContain("AI Mess Administrator");
+    expect(arg.copy("th", REQUESTER).body).toContain("AI Mess Administrator");
     // The title stays the community name.
     expect(arg.copy("en", REQUESTER).title).toBe("Mission AIMess");
     // The AdminUser id is not an AIMess user — never looked up, never stored
@@ -1031,10 +1031,10 @@ describe("MEMBER_KICKED branch — who removed the member", () => {
       REQUESTER
     );
     expect(legacy("en", REQUESTER).body).toBe(
-      "Administrator removed You from Mission AIMess"
+      "AI Mess Administrator removed you from Mission AIMess"
     );
     expect(legacy("en", "someone-else").body).toBe(
-      "Administrator removed Tom Brown from Mission AIMess"
+      "AI Mess Administrator removed Tom Brown from Mission AIMess"
     );
   });
 });

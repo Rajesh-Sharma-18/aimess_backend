@@ -6,6 +6,7 @@ import {
   sanitizeCommunitySystemMetadata,
   isActorLessSystemMessage,
   formatMuteDuration,
+  formatViewerDateTime,
 } from "@aimess/constants";
 
 const ACTOR = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -24,7 +25,7 @@ describe("system message text — display names and You personalization", () => 
       "Krish added Jane, Peter, Ram and 2 others to Testers"
     );
     expect(buildCommunitySystemFallbackText("MEMBER_ADDED", metadata, "Krish", "", BYSTANDER)).toBe(
-      "Krish added You, Jane, Ram and 2 others to Testers"
+      "Krish added you, Jane, Ram and 2 others to Testers"
     );
   });
 
@@ -141,7 +142,7 @@ describe("system message text — display names and You personalization", () => 
         },
         TARGET
       )
-    ).toBe("Admin User added You to the group");
+    ).toBe("Admin User added you");
   });
 
   it("leaves bystander text third-person", () => {
@@ -176,7 +177,7 @@ describe("system message text — display names and You personalization", () => 
         "",
         ""
       )
-    ).toBe('Community renamed to "New Community Name"');
+    ).toBe("Community renamed to “New Community Name”");
   });
 
   it("displays community name updated fallback when name is missing", () => {
@@ -216,7 +217,7 @@ describe("system message text — display names and You personalization", () => 
         "Admin User",
         ""
       )
-    ).toBe("Admin User ended the livestream (1h 24m)");
+    ).toBe("Admin User ended the livestream after 1h 24m");
   });
 
   it('shows "You ended the livestream" to the host', () => {
@@ -228,7 +229,7 @@ describe("system message text — display names and You personalization", () => 
         "",
         ACTOR
       )
-    ).toBe("You ended the livestream (1h 24m)");
+    ).toBe("You ended the livestream after 1h 24m");
   });
 
   it("displays live stream ended message without duration", () => {
@@ -251,7 +252,7 @@ describe("system message text — display names and You personalization", () => 
     };
     expect(
       buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Admin User", "")
-    ).toBe("System ended the livestream (36m)");
+    ).toBe("System ended the livestream after 36m");
     // The host's own view is not "You ended…" either — they didn't end it.
     expect(
       buildCommunitySystemFallbackText(
@@ -261,10 +262,10 @@ describe("system message text — display names and You personalization", () => 
         "",
         ACTOR
       )
-    ).toBe("System ended the livestream (36m)");
+    ).toBe("System ended the livestream after 36m");
   });
 
-  it('Super Admin end (endedReason ADMIN) reads "Administrator ended {host}\'s livestream" for everyone but the host', () => {
+  it('Super Admin end (endedReason ADMIN) reads "AI Mess Administrator ended {host}\'s livestream" for everyone but the host', () => {
     // The ADMIN row's actor is the host (the Super Admin is never carried).
     const meta = {
       actorUserId: ACTOR,
@@ -280,31 +281,31 @@ describe("system message text — display names and You personalization", () => 
         "",
         viewer
       );
-      expect(text).toBe("Administrator ended Mind Flayer's livestream (10s)");
+      expect(text).toBe("AI Mess Administrator ended Mind Flayer’s livestream after <1m");
     }
     const render = (locale: "vi" | "th") =>
       buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", "viewer", locale);
-    expect(render("vi").startsWith("Quản trị viên đã kết thúc buổi phát trực tiếp của Mind Flayer (")).toBe(true);
-    expect(render("th").startsWith("ผู้ดูแลระบบจบไลฟ์สตรีมของ Mind Flayer (")).toBe(true);
+    expect(render("vi")).toBe("AI Mess Administrator đã kết thúc buổi phát trực tiếp của Mind Flayer sau <1 phút");
+    expect(render("th")).toBe("AI Mess Administrator จบไลฟ์สตรีมของ Mind Flayer หลังผ่านไป <1 นาที");
   });
 
-  it('Super Admin end: the host reads "Administrator ended the livestream", never "You" or "System"', () => {
+  it('Super Admin end: the host reads "AI Mess Administrator ended the livestream", never "You" or "System"', () => {
     const legacy = { actorUserId: ACTOR, duration: "2m", durationSeconds: 120, endedReason: "ADMIN" };
     const current = { ...legacy, hostUserId: ACTOR };
     for (const meta of [legacy, current]) {
       expect(
         buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", ACTOR)
-      ).toBe("Administrator ended the livestream (2m)");
+      ).toBe("AI Mess Administrator ended your livestream after 2m");
       expect(
         buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Mind Flayer", "", ACTOR, "vi")
-      ).toMatch(/^Quản trị viên đã kết thúc buổi phát trực tiếp \(/);
+      ).toBe("AI Mess Administrator đã kết thúc buổi phát trực tiếp của bạn sau 2 phút");
     }
   });
 
   it("Super Admin end with no host name falls back to the host-less line, never a blank", () => {
     const meta = { actorUserId: ACTOR, duration: "10s", durationSeconds: 10, endedReason: "ADMIN" };
     const text = buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "", "");
-    expect(text).toBe("Administrator ended the livestream (10s)");
+    expect(text).toBe("AI Mess Administrator ended the livestream after <1m");
   });
 
   it("community admin end reads \"{admin} ended {host}'s livestream\"; the admin reads \"You ended {host}'s…\"", () => {
@@ -317,31 +318,34 @@ describe("system message text — display names and You personalization", () => 
       durationSeconds: 8,
       endedReason: "USER",
     };
-    for (const viewer of [undefined, ACTOR, "viewer"]) {
+    for (const viewer of [undefined, "viewer"]) {
       expect(
         buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "", viewer)
-      ).toBe("Smiley Creatures ended Mind Flayer's livestream (8s)");
+      ).toBe("Smiley Creatures ended Mind Flayer’s livestream after <1m");
     }
     expect(
+      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "", ACTOR)
+    ).toBe("Smiley Creatures ended your livestream after <1m");
+    expect(
       buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "", "admin-id")
-    ).toBe("You ended Mind Flayer's livestream (8s)");
+    ).toBe("You ended Mind Flayer’s livestream after <1m");
     expect(
       buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "", "x", "vi")
-    ).toBe("Smiley Creatures đã kết thúc buổi phát trực tiếp của Mind Flayer (8 giây)");
+    ).toBe("Smiley Creatures đã kết thúc buổi phát trực tiếp của Mind Flayer sau <1 phút");
   });
 
   it("community admin end with no resolvable host name keeps the host-less line", () => {
     const meta = { actorUserId: "admin-id", targetUserId: ACTOR, duration: "8s", durationSeconds: 8, endedReason: "USER" };
     expect(
       buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Smiley Creatures", "")
-    ).toBe("Smiley Creatures ended the livestream (8s)");
+    ).toBe("Smiley Creatures ended the livestream after <1m");
   });
 
   it("legacy admin-ended row (no target) still renders", () => {
     const meta = { actorUserId: "admin-id", duration: "4m", durationSeconds: 240, endedReason: "USER" };
     expect(
       buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", meta, "Rajesh Sharma", "", ACTOR)
-    ).toBe("Rajesh Sharma ended the livestream (4m)");
+    ).toBe("Rajesh Sharma ended the livestream after 4m");
   });
 
   it("host end with endedReason USER keeps the host name", () => {
@@ -352,7 +356,7 @@ describe("system message text — display names and You personalization", () => 
         "Admin User",
         ""
       )
-    ).toBe("Admin User ended the livestream (36m)");
+    ).toBe("Admin User ended the livestream after 36m");
   });
 
   it("platform end renders in the reader's locale, duration included", () => {
@@ -378,8 +382,8 @@ describe("system message text — display names and You personalization", () => 
       "viewer",
       "th"
     );
-    expect(vi.startsWith("Hệ thống đã kết thúc buổi phát trực tiếp (")).toBe(true);
-    expect(th.startsWith("ระบบจบไลฟ์สตรีม (")).toBe(true);
+    expect(vi).toBe("Hệ thống đã kết thúc buổi phát trực tiếp sau 36 phút");
+    expect(th).toBe("ระบบจบไลฟ์สตรีมหลังผ่านไป 36 นาที");
     expect(vi).not.toContain("Admin User");
     expect(th).not.toContain("Admin User");
   });
@@ -415,13 +419,9 @@ describe("sanitizeCommunitySystemMetadata — actor identity is stripped", () =>
     ).toEqual({ communityName: "Tech" });
   });
 
-  it("keeps event-only fields for other actor-less types", () => {
-    expect(
-      sanitizeCommunitySystemMetadata("COMMUNITY_NAME_UPDATED", {
-        newName: "New Name",
-        actorName: "Jim Methews",
-      })
-    ).toEqual({ newName: "New Name" });
+  it("v2: settings lines keep their actor (named with role)", () => {
+    const md = { newName: "New Name", actorName: "Jim Methews", actorRole: "ADMIN" };
+    expect(sanitizeCommunitySystemMetadata("COMMUNITY_NAME_UPDATED", md)).toEqual(md);
   });
 
   it("is a NO-OP for actor-bearing types (role change keeps target/actor)", () => {
@@ -438,8 +438,9 @@ describe("sanitizeCommunitySystemMetadata — actor identity is stripped", () =>
 
   it("classifies the actor-less lifecycle set correctly", () => {
     expect(isActorLessSystemMessage("COMMUNITY_CREATED")).toBe(true);
-    expect(isActorLessSystemMessage("COMMUNITY_AVATAR_UPDATED")).toBe(true);
-    expect(isActorLessSystemMessage("COMMUNITY_HANDLE_UPDATED")).toBe(true);
+    // v2: settings lines name their actor; only creation stays actor-less.
+    expect(isActorLessSystemMessage("COMMUNITY_AVATAR_UPDATED")).toBe(false);
+    expect(isActorLessSystemMessage("COMMUNITY_HANDLE_UPDATED")).toBe(false);
     expect(isActorLessSystemMessage("ROLE_CHANGED")).toBe(false);
     expect(isActorLessSystemMessage("MEMBER_BANNED")).toBe(false);
     expect(isActorLessSystemMessage(null)).toBe(false);
@@ -720,10 +721,9 @@ describe("formatMuteDuration — duration picker preset labels", () => {
 });
 
 describe("MEMBER_MUTED — personal message with until date/time", () => {
-  // Fixed future epoch for deterministic test output. The fallback renders the
-  // date via `new Date(ms).toUTCString()` — we mirror that here.
+  // Fixed future epoch; v2 renders it in the viewer's zone (UTC outside a request).
   const MUTED_UNTIL_MS = 1_800_000_000_000; // ~2027
-  const MUTED_UNTIL_DATE = new Date(MUTED_UNTIL_MS).toUTCString();
+  const MUTED_UNTIL_DATE = formatViewerDateTime(MUTED_UNTIL_MS, "en", "UTC");
 
   it("timed mute names actor + target + expiry for other moderators", () => {
     expect(
@@ -798,7 +798,7 @@ describe("MEMBER_MUTED — personal message with until date/time", () => {
         "Peter Parker",
         TARGET
       )
-    ).toBe("You were unmuted");
+    ).toBe("You can chat in the community again");
   });
 });
 
@@ -817,12 +817,12 @@ describe("community moderation lines — actor reads first person", () => {
     );
 
   it.each([
-    ["MEMBER_ADDED", "You added Peter Parker to the community", "Smiley Creatures added You to the community", "Smiley Creatures added Peter Parker to the community"],
-    ["MEMBER_REMOVED", "You removed Peter Parker from the community", "Smiley Creatures removed You from the community", "Smiley Creatures removed Peter Parker from the community"],
+    ["MEMBER_ADDED", "You added Peter Parker to the community", "Smiley Creatures added you to the community", "Smiley Creatures added Peter Parker to the community"],
+    ["MEMBER_REMOVED", "You removed Peter Parker from the community", "Smiley Creatures removed you from the community", "Smiley Creatures removed Peter Parker from the community"],
     ["MEMBER_BANNED", "You banned Peter Parker", "You were banned from this community.", "Smiley Creatures banned Peter Parker"],
     ["MEMBER_UNBANNED", "You unbanned Peter Parker", "You were unbanned", "Smiley Creatures unbanned Peter Parker"],
     ["MEMBER_MUTED", "You muted Peter Parker", "You are muted", "Smiley Creatures muted Peter Parker"],
-    ["MEMBER_UNMUTED", "You unmuted Peter Parker", "You were unmuted", "Smiley Creatures unmuted Peter Parker"],
+    ["MEMBER_UNMUTED", "You unmuted Peter Parker", "You can chat in the community again", "Smiley Creatures unmuted Peter Parker"],
   ])("%s", (type, asActor, asTarget, asBystander) => {
     expect(render(type, ACTOR)).toBe(asActor);
     expect(render(type, TARGET)).toBe(asTarget);
@@ -831,7 +831,7 @@ describe("community moderation lines — actor reads first person", () => {
 
   it("timed mute names the target and expiry for the actor", () => {
     expect(render("MEMBER_MUTED", ACTOR, { mutedUntil: 0 + 86_400_000 })).toBe(
-      `You muted Peter Parker until ${new Date(86_400_000).toUTCString()}`
+      `You muted Peter Parker until ${formatViewerDateTime(86_400_000, "en", "UTC")}`
     );
   });
 });
@@ -857,8 +857,8 @@ describe("community moderation lines — manual vs automatic actor", () => {
     expect(render("MEMBER_UNMUTED", auto, BYSTANDER)).toBe("Boyd Stevens was unmuted");
     expect(render("MEMBER_UNMUTED", auto, ACTOR)).toBe("Boyd Stevens was unmuted");
     expect(render("MEMBER_UNMUTED", auto, "")).toBe("Boyd Stevens was unmuted");
-    // Target wording unchanged.
-    expect(render("MEMBER_UNMUTED", auto, TARGET)).toBe("You were unmuted");
+    // v2: auto-expiry reads the same as a manual unmute for the target.
+    expect(render("MEMBER_UNMUTED", auto, TARGET)).toBe("You can chat in the community again");
   });
 
   it("source auto wins even if a real-looking actor id is present", () => {
@@ -881,7 +881,7 @@ describe("community moderation lines — manual vs automatic actor", () => {
 
   it("localizes per viewer locale (vi/th)", () => {
     const manual = { actorUserId: ACTOR };
-    expect(render("MEMBER_BANNED", manual, BYSTANDER, "vi")).toBe("Julia Doyle đã cấm Boyd Stevens");
+    expect(render("MEMBER_BANNED", manual, BYSTANDER, "vi")).toBe("Julia Doyle đã cấm Boyd Stevens khỏi cộng đồng");
     expect(render("MEMBER_UNMUTED", manual, BYSTANDER, "th")).toBe("Julia Doyle เปิดสิทธิ์พูดให้ Boyd Stevens");
     expect(
       render("MEMBER_UNMUTED", { actorUserId: "system", source: "auto" }, BYSTANDER, "vi")
@@ -904,15 +904,15 @@ describe("community moderation lines — Backoffice (Super Admin) actor", () => 
 
   it("a Backoffice ban / unban reads 'Administrator' for every moderator", () => {
     for (const viewer of [BYSTANDER, ""]) {
-      expect(render("MEMBER_BANNED", legacyBo, viewer)).toBe("Administrator banned Boyd Stevens");
-      expect(render("MEMBER_UNBANNED", legacyBo, viewer)).toBe("Administrator unbanned Boyd Stevens");
+      expect(render("MEMBER_BANNED", legacyBo, viewer)).toBe("AI Mess Administrator banned Boyd Stevens");
+      expect(render("MEMBER_UNBANNED", legacyBo, viewer)).toBe("AI Mess Administrator unbanned Boyd Stevens");
     }
-    expect(render("MEMBER_BANNED", legacyBo, BYSTANDER, "vi")).toContain("Quản trị viên");
-    expect(render("MEMBER_BANNED", legacyBo, BYSTANDER, "th")).toContain("ผู้ดูแลระบบ");
+    expect(render("MEMBER_BANNED", legacyBo, BYSTANDER, "vi")).toContain("AI Mess Administrator");
+    expect(render("MEMBER_BANNED", legacyBo, BYSTANDER, "th")).toContain("AI Mess Administrator");
   });
 
   it("nobody reads a Backoffice line as 'You banned …' — not even a viewer whose id is on the row", () => {
-    expect(render("MEMBER_BANNED", legacyBo, ADMIN_USER_ID)).toBe("Administrator banned Boyd Stevens");
+    expect(render("MEMBER_BANNED", legacyBo, ADMIN_USER_ID)).toBe("AI Mess Administrator banned Boyd Stevens");
   });
 
   it("the target keeps their own wording", () => {
@@ -932,7 +932,7 @@ describe("community moderation lines — Backoffice (Super Admin) actor", () => 
     const wire = sanitizeCommunitySystemMetadata("MEMBER_BANNED", legacyBo);
     expect(wire).toEqual({ targetUserId: TARGET, source: "BO" });
     // Re-rendering from the sanitized wire metadata gives the same sentence.
-    expect(render("MEMBER_BANNED", wire, BYSTANDER)).toBe("Administrator banned Boyd Stevens");
+    expect(render("MEMBER_BANNED", wire, BYSTANDER)).toBe("AI Mess Administrator banned Boyd Stevens");
   });
 
   it("an automated (auto-unmute) line is not relabelled", () => {

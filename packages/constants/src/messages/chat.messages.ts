@@ -429,16 +429,6 @@ export const CHAT_MESSAGES = {
     en: "You are muted in this community and cannot post messages",
     th: "คุณถูกปิดสิทธิ์พูดในคอมมูนิตี้นี้ จึงไม่สามารถส่งข้อความได้",
   },
-  CHAT_MUTED_IN_GROUP: {
-    vi: "Bạn đang bị tắt tiếng trong nhóm này và không thể gửi tin nhắn",
-    en: "You are muted in this group and cannot post messages",
-    th: "คุณถูกปิดสิทธิ์พูดในกลุ่มนี้ จึงไม่สามารถส่งข้อความได้",
-  },
-  CHAT_MEMBER_NOT_MUTED: {
-    vi: "Thành viên này hiện không bị tắt tiếng",
-    en: "This member is not currently muted",
-    th: "สมาชิกรายนี้ไม่ได้ถูกปิดสิทธิ์พูดอยู่",
-  },
   CHAT_CANNOT_MUTE_SELF: {
     vi: "Bạn không thể tự tắt tiếng chính mình",
     en: "You cannot mute yourself",
@@ -537,6 +527,11 @@ export const CHAT_MESSAGES = {
     en: "You are not a member of this group",
     th: "คุณไม่ได้เป็นสมาชิกของกลุ่มนี้",
   },
+  CHAT_NOT_GROUP_MEMBER: {
+    vi: "Bạn không thể gửi tin nhắn trong nhóm này vì bạn đã bị xóa khỏi nhóm.",
+    en: "You can't send messages to this group because you were removed.",
+    th: "คุณไม่สามารถส่งข้อความในกลุ่มนี้ได้ เนื่องจากคุณถูกนำออกจากกลุ่มแล้ว",
+  },
   CHAT_ALREADY_MEMBER: {
     vi: "Đã là thành viên",
     en: "Already a member",
@@ -588,6 +583,21 @@ export const CHAT_MESSAGES = {
     vi: "Không tìm thấy liên kết mời hoặc đã hết hạn",
     en: "Invite link not found or expired",
     th: "ไม่พบลิงก์เชิญหรือลิงก์หมดอายุแล้ว",
+  },
+  CHAT_GROUP_JOIN_REQUEST_NOT_FOUND: {
+    vi: "Không tìm thấy yêu cầu tham gia nhóm",
+    en: "Group join request not found",
+    th: "ไม่พบคำขอเข้าร่วมกลุ่ม",
+  },
+  CHAT_GROUP_JOIN_REQUEST_NOT_PENDING: {
+    vi: "Yêu cầu tham gia này đã được xử lý",
+    en: "This join request has already been handled",
+    th: "คำขอเข้าร่วมนี้ได้รับการดำเนินการแล้ว",
+  },
+  CHAT_GROUP_JOIN_REQUEST_SENT: {
+    vi: "Đã gửi yêu cầu tham gia, đang chờ quản trị viên duyệt",
+    en: "Join request sent — waiting for an admin to approve",
+    th: "ส่งคำขอเข้าร่วมแล้ว กำลังรอผู้ดูแลอนุมัติ",
   },
   CHAT_INVITE_LINK_EXPIRED: {
     vi: "Liên kết mời đã hết hạn",
@@ -747,6 +757,17 @@ export const CHAT_MESSAGES = {
     vi: "Lỗi máy chủ nội bộ",
     en: "Internal server error",
     th: "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์",
+  },
+  // v2 groups: leader + members only.
+  CHAT_LEADER_SUCCESSOR_REQUIRED: {
+    vi: "Hãy chọn trưởng nhóm mới trước khi rời nhóm",
+    en: "Choose a new group leader before you leave",
+    th: "โปรดเลือกหัวหน้ากลุ่มคนใหม่ก่อนออกจากกลุ่ม",
+  },
+  CHAT_GROUP_FEATURE_REMOVED: {
+    vi: "Tính năng này không còn khả dụng trong nhóm",
+    en: "This feature is no longer available in groups",
+    th: "ฟีเจอร์นี้ไม่มีในกลุ่มแล้ว",
   },
 } as const satisfies MessageCatalog;
 

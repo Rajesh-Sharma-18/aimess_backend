@@ -37,6 +37,8 @@ import { MemberAlreadyActiveError } from "../lib/member-already-active-error.js"
 /** Internal: aborts the auto-resolve transaction when the requester is banned. */
 class BannedMemberAbort extends Error {}
 
+class HandoverAbort extends Error {}
+
 /** Internal: rolls back closeAndLeaveAsLastAdmin and carries the reason out. */
 class LastAdminLeaveAbort extends Error {
   constructor(readonly outcome: "OTHERS_REMAIN" | "NOT_MEMBER") {
@@ -83,6 +85,19 @@ function openCommunityWhere(communityId: string): Prisma.CommunityWhereInput {
     deletedAt: { isSet: false },
     status: { not: CommunityStatus.CLOSED },
     moderationStatus: { not: CommunityModerationStatus.SUSPENDED },
+  };
+}
+
+/** Closed (owner or platform) communities stay visible only to their admin. */
+function visibleToViewerWhere(viewerId: string): Prisma.CommunityWhereInput {
+  return {
+    OR: [
+      {
+        status: { not: CommunityStatus.CLOSED },
+        moderationStatus: { not: CommunityModerationStatus.SUSPENDED },
+      },
+      { adminId: viewerId },
+    ],
   };
 }
 
@@ -864,11 +879,172 @@ export const communityRepository = {
   },
 
   /** Transfer community ownership by setting a new adminId (auto-handover). */
-  setCommunityAdmin(id: string, adminId: string) {
-    return prisma.community.update({
-      where: { id },
-      data: { adminId },
+  /**
+   * Move the single ADMIN seat from `fromUserId` to `toUserId` (an ACTIVE member);
+   * the former admin becomes MODERATOR, or LEFT when `fromLeaves`. The claim is conditional on
+   * Community.adminId, so concurrent handovers/transfers can never leave two
+   * admins — the loser gets false and nothing is written.
+   */
+  async handOverAdmin(
+    communityId: string,
+    fromUserId: string,
+    toUserId: string,
+    fromLeaves = false
+  ): Promise<boolean> {
+    const now = new Date();
+    const attempt = () =>
+      prisma.$transaction(async (tx) => {
+        const claimed = await tx.community.updateMany({
+          where: {
+            id: communityId,
+            adminId: fromUserId,
+            deletedAt: { isSet: false },
+          },
+          data: { adminId: toUserId },
+        });
+        if (claimed.count === 0) return false;
+        const promoted = await tx.communityMember.updateMany({
+          where: {
+            communityId,
+            userId: toUserId,
+            status: CommunityMemberStatus.ACTIVE,
+          },
+          data: { role: CommunityMemberRole.ADMIN, lastActiveAt: now },
+        });
+        if (promoted.count === 0) throw new HandoverAbort();
+        await tx.communityMember.updateMany({
+          where: {
+            communityId,
+            userId: fromUserId,
+            role: CommunityMemberRole.ADMIN,
+          },
+          data: {
+            role: fromLeaves
+              ? CommunityMemberRole.MEMBER
+              : CommunityMemberRole.MODERATOR,
+            ...(fromLeaves ? { status: CommunityMemberStatus.LEFT } : {}),
+            adminInactiveStage: { unset: true },
+          },
+        });
+        return true;
+      });
+
+    for (let tries = 1; ; tries++) {
+      try {
+        const ok = await attempt();
+        if (ok) {
+          publishCommunityMemberSyncedForChatSafe({
+            communityId,
+            userId: toUserId,
+            role: CommunityMemberRole.ADMIN,
+          });
+          publishCommunityMemberSyncedForChatSafe(
+            fromLeaves
+              ? {
+                  communityId,
+                  userId: fromUserId,
+                  role: CommunityMemberRole.MEMBER,
+                  status: CommunityMemberStatus.LEFT,
+                }
+              : {
+                  communityId,
+                  userId: fromUserId,
+                  role: CommunityMemberRole.MODERATOR,
+                }
+          );
+        }
+        return ok;
+      } catch (err: unknown) {
+        if (err instanceof HandoverAbort) return false;
+        if (!isTransactionConflict(err) || tries >= 3) throw err;
+      }
+    }
+  },
+
+  /** Stamp admin activity; writes only when the stamp is ≥ 1h old. Ends the reminder streak. */
+  touchAdminActivity(communityId: string, userId: string, now = new Date()) {
+    return prisma.communityMember.updateMany({
+      where: {
+        communityId,
+        userId,
+        role: CommunityMemberRole.ADMIN,
+        status: CommunityMemberStatus.ACTIVE,
+        OR: [
+          { lastActiveAt: { isSet: false } },
+          { lastActiveAt: { lt: new Date(now.getTime() - 3_600_000) } },
+        ],
+      },
+      data: { lastActiveAt: now, adminInactiveStage: { unset: true } },
     });
+  },
+
+  /** Admins that predate activity tracking start their clock at first sight. */
+  initMissingAdminActivity(now: Date) {
+    return prisma.communityMember.updateMany({
+      where: {
+        role: CommunityMemberRole.ADMIN,
+        status: CommunityMemberStatus.ACTIVE,
+        lastActiveAt: { isSet: false },
+      },
+      data: { lastActiveAt: now },
+    });
+  },
+
+  /** One id-keyset page of ACTIVE admins idle since before `idleBefore`. */
+  findIdleAdmins(idleBefore: Date, afterId: string | undefined, limit: number) {
+    return prisma.communityMember.findMany({
+      where: {
+        role: CommunityMemberRole.ADMIN,
+        status: CommunityMemberStatus.ACTIVE,
+        lastActiveAt: { lt: idleBefore },
+        ...(afterId ? { id: { gt: afterId } } : {}),
+      },
+      orderBy: { id: "asc" },
+      take: limit,
+      select: {
+        id: true,
+        communityId: true,
+        userId: true,
+        lastActiveAt: true,
+        adminInactiveStage: true,
+      },
+    });
+  },
+
+  /** Claim a reminder stage for the current idle streak; false when already sent. */
+  async claimAdminInactiveStage(
+    memberId: string,
+    stage: number
+  ): Promise<boolean> {
+    const res = await prisma.communityMember.updateMany({
+      where: {
+        id: memberId,
+        role: CommunityMemberRole.ADMIN,
+        OR: [
+          { adminInactiveStage: { isSet: false } },
+          { adminInactiveStage: { lt: stage } },
+        ],
+      },
+      data: { adminInactiveStage: stage },
+    });
+    return res.count > 0;
+  },
+
+  /** Subset of `communityIds` with at least one ACTIVE moderator. */
+  async findCommunityIdsWithModerator(
+    communityIds: string[]
+  ): Promise<Set<string>> {
+    if (communityIds.length === 0) return new Set();
+    const rows = await prisma.communityMember.findMany({
+      where: {
+        communityId: { in: communityIds },
+        role: CommunityMemberRole.MODERATOR,
+        status: CommunityMemberStatus.ACTIVE,
+      },
+      select: { communityId: true },
+      distinct: ["communityId"],
+    });
+    return new Set(rows.map((r) => r.communityId));
   },
 
   deleteCommunityHard(id: string) {
@@ -996,15 +1172,16 @@ export const communityRepository = {
    * The longest-tenured ACTIVE moderator (earliest joinedAt) — used to pick the
    * auto-handover successor when an admin leaves. Returns just the userId.
    */
-  findOldestActiveModerator(communityId: string) {
+  findOldestActiveModerator(communityId: string, excludeUserIds: string[] = []) {
     return prisma.communityMember.findFirst({
       where: {
         communityId,
         role: CommunityMemberRole.MODERATOR,
         status: CommunityMemberStatus.ACTIVE,
+        ...(excludeUserIds.length ? { userId: { notIn: excludeUserIds } } : {}),
       },
-      orderBy: { joinedAt: "asc" },
-      select: { userId: true },
+      orderBy: [{ joinedAt: "asc" }, { userId: "asc" }],
+      select: { userId: true, snapshotDisplayName: true, snapshotUsername: true },
     });
   },
 
@@ -1013,16 +1190,16 @@ export const communityRepository = {
    * given user — fallback auto-handover successor when no MODERATOR exists.
    * Returns just the userId.
    */
-  findOldestActiveMember(communityId: string, excludeUserId: string) {
+  findOldestActiveMember(communityId: string, excludeUserIds: string[]) {
     return prisma.communityMember.findFirst({
       where: {
         communityId,
         role: CommunityMemberRole.MEMBER,
         status: CommunityMemberStatus.ACTIVE,
-        userId: { not: excludeUserId },
+        userId: { notIn: excludeUserIds },
       },
-      orderBy: { joinedAt: "asc" },
-      select: { userId: true },
+      orderBy: [{ joinedAt: "asc" }, { userId: "asc" }],
+      select: { userId: true, snapshotDisplayName: true, snapshotUsername: true },
     });
   },
 
@@ -1761,6 +1938,7 @@ export const communityRepository = {
       deletedAt: { isSet: false },
       lastActivityAt: bound,
       members: { some: membershipSome },
+      AND: [visibleToViewerWhere(params.userId)],
     };
 
     const [rows, total] = await Promise.all([
@@ -1774,6 +1952,7 @@ export const communityRepository = {
         where: {
           deletedAt: { isSet: false },
           members: { some: membershipSome },
+          AND: [visibleToViewerWhere(params.userId)],
         },
       }),
     ]);
@@ -1844,6 +2023,7 @@ export const communityRepository = {
       deletedAt: { isSet: false },
       members: membershipSome,
       ...boundary,
+      AND: [visibleToViewerWhere(params.userId)],
     };
 
     const [rows, total] = await Promise.all([
@@ -1857,6 +2037,7 @@ export const communityRepository = {
         where: {
           deletedAt: { isSet: false },
           members: membershipSome,
+          AND: [visibleToViewerWhere(params.userId)],
         },
       }),
     ]);
@@ -2300,6 +2481,7 @@ export const communityRepository = {
    * "Dr. Jhatka".
    */
   async listDiscoverable(params: {
+    viewerId: string;
     q?: string;
     categoryId?: string;
     includeMemberCommunityIds?: string[];
@@ -2333,16 +2515,8 @@ export const communityRepository = {
       and.push(...buildCommunitySearchFilter(params.q));
     }
 
-    // Owner-CLOSED communities are not surfaced for discovery/joining, but one the caller already belongs to stays visible in their OWN mine-search: closing is a write-lock, not a removal, so the row must never vanish from an existing member's list.
-    // `not` → Mongo `$ne`, which also matches legacy rows where `status` is unset (treated as ACTIVE), so backward-compat is preserved.
-    and.push({
-      OR: [
-        { status: { not: CommunityStatus.CLOSED } },
-        ...(params.includeMemberCommunityIds?.length
-          ? [{ id: { in: params.includeMemberCommunityIds } }]
-          : []),
-      ],
-    });
+    // Closed (owner or platform) communities are hidden from everyone but their admin.
+    and.push(visibleToViewerWhere(params.viewerId));
 
     // Keyset mode: `id desc` is already the sort, so the default `_id` index serves the boundary — no skip (O(skip) at depth) and no count (an unbounded full-predicate scan on every keystroke).
     if (params.cursor) {
@@ -3132,6 +3306,9 @@ export const communityRepository = {
     targetUserId?: string;
     reason?: string;
     metadata?: Prisma.InputJsonValue;
+    actorName?: string | null;
+    actorRole?: string | null;
+    targetName?: string | null;
   }) {
     return prisma.communityAuditLog.create({ data: entry });
   },
@@ -3160,6 +3337,9 @@ export const communityRepository = {
           actorId: true,
           action: true,
           targetUserId: true,
+          actorName: true,
+          actorRole: true,
+          targetName: true,
           reason: true,
           metadata: true,
           createdAt: true,
@@ -4215,8 +4395,25 @@ export const communityRepository = {
     createdBy: string;
     maxUses: number | null;
     expiresAt: Date | null;
+    activeKey?: string | null;
   }) {
     return prisma.communityInviteLink.create({ data });
+  },
+
+  /** Revokes every live link of the community (the reset). */
+  revokeAllInviteLinks(communityId: string) {
+    return prisma.communityInviteLink.updateMany({
+      where: { communityId, ...NOT_REVOKED },
+      data: { revokedAt: new Date(), activeKey: null },
+    });
+  },
+
+  /** Kills the legacy permanent code too, so a reset leaves no old door open. */
+  clearInvitationCode(communityId: string) {
+    return prisma.community.updateMany({
+      where: { id: communityId, invitationCode: { isSet: true } },
+      data: { invitationCode: { unset: true } },
+    });
   },
 
   findInviteLinkById(linkId: string) {
@@ -4245,11 +4442,10 @@ export const communityRepository = {
    * Returns null when the caller has none — the caller then mints a fresh one,
    * which is what makes the link roll over after a reset.
    */
-  findLatestReusableInviteLink(communityId: string, createdBy: string) {
+  findLatestReusableInviteLink(communityId: string) {
     return prisma.communityInviteLink.findFirst({
       where: {
         communityId,
-        createdBy,
         // Both fields are OPTIONAL, so an untouched row simply omits them — and
         // on Mongo `field: null` matches only documents where the field EXISTS
         // and is null. Each needs its own `isSet: false` alternative, ANDed so
@@ -4257,17 +4453,6 @@ export const communityRepository = {
         AND: [
           { OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }] },
           { OR: [{ maxUses: null }, { maxUses: { isSet: false } }] },
-          // Links now lapse, so an expired one must not be handed back as the
-          // community's live share link — the Share sheet would show a code
-          // that fails on redeem. A null/absent expiresAt is a pre-expiry row,
-          // which never lapses; anything else must still be in the future.
-          {
-            OR: [
-              { expiresAt: null },
-              { expiresAt: { isSet: false } },
-              { expiresAt: { gt: new Date() } },
-            ],
-          },
         ],
       },
       orderBy: { createdAt: "desc" },
@@ -4327,11 +4512,8 @@ export const communityRepository = {
       where.AND = [NOT_REVOKED];
       where.expiresAt = { lt: now };
     } else if (params.status === "active") {
-      // ANDed, not two `OR` keys — the second would overwrite the first.
-      where.AND = [
-        NOT_REVOKED,
-        { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
-      ];
+      // Links do not expire: live = not revoked.
+      where.AND = [NOT_REVOKED];
     }
     const [rows, total] = await Promise.all([
       prisma.communityInviteLink.findMany({
@@ -4372,8 +4554,9 @@ export const communityRepository = {
       if (link.maxUses !== null && link.usedCount >= link.maxUses) {
         return { count: 0 };
       }
+      // Not revoked: a redeem whose claim lands after a reset is refused.
       const result = await prisma.communityInviteLink.updateMany({
-        where: { id: linkId, usedCount: link.usedCount },
+        where: { id: linkId, usedCount: link.usedCount, ...NOT_REVOKED },
         data: { usedCount: { increment: 1 } },
       });
       if (result.count === 1) return { count: 1 };

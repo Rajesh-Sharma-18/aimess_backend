@@ -7,7 +7,7 @@
 
 import type { MediaObject } from "@aimess/shared-types";
 
-export type GroupRole = "ADMIN" | "MODERATOR" | "MEMBER";
+export type GroupRole = "ADMIN" | "MEMBER";
 
 /** Owner of a group (role=ADMIN, fallback GroupRoom.createdBy). */
 export interface GroupAdmin {

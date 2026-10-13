@@ -99,7 +99,7 @@ export class CommunityPinService {
     // 2. Load room and assert writable (not closed / suspended)
     const room = await this.roomRepo.findRoomById(roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
-    assertCommunityRoomWritable(room);
+    assertCommunityRoomWritable(room, pinner);
 
     const communityName: string =
       typeof room.name === "string" && room.name ? room.name : "Community";

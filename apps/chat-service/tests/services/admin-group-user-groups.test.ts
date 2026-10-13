@@ -44,7 +44,7 @@ describe("AdminGroupService.listUserGroups", () => {
     const joinedAt = new Date("2026-01-02T00:00:00Z");
     const createdAt = new Date("2026-01-01T00:00:00Z");
     const { service, groupRoomRepo } = makeService(
-      [{ roomId: "r1", role: "MODERATOR", joinedAt }],
+      [{ roomId: "r1", role: "MEMBER", joinedAt }],
       [
         {
           roomId: "r1",
@@ -72,7 +72,7 @@ describe("AdminGroupService.listUserGroups", () => {
       memberCount: 7,
       memberLimit: 256,
       status: "ACTIVE",
-      role: "MODERATOR",
+      role: "MEMBER",
       joinedAt: joinedAt.getTime(),
       createdAt: createdAt.getTime(),
     });

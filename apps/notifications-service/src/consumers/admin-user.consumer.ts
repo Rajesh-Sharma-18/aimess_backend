@@ -1,5 +1,9 @@
 import { logger } from "@aimess/logger";
-import { accountCopy, type LocalizedCopy } from "@aimess/constants";
+import {
+  accountCopy,
+  resolveTimeZone,
+  type LocalizedCopy,
+} from "@aimess/constants";
 import {
   AdminUserEvents,
   type AdminUserNotifyPayload,
@@ -8,7 +12,11 @@ import {
 import amqp from "amqplib";
 
 import { env } from "../config/env.js";
+import { accountRestrictedEmail } from "../providers/mail/templates/account-restricted.js";
+import { sendMail } from "../providers/mail/sendMail.js";
+import { deviceTokenService } from "../services/device-token.service.js";
 import { pushToUser } from "../services/push.service.js";
+import { getUserLocale } from "../services/notification-settings.service.js";
 
 /**
  * auth-service re-publishes admin ban/suspend/unban actions (after force-logout)
@@ -33,11 +41,17 @@ const ADMIN_USER_NOTIFY_QUEUE = "admin.user.notify.queue";
  * the Notification Center can re-render it after a language change, and renders
  * it once per device locale for the tray.
  */
-const NOTIFY_COPY_BUILDER: Record<string, (() => LocalizedCopy) | undefined> = {
-  [AdminUserEvents.USER_BANNED]: accountCopy.banned,
-  [AdminUserEvents.USER_SUSPENDED]: accountCopy.suspended,
-  [AdminUserEvents.USER_UNBANNED]: accountCopy.reinstated,
-  [AdminUserEvents.USER_ACCOUNT_UPDATED]: accountCopy.updatedByAdmin,
+const NOTIFY_COPY_BUILDER: Record<
+  string,
+  ((data: Record<string, string>) => LocalizedCopy) | undefined
+> = {
+  [AdminUserEvents.USER_BANNED]: (data) => accountCopy.banned(data.reason),
+  [AdminUserEvents.USER_SUSPENDED]: (data) =>
+    accountCopy.suspended(Date.parse(data.suspendedUntil ?? "") || null, data.reason),
+  [AdminUserEvents.USER_UNBANNED]: () => accountCopy.reinstated(),
+  [AdminUserEvents.USER_ACCOUNT_UPDATED]: () => accountCopy.updatedByAdmin(),
+  ACCOUNT_WARNED: (data) => accountCopy.warned(data.note),
+  REPORT_OUTCOME: (data) => accountCopy.reportOutcome(data.outcome ?? ""),
 };
 
 async function handleAdminUserNotify(
@@ -58,7 +72,7 @@ async function handleAdminUserNotify(
     userId: p.userId,
     category: "systemEnabled",
     type,
-    copy: NOTIFY_COPY_BUILDER[type]?.(),
+    copy: NOTIFY_COPY_BUILDER[type]?.(p.data ?? {}),
     title: p.title,
     body: p.body,
     data: {
@@ -68,6 +82,29 @@ async function handleAdminUserNotify(
       } satisfies NotificationNavigation),
     },
   });
+
+  if (p.email) {
+    const locale = await getUserLocale(p.userId).catch(() => undefined);
+    // The most recently seen device's zone; none → UTC.
+    const latest = (await deviceTokenService.getTokensForUser(p.userId).catch(() => []))
+      .filter((row) => row.timezone)
+      .sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime())[0];
+    const until = Date.parse(p.data?.suspendedUntil ?? "");
+    // The push already went out; a mail failure must not dead-letter it.
+    await sendMail({
+      to: p.email,
+      ...accountRestrictedEmail({
+        banned: type === AdminUserEvents.USER_BANNED,
+        reason: p.data?.reason ?? "",
+        until: Number.isFinite(until) ? until : null,
+        locale,
+        timeZone: resolveTimeZone(latest?.timezone),
+      }),
+    }).catch((error: unknown) => {
+      logger.warn(`account-restricted email failed user=${p.userId}`);
+      logger.warn(error);
+    });
+  }
 }
 
 export async function startAdminUserConsumer(): Promise<void> {

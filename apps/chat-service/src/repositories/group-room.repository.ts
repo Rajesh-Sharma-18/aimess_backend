@@ -5,6 +5,7 @@ import type {
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { normalizeGroupMember } from "./group-member.repository.js";
 import {
   buildGroupSearchFilter,
   normalizeForSearch,
@@ -666,11 +667,11 @@ export class GroupRoomRepository {
         let memberCountAtClosure = room.memberCountAtClosure;
         if (room.status === "ACTIVE") {
           const roster = await tx.groupMember.findMany({
-            where: { roomId, status: { in: ["ACTIVE", "BANNED"] } },
+            where: { roomId, status: "ACTIVE" },
           });
           if (roster.length) {
             await tx.groupClosureMember.createMany({
-              data: roster.map((m) => {
+              data: roster.map(normalizeGroupMember).map((m) => {
                 const id = identities.get(m.userId);
                 return {
                   roomId,

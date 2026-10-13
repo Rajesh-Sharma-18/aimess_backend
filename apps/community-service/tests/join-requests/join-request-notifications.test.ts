@@ -242,6 +242,15 @@ describe("approveJoinRequest — events + member fan-out", () => {
     expect(typeof payload.eventAt).toBe("string");
   });
 
+  it("AUDIT: the approver is the actor, the requester the target, and no COMMUNITY_JOINED row names the approver", async () => {
+    await communityService.approveJoinRequest(CID, MOD, RID);
+    const rows = repo.createAuditLog.mock.calls.map((c) => c[0]);
+    expect(rows).toContainEqual(
+      expect.objectContaining({ action: "JOIN_REQUEST_APPROVED", actorId: MOD, targetUserId: REQUESTER })
+    );
+    expect(rows.filter((r) => r.action === "COMMUNITY_JOINED" && r.actorId === MOD)).toEqual([]);
+  });
+
   it("names the approver with their real display name", async () => {
     await communityService.approveJoinRequest(CID, MOD, RID);
 

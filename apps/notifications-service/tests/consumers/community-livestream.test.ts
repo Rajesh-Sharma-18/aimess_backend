@@ -283,7 +283,7 @@ describe("LIVESTREAM_ENDED branch", () => {
     const build = endedFor;
     expect(recipients).toEqual([U2]);
     const body = build(U2).copy("en").body;
-    expect(body).toBe("Admin Person ended Jane Doe's livestream in Cool Community after 2m");
+    expect(body).toBe("Admin Person ended Jane Doe’s livestream in Cool Community after 2m");
     expect(build(U2).copy("vi").body).toBe(
       "Admin Person đã kết thúc buổi phát trực tiếp của Jane Doe trong Cool Community sau 2m"
     );
@@ -322,7 +322,7 @@ describe("LIVESTREAM_ENDED branch", () => {
     const build = endedFor;
     expect(recipients).toEqual([HOST, U2]);
     expect(build(HOST).copy("en").body).toBe(
-      "Admin Person ended Jane Doe's livestream in Cool Community after 4m"
+      "Admin Person ended Jane Doe’s livestream in Cool Community after 4m"
     );
     // push.service drops recipient === actorId: the actor must be the admin,
     // or the host's push is silently suppressed.
@@ -331,7 +331,25 @@ describe("LIVESTREAM_ENDED branch", () => {
     expect(build(HOST).data.hostUserId).toBe(HOST);
   });
 
-  it("Super Admin end (ADMIN) reads 'Administrator ended {host}'s livestream', pushes the host, leaks no identity", async () => {
+  it("CONNECTION_LOST: the host gets an inbox-only row, never a push", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      recipientIds: [HOST, U1],
+      duration: "45m",
+      durationSeconds: 2700,
+      endedReason: "CONNECTION_LOST",
+    });
+
+    expect(endedRecipients()).toEqual([HOST, U1]);
+    const host = endedFor(HOST);
+    expect(host.skipPush).toBe(true);
+    expect(host.actorId).toBeUndefined();
+    expect(host.copy("en").body).toBe("Your livestream ended due to connection loss");
+    expect(host.data.updateOnly).toBeUndefined();
+    expect(endedFor(U1).skipPush).toBe(true);
+  });
+
+  it("Super Admin end (ADMIN) reads 'AI Mess Administrator ended {host}'s livestream', pushes the host, leaks no identity", async () => {
     await deliver(CommunityEvents.LIVESTREAM_ENDED, {
       ...startedPayload,
       recipientIds: [HOST, U1, U2],
@@ -345,18 +363,18 @@ describe("LIVESTREAM_ENDED branch", () => {
     expect(recipients).toEqual([HOST, U1, U2]);
     // The host reads the host-less form; everyone else is told whose it was.
     expect(build(HOST).copy("en").body).toBe(
-      "Administrator ended the livestream in Cool Community after 4m"
+      "AI Mess Administrator ended the livestream in Cool Community after 4m"
     );
     expect(build(HOST).copy.descriptor.args).not.toContain("Jane Doe");
     const input = build(U1);
     expect(input.copy("en").body).toBe(
-      "Administrator ended Jane Doe's livestream in Cool Community after 4m"
+      "AI Mess Administrator ended Jane Doe’s livestream in Cool Community after 4m"
     );
     expect(input.copy("vi").body).toBe(
-      "Quản trị viên đã kết thúc buổi phát trực tiếp của Jane Doe trong Cool Community sau 4m"
+      "AI Mess Administrator đã kết thúc buổi phát trực tiếp của Jane Doe trong Cool Community sau 4m"
     );
     expect(input.copy("th").body).toBe(
-      "ผู้ดูแลระบบจบไลฟ์สตรีมของ Jane Doe ใน Cool Community หลังจาก 4m"
+      "AI Mess Administrator จบไลฟ์สตรีมของ Jane Doe ใน Cool Community หลังจาก 4m"
     );
     for (const locale of ["en", "vi", "th"]) {
       expect(input.copy(locale).body).not.toMatch(/System|Hệ thống|An administrator/);

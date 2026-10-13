@@ -38,7 +38,7 @@ describe("member-added copy", () => {
 
   it("community: target, actor and third viewer each read their own sentence", () => {
     expect(community("en", TOM).body).toBe(
-      "John Smith added You to Gokuldham Society"
+      "John Smith added you to Gokuldham Society"
     );
     expect(community("en", JOHN).body).toBe(
       "You added Tom Brown to Gokuldham Society"
@@ -53,9 +53,14 @@ describe("member-added copy", () => {
     expect(kicked("en", MOD).body).toBe("John Smith removed Tom Brown from C");
   });
 
+  it("an admin who ADDS someone is named, not labelled by role", () => {
+    const byAdmin = groupCopy.memberAdded("testgp", "Harshil Vekariya", "Tom", "u-h", "u-tom", "ADMIN");
+    expect(byAdmin("en", "u-tom").body).toBe("Harshil Vekariya added you to testgp");
+  });
+
   it("group: same rule", () => {
     expect(group("en", "u-boyd").body).toBe(
-      "Kristi Noem added You to Weekend Trip"
+      "Kristi Noem added you to Weekend Trip"
     );
     expect(group("en", "u-kristi").body).toBe(
       "You added Boyd Stevens to Weekend Trip"
@@ -101,12 +106,12 @@ describe("member-added copy", () => {
   it("missing names fall back to the localized 'Someone', never undefined/null", () => {
     const copy = communityCopy.memberAdded("C", "", null, JOHN, TOM);
     expect(copy("en", MOD).body).toBe("Someone added Someone to C");
-    expect(copy("en", TOM).body).toBe("Someone added You to C");
+    expect(copy("en", TOM).body).toBe("Someone added you to C");
   });
 
   it("localizes in vi and th", () => {
     expect(community("vi", TOM).body).toBe(
-      "John Smith đã thêm Bạn vào Gokuldham Society"
+      "John Smith đã thêm bạn vào Gokuldham Society"
     );
     expect(community("th", TOM).body).toBe(
       "John Smith เพิ่มคุณเข้า Gokuldham Society"
@@ -138,8 +143,8 @@ describe("member-added copy", () => {
   });
 });
 
-describe("Super Admin (Backoffice) actor reads 'Administrator'", () => {
-  it("community removal push/inbox: target reads 'Administrator removed You from …'", () => {
+describe("Super Admin (Backoffice) actor reads 'AI Mess Administrator'", () => {
+  it("community removal push/inbox: target reads 'AI Mess Administrator removed you from …'", () => {
     for (const actorId of [PLATFORM_ADMIN_ACTOR_ID, SYSTEM_ACTOR_ID /* legacy rows */]) {
       const copy = communityCopy.memberKicked(
         "Mission AIMess",
@@ -149,16 +154,16 @@ describe("Super Admin (Backoffice) actor reads 'Administrator'", () => {
         TOM
       );
       expect(copy("en", TOM).body).toBe(
-        "Administrator removed You from Mission AIMess"
+        "AI Mess Administrator removed you from Mission AIMess"
       );
       expect(copy("vi", TOM).body).toBe(
-        "Quản trị viên đã xóa Bạn khỏi Mission AIMess"
+        "AI Mess Administrator đã xóa bạn khỏi Mission AIMess"
       );
-      expect(copy("th", TOM).body).toBe("ผู้ดูแลระบบนำคุณออกจากMission AIMess");
+      expect(copy("th", TOM).body).toBe("AI Mess Administrator นำคุณออกจาก Mission AIMess");
       // Replayed from the stored ticket (refresh / history / socket): same text.
       expect(
         renderNotificationCopy(ticket(copy), "en", undefined, TOM)?.body
-      ).toBe("Administrator removed You from Mission AIMess");
+      ).toBe("AI Mess Administrator removed you from Mission AIMess");
     }
   });
 
@@ -171,7 +176,7 @@ describe("Super Admin (Backoffice) actor reads 'Administrator'", () => {
       SYSTEM_ACTOR_ID,
       TOM
     );
-    expect(copy("en", TOM).body).toBe("System added You to C");
+    expect(copy("en", TOM).body).toBe("System added you to C");
     expect(copy("en", MOD).body).toBe("System added Tom Brown to C");
     expect(
       buildCommunitySystemFallbackText(

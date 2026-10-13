@@ -48,6 +48,12 @@ export const CommunitySystemMessageType = {
   PINNED_MESSAGE: "PINNED_MESSAGE",
   UNPINNED_MESSAGE: "UNPINNED_MESSAGE",
   COMMUNITY_INVITE_CREATED: "COMMUNITY_INVITE_CREATED",
+  /** Admin/Moderator deleted another member's message. metadata: actorUserId,
+   *  actorName, actorRole, senderId, senderName, messageId. */
+  MESSAGE_DELETED: "MESSAGE_DELETED",
+  /** metadata: actorUserId, actorName, actorRole (PLATFORM for staff). */
+  COMMUNITY_CLOSED: "COMMUNITY_CLOSED",
+  COMMUNITY_REOPENED: "COMMUNITY_REOPENED",
 
   // --- Personal (visible ONLY to the affected user) ---------------------------
   COMMUNITY_JOINED: "COMMUNITY_JOINED",
@@ -121,7 +127,7 @@ export const SYSTEM_MESSAGE_VISIBILITY: Record<
   ROLE_CHANGED: "COMMUNITY",
   MEMBER_JOINED: "COMMUNITY",
   MEMBER_LEFT: "COMMUNITY",
-  MEMBER_REMOVED: "COMMUNITY",
+  MEMBER_REMOVED: "MODERATION",
   MEMBER_BANNED: "MODERATION",
   MEMBER_UNBANNED: "MODERATION",
   MEMBER_MUTED: "MODERATION",
@@ -129,6 +135,10 @@ export const SYSTEM_MESSAGE_VISIBILITY: Record<
   PINNED_MESSAGE: "COMMUNITY",
   UNPINNED_MESSAGE: "COMMUNITY",
   COMMUNITY_INVITE_CREATED: "COMMUNITY",
+  MESSAGE_DELETED: "COMMUNITY",
+  // Members cannot read a closed community; only the closing admin's own copy.
+  COMMUNITY_CLOSED: "PERSONAL",
+  COMMUNITY_REOPENED: "COMMUNITY",
   COMMUNITY_JOINED: "PERSONAL",
   JOIN_REQUEST_APPROVED: "PERSONAL",
   JOIN_REQUEST_REJECTED: "PERSONAL",
@@ -171,6 +181,9 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   PINNED_MESSAGE: true,
   UNPINNED_MESSAGE: false,
   COMMUNITY_INVITE_CREATED: false,
+  MESSAGE_DELETED: false,
+  COMMUNITY_CLOSED: false,
+  COMMUNITY_REOPENED: false,
   COMMUNITY_JOINED: false,
   JOIN_REQUEST_APPROVED: false,
   JOIN_REQUEST_REJECTED: false,
@@ -255,13 +268,7 @@ export function isPersonalJoinSessionType(
  *  - MEMBER_LEFT:    High-churn noise; a voluntary leave must not pollute chat.
  *  - MEMBER_JOINED:  Legacy COMMUNITY-WIDE join line; duplicates the personal
  *                    COMMUNITY_JOINED line. Hidden to suppress vestigial rows.
- *  - MEMBER_REMOVED: Product rule — removal must be SILENT from the chat-message
- *                    perspective. The removed user learns via the dedicated
- *                    `community:membership:removed` socket event on their personal
- *                    channel (all devices); other members see a roster update via
- *                    `community:member:removed`. No "{name} was removed" text must
- *                    appear in chat history, sync, lastActivity, or any API surface.
- *                    Moderation history lives in the audit log and backoffice panel.
+ *  (MEMBER_REMOVED left this set in v2: it is a MODERATION audit line now.)
  *
  * The five MODERATION subtypes (add / ban / unban / mute / unmute) are NOT in this
  * set and must not be "tidied" into it. They ARE emitted, as an audit line that
@@ -279,12 +286,12 @@ export function isPersonalJoinSessionType(
  * | Membership event        | Chat system msg     | Recipient-scoped msg | Bumps lastActivity |
  * |-------------------------|---------------------|----------------------|--------------------|
  * | Member joined           | No (HIDDEN)         | Yes (COMMUNITY_JOINED PERSONAL) | No    |
- * | Member removed by admin | No (HIDDEN)         | No (socket only)     | No                 |
+ * | Member removed by admin | Yes (MODERATION)    | No (socket + push)   | No                 |
  * | Member added by admin   | Yes (MODERATION)    | Yes (MEMBER_ADDED PERSONAL)     | No    |
  * | Member banned           | Yes (MODERATION)    | No (socket + push only) | No              |
  * | Member unbanned         | Yes (MODERATION)    | No (socket only)     | No                 |
  * | Member muted            | Yes (MODERATION)    | Yes (MEMBER_MUTED PERSONAL)     | No    |
- * | Member unmuted          | Yes (MODERATION)    | No (socket only: :unmuted)      | No    |
+ * | Member unmuted          | Yes (MODERATION)    | Yes (MEMBER_UNMUTED PERSONAL)   | No    |
  * | Member left voluntarily | No (HIDDEN)         | No                   | No                 |
  * | Member role changed     | Yes (COMMUNITY)     | Yes (ROLE_CHANGED_SELF PERSONAL) | Yes  |
  *
@@ -298,7 +305,6 @@ export function isPersonalJoinSessionType(
 export const HIDDEN_SYSTEM_MESSAGE_TYPES = [
   "MEMBER_LEFT",
   "MEMBER_JOINED",
-  "MEMBER_REMOVED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /** True when the subtype must never appear in the chat timeline (see above). */
@@ -336,6 +342,7 @@ export function isHiddenSystemMessage(
  */
 export const MODERATION_ONLY_SYSTEM_MESSAGE_TYPES = [
   "MEMBER_ADDED",
+  "MEMBER_REMOVED",
   "MEMBER_BANNED",
   "MEMBER_UNBANNED",
   "MEMBER_MUTED",
@@ -364,6 +371,8 @@ export const MODERATION_ONLY_SYSTEM_MESSAGE_TYPES = [
 export const MODERATION_TYPES_WITH_PERSONAL_COPY = [
   "MEMBER_ADDED",
   "MEMBER_MUTED",
+  // v2: "You can chat in X again" (manual unmute and auto-expiry).
+  "MEMBER_UNMUTED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /**
@@ -504,14 +513,9 @@ export function canViewSystemMessage(args: {
  * fields (communityName, newName, duration) — all actor/target identity is
  * stripped via {@link sanitizeCommunitySystemMetadata}.
  */
+// v2: settings lines name their actor (with role); only creation stays actor-less.
 export const ACTOR_LESS_SYSTEM_MESSAGE_TYPES = [
   "COMMUNITY_CREATED",
-  "COMMUNITY_NAME_UPDATED",
-  "COMMUNITY_DESCRIPTION_UPDATED",
-  "COMMUNITY_AVATAR_UPDATED",
-  "COMMUNITY_BANNER_UPDATED",
-  "COMMUNITY_HANDLE_UPDATED",
-  "COMMUNITY_UPDATED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /** True when the subtype is a pure event whose text must never name an actor. */

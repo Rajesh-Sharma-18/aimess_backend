@@ -780,6 +780,19 @@ export function registerChatNamespace(
           personalizeFn = personalizeAutoDeleteLabel;
         }
         if (parsed.event === "message:new") {
+          // A removal line skips the removed member's room sockets (they get it
+          // on their own channel); the batcher has no per-frame exclusion.
+          if (pattern === "conv:*" && typeof parsed.excludeUserId === "string") {
+            void emitPersonalizedSender(
+              chat,
+              channel,
+              parsed.event,
+              parsed.data,
+              personalizeGroupSocketMessage,
+              parsed.excludeUserId
+            );
+            return;
+          }
           // Both buses (`conv:<roomId>` for the open transcript and
           // `user:<id>` for the inbox/delivery-receipt copy) coalesce, each
           // under its own channel key so they can never mix.

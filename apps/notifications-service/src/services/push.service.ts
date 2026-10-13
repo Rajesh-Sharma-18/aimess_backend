@@ -9,6 +9,7 @@ import {
 import {
   AdminUserEvents,
   AuthEvents,
+  ChatEvents,
   CommunityEvents,
   FriendshipEvents,
 } from "@aimess/shared-types";
@@ -83,14 +84,37 @@ const NOTIFY_SUPPRESSED_TYPES = new Set<string>([]);
  * Informational SYSTEM events (ANNOUNCEMENT, MAINTENANCE, UPDATE_REQUIRED) are
  * deliberately absent: they are exactly what the System toggle is for.
  */
+/**
+ * Mandatory account/moderation messages (System channel): delivered whatever the
+ * category toggles, quiet hours or per-community toggles say, and tagged
+ * `channelId: "system_v2"` so Android posts them on the System channel.
+ */
+export const SYSTEM_CHANNEL_ID = "system_v2";
+export const MANDATORY_TYPES = new Set<string>([
+  AdminUserEvents.USER_BANNED,
+  AdminUserEvents.USER_SUSPENDED,
+  AdminUserEvents.USER_UNBANNED,
+  CommunityEvents.MEMBER_KICKED,
+  CommunityEvents.MEMBER_BANNED,
+  CommunityEvents.MEMBER_UNBANNED,
+  CommunityEvents.MEMBER_MUTED,
+  CommunityEvents.MEMBER_UNMUTED,
+  CommunityEvents.MEMBER_ROLE_CHANGED,
+  CommunityEvents.ADMIN_TRANSFERRED,
+  CommunityEvents.REPORT_ACTIONED,
+  CommunityEvents.REPORT_RESOLVED,
+  ChatEvents.GROUP_LEADER_CHANGED,
+  "COMMUNITY_ADMIN_INACTIVE_REMINDER",
+  "ACCOUNT_WARNED",
+  "REPORT_OUTCOME",
+]);
+
 const NON_SUPPRESSIBLE_TYPES = new Set<string>([
   AuthEvents.SECURITY_NEW_LOGIN,
   AuthEvents.PASSWORD_CHANGED,
   AuthEvents.EMAIL_CHANGED,
-  AdminUserEvents.USER_BANNED,
-  AdminUserEvents.USER_SUSPENDED,
-  AdminUserEvents.USER_UNBANNED,
   AdminUserEvents.USER_ACCOUNT_UPDATED,
+  ...MANDATORY_TYPES,
 ]);
 
 /**
@@ -123,6 +147,10 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   CommunityEvents.JOIN_REQUEST_RETRACTED,
   // The requester's outcome card: their request was accepted and they are now a member.
   CommunityEvents.JOIN_REQUEST_APPROVED,
+  // Private-group join requests — same lifecycle as the community trio above.
+  ChatEvents.GROUP_JOIN_REQUESTED,
+  ChatEvents.GROUP_JOIN_REQUEST_RETRACTED,
+  ChatEvents.GROUP_JOIN_REQUEST_APPROVED,
   // Livestream — listed under LIVE_NOW (chat-service notification-category.ts).
   // Still gated like the push: liveStreamEnabled, the community's own
   // streamEnabled toggle, and ACTIVE membership.
@@ -152,6 +180,10 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   AdminUserEvents.USER_SUSPENDED,
   AdminUserEvents.USER_UNBANNED,
   AdminUserEvents.USER_ACCOUNT_UPDATED,
+  "ACCOUNT_WARNED",
+  "REPORT_OUTCOME",
+  "COMMUNITY_ADMIN_INACTIVE_REMINDER",
+  ChatEvents.GROUP_LEADER_CHANGED,
   "ANNOUNCEMENT",
   "MAINTENANCE",
   "UPDATE_REQUIRED",
@@ -177,6 +209,7 @@ const WEB_ACTIONABLE_DATA_ONLY_TYPES = new Set<string>([
   "CALL_HANDLED",
   "MESSAGE_DELETED",
   CommunityEvents.JOIN_REQUEST_RETRACTED,
+  ChatEvents.GROUP_JOIN_REQUEST_RETRACTED,
   // Tray dismissals (push-dismiss.ts). The worker closes cards by `tags`. They
   // only reach WEB when a card was actually shown (see tray-cards.ts), so they
   // do not burn the browser's silent-push budget on every read.
@@ -539,7 +572,10 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // `data.tag` too, because the Android app draws the card itself and only sees
   // the data map, and a web page drawing a foreground card does the same.
   const tag = !dataOnly && collapseKey ? collapseKey : undefined;
-  const rawData = tag ? { ...(input.data ?? {}), tag } : input.data;
+  const typedData = MANDATORY_TYPES.has(type)
+    ? { ...(input.data ?? {}), channelId: SYSTEM_CHANNEL_ID }
+    : input.data;
+  const rawData = tag ? { ...(typedData ?? {}), tag } : typedData;
 
   // The recipient's ACCOUNT language. Cached in Redis alongside their
   // notification settings, so this is the same round-trip the settings gate
@@ -638,7 +674,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
 
       const prefField =
         input.communityPrefField ?? defaultCommunityPrefField(category);
-      if (prefField) {
+      if (prefField && !MANDATORY_TYPES.has(type)) {
         try {
           const enabled = await isCommunityNotificationEnabled(
             userId,
@@ -679,11 +715,15 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // placeholder is product copy that localizes like any other. The inbox row
   // above keeps the real body; it is already behind the app's own auth. Title
   // is left unmasked either way.
-  const views = new Map<SupportedLocale, PushView>();
-  const viewFor = (viewLocale: SupportedLocale): PushView => {
-    const cached = views.get(viewLocale);
+  const views = new Map<string, PushView>();
+  const viewFor = (
+    viewLocale: SupportedLocale,
+    timeZone: string | null = null
+  ): PushView => {
+    const tz = timeZone ?? "UTC";
+    const cached = views.get(`${viewLocale} ${tz}`);
     if (cached) return cached;
-    const localized = input.copy?.(viewLocale, userId);
+    const localized = input.copy?.(viewLocale, userId, tz);
     const fullBody = localized?.body ?? input.body ?? "";
     const view: PushView = {
       title: localized?.title ?? input.title ?? "",
@@ -697,7 +737,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
         : rawData,
       actions: input.actions?.(viewLocale),
     };
-    views.set(viewLocale, view);
+    views.set(`${viewLocale} ${tz}`, view);
     return view;
   };
 
@@ -866,13 +906,13 @@ export async function pushToUser(input: PushInput): Promise<void> {
   const hasVoipToken = tokens.some((t) => t.tokenType === "VOIP");
 
   await Promise.all(
-    tokens.map(async ({ token, tokenType, platform, locale: deviceLocale }) => {
+    tokens.map(async ({ token, tokenType, platform, locale: deviceLocale, timezone }) => {
       // THIS device's language, not the account's. A null column (older client)
       // or an unsupported tag falls back to the account setting rather than to
       // DEFAULT_LOCALE, which is `vi` in production — a fallback that flipped
       // every pre-upgrade device to Vietnamese would be a worse bug than the
       // one this fixes.
-      const view = viewFor(parseSupportedLocale(deviceLocale) ?? locale);
+      const view = viewFor(parseSupportedLocale(deviceLocale) ?? locale, timezone);
 
       // VOIP tokens are iOS PushKit tokens registered only for call ringing —
       // they must go over raw APNs, never FCM (FCM doesn't reach PushKit), and

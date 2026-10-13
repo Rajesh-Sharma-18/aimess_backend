@@ -10,6 +10,9 @@
 jest.mock("../../src/services/community.service.js", () => ({
   communityService: {
     createInviteLink: jest.fn(),
+    findLatestReusableInviteLink: jest.fn(async () => null),
+    revokeAllInviteLinks: jest.fn(async () => ({ count: 0 })),
+    clearInvitationCode: jest.fn(async () => ({ count: 0 })),
     listInviteLinks: jest.fn(),
     revokeInviteLink: jest.fn(),
     bulkSendInviteLink: jest.fn(),

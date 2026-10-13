@@ -22,6 +22,7 @@ import {
   startMuteSweeper,
   backfillActiveMutesToChat,
 } from "./jobs/mute-sweeper.js";
+import { startAdminInactivityJob } from "./jobs/admin-inactivity.js";
 
 function getRawCommandErrorMessage(error: unknown): string {
   if (!error || typeof error !== "object") return "";
@@ -59,6 +60,18 @@ async function start() {
         ],
       });
       logger.info("Index ready: communities.invitationCode (sparse unique)");
+      // One shared live invite link per community - makes reset/create race-safe.
+      await prisma.$runCommandRaw({
+        createIndexes: "community_invite_links",
+        indexes: [
+          {
+            key: { activeKey: 1 },
+            name: "community_invite_links_active_unique",
+            unique: true,
+            partialFilterExpression: { activeKey: { $type: "string" } },
+          },
+        ],
+      });
     } catch (indexErr) {
       logger.warn(
         "Could not create invitationCode sparse index — permanent invite links may lack uniqueness enforcement"
@@ -208,6 +221,7 @@ async function start() {
     // migration backfill, best-effort) then start the per-minute expiry sweep.
     void backfillActiveMutesToChat();
     startMuteSweeper();
+    startAdminInactivityJob();
 
     app.listen(env.COMMUNITY_SERVICE_PORT, "0.0.0.0", () => {
       logger.info(

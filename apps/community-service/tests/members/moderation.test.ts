@@ -12,7 +12,6 @@ jest.mock("../../src/services/community.service.js", () => ({
     muteMember: jest.fn(),
     unmuteMember: jest.fn(),
     listMutedMembers: jest.fn(),
-    warnMember: jest.fn(),
     listMemberWarnings: jest.fn(),
     listAuditLogs: jest.fn(),
   },
@@ -20,7 +19,7 @@ jest.mock("../../src/services/community.service.js", () => ({
 
 import request from "supertest";
 
-import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
+import { ForbiddenError, NotFoundError } from "@aimess/errors";
 
 import { app } from "../../src/app.js";
 import { communityService } from "../../src/services/community.service.js";
@@ -184,66 +183,15 @@ describe("GET /:id/muted-members", () => {
 });
 
 describe("POST /:id/members/:userId/warn", () => {
-  beforeEach(() => {
-    svc.warnMember.mockResolvedValue({ id: "w".repeat(24), note: "warn 1" });
-  });
-
-  it("warns a member → 201", async () => {
-    const res = await request(app)
-      .post(`/api/v1/communities/${CID}/members/${TARGET}/warn`)
-      .set(auth())
-      .send({ note: "Be respectful" });
-    expect(res.status).toBe(201);
-    expect(svc.warnMember).toHaveBeenCalledWith(
-      CID,
-      SELF,
-      TARGET,
-      "Be respectful"
-    );
-  });
-
-  it("returns 400 when note is missing (required)", async () => {
-    const res = await request(app)
-      .post(`/api/v1/communities/${CID}/members/${TARGET}/warn`)
-      .set(auth())
-      .send({});
-    expect(res.status).toBe(400);
-    expect(svc.warnMember).not.toHaveBeenCalled();
-  });
-
-  it("returns 400 when note is an empty string", async () => {
-    const res = await request(app)
-      .post(`/api/v1/communities/${CID}/members/${TARGET}/warn`)
-      .set(auth())
-      .send({ note: "   " });
-    expect(res.status).toBe(400);
-  });
-
-  it("returns 400 when note exceeds 1000 chars", async () => {
-    const res = await request(app)
-      .post(`/api/v1/communities/${CID}/members/${TARGET}/warn`)
-      .set(auth())
-      .send({ note: "x".repeat(1001) });
-    expect(res.status).toBe(400);
-  });
-
-  it("accepts a unicode/emoji note", async () => {
-    const res = await request(app)
-      .post(`/api/v1/communities/${CID}/members/${TARGET}/warn`)
-      .set(auth())
-      .send({ note: "Final warning 🚫 — последнее предупреждение" });
-    expect(res.status).toBe(201);
-  });
-
-  it("returns 400 when warning the admin (service guard)", async () => {
-    svc.warnMember.mockRejectedValue(
-      new BadRequestError("COMMUNITY_MEMBER_CANNOT_MODIFY_ADMIN")
-    );
-    const res = await request(app)
-      .post(`/api/v1/communities/${CID}/members/${TARGET}/warn`)
-      .set(auth())
-      .send({ note: "warn" });
-    expect(res.status).toBe(400);
+  it("is retired → 410 COMMUNITY_FEATURE_REMOVED, any body", async () => {
+    for (const body of [{ note: "Be respectful" }, {}]) {
+      const res = await request(app)
+        .post(`/api/v1/communities/${CID}/members/${TARGET}/warn`)
+        .set(auth())
+        .send(body);
+      expect(res.status).toBe(410);
+      expect(res.body.error.code).toBe("COMMUNITY_FEATURE_REMOVED");
+    }
   });
 });
 

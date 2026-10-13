@@ -7,6 +7,8 @@
  * rows (an earlier build baked the admin's real name into `systemData.actorName`
  * and `senderName`) are scrubbed by `toWireMessage` on every read.
  */
+import { buildGroupSystemFallbackText } from "@aimess/constants";
+
 import { GroupSystemMessageService } from "../../src/services/group-system-message.service.js";
 import { GroupMemberService } from "../../src/services/group-member.service.js";
 import { toWireMessage } from "../../src/lib/chat-message.serializer.js";
@@ -82,7 +84,7 @@ describe("GroupSystemMessageService — Backoffice actor", () => {
       senderName: string;
     };
     expect(row.content.text).toBe(
-      "Administrator removed Name user-2 from the group"
+      "AI Mess Administrator removed Name user-2"
     );
     expect(row.systemData.source).toBe("BO");
     expect(row.systemData.actorName).toBe("");
@@ -104,7 +106,7 @@ describe("GroupSystemMessageService — Backoffice actor", () => {
 
     const row = storedRow(stubs);
     expect(row.systemData.actorName).toBe("");
-    expect(row.content.text).toBe("Administrator banned Name user-2");
+    expect(row.content.text).toBe("AI Mess Administrator banned Name user-2");
   });
 
   it("NEGATIVE: a real chat actor is still named from the live snapshot", async () => {
@@ -120,7 +122,7 @@ describe("GroupSystemMessageService — Backoffice actor", () => {
     const row = storedRow(stubs);
     expect(row.systemData.actorName).toBe("Name user-1");
     expect(row.content.text).toBe(
-      "Name user-1 removed Name user-2 from the group"
+      "Name user-1 removed Name user-2"
     );
   });
 
@@ -141,7 +143,7 @@ describe("GroupSystemMessageService — Backoffice actor", () => {
     )!;
     const payload = JSON.parse(published[1] as string);
     expect(payload.event).toBe("message:new");
-    expect(payload.data.content.text).toBe("Administrator banned Name user-2");
+    expect(payload.data.content.text).toBe("AI Mess Administrator banned Name user-2");
     expect(payload.data.systemData.source).toBe("BO");
     expect(payload.data.senderName).toBe("");
     // The banned member still never receives their own ban line.
@@ -184,7 +186,7 @@ describe("toWireMessage — legacy Backoffice rows", () => {
     const wire = toWireMessage(legacy) as unknown as Record<string, unknown>;
     expect(JSON.stringify(wire)).not.toContain("Rajesh");
     expect((wire.content as { text: string }).text).toBe(
-      "Administrator banned Tom"
+      "AI Mess Administrator banned Tom"
     );
     expect(wire.senderName).toBe("");
     expect((wire.systemData as Record<string, unknown>).targetName).toBe("Tom");
@@ -264,6 +266,7 @@ describe("GroupMemberService.kick — Backoffice marker", () => {
         actorId: null,
         systemData: { targetUserId: "target-1", source: "BO" },
         excludeUserId: "target-1",
+        notifyUserId: "target-1",
       })
     );
   });
@@ -281,68 +284,27 @@ describe("GroupMemberService.kick — Backoffice marker", () => {
       expect.objectContaining({
         actorId: "actor-1",
         systemData: { targetUserId: "target-1" },
+        notifyUserId: "target-1",
       })
+    );
+  });
+
+  it("the removed member reads it in first person, in their language", () => {
+    const line = { actorId: "an", actorName: "An", targetUserId: "binh", targetName: "Binh" };
+    const bo = { targetUserId: "binh", targetName: "Binh", source: "BO" };
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", line, "binh")).toBe("An removed you");
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", line, "binh", "vi")).toBe(
+      "An đã xóa bạn khỏi nhóm"
+    );
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", line, "binh", "th")).toBe(
+      "An นำคุณออกจากกลุ่ม"
+    );
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", bo, "binh")).toBe(
+      "AI Mess Administrator removed you"
+    );
+    expect(buildGroupSystemFallbackText("MEMBER_REMOVED", line, "someone")).toBe(
+      "An removed Binh"
     );
   });
 });
 
-describe("GroupMemberService.ban / unban — Backoffice marker", () => {
-  it("POSITIVE: a Backoffice ban is marked source BO, actor-less", async () => {
-    const { service, sysMsg } = buildMemberService();
-
-    await service.ban({
-      roomId: "grp-1",
-      targetUserId: "target-1",
-      bannedBy: "admin-user-1",
-      asPlatformAdmin: true,
-    });
-
-    expect(sysMsg.post).toHaveBeenCalledWith(
-      expect.objectContaining({
-        actorId: null,
-        systemData: { targetUserId: "target-1", source: "BO" },
-        excludeUserId: "target-1",
-      })
-    );
-  });
-
-  it("POSITIVE: a Backoffice unban is marked source BO, actor-less", async () => {
-    const { service, sysMsg } = buildMemberService();
-    (
-      service as unknown as { memberRepo: { findByRoomAndUser: jest.Mock } }
-    ).memberRepo.findByRoomAndUser = jest
-      .fn()
-      .mockResolvedValue({ userId: "target-1", status: "BANNED" });
-
-    await service.unban({
-      roomId: "grp-1",
-      targetUserId: "target-1",
-      unbannedBy: "admin-user-1",
-      asPlatformAdmin: true,
-    });
-
-    expect(sysMsg.post).toHaveBeenCalledWith(
-      expect.objectContaining({
-        actorId: null,
-        systemData: { targetUserId: "target-1", source: "BO" },
-      })
-    );
-  });
-
-  it("NEGATIVE: an in-group ban is not marked Backoffice", async () => {
-    const { service, sysMsg } = buildMemberService();
-
-    await service.ban({
-      roomId: "grp-1",
-      targetUserId: "target-1",
-      bannedBy: "actor-1",
-    });
-
-    expect(sysMsg.post).toHaveBeenCalledWith(
-      expect.objectContaining({
-        actorId: "actor-1",
-        systemData: { targetUserId: "target-1" },
-      })
-    );
-  });
-});

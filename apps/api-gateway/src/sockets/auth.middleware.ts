@@ -8,7 +8,11 @@ import {
 } from "@aimess/auth-jwt";
 import { getActiveSessionFromCache, isUserBanned } from "@aimess/redis";
 import { logger } from "@aimess/logger";
-import { resolveLocale, type SupportedLocale } from "@aimess/constants";
+import {
+  resolveLocale,
+  resolveTimeZone,
+  type SupportedLocale,
+} from "@aimess/constants";
 import { resolveAccountLocale } from "./account-locale.js";
 import { appVersionService } from "../app-version/index.js";
 import { env, accessTokenVerifyConfig } from "../config/env.js";
@@ -137,6 +141,19 @@ export function resolveHandshakeLocale(
   return locale;
 }
 
+/** Viewer IANA zone from `auth.tz` / `query.tz` / `x-timezone`; invalid → "UTC". */
+export function resolveHandshakeTimeZone(
+  handshake: HandshakeLocaleSource
+): string {
+  const a = handshake.auth as Record<string, unknown> | undefined;
+  const q = handshake.query as Record<string, unknown> | undefined;
+  return resolveTimeZone(
+    firstString(a?.tz) ??
+      firstString(q?.tz) ??
+      firstString(handshake.headers["x-timezone"])
+  );
+}
+
 function firstString(value: unknown): string | undefined {
   if (Array.isArray(value)) return firstString(value[0]);
   if (typeof value !== "string") return undefined;
@@ -219,6 +236,7 @@ export function createGatewaySocketAuthMiddleware(
         }
 
         socket.data.locale = resolveHandshakeLocale(socket.handshake);
+        socket.data.tz = resolveHandshakeTimeZone(socket.handshake);
 
         // Same admin FORCE refusal as the REST gate (426); fails open the same way.
         const updateRefusal = await appVersionService.refusal(
@@ -328,6 +346,7 @@ export function createGatewayAdminSocketAuthMiddleware(
         }
 
         socket.data.locale = resolveHandshakeLocale(socket.handshake);
+        socket.data.tz = resolveHandshakeTimeZone(socket.handshake);
 
         const verified = verifyAdminAccessToken(token, env.JWT_ADMIN_SECRET);
 

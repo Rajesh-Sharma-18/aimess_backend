@@ -28,15 +28,15 @@ export const SYSTEM_MESSAGES = {
   /** The actor of an action a Super Admin performed from Backoffice — they are
    *  not an AIMess user, so no person is named ("Administrator removed Tom …"). */
   SYS_NAME_ADMINISTRATOR: {
-    vi: "Quản trị viên",
-    en: "Administrator",
-    th: "ผู้ดูแลระบบ",
+    vi: "AI Mess Administrator",
+    en: "AI Mess Administrator",
+    th: "AI Mess Administrator",
   },
   /** A community/group admin or moderator acting in that role is named by the
    *  role, never by their name ("Admin removed Tom …"). Distinct from the
    *  platform's "Administrator". */
   SYS_NAME_ROLE_ADMIN: {
-    vi: "Người quản trị",
+    vi: "Quản trị viên",
     en: "Admin",
     th: "แอดมิน",
   },
@@ -253,9 +253,9 @@ export const SYSTEM_MESSAGES = {
   // missed it. `SYS_CALL_MISSED` below stays as the neutral, direction-less
   // fallback for the stored text, which is written once and read by both.
   SYS_CALL_NO_ANSWER: {
-    vi: "{{label}} không trả lời",
-    en: "{{label}}, no answer",
-    th: "{{label}}ไม่มีการรับสาย",
+    vi: "Không trả lời",
+    en: "No answer",
+    th: "ไม่มีผู้รับสาย",
   },
   SYS_CALL_MISSED_CALL: {
     vi: "{{label}} bị bỏ lỡ",
@@ -272,7 +272,7 @@ export const SYSTEM_MESSAGES = {
   SYS_CALL_PREVIEW_MISSED_VIDEO: {
     vi: "Cuộc gọi video nhỡ",
     en: "Missed video call",
-    th: "สายวิดีโอที่ไม่ได้รับ",
+    th: "วิดีโอคอลที่ไม่ได้รับ",
   },
   SYS_CALL_MISSED: {
     vi: "{{label}} không có người trả lời",
@@ -293,12 +293,12 @@ export const SYSTEM_MESSAGES = {
   SYS_GROUP_CREATED: {
     vi: "{{actor}} đã tạo nhóm",
     en: "{{actor}} created the group",
-    th: "{{actor}}สร้างกลุ่มนี้",
+    th: "{{actor}}สร้างกลุ่ม",
   },
   SYS_GROUP_CREATED_SELF: {
     vi: "Bạn đã tạo nhóm",
     en: "You created the group",
-    th: "คุณสร้างกลุ่มนี้",
+    th: "คุณสร้างกลุ่ม",
   },
   SYS_GROUP_MEMBER_JOINED: {
     vi: "{{actor}} đã tham gia nhóm",
@@ -362,14 +362,14 @@ export const SYSTEM_MESSAGES = {
     th: "คุณเป็นผู้ดูแลแล้ว",
   },
   SYS_GROUP_ROLE_ADMIN: {
-    vi: "{{target}} hiện là quản trị viên của nhóm",
-    en: "{{target}} is now the group admin",
-    th: "{{target}}เป็นผู้ดูแลกลุ่มแล้ว",
+    vi: "{{target}} hiện là trưởng nhóm",
+    en: "{{target}} is now the group leader",
+    th: "{{target}}เป็นหัวหน้ากลุ่มแล้ว",
   },
   SYS_GROUP_ROLE_ADMIN_SELF: {
-    vi: "Bạn hiện là quản trị viên của nhóm",
-    en: "You are now the group admin",
-    th: "คุณเป็นผู้ดูแลกลุ่มแล้ว",
+    vi: "Bạn hiện là trưởng nhóm",
+    en: "You’re now the group leader",
+    th: "ตอนนี้คุณเป็นหัวหน้ากลุ่มแล้ว",
   },
   // Also used for ADMIN_REMOVED — a demotion and a role change to MEMBER read
   // identically in every language here.
@@ -410,12 +410,12 @@ export const SYSTEM_MESSAGES = {
   },
   SYS_GROUP_RENAMED: {
     vi: "{{actor}} đã đổi tên nhóm thành “{{name}}”",
-    en: '{{actor}} renamed the group to "{{name}}"',
+    en: "{{actor}} renamed the group to “{{name}}”",
     th: "{{actor}}เปลี่ยนชื่อกลุ่มเป็น “{{name}}”",
   },
   SYS_GROUP_RENAMED_SELF: {
     vi: "Bạn đã đổi tên nhóm thành “{{name}}”",
-    en: 'You renamed the group to "{{name}}"',
+    en: "You renamed the group to “{{name}}”",
     th: "คุณเปลี่ยนชื่อกลุ่มเป็น “{{name}}”",
   },
   SYS_GROUP_RENAMED_PLAIN: {
@@ -439,14 +439,14 @@ export const SYSTEM_MESSAGES = {
     th: "คุณเปลี่ยนรูปกลุ่ม",
   },
   SYS_GROUP_DESCRIPTION_CHANGED: {
-    vi: "{{actor}} đã cập nhật mô tả nhóm",
-    en: "{{actor}} updated the group description",
-    th: "{{actor}}อัปเดตคำอธิบายกลุ่ม",
+    vi: "{{actor}} đã đổi mô tả nhóm",
+    en: "{{actor}} changed the group description",
+    th: "{{actor}}เปลี่ยนคำอธิบายกลุ่ม",
   },
   SYS_GROUP_DESCRIPTION_CHANGED_SELF: {
-    vi: "Bạn đã cập nhật mô tả nhóm",
-    en: "You updated the group description",
-    th: "คุณอัปเดตคำอธิบายกลุ่ม",
+    vi: "Bạn đã đổi mô tả nhóm",
+    en: "You changed the group description",
+    th: "คุณเปลี่ยนคำอธิบายกลุ่ม",
   },
   SYS_GROUP_INVITE_LINK_CREATED: {
     vi: "{{actor}} đã tạo liên kết mời",
@@ -571,9 +571,9 @@ export const SYSTEM_MESSAGES = {
     th: "{{who}}ตั้งให้ข้อความลบหลังจากเปิดอ่าน",
   },
   SYS_PRIVATE_AUTO_DELETE_DURATION: {
-    vi: "{{who}} đã đặt tin nhắn tự xóa sau {{duration}}",
+    vi: "{{who}} đã đặt tin nhắn tự động xóa sau {{duration}}",
     en: "{{who}} set messages to auto-delete after {{duration}}",
-    th: "{{who}}ตั้งให้ข้อความลบอัตโนมัติหลังจาก {{duration}}",
+    th: "{{who}}ตั้งให้ข้อความลบอัตโนมัติหลัง {{duration}}",
   },
   SYS_PRIVATE_AUTO_DELETE_ON: {
     vi: "{{who}} đã bật tự động xóa tin nhắn",
@@ -609,7 +609,7 @@ export const SYSTEM_MESSAGES = {
   },
   SYS_COMMUNITY_RENAMED: {
     vi: "Cộng đồng đã đổi tên thành “{{name}}”",
-    en: 'Community renamed to "{{name}}"',
+    en: "Community renamed to “{{name}}”",
     th: "เปลี่ยนชื่อคอมมูนิตี้เป็น “{{name}}”",
   },
   SYS_COMMUNITY_NAME_UPDATED: {
@@ -650,23 +650,23 @@ export const SYSTEM_MESSAGES = {
   // COMMUNITY_PRIVACY_CHANGED (actor-bearing) — "You …" for the actor.
   SYS_COMMUNITY_PRIVACY_PRIVATE: {
     vi: "{{actor}} đã chuyển cộng đồng sang riêng tư",
-    en: "{{actor}} changed the community to private",
-    th: "{{actor}} เปลี่ยนคอมมูนิตี้เป็นแบบส่วนตัว",
+    en: "{{actor}} made the community private",
+    th: "{{actor}}ตั้งคอมมูนิตี้เป็นแบบส่วนตัว",
   },
   SYS_COMMUNITY_PRIVACY_PRIVATE_SELF: {
     vi: "Bạn đã chuyển cộng đồng sang riêng tư",
-    en: "You changed the community to private",
-    th: "คุณเปลี่ยนคอมมูนิตี้เป็นแบบส่วนตัว",
+    en: "You made the community private",
+    th: "คุณตั้งคอมมูนิตี้เป็นแบบส่วนตัว",
   },
   SYS_COMMUNITY_PRIVACY_PUBLIC: {
     vi: "{{actor}} đã chuyển cộng đồng sang công khai",
-    en: "{{actor}} changed the community to public",
-    th: "{{actor}} เปลี่ยนคอมมูนิตี้เป็นแบบสาธารณะ",
+    en: "{{actor}} made the community public",
+    th: "{{actor}}ตั้งคอมมูนิตี้เป็นแบบสาธารณะ",
   },
   SYS_COMMUNITY_PRIVACY_PUBLIC_SELF: {
     vi: "Bạn đã chuyển cộng đồng sang công khai",
-    en: "You changed the community to public",
-    th: "คุณเปลี่ยนคอมมูนิตี้เป็นแบบสาธารณะ",
+    en: "You made the community public",
+    th: "คุณตั้งคอมมูนิตี้เป็นแบบสาธารณะ",
   },
   // Legacy COMMUNITY_UPDATED rows whose ONLY change was visibility: the actor
   // was stripped when they were written, so they stay actor-less.
@@ -681,12 +681,12 @@ export const SYSTEM_MESSAGES = {
     th: "คอมมูนิตี้เปลี่ยนเป็นแบบสาธารณะแล้ว",
   },
   SYS_COMMUNITY_LIVESTREAM_STARTED: {
-    vi: "{{actor}} đã bắt đầu một buổi phát trực tiếp",
+    vi: "{{actor}} đã bắt đầu phát trực tiếp",
     en: "{{actor}} started a livestream",
     th: "{{actor}}เริ่มไลฟ์สตรีม",
   },
   SYS_COMMUNITY_LIVESTREAM_STARTED_SELF: {
-    vi: "Bạn đã bắt đầu một buổi phát trực tiếp",
+    vi: "Bạn đã bắt đầu phát trực tiếp",
     en: "You started a livestream",
     th: "คุณเริ่มไลฟ์สตรีม",
   },
@@ -707,28 +707,28 @@ export const SYSTEM_MESSAGES = {
   },
   SYS_COMMUNITY_LIVESTREAM_ENDED_HOST: {
     vi: "{{actor}} đã kết thúc buổi phát trực tiếp của {{host}}",
-    en: "{{actor}} ended {{host}}'s livestream",
+    en: "{{actor}} ended {{host}}’s livestream",
     th: "{{actor}}จบไลฟ์สตรีมของ{{host}}",
   },
   SYS_COMMUNITY_LIVESTREAM_ENDED_HOST_SELF: {
     vi: "Bạn đã kết thúc buổi phát trực tiếp của {{host}}",
-    en: "You ended {{host}}'s livestream",
+    en: "You ended {{host}}’s livestream",
     th: "คุณจบไลฟ์สตรีมของ{{host}}",
   },
   SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN: {
-    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp",
-    en: "Administrator ended the livestream",
-    th: "ผู้ดูแลระบบจบไลฟ์สตรีม",
+    vi: "AI Mess Administrator đã kết thúc buổi phát trực tiếp",
+    en: "AI Mess Administrator ended the livestream",
+    th: "AI Mess Administrator จบไลฟ์สตรีม",
   },
   SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST: {
-    vi: "Quản trị viên đã kết thúc buổi phát trực tiếp của {{host}}",
-    en: "Administrator ended {{host}}'s livestream",
-    th: "ผู้ดูแลระบบจบไลฟ์สตรีมของ{{host}}",
+    vi: "AI Mess Administrator đã kết thúc buổi phát trực tiếp của {{host}}",
+    en: "AI Mess Administrator ended {{host}}’s livestream",
+    th: "AI Mess Administrator จบไลฟ์สตรีมของ{{host}}",
   },
   SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION: {
-    vi: "{{lead}} ({{duration}})",
-    en: "{{lead}} ({{duration}})",
-    th: "{{lead}} ({{duration}})",
+    vi: "{{lead}} sau {{duration}}",
+    en: "{{lead}} after {{duration}}",
+    th: "{{lead}}หลังผ่านไป {{duration}}",
   },
   SYS_COMMUNITY_ROLE_ADMIN: {
     vi: "{{target}} hiện là quản trị viên của cộng đồng",
@@ -882,7 +882,7 @@ export const SYSTEM_MESSAGES = {
   // Member added / removed lines are SYS_MEMBER_ADDED_TO / SYS_MEMBER_REMOVED_FROM
   // (top of this file), shared with groups and notifications.
   SYS_COMMUNITY_MEMBER_BANNED_ACTOR: {
-    vi: "Bạn đã cấm {{target}}",
+    vi: "Bạn đã cấm {{target}} khỏi cộng đồng",
     en: "You banned {{target}}",
     th: "คุณแบน{{target}}",
   },
@@ -894,12 +894,12 @@ export const SYSTEM_MESSAGES = {
   SYS_COMMUNITY_MEMBER_MUTED_UNTIL_ACTOR: {
     vi: "Bạn đã cấm nói {{target}} đến {{until}}",
     en: "You muted {{target}} until {{until}}",
-    th: "คุณปิดสิทธิ์พูด{{target}}จนถึง {{until}}",
+    th: "คุณปิดสิทธิ์พูดของ{{target}}จนถึง {{until}}",
   },
   SYS_COMMUNITY_MEMBER_MUTED_ACTOR: {
     vi: "Bạn đã cấm nói {{target}}",
     en: "You muted {{target}}",
-    th: "คุณปิดสิทธิ์พูด{{target}}",
+    th: "คุณปิดสิทธิ์พูดของ{{target}}",
   },
   SYS_COMMUNITY_MEMBER_UNMUTED_ACTOR: {
     vi: "Bạn đã bỏ cấm nói {{target}}",
@@ -911,7 +911,7 @@ export const SYSTEM_MESSAGES = {
   // ("{{target}} was unmuted") stay for actor-less rows — the auto-unmute sweeper
   // (metadata.source "auto") and legacy rows without an actorUserId.
   SYS_COMMUNITY_MEMBER_BANNED_BY: {
-    vi: "{{actor}} đã cấm {{target}}",
+    vi: "{{actor}} đã cấm {{target}} khỏi cộng đồng",
     en: "{{actor}} banned {{target}}",
     th: "{{actor}}แบน{{target}}",
   },
@@ -923,12 +923,12 @@ export const SYSTEM_MESSAGES = {
   SYS_COMMUNITY_MEMBER_MUTED_UNTIL_BY: {
     vi: "{{actor}} đã cấm nói {{target}} đến {{until}}",
     en: "{{actor}} muted {{target}} until {{until}}",
-    th: "{{actor}}ปิดสิทธิ์พูด{{target}}จนถึง {{until}}",
+    th: "{{actor}}ปิดสิทธิ์พูดของ{{target}}จนถึง {{until}}",
   },
   SYS_COMMUNITY_MEMBER_MUTED_BY: {
     vi: "{{actor}} đã cấm nói {{target}}",
     en: "{{actor}} muted {{target}}",
-    th: "{{actor}}ปิดสิทธิ์พูด{{target}}",
+    th: "{{actor}}ปิดสิทธิ์พูดของ{{target}}",
   },
   SYS_COMMUNITY_MEMBER_UNMUTED_BY: {
     vi: "{{actor}} đã bỏ cấm nói {{target}}",
@@ -951,6 +951,222 @@ export const SYSTEM_MESSAGES = {
     vi: "Bạn đã thả {{emoji}} cho {{preview}}",
     en: "You reacted {{emoji}} to {{preview}}",
     th: "คุณแสดงความรู้สึก {{emoji}} ต่อ {{preview}}",
+  },
+  // ── System messages v2 (docs: SYSTEM_MESSAGES_V2_CONTRACT) ──
+  SYS_ACTOR_WITH_ROLE: {
+    vi: "{{name}} ({{role}})",
+    en: "{{name}} ({{role}})",
+    th: "{{name}} ({{role}})",
+  },
+  SYS_DURATION_UNDER_MINUTE: {
+    vi: "<1 phút",
+    en: "<1m",
+    th: "<1 นาที",
+  },
+  SYS_MEMBER_ADDED: {
+    vi: "{{actor}} đã thêm {{target}}",
+    en: "{{actor}} added {{target}}",
+    th: "{{actor}}เพิ่ม{{target}}",
+  },
+  SYS_GROUP_MEMBER_REMOVED: {
+    vi: "{{actor}} đã xóa {{target}} khỏi nhóm",
+    en: "{{actor}} removed {{target}}",
+    th: "{{actor}}นำ{{target}}ออกจากกลุ่ม",
+  },
+  SYS_COMMUNITY_MEMBER_REMOVED: {
+    vi: "{{actor}} đã xóa {{target}} khỏi cộng đồng",
+    en: "{{actor}} removed {{target}}",
+    th: "{{actor}}นำ{{target}}ออกจากคอมมูนิตี้",
+  },
+  SYS_MESSAGE_DELETED: {
+    vi: "{{actor}} đã xóa một tin nhắn",
+    en: "{{actor}} deleted a message",
+    th: "{{actor}}ลบข้อความ",
+  },
+  SYS_MESSAGE_DELETED_ACTOR: {
+    vi: "Bạn đã xóa một tin nhắn",
+    en: "You deleted a message",
+    th: "คุณลบข้อความ",
+  },
+  SYS_MESSAGE_DELETED_SENDER: {
+    vi: "{{actor}} đã xóa tin nhắn của bạn",
+    en: "{{actor}} deleted your message",
+    th: "{{actor}}ลบข้อความของคุณ",
+  },
+  SYS_GROUP_LEADER_MADE: {
+    vi: "{{actor}} đã chuyển quyền trưởng nhóm cho {{target}}",
+    en: "{{actor}} made {{target}} the group leader",
+    th: "{{actor}}โอนตำแหน่งหัวหน้ากลุ่มให้{{target}}",
+  },
+  SYS_GROUP_LEADER_MADE_ACTOR: {
+    vi: "Bạn đã chuyển quyền trưởng nhóm cho {{target}}",
+    en: "You made {{target}} the group leader",
+    th: "คุณโอนตำแหน่งหัวหน้ากลุ่มให้{{target}}",
+  },
+  SYS_GROUP_LEADER_MADE_TARGET: {
+    vi: "{{actor}} đã chuyển quyền trưởng nhóm cho bạn",
+    en: "{{actor}} made you the group leader",
+    th: "{{actor}}โอนตำแหน่งหัวหน้ากลุ่มให้คุณ",
+  },
+  SYS_CALL_DECLINED_OUTGOING: {
+    vi: "Cuộc gọi bị từ chối",
+    en: "Call declined",
+    th: "สายถูกปฏิเสธ",
+  },
+  SYS_CALL_DECLINED_INCOMING_VOICE: {
+    vi: "Bạn đã từ chối cuộc gọi thoại",
+    en: "You declined a voice call",
+    th: "คุณปฏิเสธสายสนทนา",
+  },
+  SYS_CALL_DECLINED_INCOMING_VIDEO: {
+    vi: "Bạn đã từ chối cuộc gọi video",
+    en: "You declined a video call",
+    th: "คุณปฏิเสธวิดีโอคอล",
+  },
+  SYS_COMMUNITY_RENAMED_BY: {
+    vi: "{{actor}} đã đổi tên cộng đồng thành “{{name}}”",
+    en: "{{actor}} renamed the community to “{{name}}”",
+    th: "{{actor}}เปลี่ยนชื่อคอมมูนิตี้เป็น “{{name}}”",
+  },
+  SYS_COMMUNITY_RENAMED_SELF: {
+    vi: "Bạn đã đổi tên cộng đồng thành “{{name}}”",
+    en: "You renamed the community to “{{name}}”",
+    th: "คุณเปลี่ยนชื่อคอมมูนิตี้เป็น “{{name}}”",
+  },
+  SYS_COMMUNITY_PHOTO_CHANGED_BY: {
+    vi: "{{actor}} đã đổi ảnh cộng đồng",
+    en: "{{actor}} changed the community photo",
+    th: "{{actor}}เปลี่ยนรูปคอมมูนิตี้",
+  },
+  SYS_COMMUNITY_PHOTO_CHANGED_SELF: {
+    vi: "Bạn đã đổi ảnh cộng đồng",
+    en: "You changed the community photo",
+    th: "คุณเปลี่ยนรูปคอมมูนิตี้",
+  },
+  SYS_COMMUNITY_SETTINGS_UPDATED_BY: {
+    vi: "{{actor}} đã cập nhật cài đặt cộng đồng",
+    en: "{{actor}} updated the community settings",
+    th: "{{actor}}อัปเดตการตั้งค่าคอมมูนิตี้",
+  },
+  SYS_COMMUNITY_SETTINGS_UPDATED_SELF: {
+    vi: "Bạn đã cập nhật cài đặt cộng đồng",
+    en: "You updated the community settings",
+    th: "คุณอัปเดตการตั้งค่าคอมมูนิตี้",
+  },
+  SYS_COMMUNITY_MADE_MODERATOR: {
+    vi: "{{actor}} đã đặt {{target}} làm người kiểm duyệt",
+    en: "{{actor}} made {{target}} a moderator",
+    th: "{{actor}}แต่งตั้ง{{target}}เป็นผู้ช่วยดูแล",
+  },
+  SYS_COMMUNITY_MADE_MODERATOR_ACTOR: {
+    vi: "Bạn đã đặt {{target}} làm người kiểm duyệt",
+    en: "You made {{target}} a moderator",
+    th: "คุณแต่งตั้ง{{target}}เป็นผู้ช่วยดูแล",
+  },
+  SYS_COMMUNITY_MADE_MODERATOR_TARGET: {
+    vi: "{{actor}} đã đặt bạn làm người kiểm duyệt",
+    en: "{{actor}} made you a moderator",
+    th: "{{actor}}แต่งตั้งคุณเป็นผู้ช่วยดูแล",
+  },
+  SYS_COMMUNITY_REMOVED_MODERATOR: {
+    vi: "{{actor}} đã gỡ quyền kiểm duyệt của {{target}}",
+    en: "{{actor}} removed {{target}} as moderator",
+    th: "{{actor}}ถอด{{target}}ออกจากผู้ช่วยดูแล",
+  },
+  SYS_COMMUNITY_REMOVED_MODERATOR_ACTOR: {
+    vi: "Bạn đã gỡ quyền kiểm duyệt của {{target}}",
+    en: "You removed {{target}} as moderator",
+    th: "คุณถอด{{target}}ออกจากผู้ช่วยดูแล",
+  },
+  SYS_COMMUNITY_REMOVED_MODERATOR_TARGET: {
+    vi: "{{actor}} đã gỡ quyền kiểm duyệt của bạn",
+    en: "{{actor}} removed you as moderator",
+    th: "{{actor}}ถอดคุณออกจากผู้ช่วยดูแล",
+  },
+  SYS_COMMUNITY_MADE_ADMIN: {
+    vi: "{{actor}} đã chuyển quyền quản trị cho {{target}}",
+    en: "{{actor}} made {{target}} the admin",
+    th: "{{actor}}โอนสิทธิ์แอดมินให้{{target}}",
+  },
+  SYS_COMMUNITY_MADE_ADMIN_ACTOR: {
+    vi: "Bạn đã chuyển quyền quản trị cho {{target}}. Bạn hiện là người kiểm duyệt",
+    en: "You made {{target}} the admin. You’re now a moderator",
+    th: "คุณโอนสิทธิ์แอดมินให้{{target}}แล้ว ตอนนี้คุณเป็นผู้ช่วยดูแล",
+  },
+  SYS_COMMUNITY_MADE_ADMIN_TARGET: {
+    vi: "{{actor}} đã chuyển quyền quản trị cho bạn",
+    en: "{{actor}} made you the admin",
+    th: "{{actor}}โอนสิทธิ์แอดมินให้คุณ",
+  },
+  SYS_COMMUNITY_NOW_ADMIN: {
+    vi: "{{target}} hiện là quản trị viên",
+    en: "{{target}} is now the admin",
+    th: "{{target}}เป็นแอดมินแล้ว",
+  },
+  SYS_COMMUNITY_NOW_ADMIN_SELF: {
+    vi: "Bạn hiện là quản trị viên của {{entity}}",
+    en: "You’re now the admin of {{entity}}",
+    th: "ตอนนี้คุณเป็นแอดมินของ{{entity}}",
+  },
+  SYS_COMMUNITY_MEMBER_MUTED_UNTIL_TARGET: {
+    vi: "{{actor}} đã cấm nói bạn đến {{until}}",
+    en: "{{actor}} muted you until {{until}}",
+    th: "{{actor}}ปิดสิทธิ์พูดของคุณจนถึง {{until}}",
+  },
+  SYS_COMMUNITY_MEMBER_MUTED_TARGET: {
+    vi: "{{actor}} đã cấm nói bạn",
+    en: "{{actor}} muted you",
+    th: "{{actor}}ปิดสิทธิ์พูดของคุณ",
+  },
+  SYS_COMMUNITY_CAN_CHAT_AGAIN: {
+    vi: "Bạn có thể trò chuyện trong {{entity}} trở lại",
+    en: "You can chat in {{entity}} again",
+    th: "คุณแชทใน{{entity}}ได้อีกครั้งแล้ว",
+  },
+  SYS_COMMUNITY_LIVESTREAM_ENDED_YOURS: {
+    vi: "{{actor}} đã kết thúc buổi phát trực tiếp của bạn",
+    en: "{{actor}} ended your livestream",
+    th: "{{actor}}จบไลฟ์สตรีมของคุณ",
+  },
+  SYS_COMMUNITY_LIVESTREAM_LOST: {
+    vi: "Buổi phát trực tiếp của {{host}} đã kết thúc",
+    en: "{{host}}’s livestream ended",
+    th: "ไลฟ์สตรีมของ{{host}}จบลง",
+  },
+  SYS_COMMUNITY_LIVESTREAM_LOST_SELF: {
+    vi: "Buổi phát trực tiếp của bạn đã kết thúc do mất kết nối",
+    en: "Your livestream ended due to connection loss",
+    th: "ไลฟ์สตรีมของคุณจบลงเนื่องจากการเชื่อมต่อขาดหาย",
+  },
+  SYS_COMMUNITY_CLOSED: {
+    vi: "{{actor}} đã đóng cộng đồng này",
+    en: "{{actor}} closed this community",
+    th: "{{actor}}ปิดคอมมูนิตี้นี้",
+  },
+  SYS_COMMUNITY_CLOSED_SELF: {
+    vi: "Bạn đã đóng cộng đồng này",
+    en: "You closed this community",
+    th: "คุณปิดคอมมูนิตี้นี้",
+  },
+  SYS_COMMUNITY_REOPENED: {
+    vi: "{{actor}} đã mở lại cộng đồng này",
+    en: "{{actor}} reopened this community",
+    th: "{{actor}}เปิดคอมมูนิตี้นี้อีกครั้ง",
+  },
+  SYS_COMMUNITY_REOPENED_SELF: {
+    vi: "Bạn đã mở lại cộng đồng này",
+    en: "You reopened this community",
+    th: "คุณเปิดคอมมูนิตี้นี้อีกครั้ง",
+  },
+  SYS_DELETED_ACCOUNT_NAME: {
+    vi: "Tài khoản đã bị xóa",
+    en: "Deleted Account",
+    th: "บัญชีที่ถูกลบ",
+  },
+  SYS_COMMUNITY_NOW_MODERATOR_SELF: {
+    vi: "Bạn hiện là người kiểm duyệt trong {{entity}}",
+    en: "You’re now a moderator in {{entity}}",
+    th: "ตอนนี้คุณเป็นผู้ช่วยดูแลใน{{entity}}",
   },
 } as const satisfies MessageCatalog;
 

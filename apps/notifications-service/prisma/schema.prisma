@@ -45,6 +45,8 @@ model DeviceToken {
   // Null = this client never sent one (older build) -> fall back to the
   // account language, which is exactly the pre-existing behaviour.
   locale     String?
+  // Device IANA time zone for push copy times ("Asia/Ho_Chi_Minh"); null → UTC.
+  timezone   String?
   lastSeenAt DateTime @default(now())
   createdAt  DateTime @default(now())
 

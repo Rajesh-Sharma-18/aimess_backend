@@ -12,6 +12,7 @@ import type {
   RoomMember,
 } from "../generated/prisma/index.js";
 import { getCommunityReconcileClient } from "../grpc/community.client.js";
+import { publishAdminActiveSafe } from "../events/publish-community-activity.js";
 
 /**
  * Centralized access guards for chat-service.
@@ -72,21 +73,38 @@ export function privateRoomPeerId(
  * Group: the caller MUST be an ACTIVE member. When `roles` is supplied the
  * member's role must be one of them (e.g. ADMIN for management actions).
  *
+ * @throws ForbiddenError `CHAT_NOT_GROUP_MEMBER` when the caller was removed (KICKED).
  * @throws ForbiddenError `CHAT_NOT_A_MEMBER` when the caller isn't an active member.
  * @throws ForbiddenError `CHAT_INSUFFICIENT_PERMISSIONS` when the role is too low.
  */
 export async function assertGroupMember(
-  memberRepo: Pick<GroupMemberRepository, "findActiveByRoomAndUser">,
+  memberRepo: Pick<GroupMemberRepository, "findActiveByRoomAndUser"> &
+    Partial<Pick<GroupMemberRepository, "findByRoomAndUser">>,
   roomId: string,
   userId: string,
   opts?: { roles?: readonly string[] }
 ): Promise<GroupMember> {
   const member = await memberRepo.findActiveByRoomAndUser(roomId, userId);
-  if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+  if (!member) throw await groupWriteDeniedError(memberRepo, roomId, userId);
   if (opts?.roles && !opts.roles.includes(member.role)) {
     throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
   }
   return member;
+}
+
+/** The error for a non-ACTIVE group writer: a removed (KICKED) member gets 403 `CHAT_NOT_GROUP_MEMBER`, anyone else `fallback`. */
+export async function groupWriteDeniedError(
+  memberRepo: Partial<Pick<GroupMemberRepository, "findByRoomAndUser">>,
+  roomId: string,
+  userId: string,
+  fallback: Error = new ForbiddenError("CHAT_NOT_A_MEMBER")
+): Promise<Error> {
+  const row = await Promise.resolve(
+    memberRepo.findByRoomAndUser?.(roomId, userId)
+  ).catch(() => null);
+  return row?.status === "KICKED"
+    ? new ForbiddenError("CHAT_NOT_GROUP_MEMBER")
+    : fallback;
 }
 
 /**
@@ -126,15 +144,11 @@ export async function assertGroupWritable(
 }
 
 /**
- * Group READ access: an ACTIVE member reads everything. Anyone whose
- * membership has ENDED — LEFT, KICKED or BANNED — is denied outright, so the
- * group they no longer belong to cannot be opened, paged, searched or probed
- * by holding onto its roomId. This guard used to widen LEFT/KICKED to a
- * cutoff-capped read (WhatsApp-style read-only history); it no longer does,
- * matching the inbox, which stopped listing those rooms at all
- * (`getInboxMemberships`).
+ * Group READ access: an ACTIVE member reads everything. A REMOVED (KICKED)
+ * member keeps a read-only chat up to and including their removal line
+ * (`readCutoffBefore` = `kickedAt`, contract §8). A voluntary leaver is denied.
  *
- * The ONE surviving widening is a DISBANDED room, where the ROOM is the thing
+ * The other widening is a DISBANDED room, where the ROOM is the thing
  * that died rather than the membership: the disband ends every membership at
  * exactly the room's `disbandedAt`, and an open client has to keep rendering
  * the history it already holds. So a LEFT row is admitted only when its
@@ -160,6 +174,9 @@ export async function assertGroupReadAccess(
   const member = await memberRepo.findByRoomAndUser(roomId, userId);
   if (member?.status === "ACTIVE") return { member };
   const cutoff = groupReadCutoff(member);
+  if (cutoff && member?.status === "KICKED") {
+    return { member, readCutoffBefore: cutoff };
+  }
   if (cutoff && member?.status === "LEFT") {
     const room = await roomRepo.findByRoomId(roomId);
     if (
@@ -177,10 +194,8 @@ export async function assertGroupReadAccess(
  * row carries no historical read access at all (ACTIVE, BANNED, missing, or a
  * LEFT/KICKED row whose timestamp was never written).
  *
- * Since a removal now ends access entirely, this is reached only on the
- * DISBANDED path (see {@link assertGroupReadAccess}) and by the detail preview
- * cap that mirrors it, so the preview and the timeline can never disagree
- * about how far a disbanded room may be read.
+ * Shared by {@link assertGroupReadAccess} and the list/detail preview cap, so the
+ * preview and the timeline never disagree about how far a row may be read.
  */
 export function groupReadCutoff(
   member:
@@ -191,43 +206,6 @@ export function groupReadCutoff(
   if (member?.status === "LEFT") return member.leftAt ?? null;
   if (member?.status === "KICKED") return member.kickedAt ?? null;
   return null;
-}
-
-/**
- * True when the group member row carries an effective moderation mute.
- * Lazy expiry: a timed mute (`moderationMutedUntil`) auto-lifts the instant it
- * passes — no sweeper needed. An indefinite mute has `moderationMuted=true`
- * with `moderationMutedUntil=null`. Mirrors {@link isCommunityMemberMuted};
- * unlike community's cross-service mirror, group membership is a single row
- * chat-service already owns, so no separate mute model/sync is needed.
- */
-export function isGroupMemberMuted(
-  member:
-    | Pick<GroupMember, "moderationMuted" | "moderationMutedUntil">
-    | null
-    | undefined
-): boolean {
-  if (!member?.moderationMuted) return false;
-  if (member.moderationMutedUntil == null) return true; // indefinite
-  return member.moderationMutedUntil.getTime() > Date.now();
-}
-
-/**
- * Group WRITE gate for moderation mute: a muted member cannot send/react
- * (they keep full read access). Call AFTER the membership guard that loads
- * the member row, reusing it — zero extra I/O.
- *
- * @throws ForbiddenError `CHAT_MUTED_IN_GROUP` when the member is muted.
- */
-export function assertGroupMemberNotMuted(
-  member:
-    | Pick<GroupMember, "moderationMuted" | "moderationMutedUntil">
-    | null
-    | undefined
-): void {
-  if (isGroupMemberMuted(member)) {
-    throw new ForbiddenError("CHAT_MUTED_IN_GROUP");
-  }
 }
 
 /**
@@ -262,10 +240,9 @@ export async function getCommunityLiveRole(
 }
 
 /**
- * Moderation hierarchy for deleting SOMEONE ELSE's message, shared by groups
- * (`GroupMessageService.deleteMessage`, UPPERCASE roles) and communities
- * (`CommunityMessageService.deleteForAll`, lowercase live roles) — hence the
- * case-insensitive compare.
+ * Moderation hierarchy for deleting SOMEONE ELSE's community message
+ * (`CommunityMessageService.deleteForAll`, lowercase live roles) — the
+ * compare is case-insensitive.
  *
  * Both call sites previously asked only "is the actor ADMIN or MODERATOR?" and
  * never looked at the SENDER's role, so a MODERATOR could delete an ADMIN's
@@ -425,13 +402,25 @@ export async function assertCommunityMember(
  * @throws ForbiddenError `COMMUNITY_CHAT_DISABLED` when the room is missing/inactive.
  */
 export function assertCommunityRoomWritable(
-  room: { status: string } | null | undefined
+  room: { status: string } | null | undefined,
+  member?: Pick<RoomMember, "role"> | null
 ): void {
   if (room?.status === "active") return;
   if (room?.status === "suspended") {
+    assertCommunityOpenFor(room, member);
     throw new ForbiddenError("COMMUNITY_SUSPENDED");
   }
   throw new ForbiddenError("COMMUNITY_CHAT_DISABLED");
+}
+
+/** Closed/suspended community: only its admin may still open it (read-only). */
+export function assertCommunityOpenFor(
+  room: { status: string } | null | undefined,
+  member: Pick<RoomMember, "role"> | null | undefined
+): void {
+  if (room?.status === "suspended" && member?.role !== "admin") {
+    throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+  }
 }
 
 /**
@@ -499,8 +488,8 @@ export function assertCommunityMemberNotMuted(
  * (`communityType`, synced from community-service by the room provisioner, the
  * `community.visibility_changed` event, and the boot reconciler). A null/missing
  * value is treated as PRIVATE — conservative fail-closed so an unsynced room
- * never leaks a PRIVATE community's history to a non-member. The room is only
- * loaded for non-members; ACTIVE members short-circuit first.
+ * never leaks a PRIVATE community's history to a non-member. A closed room
+ * answers COMMUNITY_IS_CLOSED to everyone but its admin.
  *
  * @throws ForbiddenError `USER_BANNED` when the caller is banned from the
  *   community and `options.allowBannedReadCutoff` is not set.
@@ -518,7 +507,14 @@ export async function assertCommunityReadAccess(
   canRead: boolean;
   bannedAtCutoff?: Date;
 }> {
-  const member = await memberRepo.findByRoomAndUser(roomId, userId);
+  const [member, room] = await Promise.all([
+    memberRepo.findByRoomAndUser(roomId, userId),
+    roomRepo.findRoomById(roomId),
+  ]);
+  assertCommunityOpenFor(room, member?.status === "active" ? member : null);
+  if (member?.status === "active" && member.role === "admin") {
+    publishAdminActiveSafe(roomId, userId);
+  }
 
   // Banned: denied outright, even for a PUBLIC community — a ban revokes all
   // WRITE/realtime access, so this must NOT fall through to the "PUBLIC
@@ -542,7 +538,6 @@ export async function assertCommunityReadAccess(
   }
 
   // Non-members can read only if the community is PUBLIC (persisted on the room).
-  const room = await roomRepo.findRoomById(roomId);
   if (room?.communityType === "PUBLIC") {
     return { member: null, canRead: true };
   }

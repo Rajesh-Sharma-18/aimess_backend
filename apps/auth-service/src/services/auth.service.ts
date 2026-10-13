@@ -17,7 +17,7 @@ import {
   isEmailLoginIdentifier,
   normalizeLoginIdentifier,
 } from "../lib/login-identifier.js";
-import { assertNotBanned } from "../lib/account-guard.js";
+import { assertNotRestricted } from "../lib/account-guard.js";
 import {
   accountLockedError,
   lockedForSec,
@@ -124,6 +124,8 @@ export const authService = {
     // Verifying the credential first keeps both — the right answer for the
     // owner, an unchanged one for anybody else — so this is not an enumeration
     // oracle: without the password the response is byte-identical to before.
+    // AIMESS-62 (product, 2026-10-12): /accounts/validate purpose=login now
+    // discloses this state at the identifier step; login itself is unchanged.
     //
     // Deliberately BEFORE the locked/banned/status checks: a soft delete also
     // sets status to PENDING_DELETION, and reaching those would answer
@@ -151,9 +153,20 @@ export const authService = {
       throw accountLockedError(lockedForSec(user.lockedUntil));
     }
 
-    if (user.status === AccountStatus.BANNED) {
-      auditFailure("ACCOUNT_BANNED", user.id);
-      assertNotBanned(user.status);
+    if (
+      user.status === AccountStatus.BANNED ||
+      user.status === AccountStatus.SUSPENDED
+    ) {
+      // Reason and end time only for whoever proved the password.
+      const disclose =
+        !!user.passwordHash &&
+        (await bcrypt.compare(input.password, user.passwordHash));
+      try {
+        user.status = await assertNotRestricted(user, disclose);
+      } catch (error) {
+        auditFailure(`ACCOUNT_${user.status}`, user.id);
+        throw error;
+      }
     }
 
     if (user.status !== AccountStatus.ACTIVE) {

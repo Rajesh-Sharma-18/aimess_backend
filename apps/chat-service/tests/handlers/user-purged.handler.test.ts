@@ -46,7 +46,7 @@ jest.mock("../../src/config/prisma.js", () => ({
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { handleUserPurged } =
+const { handleUserPurged, setPurgedLeaderSuccession } =
   require("../../src/handlers/user-purged.handler.js") as typeof import("../../src/handlers/user-purged.handler.js");
 
 const USER = "user-1";
@@ -159,5 +159,14 @@ describe("user.purged — chat sender snapshots", () => {
     generalMessages = [];
 
     await expect(handleUserPurged({ userId: USER } as never)).resolves.toBeUndefined();
+  });
+
+  it("hands every group the deleted account led to its successor", async () => {
+    const succession = jest.fn(async () => []);
+    setPurgedLeaderSuccession(succession);
+
+    await handleUserPurged({ userId: USER } as never);
+
+    expect(succession).toHaveBeenCalledWith(USER);
   });
 });

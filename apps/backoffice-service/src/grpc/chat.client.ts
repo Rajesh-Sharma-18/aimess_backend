@@ -177,6 +177,7 @@ export interface AdminApplySystemBanReq {
   userId: string;
   actorAdminId: string;
   reason: string;
+  reasonCode?: "ADMIN_BANNED" | "ADMIN_SUSPENDED";
 }
 export interface AdminApplySystemBanRes {
   ok: boolean;

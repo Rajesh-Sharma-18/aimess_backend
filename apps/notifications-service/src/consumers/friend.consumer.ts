@@ -151,35 +151,8 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
 
     case FriendshipEvents.FRIEND_REJECTED: {
       const p = data as FriendRejectedPayload;
-      const deepLink = buildDeepLink("user", p.addresseeId);
-      // The requester's inbox row records the decline, but a declined request
-      // never wakes their devices.
-      await pushToUser({
-        userId: p.requesterId,
-        category: "friendRequestEnabled",
-        type,
-        skipPush: true,
-        actorId: p.addresseeId,
-        copy: friendCopy.rejected(p.addresseeName),
-        localizedData: resolutionCopy.friendDeclined(),
-        deepLink,
-        apnsThreadId: `friend_${p.friendshipId}`,
-        data: {
-          friendshipId: p.friendshipId,
-          addresseeId: p.addresseeId,
-          deepLink,
-          resolutionTone: "danger",
-          actorSnapshot: JSON.stringify({
-            userId: p.addresseeId,
-            displayName: p.addresseeName,
-            avatarUrl: p.addresseeAvatarUrl,
-          }),
-          navigation: JSON.stringify({
-            screen: "FRIEND_REQUESTS",
-            userId: p.addresseeId,
-          } satisfies NotificationNavigation),
-        },
-      });
+      // Spec: a decline never notifies the requester (no push, no inbox row). Their
+      // UI learns it from the conversation:friend-request-rejected socket event.
       // Update the ADDRESSEE's own friend.requested inbox row in-place so it
       // persists the "I have declined" state across reloads. The gRPC handler
       // detects type="friend.rejected" and replaces the existing friend.requested

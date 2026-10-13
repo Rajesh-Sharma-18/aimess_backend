@@ -22,14 +22,26 @@
  */
 import { t } from "./i18n.js";
 import {
+  administratorActorLabel,
   memberChangeText,
+  namedActorLabel,
   personLabel,
+  PLATFORM_ACTOR_ROLE,
   PLATFORM_ADMIN_ACTOR_ID,
-  roleActorLabel,
   SYSTEM_ACTOR_ID,
   type MemberChange,
 } from "./member-change-text.js";
+import { currentTimeZone } from "./locale-context.js";
+import { formatDurationShort, formatViewerDateTime } from "./time-format.js";
+import {
+  accountBannedMessage,
+  accountSuspendedMessage,
+} from "./account-status-text.js";
 import { localizeMessagePreview } from "./message-preview.js";
+import {
+  DELETED_ACCOUNT_DISPLAY_NAME,
+  deletedAccountDisplayName,
+} from "./user/deleted-account.js";
 import {
   buildCallActivityText,
   type CallActivityDirection,
@@ -81,7 +93,9 @@ export type LocalizedCopy = ((
    * side as "You"); it is never stored, so one ticket renders correctly for
    * whoever reads it.
    */
-  viewerId?: string
+  viewerId?: string,
+  /** The reader's IANA zone (device / socket / request); "UTC" when unknown. */
+  timeZone?: string
 ) => NotificationCopy) & {
   descriptor?: CopyDescriptor;
 };
@@ -98,7 +112,7 @@ export type LocalizedData = ((
 
 type Replayable = (
   ...args: never[]
-) => (locale: SupportedLocale, viewerId?: string) => unknown;
+) => (locale: SupportedLocale, viewerId?: string, timeZone?: string) => unknown;
 
 /**
  * ref → builder. The ref strings are a PERSISTED CONTRACT: they are written
@@ -168,7 +182,8 @@ function replay(
   raw: string | undefined | null,
   locale: SupportedLocale,
   data?: Record<string, unknown>,
-  viewerId?: string
+  viewerId?: string,
+  timeZone?: string
 ): unknown {
   if (!raw) return null;
   let parsed: CopyDescriptor;
@@ -190,8 +205,8 @@ function replay(
     return (
       build as (
         ...a: unknown[]
-      ) => (l: SupportedLocale, viewerId?: string) => unknown
-    )(...args)(locale, viewerId);
+      ) => (l: SupportedLocale, viewerId?: string, tz?: string) => unknown
+    )(...args)(locale, viewerId, timeZone);
   } catch {
     // A malformed/legacy descriptor must degrade to the row's stored text, never
     // take the notification list down with it.
@@ -214,9 +229,11 @@ export function renderNotificationCopy(
   locale: SupportedLocale,
   data?: Record<string, unknown>,
   /** The reader's userId — see {@link LocalizedCopy}. */
-  viewerId?: string
+  viewerId?: string,
+  /** The reader's IANA zone — see {@link LocalizedCopy}. */
+  timeZone?: string
 ): NotificationCopy | null {
-  const out = replay(copyRef, locale, data, viewerId);
+  const out = replay(copyRef, locale, data, viewerId, timeZone);
   return out && typeof out === "object" && "body" in out
     ? (out as NotificationCopy)
     : null;
@@ -271,12 +288,15 @@ const named = (
 const person = (
   name: string | null | undefined,
   locale: SupportedLocale
-): string => name?.trim() || t("SYS_NAME_SOMEONE", locale);
+): string =>
+  name?.trim() === DELETED_ACCOUNT_DISPLAY_NAME
+    ? deletedAccountDisplayName(locale)
+    : name?.trim() || t("SYS_NAME_SOMEONE", locale);
 
 /**
  * "{actor} added {target} to {entity}" / "{actor} removed {target} from
  * {entity}" — the same member-change sentence the chat lines render
- * (member-change-text.ts), with the reader's own side as "You".
+ * (member-change-text.ts); the reader is "You" as actor, "you" as target.
  */
 const memberChange = (
   change: MemberChange,
@@ -290,11 +310,25 @@ const memberChange = (
     change,
     {
       actor: personLabel(actor.id, actor.name, viewerId, locale),
-      target: personLabel(target.id, target.name, viewerId, locale),
+      target:
+        viewerId && target.id === viewerId
+          ? t("SYS_NAME_YOU_OBJECT", locale)
+          : personLabel(target.id, target.name, viewerId, locale),
       entity,
     },
     locale
   );
+
+/** v2 actor: "Lan (Moderator)" from the role snapshot, else the plain name. */
+const actorLabel = (
+  name: string | null | undefined,
+  role: string | null | undefined,
+  locale: SupportedLocale
+): string => namedActorLabel(name, role, locale) ?? person(name, locale);
+
+/** Whether a ticket carries a v2 actor (name or role) — legacy tickets don't. */
+const hasActor = (name?: string | null, role?: string | null): boolean =>
+  Boolean(name?.trim() || role?.trim());
 
 function roleLabel(role: string, locale: SupportedLocale): string {
   const r = String(role ?? "").toUpperCase();
@@ -304,21 +338,28 @@ function roleLabel(role: string, locale: SupportedLocale): string {
   return role.toLowerCase();
 }
 
-const INTL_LOCALE: Record<SupportedLocale, string> = {
-  en: "en-US",
-  vi: "vi-VN",
-  th: "th-TH",
-};
+/** ISO or epoch-ms mute expiry in the reader's zone ("10:00 PM, Oct 8"). */
+function formatUntil(
+  value: string | number,
+  locale: SupportedLocale,
+  timeZone: string | undefined
+): string | null {
+  const ms = typeof value === "number" ? value : new Date(value).getTime();
+  return Number.isFinite(ms) && ms > 0
+    ? formatViewerDateTime(ms, locale, timeZone ?? currentTimeZone())
+    : null;
+}
 
-function formatUntil(iso: string, locale: SupportedLocale): string | null {
-  const at = new Date(iso);
-  return Number.isNaN(at.getTime())
-    ? null
-    : `${new Intl.DateTimeFormat(INTL_LOCALE[locale], {
-        dateStyle: "medium",
-        timeStyle: "short",
-        timeZone: "UTC",
-      }).format(at)} UTC`;
+/** A livestream runtime: seconds re-render per reader; legacy tickets carry a baked string. */
+function durationLabel(
+  duration: string | number | null | undefined,
+  locale: SupportedLocale
+): string {
+  if (typeof duration === "number") {
+    return duration > 0 ? formatDurationShort(duration, locale) : "";
+  }
+  const d = duration?.trim() ?? "";
+  return /^0[smh]?$/.test(d) ? "" : d;
 }
 
 // Social rows are self-describing sentences that already name the person and
@@ -443,28 +484,66 @@ export const communityCopy = register("community", {
     (
       communityName: string,
       hostName: string,
-      duration?: string | null,
+      duration?: string | number | null,
       streamHostName?: string | null,
       actorRole?: string | null
     ): LocalizedCopy =>
     (locale) => {
       const host = streamHostName?.trim();
-      const withDuration = duration && !/^0[smh]?$/.test(duration.trim());
+      const d = durationLabel(duration, locale);
       const key = host
-        ? withDuration
+        ? d
           ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST_DURATION"
           : "NOTIF_COMMUNITY_LIVESTREAM_ENDED_HOST"
-        : withDuration
+        : d
           ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_DURATION"
           : "NOTIF_COMMUNITY_LIVESTREAM_ENDED";
       return {
         title: named(communityName, locale),
         body: t(key, locale, {
-          name: roleActorLabel(actorRole, locale) ?? person(hostName, locale),
+          name: host ? actorLabel(hostName, actorRole, locale) : person(hostName, locale),
           community: named(communityName, locale),
-          duration: duration ?? "",
+          duration: d,
           host: host ?? "",
         }),
+        inboxTitle: null,
+      };
+    },
+  /**
+   * The host's own inbox row when someone else (or signal loss) ended their
+   * stream: "Minh (Admin) ended your livestream after 12m" / "AI Mess
+   * Administrator ended …" / "Your livestream ended due to connection loss".
+   * `endedReason`: "CONNECTION_LOST" | "ADMIN" (platform) | anything else = a
+   * community admin/moderator named by `actorName` + `actorRole`.
+   */
+  livestreamEndedForHost:
+    (
+      communityName: string,
+      endedReason: string,
+      actorName?: string | null,
+      actorRole?: string | null,
+      durationSeconds?: number | null
+    ): LocalizedCopy =>
+    (locale) => {
+      const reason = String(endedReason ?? "").toUpperCase();
+      if (reason === "CONNECTION_LOST") {
+        return {
+          title: named(communityName, locale),
+          body: t("SYS_COMMUNITY_LIVESTREAM_LOST_SELF", locale),
+          inboxTitle: null,
+        };
+      }
+      const actor =
+        reason === "ADMIN" || String(actorRole ?? "").toUpperCase() === PLATFORM_ACTOR_ROLE
+          ? administratorActorLabel(locale)
+          : actorLabel(actorName, actorRole, locale);
+      const lead = t("SYS_COMMUNITY_LIVESTREAM_ENDED_YOURS", locale, { actor });
+      const d = durationLabel(durationSeconds ?? null, locale);
+      return {
+        title: named(communityName, locale),
+        body: d
+          ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION", locale, { lead, duration: d })
+          : lead,
         inboxTitle: null,
       };
     },
@@ -476,24 +555,24 @@ export const communityCopy = register("community", {
   livestreamEndedByAdmin:
     (
       communityName: string,
-      duration?: string | null,
+      duration?: string | number | null,
       hostName?: string | null
     ): LocalizedCopy =>
     (locale) => {
       const host = hostName?.trim();
-      const withDuration = duration && !/^0[smh]?$/.test(duration.trim());
+      const d = durationLabel(duration, locale);
       const key = host
-        ? withDuration
+        ? d
           ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST_DURATION"
           : "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST"
-        : withDuration
+        : d
           ? "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_DURATION"
           : "NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN";
       return {
         title: named(communityName, locale),
         body: t(key, locale, {
           community: named(communityName, locale),
-          duration: duration ?? "",
+          duration: d,
           host: host ?? "",
         }),
         inboxTitle: null,
@@ -501,37 +580,52 @@ export const communityCopy = register("community", {
     },
   /** Platform-ended (moderation, bans, timeouts): never names the host. */
   livestreamEndedBySystem:
-    (communityName: string, duration?: string | null): LocalizedCopy =>
-    (locale) => ({
-      title: named(communityName, locale),
-      body:
-        duration && !/^0[smh]?$/.test(duration.trim())
+    (communityName: string, duration?: string | number | null): LocalizedCopy =>
+    (locale) => {
+      const d = durationLabel(duration, locale);
+      return {
+        title: named(communityName, locale),
+        body: d
           ? t("NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM_DURATION", locale, {
               community: named(communityName, locale),
-              duration,
+              duration: d,
             })
           : t("NOTIF_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale, {
               community: named(communityName, locale),
             }),
-      inboxTitle: null,
-    }),
+        inboxTitle: null,
+      };
+    },
   joinRequestApproved:
-    (communityName: string, decidedByName: string): LocalizedCopy =>
+    (
+      communityName: string,
+      decidedByName: string,
+      actorRole?: string | null
+    ): LocalizedCopy =>
     (locale) => ({
       title: named(communityName, locale),
       body: t("NOTIF_COMMUNITY_JOIN_REQUEST_APPROVED", locale, {
-        name: person(decidedByName, locale),
+        name: actorLabel(decidedByName, actorRole, locale),
         community: named(communityName, locale),
       }),
       inboxTitle: null,
     }),
   joinRequestRejected:
-    (communityName: string): LocalizedCopy =>
+    (
+      communityName: string,
+      decidedByName?: string | null,
+      actorRole?: string | null
+    ): LocalizedCopy =>
     (locale) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_JOIN_REQUEST_REJECTED", locale, {
-        community: named(communityName, locale),
-      }),
+      body: hasActor(decidedByName, actorRole)
+        ? t("NOTIF_COMMUNITY_JOIN_REQUEST_DECLINED_BY", locale, {
+            name: actorLabel(decidedByName, actorRole, locale),
+            community: named(communityName, locale),
+          })
+        : t("NOTIF_COMMUNITY_JOIN_REQUEST_REJECTED", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
   memberJoined:
@@ -562,7 +656,7 @@ export const communityCopy = register("community", {
         ? memberChange(
             "ADDED",
             named(communityName, locale),
-            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
+            { id: actorId, name: namedActorLabel(actorName, actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
@@ -590,7 +684,7 @@ export const communityCopy = register("community", {
         ? memberChange(
             "ADDED",
             named(communityName, locale),
-            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
+            { id: actorId, name: namedActorLabel(actorName, actorRole, locale) ?? actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
@@ -609,16 +703,64 @@ export const communityCopy = register("community", {
       }),
       inboxTitle: null,
     }),
-  roleChanged:
-    (newRole: string, communityName?: string | null): LocalizedCopy =>
+  /** Former admin after any handover: "You’re now a moderator in X". */
+  formerAdminNowModerator:
+    (communityName?: string | null): LocalizedCopy =>
     (locale) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_ROLE_CHANGED", locale, {
-        role: roleLabel(newRole, locale),
+      body: t("NOTIF_COMMUNITY_NOW_MODERATOR", locale, {
         community: named(communityName, locale),
       }),
       inboxTitle: null,
     }),
+  /** Day-20/27 reminder (type COMMUNITY_ADMIN_INACTIVE_REMINDER). */
+  adminInactiveReminder:
+    (
+      communityName: string | null | undefined,
+      daysLeft: number,
+      successorKind: string
+    ): LocalizedCopy =>
+    (locale) => ({
+      title: named(communityName, locale),
+      body: t(
+        String(successorKind).toUpperCase() === "MEMBER"
+          ? "NOTIF_COMMUNITY_ADMIN_INACTIVE_TO_MEMBER"
+          : "NOTIF_COMMUNITY_ADMIN_INACTIVE_TO_MODERATOR",
+        locale,
+        { community: named(communityName, locale), days: daysLeft }
+      ),
+      inboxTitle: null,
+    }),
+  // v2 tickets carry the actor: "Minh (Admin) made you a moderator in X".
+  roleChanged:
+    (
+      newRole: string,
+      communityName?: string | null,
+      actorName?: string | null,
+      actorRole?: string | null,
+      oldRole?: string | null
+    ): LocalizedCopy =>
+    (locale) => {
+      const role = String(newRole ?? "").toUpperCase();
+      const community = named(communityName, locale);
+      const name = actorLabel(actorName, actorRole, locale);
+      const body = !hasActor(actorName, actorRole)
+        ? t("NOTIF_COMMUNITY_ROLE_CHANGED", locale, {
+            role: roleLabel(newRole, locale),
+            community,
+          })
+        : role === "ADMIN"
+          ? t("NOTIF_COMMUNITY_ADMIN_TRANSFERRED", locale, { community })
+          : role === "MODERATOR"
+            ? t("NOTIF_COMMUNITY_MADE_MODERATOR_BY", locale, { name, community })
+            : String(oldRole ?? "").toUpperCase() === "MODERATOR"
+              ? t("NOTIF_COMMUNITY_REMOVED_MODERATOR_BY", locale, { name, community })
+              : t("NOTIF_COMMUNITY_ROLE_CHANGED", locale, {
+                  role: roleLabel(newRole, locale),
+                  community,
+                });
+      return { title: community, body, inboxTitle: null };
+    },
   // "{actor} removed {target} from {community}", reader's side as "You" —
   // same contract as memberAdded. A ticket written before actor/target were
   // carried keeps "You were removed from …".
@@ -642,7 +784,7 @@ export const communityCopy = register("community", {
               // SYSTEM_ACTOR_ID, which only the Backoffice removal ever stored.
               id:
                 actorId === SYSTEM_ACTOR_ID ? PLATFORM_ADMIN_ACTOR_ID : actorId,
-              name: roleActorLabel(actorRole, locale) ?? actorName,
+              name: namedActorLabel(actorName, actorRole, locale) ?? actorName,
             },
             { id: targetUserId, name: targetName },
             viewerId,
@@ -654,43 +796,67 @@ export const communityCopy = register("community", {
       inboxTitle: null,
     }),
   memberBanned:
-    (communityName?: string | null): LocalizedCopy =>
+    (
+      communityName?: string | null,
+      actorName?: string | null,
+      actorRole?: string | null
+    ): LocalizedCopy =>
     (locale) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_MEMBER_BANNED", locale, {
-        community: named(communityName, locale),
-      }),
+      body: hasActor(actorName, actorRole)
+        ? t("NOTIF_COMMUNITY_MEMBER_BANNED_BY", locale, {
+            name: actorLabel(actorName, actorRole, locale),
+            community: named(communityName, locale),
+          })
+        : t("NOTIF_COMMUNITY_MEMBER_BANNED", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
   memberUnbanned:
-    (communityName?: string | null): LocalizedCopy =>
+    (
+      communityName?: string | null,
+      actorName?: string | null,
+      actorRole?: string | null
+    ): LocalizedCopy =>
     (locale) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_MEMBER_UNBANNED", locale, {
-        community: named(communityName, locale),
-      }),
+      body: hasActor(actorName, actorRole)
+        ? t("NOTIF_COMMUNITY_MEMBER_UNBANNED_BY", locale, {
+            name: actorLabel(actorName, actorRole, locale),
+            community: named(communityName, locale),
+          })
+        : t("NOTIF_COMMUNITY_MEMBER_UNBANNED", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
+  // `mutedUntil`: ISO or epoch ms, rendered in the reader's zone.
   memberMuted:
     (
-      mutedUntil?: string | null,
-      communityName?: string | null
+      mutedUntil?: string | number | null,
+      communityName?: string | null,
+      actorName?: string | null,
+      actorRole?: string | null
     ): LocalizedCopy =>
-    (locale) => {
-      const until = mutedUntil ? formatUntil(mutedUntil, locale) : null;
+    (locale, _viewerId, timeZone) => {
+      const until = mutedUntil ? formatUntil(mutedUntil, locale, timeZone) : null;
+      const community = named(communityName, locale);
+      const byActor = hasActor(actorName, actorRole);
+      const name = actorLabel(actorName, actorRole, locale);
       return {
-        title: named(communityName, locale),
+        title: community,
         body: until
-          ? t("NOTIF_COMMUNITY_MEMBER_MUTED_UNTIL", locale, {
-              community: named(communityName, locale),
-              until,
-            })
-          : t("NOTIF_COMMUNITY_MEMBER_MUTED", locale, {
-              community: named(communityName, locale),
-            }),
+          ? byActor
+            ? t("NOTIF_COMMUNITY_MEMBER_MUTED_UNTIL_BY", locale, { name, community, until })
+            : t("NOTIF_COMMUNITY_MEMBER_MUTED_UNTIL", locale, { community, until })
+          : byActor
+            ? t("NOTIF_COMMUNITY_MEMBER_MUTED_BY", locale, { name, community })
+            : t("NOTIF_COMMUNITY_MEMBER_MUTED", locale, { community }),
         inboxTitle: null,
       };
     },
+  // "You can chat in X again" — manual unmute only (auto-expiry sends no push).
   memberUnmuted:
     (communityName?: string | null): LocalizedCopy =>
     (locale) => ({
@@ -768,21 +934,39 @@ export const communityCopy = register("community", {
       inboxTitle: null,
     }),
   closed:
-    (communityName?: string | null): LocalizedCopy =>
+    (
+      communityName?: string | null,
+      actorName?: string | null,
+      actorRole?: string | null
+    ): LocalizedCopy =>
     (locale) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_CLOSED", locale, {
-        community: named(communityName, locale),
-      }),
+      body: hasActor(actorName, actorRole)
+        ? t("NOTIF_COMMUNITY_CLOSED_BY", locale, {
+            name: actorLabel(actorName, actorRole, locale),
+            community: named(communityName, locale),
+          })
+        : t("NOTIF_COMMUNITY_CLOSED", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
   reopened:
-    (communityName: string): LocalizedCopy =>
+    (
+      communityName: string,
+      actorName?: string | null,
+      actorRole?: string | null
+    ): LocalizedCopy =>
     (locale) => ({
       title: named(communityName, locale),
-      body: t("NOTIF_COMMUNITY_REOPENED", locale, {
-        community: named(communityName, locale),
-      }),
+      body: hasActor(actorName, actorRole)
+        ? t("NOTIF_COMMUNITY_REOPENED_BY", locale, {
+            name: actorLabel(actorName, actorRole, locale),
+            community: named(communityName, locale),
+          })
+        : t("NOTIF_COMMUNITY_REOPENED", locale, {
+            community: named(communityName, locale),
+          }),
       inboxTitle: null,
     }),
 });
@@ -1034,19 +1218,52 @@ export const groupCopy = register("group", {
         ? memberChange(
             "ADDED",
             groupName || t("NOTIF_GROUP_UNNAMED", locale),
-            { id: actorId, name: roleActorLabel(actorRole, locale) ?? actorName },
+            { id: actorId, name: actorName },
             { id: targetUserId, name: targetName },
             viewerId,
             locale
           )
         : t("NOTIF_GROUP_MEMBER_ADDED", locale),
     }),
+  // "An removed you from X".
+  memberRemoved:
+    (
+      groupName: string,
+      actorName?: string | null,
+      targetName?: string | null,
+      actorId?: string | null,
+      targetUserId?: string | null
+    ): LocalizedCopy =>
+    (locale, viewerId) => {
+      const name = groupName || t("NOTIF_GROUP_THIS_GROUP", locale);
+      return {
+        title: name,
+        body: memberChange(
+          "REMOVED",
+          name,
+          { id: actorId, name: actorName },
+          { id: targetUserId, name: targetName },
+          viewerId,
+          locale
+        ),
+      };
+    },
+  /** New leader (manual handover, leave-with-successor, or automatic). */
+  leaderChanged:
+    (groupName: string): LocalizedCopy =>
+    (locale) => {
+      const name = groupName || t("NOTIF_GROUP_THIS_GROUP", locale);
+      return {
+        title: name,
+        body: t("NOTIF_GROUP_LEADER_NOW", locale, { group: name }),
+      };
+    },
   // Word-for-word the community mute copy, with "group" in place of the
   // community name — see communityCopy.memberMuted/memberUnmuted.
   memberMuted:
     (groupName: string, mutedUntil?: string | null): LocalizedCopy =>
-    (locale) => {
-      const until = mutedUntil ? formatUntil(mutedUntil, locale) : null;
+    (locale, _viewerId, timeZone) => {
+      const until = mutedUntil ? formatUntil(mutedUntil, locale, timeZone) : null;
       const name = groupName || t("NOTIF_GROUP_THIS_GROUP", locale);
       return {
         title: name,
@@ -1062,6 +1279,39 @@ export const groupCopy = register("group", {
       return {
         title: name,
         body: t("NOTIF_GROUP_MEMBER_UNMUTED", locale, { group: name }),
+      };
+    },
+  joinRequested:
+    (groupName: string, requesterName: string): LocalizedCopy =>
+    (locale) => {
+      const name = groupName || t("NOTIF_GROUP_THIS_GROUP", locale);
+      return {
+        title: name,
+        body: t("NOTIF_GROUP_JOIN_REQUESTED", locale, {
+          name: person(requesterName, locale),
+          group: name,
+        }),
+        inboxTitle: null,
+      };
+    },
+  joinRequestApproved:
+    (groupName: string): LocalizedCopy =>
+    (locale) => {
+      const name = groupName || t("NOTIF_GROUP_THIS_GROUP", locale);
+      return {
+        title: name,
+        body: t("NOTIF_GROUP_JOIN_REQUEST_APPROVED", locale, { group: name }),
+        inboxTitle: null,
+      };
+    },
+  joinRequestRejected:
+    (groupName: string): LocalizedCopy =>
+    (locale) => {
+      const name = groupName || t("NOTIF_GROUP_THIS_GROUP", locale);
+      return {
+        title: name,
+        body: t("NOTIF_GROUP_JOIN_REQUEST_REJECTED", locale, { group: name }),
+        inboxTitle: null,
       };
     },
 });
@@ -1131,14 +1381,20 @@ export const callCopy = register("call", {
  * ticket re-renders it per reader and per device.
  */
 export const accountCopy = register("account", {
-  banned: (): LocalizedCopy => (locale) => ({
-    title: t("NOTIF_ACCOUNT_BANNED_TITLE", locale),
-    body: t("NOTIF_ACCOUNT_BANNED_BODY", locale),
-  }),
-  suspended: (): LocalizedCopy => (locale) => ({
-    title: t("NOTIF_ACCOUNT_SUSPENDED_TITLE", locale),
-    body: t("NOTIF_ACCOUNT_SUSPENDED_BODY", locale),
-  }),
+  banned:
+    (reason?: string | null): LocalizedCopy =>
+    (locale) => ({
+      title: t("NOTIF_ACCOUNT_BANNED_TITLE", locale),
+      body: accountBannedMessage(reason, locale),
+    }),
+  suspended:
+    (untilMs?: number | null, reason?: string | null): LocalizedCopy =>
+    (locale, _viewerId, timeZone) => ({
+      title: t("NOTIF_ACCOUNT_SUSPENDED_TITLE", locale),
+      body: untilMs
+        ? accountSuspendedMessage(untilMs, reason, locale, timeZone ?? currentTimeZone())
+        : t("NOTIF_ACCOUNT_SUSPENDED_BODY", locale),
+    }),
   reinstated: (): LocalizedCopy => (locale) => ({
     title: t("NOTIF_ACCOUNT_REINSTATED_TITLE", locale),
     body: t("NOTIF_ACCOUNT_REINSTATED_BODY", locale),
@@ -1147,6 +1403,25 @@ export const accountCopy = register("account", {
     title: t("NOTIF_ACCOUNT_UPDATED_BY_ADMIN_TITLE", locale),
     body: t("NOTIF_ACCOUNT_UPDATED_BY_ADMIN_BODY", locale),
   }),
+  /** Type ACCOUNT_WARNED; the note is staff-authored and never translated. */
+  warned:
+    (note?: string | null): LocalizedCopy =>
+    (locale) => ({
+      title: t("NOTIF_ACCOUNT_WARNED_TITLE", locale),
+      body: t("NOTIF_ACCOUNT_WARNED_BODY", locale, { note: note?.trim() ?? "" }),
+    }),
+  /** Type REPORT_OUTCOME, to the reporter; never names who was actioned. */
+  reportOutcome:
+    (outcome: string): LocalizedCopy =>
+    (locale) => ({
+      title: t("NOTIF_REPORT_OUTCOME_TITLE", locale),
+      body: t(
+        String(outcome).toUpperCase() === "ACTIONED"
+          ? "NOTIF_REPORT_OUTCOME_ACTIONED"
+          : "NOTIF_REPORT_OUTCOME_NO_ACTION",
+        locale
+      ),
+    }),
 });
 
 export const authCopy = register("auth", {
@@ -1214,10 +1489,17 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "streamHostName",
     "actorRole",
   ],
+  "community.livestreamEndedForHost": [
+    "communityName",
+    "endedReason",
+    "actorName",
+    "actorRole",
+    "durationSeconds",
+  ],
   "community.livestreamEndedBySystem": ["communityName", "duration"],
   "community.livestreamEndedByAdmin": ["communityName", "duration", "hostName"],
-  "community.joinRequestApproved": ["communityName", "decidedByName"],
-  "community.joinRequestRejected": ["communityName"],
+  "community.joinRequestApproved": ["communityName", "decidedByName", "actorRole"],
+  "community.joinRequestRejected": ["communityName", "decidedByName", "actorRole"],
   "community.memberJoined": ["communityName"],
   "community.memberAdded": [
     "communityName",
@@ -1236,7 +1518,9 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "actorRole",
   ],
   "community.adminTransferred": ["communityName"],
-  "community.roleChanged": ["newRole", "communityName"],
+  "community.formerAdminNowModerator": ["communityName"],
+  "community.adminInactiveReminder": ["communityName", "daysLeft", "successorKind"],
+  "community.roleChanged": ["newRole", "communityName", "actorName", "actorRole", "oldRole"],
   "community.memberKicked": [
     "communityName",
     "actorName",
@@ -1245,9 +1529,9 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "targetUserId",
     "actorRole",
   ],
-  "community.memberBanned": ["communityName"],
-  "community.memberUnbanned": ["communityName"],
-  "community.memberMuted": ["mutedUntil", "communityName"],
+  "community.memberBanned": ["communityName", "actorName", "actorRole"],
+  "community.memberUnbanned": ["communityName", "actorName", "actorRole"],
+  "community.memberMuted": ["mutedUntil", "communityName", "actorName", "actorRole"],
   "community.memberUnmuted": ["communityName"],
   "community.memberWarned": ["note", "communityName"],
   "community.inviteSent": ["communityName"],
@@ -1256,8 +1540,8 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
   "community.reportActioned": ["communityName"],
   "community.reportResolved": ["communityName"],
   "community.deleted": ["communityName"],
-  "community.closed": ["communityName"],
-  "community.reopened": ["communityName"],
+  "community.closed": ["communityName", "actorName", "actorRole"],
+  "community.reopened": ["communityName", "actorName", "actorRole"],
 
   // Each takes ONE options object; it is passed through under its own name
   // rather than flattened. All but `mentionInbox` are push-only; that one is
@@ -1276,8 +1560,19 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "targetUserId",
     "actorRole",
   ],
+  "group.memberRemoved": [
+    "groupName",
+    "actorName",
+    "targetName",
+    "actorId",
+    "targetUserId",
+  ],
+  "group.leaderChanged": ["groupName"],
   "group.memberMuted": ["groupName", "mutedUntil"],
   "group.memberUnmuted": ["groupName"],
+  "group.joinRequested": ["groupName", "requesterName"],
+  "group.joinRequestApproved": ["groupName"],
+  "group.joinRequestRejected": ["groupName"],
 
   "call.ringing": ["callerName", "callType"],
   "call.missed": ["callerName", "callType"],
@@ -1291,10 +1586,12 @@ export const COPY_PARAM_NAMES: Record<string, readonly string[]> = {
     "ringDurationSec",
   ],
 
-  "account.banned": [],
-  "account.suspended": [],
+  "account.banned": ["reason"],
+  "account.suspended": ["untilMs", "reason"],
   "account.reinstated": [],
   "account.updatedByAdmin": [],
+  "account.warned": ["note"],
+  "account.reportOutcome": ["outcome"],
 
   "auth.newLogin": ["browser", "location"],
   "auth.passwordChanged": [],

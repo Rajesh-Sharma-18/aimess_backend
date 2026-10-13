@@ -726,16 +726,6 @@ export const bannedMembersQuerySchema = z.object({
 });
 export type BannedMembersQuery = z.infer<typeof bannedMembersQuerySchema>;
 
-/** Warn a member: a required note. */
-export const warnMemberSchema = z.object({
-  note: z
-    .string()
-    .trim()
-    .min(1, "Note is required")
-    .max(1000, "Note must be at most 1000 characters"),
-});
-export type WarnMemberInput = z.infer<typeof warnMemberSchema>;
-
 export const warningsQuerySchema = z.object({
   page: pageSchema,
   limit: limitSchema,

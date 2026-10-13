@@ -15,6 +15,8 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findById: jest.fn(),
     countActiveInviteLinksByCreator: jest.fn(async () => 0),
     createInviteLink: jest.fn(),
+    revokeAllInviteLinks: jest.fn(async () => ({ count: 0 })),
+    clearInvitationCode: jest.fn(async () => ({ count: 0 })),
     findLatestReusableInviteLink: jest.fn(async () => null),
     createAuditLog: jest.fn(),
     // The atomic first-writer guard behind `ensurePermanentInvitationCode`

@@ -761,9 +761,12 @@ export const userManagementService = {
     // banned user with a stale membership is far better than a user who is not
     // banned at all. Every id is recorded on the audit row so an operator can
     // see (and re-run) what the ban actually took down.
-    const cascade = timeBoxed
-      ? emptyCascade()
-      : await applySpaceCascade(userId, ref.actorId, input.reason);
+    const cascade = await applySpaceCascade(
+      userId,
+      ref.actorId,
+      input.reason,
+      timeBoxed ? "ADMIN_SUSPENDED" : "ADMIN_BANNED"
+    );
 
     await moderationActionRepository.create({
       actorId: ref.actorId,
@@ -811,6 +814,7 @@ export const userManagementService = {
         reason: input.reason,
         suspendedUntil:
           result.suspendedUntil != null ? toIso(result.suspendedUntil) : null,
+        forceLogout: true,
         notifyUser: input.notifyUser,
         actorId: ref.actorId,
         at: toIso(ref.at),
@@ -884,11 +888,19 @@ export const userManagementService = {
 
     // Before the event that revokes sessions — see banUser.
     await streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
+    const cascade = await applySpaceCascade(
+      userId,
+      ref.actorId,
+      input.reason,
+      "ADMIN_SUSPENDED"
+    );
+    await recordCascadeAudits(ref.actorId, userId, cascade, ctx);
     publishUserSuspendedSafe({
       userId,
       reason: input.reason,
       suspendedUntil:
         result.suspendedUntil != null ? toIso(result.suspendedUntil) : null,
+      forceLogout: true,
       notifyUser: input.notifyUser,
       actorId: ref.actorId,
       at: toIso(ref.at),
@@ -1314,13 +1326,15 @@ function emptyCascade(): SpaceCascade {
 async function applySpaceCascade(
   userId: string,
   actorAdminId: string,
-  reason: string
+  reason: string,
+  reasonCode: "ADMIN_BANNED" | "ADMIN_SUSPENDED"
 ): Promise<SpaceCascade> {
   const cascade = emptyCascade();
+  const req = { userId, actorAdminId, reason, reasonCode };
 
   const [communities, groups] = await Promise.allSettled([
-    communityClient.adminApplySystemBan({ userId, actorAdminId, reason }),
-    chatClient.adminApplySystemBan({ userId, actorAdminId, reason }),
+    communityClient.adminApplySystemBan(req),
+    chatClient.adminApplySystemBan(req),
   ]);
 
   if (communities.status === "fulfilled") {
@@ -1506,11 +1520,9 @@ function mapCommunityScopeError(errorCode: string): Error {
   return new ConflictError(errorCode || "COMMUNITY_BAN_FAILED");
 }
 
-// Group-scoped ban: the exact community-scoped analogue. Delegates to
-// chat-service (owner of aimess_chat) over the AdminBanGroupMember RPC — a
-// normal member's membership goes BANNED (evicted, rejoin-blocked); the group
-// OWNER instead has the whole group CLOSED (ADMIN_BANNED banner, roster kept).
-// The ACCOUNT is never touched, so the caller sees back the unchanged status.
+// Legacy group-scoped ban. Groups have no ban: chat-service (AdminBanGroupMember)
+// REMOVES the member (KICKED, re-addable by the leader; a leader hands over first)
+// and posts "AI Mess Administrator removed X". The ACCOUNT is never touched.
 async function banFromGroup(
   userId: string,
   input: BanUserInput,
@@ -1549,8 +1561,7 @@ async function banFromGroup(
       reason: input.reason,
       note: input.note ?? null,
       permanent: true,
-      // Banning a group's own owner closes that group as a side effect; the
-      // audit row names it or the blast radius is invisible.
+      removedInstead: true,
       closedGroup: result.closedGroup ?? false,
     },
     ip: ctx.ip,
@@ -1594,8 +1605,7 @@ async function unbanFromGroup(
       banType: "GROUP",
       groupId,
       note: input.note ?? null,
-      // Same asymmetry as community/system unban: the membership stays LEFT (the
-      // user must rejoin), and a group CLOSED by an owner ban stays CLOSED.
+      // Groups have no ban: chat-service treats this as a no-op success.
       membershipRestored: false,
     },
     ip: ctx.ip,

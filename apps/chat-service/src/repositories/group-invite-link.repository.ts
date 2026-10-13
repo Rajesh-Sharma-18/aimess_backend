@@ -22,6 +22,7 @@ export class GroupInviteLinkRepository {
         maxUses: (data.maxUses as number) ?? null,
         usedCount: (data.usedCount as number) ?? 0,
         shareName: (data.shareName as string) ?? "",
+        activeKey: (data.activeKey as string) ?? null,
         createdAt: (data.createdAt as Date) ?? new Date(),
       },
     });
@@ -62,7 +63,36 @@ export class GroupInviteLinkRepository {
         status: "REVOKED",
         revokedAt: new Date(),
         revokedBy: userId,
+        activeKey: null,
       },
+    });
+  }
+
+  /**
+   * Takes one use of an ACTIVE link atomically (optimistic on usedCount): a join
+   * counts only if this write lands before a reset's revoke, and maxUses can't be
+   * oversubscribed.
+   */
+  async claimUse(token: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const row = await this.prisma.groupInviteLink.findUnique({
+        where: { token },
+      });
+      if (!row || row.status !== "ACTIVE") return false;
+      if (row.maxUses && row.usedCount >= row.maxUses) return false;
+      const { count } = await this.prisma.groupInviteLink.updateMany({
+        where: { token, status: "ACTIVE", usedCount: row.usedCount },
+        data: { usedCount: { increment: 1 } },
+      });
+      if (count === 1) return true;
+    }
+    return false;
+  }
+
+  async releaseUse(token: string): Promise<void> {
+    await this.prisma.groupInviteLink.updateMany({
+      where: { token, usedCount: { gt: 0 } },
+      data: { usedCount: { decrement: 1 } },
     });
   }
 
@@ -85,6 +115,7 @@ export class GroupInviteLinkRepository {
         status: "REVOKED",
         revokedAt: new Date(),
         revokedBy: userId,
+        activeKey: null,
       },
     });
   }

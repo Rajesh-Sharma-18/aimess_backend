@@ -23,6 +23,8 @@ export const refreshTokenRepository = {
           select: {
             id: true,
             status: true,
+            suspendedReason: true,
+            suspendedUntil: true,
             deletedAt: true,
             role: true,
           },

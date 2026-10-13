@@ -67,6 +67,7 @@ import {
   reopenCommunity,
   reviewCommunityReport,
   revokeCommunityInviteLink,
+  resetCommunityInviteLinks,
   setMuteSetting,
   setNotificationPreferences,
   transferCommunityAdmin,
@@ -138,7 +139,6 @@ import {
   updateCommunitySchema,
   updateMemberRoleSchema,
   warningsQuerySchema,
-  warnMemberSchema,
 } from "../validators/community.validator.js";
 
 export const communityRoutes: IRouter = Router();
@@ -496,8 +496,6 @@ communityRoutes.delete(
 
 communityRoutes.post(
   "/:id/members/:userId/warn",
-  validateParams(communityMemberParamsSchema),
-  validateBody(warnMemberSchema),
   warnCommunityMember
 );
 
@@ -692,6 +690,12 @@ communityRoutes.get(
   validateParams(communityIdParamsSchema),
   validateQuery(listInviteLinksQuerySchema),
   listCommunityInviteLinks
+);
+
+communityRoutes.post(
+  "/:id/invite-links/reset",
+  validateParams(communityIdParamsSchema),
+  resetCommunityInviteLinks
 );
 
 communityRoutes.delete(

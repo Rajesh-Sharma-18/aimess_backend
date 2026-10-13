@@ -126,24 +126,27 @@ describe("buildCallActivityText", () => {
         status: "MISSED",
         direction: "OUTGOING",
       })
-    ).toBe("Voice call, no answer");
+    ).toBe("No answer");
   });
 
   // "Cancelled" and "declined" are LIFECYCLE facts, not outcomes the reader
   // experienced. Whoever ended an unanswered ring, the caller got no answer and
   // the callee missed it — so all four terminal non-connected states collapse
   // onto ONE viewer-relative pair.
-  it("never surfaces cancelled or declined — every unanswered call reads the same", () => {
-    for (const status of ["MISSED", "CANCELLED", "DECLINED", "FAILED"]) {
+  it("v2: declined is told apart; every other unanswered call reads the same", () => {
+    expect(buildCallActivityText({ ...voice, status: "DECLINED", direction: "OUTGOING" })).toBe("Call declined");
+    expect(buildCallActivityText({ ...voice, status: "DECLINED", direction: "INCOMING" })).toBe("You declined a voice call");
+    expect(buildCallActivityText({ ...video, status: "DECLINED", direction: "INCOMING" })).toBe("You declined a video call");
+    for (const status of ["MISSED", "CANCELLED", "FAILED"]) {
       expect(
         buildCallActivityText({ ...voice, status, direction: "OUTGOING" })
-      ).toBe("Voice call, no answer");
+      ).toBe("No answer");
       expect(
         buildCallActivityText({ ...voice, status, direction: "INCOMING" })
       ).toBe("Missed voice call");
       expect(
         buildCallActivityText({ ...video, status, direction: "OUTGOING" })
-      ).toBe("Video call, no answer");
+      ).toBe("No answer");
       expect(
         buildCallActivityText({ ...video, status, direction: "INCOMING" })
       ).toBe("Missed video call");
@@ -152,7 +155,7 @@ describe("buildCallActivityText", () => {
 
   it("says nothing about which side hung up first", () => {
     for (const direction of ["INCOMING", "OUTGOING"] as const) {
-      for (const status of ["MISSED", "CANCELLED", "DECLINED", "FAILED"]) {
+      for (const status of ["MISSED", "CANCELLED", "FAILED"]) {
         const line = buildCallActivityText({ ...voice, status, direction });
         expect(line.toLowerCase()).not.toContain("cancel");
         expect(line.toLowerCase()).not.toContain("declin");

@@ -36,7 +36,7 @@ describe("personalizeConvUpdatedPreview", () => {
   it("renders the row in the reader's language", () => {
     expect(
       previewOf(personalizeConvUpdatedPreview(GROUP_BUMP, "x", "en"))
-    ).toBe("Alex removed Jim from the group");
+    ).toBe("Alex removed Jim");
     expect(
       previewOf(personalizeConvUpdatedPreview(GROUP_BUMP, "x", "vi"))
     ).toBe("Alex đã xóa Jim khỏi nhóm");
@@ -147,7 +147,7 @@ describe("one bump, one language per recipient", () => {
       personalizeConvUpdatedPreview
     );
 
-    expect(previewOf(en.emit.mock.calls[0][1])).toBe("Alex removed Jim from the group");
+    expect(previewOf(en.emit.mock.calls[0][1])).toBe("Alex removed Jim");
     expect(previewOf(vi.emit.mock.calls[0][1])).toBe("Alex đã xóa Jim khỏi nhóm");
     expect(previewOf(th.emit.mock.calls[0][1])).toBe("Alex นำ Jim ออกจากกลุ่ม");
   });

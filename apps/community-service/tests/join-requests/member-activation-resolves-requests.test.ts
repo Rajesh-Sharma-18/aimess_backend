@@ -286,6 +286,16 @@ describe("A. addMembers while B has a PENDING join request", () => {
     ]);
   });
 
+  it("AUDIT: an add is MEMBER_ADDED with the adder as actor and the added member as target (no COMMUNITY_JOINED)", async () => {
+    repo.createAuditLog.mockResolvedValue(undefined);
+    await communityService.addMembers(CID, ADMIN, [B]);
+    const rows = repo.createAuditLog.mock.calls.map((c) => c[0]);
+    expect(rows.filter((r) => r.action === "MEMBER_ADDED")).toEqual([
+      expect.objectContaining({ actorId: ADMIN, targetUserId: B }),
+    ]);
+    expect(rows.some((r) => r.action === "COMMUNITY_JOINED")).toBe(false);
+  });
+
   it("A1: hands the membership write the caller id, so the SAME transaction resolves B's request", async () => {
     await communityService.addMembers(CID, ADMIN, [B]);
 
@@ -550,10 +560,9 @@ describe("C. copy per path", () => {
     const added = publishChatUserEvent.mock.calls.find(
       ([, , evt]) => evt === "community:added"
     );
-    // The adding admin is named by role, never by name.
-    expect(added?.[3].lastActivity.preview).toBe(
-      "Admin added You to Secret Club"
-    );
+    // v2: the adder is named with their role — "Minh (Admin) added you".
+    expect(added?.[3].lastActivity.preview).toMatch(/\(Admin\) added you$/);
+    expect(added?.[3].lastActivity.preview).not.toMatch(/^Admin /);
   });
 });
 

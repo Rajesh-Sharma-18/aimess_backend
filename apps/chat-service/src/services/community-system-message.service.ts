@@ -11,6 +11,7 @@ import {
   isPersonalJoinSessionType,
   sanitizeCommunitySystemMetadata,
   BACKOFFICE_SOURCE,
+  PLATFORM_ACTOR_ROLE,
   buildCommunitySystemFallbackText,
   buildCommunitySystemSelfPreview,
   resolveCommunitySystemSubjectUserId,
@@ -162,7 +163,17 @@ export class CommunitySystemMessageService {
       const targetUserIds = Array.isArray(metadata.targetUserIds)
         ? metadata.targetUserIds.map((id) => String(id)).filter(Boolean)
         : [];
-      const ids = [triggeredByUserId, targetUserId, ...targetUserIds].filter(
+      // A Backoffice / platform / automatic line has no AIMess-user actor: no
+      // name is stored — readers render "AI Mess Administrator" from the role.
+      const noUserActor =
+        metadata.source === BACKOFFICE_SOURCE ||
+        metadata.actorRole === PLATFORM_ACTOR_ROLE ||
+        metadata.auto === true;
+      const ids = [
+        noUserActor ? null : triggeredByUserId,
+        targetUserId,
+        ...targetUserIds,
+      ].filter(
         (id): id is string => Boolean(id)
       );
       const snapshots = ids.length
@@ -172,12 +183,9 @@ export class CommunitySystemMessageService {
           )
         : new Map<string, Record<string, unknown>>();
 
-      // A Backoffice line's actor is a Super Admin, not an AIMess user: no name
-      // is stored or sent — every reader renders "Administrator" from `source`.
-      const actorName =
-        metadata.source === BACKOFFICE_SOURCE
-          ? ""
-          : this.nameOf(snapshots, triggeredByUserId);
+      const actorName = noUserActor
+        ? ""
+        : this.nameOf(snapshots, triggeredByUserId);
       const targetName = this.nameOf(snapshots, targetUserId);
 
       // actorUserId is the single consistent key across all subtypes so the

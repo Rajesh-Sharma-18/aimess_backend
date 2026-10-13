@@ -29,6 +29,8 @@ import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import {
   buildTextSearchCountPipeline,
   buildTextSearchPipeline,
+  docCreatedAtMs,
+  docObjectId,
   orderByIds,
   parseSearchCursor,
   readTextSearchPage,
@@ -141,50 +143,70 @@ function moderationSystemGuard(
   return clauses;
 }
 
-function personalJoinSessionGuard(
+/** The viewer's current membership session: its one personal join line, and when that line was posted. */
+interface JoinSession {
+  messageId: string | null;
+  startedAt: Date | null;
+}
+
+const NO_JOIN_SESSION: JoinSession = { messageId: null, startedAt: null };
+
+function joinSessionGuard(
   userId: string,
-  latestPersonalJoinMessageId: string | null
-): Record<string, unknown> {
+  session: JoinSession
+): Record<string, unknown>[] {
   const personalJoin = {
     visibleToUserId: userId,
     systemMessageType: { $in: [...PERSONAL_JOIN_SESSION_TYPES] },
   };
-  if (!latestPersonalJoinMessageId) {
-    return { $nor: [personalJoin] };
+  const clauses: Record<string, unknown>[] = [
+    session.messageId
+      ? {
+          $or: [
+            { $nor: [personalJoin] },
+            { _id: { $eq: { $oid: session.messageId } } },
+          ],
+        }
+      : { $nor: [personalJoin] },
+  ];
+  // Community-scoped join/add lines posted before the viewer's current membership are not theirs to read.
+  if (session.startedAt) {
+    clauses.push({
+      $nor: [
+        {
+          visibleToUserId: { $in: [null] },
+          systemMessageType: { $in: [...PERSONAL_JOIN_SESSION_TYPES] },
+          createdAt: { $lt: { $date: session.startedAt.toISOString() } },
+        },
+      ],
+    });
   }
-  return {
-    $or: [
-      { $nor: [personalJoin] },
-      { _id: { $eq: { $oid: latestPersonalJoinMessageId } } },
-    ],
-  };
+  return clauses;
 }
 
-function isLatestPersonalJoinSessionForUser(
+function isInJoinSession(
   msg: {
     id: string;
     visibleToUserId?: string | null;
     systemMessageType?: string | null;
+    createdAt: Date;
   },
   userId: string,
-  latestPersonalJoinMessageId: string | null
+  session: JoinSession
 ): boolean {
-  if (
-    msg.visibleToUserId === userId &&
-    isPersonalJoinSessionType(msg.systemMessageType)
-  ) {
-    return latestPersonalJoinMessageId === msg.id;
-  }
-  return true;
+  if (!isPersonalJoinSessionType(msg.systemMessageType)) return true;
+  if (msg.visibleToUserId === userId) return session.messageId === msg.id;
+  if (msg.visibleToUserId || !session.startedAt) return true;
+  return msg.createdAt >= session.startedAt;
 }
 
 export class GeneralRoomMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
-  private async findLatestPersonalJoinMessageId(
+  private async findJoinSession(
     roomId: string,
     userId: string
-  ): Promise<string | null> {
+  ): Promise<JoinSession> {
     const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
       pipeline: [
         {
@@ -198,10 +220,15 @@ export class GeneralRoomMessageRepository {
         },
         { $sort: { createdAt: -1, _id: -1 } },
         { $limit: 1 },
+        { $project: { createdAt: 1 } },
       ] as unknown as Prisma.InputJsonValue[],
-    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
-    const id = raw[0]?._id;
-    return typeof id === "string" ? id : (id?.$oid ?? null);
+    })) as unknown as Parameters<typeof docObjectId>[0][];
+    const row = raw[0];
+    const startedAtMs = row ? docCreatedAtMs(row) : 0;
+    return {
+      messageId: row ? docObjectId(row) : null,
+      startedAt: startedAtMs > 0 ? new Date(startedAtMs) : null,
+    };
   }
 
   async save(data: {
@@ -451,7 +478,7 @@ export class GeneralRoomMessageRepository {
         : new Date(beforeTimestamp);
     // Prisma MongoDB doesn't support $nin on JSON arrays directly.
     // Fetch and filter in memory for deletedBy + personal visibility.
-    const [messages, latestPersonalJoinMessageId] = await Promise.all([
+    const [messages, joinSession] = await Promise.all([
       this.prisma.generalRoomMessage.findMany({
         where: {
           roomId,
@@ -462,8 +489,8 @@ export class GeneralRoomMessageRepository {
         take: limit + 10,
       }),
       viewerIsActiveMember
-        ? this.findLatestPersonalJoinMessageId(roomId, userId)
-        : Promise.resolve(null),
+        ? this.findJoinSession(roomId, userId)
+        : Promise.resolve(NO_JOIN_SESSION),
     ]);
 
     // Filter out messages this user deleted-for-me + PERSONAL messages targeted
@@ -474,10 +501,10 @@ export class GeneralRoomMessageRepository {
         return (
           !deletedBy.includes(userId) &&
           isVisibleToUser(msg, userId, viewerIsActiveMember, viewerRole) &&
-          isLatestPersonalJoinSessionForUser(
+          isInJoinSession(
             msg,
             userId,
-            latestPersonalJoinMessageId
+            joinSession
           )
         );
       })
@@ -513,7 +540,7 @@ export class GeneralRoomMessageRepository {
      * Omitted => normal member (fail-closed).
      */
     viewerRole?: string | null;
-    latestPersonalJoinMessageId?: string | null;
+    joinSession?: JoinSession;
     /**
      * Upper bound for a BANNED viewer: only messages created at/before their
      * ban timestamp are visible (Telegram parity — pre-ban history stays
@@ -541,9 +568,9 @@ export class GeneralRoomMessageRepository {
       ];
     } else {
       andClauses.push(
-        personalJoinSessionGuard(
+        ...joinSessionGuard(
           params.userId,
-          params.latestPersonalJoinMessageId ?? null
+          params.joinSession ?? NO_JOIN_SESSION
         )
       );
     }
@@ -600,15 +627,15 @@ export class GeneralRoomMessageRepository {
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
     const before = params.direction === "before";
     const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
-    const latestPersonalJoinMessageId = viewerIsActiveMember
-      ? await this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
-      : null;
+    const joinSession = viewerIsActiveMember
+      ? await this.findJoinSession(params.roomId, params.userId)
+      : NO_JOIN_SESSION;
     const base = this.timelineMatch({
       roomId: params.roomId,
       userId: params.userId,
       viewerIsActiveMember,
       viewerRole: params.viewerRole,
-      latestPersonalJoinMessageId,
+      joinSession,
       readCutoff: params.readCutoff,
     });
 
@@ -801,9 +828,9 @@ export class GeneralRoomMessageRepository {
     readCutoff?: Date | null;
   }): Promise<number> {
     const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
-    const latestPersonalJoinMessageId = viewerIsActiveMember
-      ? await this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
-      : null;
+    const joinSession = viewerIsActiveMember
+      ? await this.findJoinSession(params.roomId, params.userId)
+      : NO_JOIN_SESSION;
     const result = (await this.prisma.generalRoomMessage.aggregateRaw({
       pipeline: [
         {
@@ -812,7 +839,7 @@ export class GeneralRoomMessageRepository {
             userId: params.userId,
             viewerIsActiveMember,
             viewerRole: params.viewerRole,
-            latestPersonalJoinMessageId,
+            joinSession,
             readCutoff: params.readCutoff,
           }),
         },
@@ -847,7 +874,7 @@ export class GeneralRoomMessageRepository {
         ? params.readCutoff
         : null;
 
-    const [older, newer, latestPersonalJoinMessageId] = await Promise.all([
+    const [older, newer, joinSession] = await Promise.all([
       // anchor-inclusive older half (desc → reversed to asc before merge)
       this.prisma.generalRoomMessage.findMany({
         where: {
@@ -874,8 +901,8 @@ export class GeneralRoomMessageRepository {
             take: half,
           }),
       (params.viewerIsActiveMember ?? true)
-        ? this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
-        : Promise.resolve(null),
+        ? this.findJoinSession(params.roomId, params.userId)
+        : Promise.resolve(NO_JOIN_SESSION),
     ]);
 
     return [...older.reverse(), ...newer].filter((msg) => {
@@ -888,10 +915,10 @@ export class GeneralRoomMessageRepository {
           params.viewerIsActiveMember ?? true,
           params.viewerRole
         ) &&
-        isLatestPersonalJoinSessionForUser(
+        isInJoinSession(
           msg,
           params.userId,
-          latestPersonalJoinMessageId
+          joinSession
         )
       );
     });
@@ -940,15 +967,15 @@ export class GeneralRoomMessageRepository {
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
     const before = params.direction === "before";
     const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
-    const latestPersonalJoinMessageId = viewerIsActiveMember
-      ? await this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
-      : null;
+    const joinSession = viewerIsActiveMember
+      ? await this.findJoinSession(params.roomId, params.userId)
+      : NO_JOIN_SESSION;
     const match: Record<string, unknown> = this.timelineMatch({
       roomId: params.roomId,
       userId: params.userId,
       viewerIsActiveMember,
       viewerRole: params.viewerRole,
-      latestPersonalJoinMessageId,
+      joinSession,
       readCutoff: params.readCutoff,
     });
     if (params.seq != null) {
@@ -986,15 +1013,15 @@ export class GeneralRoomMessageRepository {
   }): Promise<GeneralRoomMessage[]> {
     const half = Math.max(1, Math.floor(params.limit / 2));
     const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
-    const latestPersonalJoinMessageId = viewerIsActiveMember
-      ? await this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
-      : null;
+    const joinSession = viewerIsActiveMember
+      ? await this.findJoinSession(params.roomId, params.userId)
+      : NO_JOIN_SESSION;
     const base = this.timelineMatch({
       roomId: params.roomId,
       userId: params.userId,
       viewerIsActiveMember,
       viewerRole: params.viewerRole,
-      latestPersonalJoinMessageId,
+      joinSession,
       readCutoff: params.readCutoff,
     });
     const [before, anchorAndAfter] = await Promise.all([
@@ -1032,7 +1059,7 @@ export class GeneralRoomMessageRepository {
      * Omitted => normal member (fail-closed).
      */
     viewerRole?: string | null;
-    latestPersonalJoinMessageId?: string | null;
+    joinSession?: JoinSession;
   }): Prisma.InputJsonObject {
     return {
       roomId: { $oid: params.roomId },
@@ -1047,9 +1074,9 @@ export class GeneralRoomMessageRepository {
       // absent (regular messages), so they pass through.
       systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
       $and: [
-        personalJoinSessionGuard(
+        ...joinSessionGuard(
           params.userId,
-          params.latestPersonalJoinMessageId ?? null
+          params.joinSession ?? NO_JOIN_SESSION
         ),
         // MODERATION-restricted broadcast lines — owner/admin/moderator only.
         ...moderationSystemGuard(params.viewerRole),
@@ -1077,12 +1104,12 @@ export class GeneralRoomMessageRepository {
      */
     viewerRole?: string | null;
   }): Promise<GeneralRoomMessage[]> {
-    const latestPersonalJoinMessageId =
-      await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);
+    const joinSession =
+      await this.findJoinSession(params.roomId, params.userId);
     const raw = (await this.prisma.generalRoomMessage.findRaw({
       filter: this.conversationMatch({
         ...params,
-        latestPersonalJoinMessageId,
+        joinSession,
       }),
       options: {
         sort: { createdAt: -1 },
@@ -1123,14 +1150,14 @@ export class GeneralRoomMessageRepository {
      */
     viewerRole?: string | null;
   }): Promise<number> {
-    const latestPersonalJoinMessageId =
-      await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);
+    const joinSession =
+      await this.findJoinSession(params.roomId, params.userId);
     const result = (await this.prisma.generalRoomMessage.aggregateRaw({
       pipeline: [
         {
           $match: this.conversationMatch({
             ...params,
-            latestPersonalJoinMessageId,
+            joinSession,
           }),
         },
         { $count: "total" },
@@ -1886,10 +1913,10 @@ export class GeneralRoomMessageRepository {
       // regular messages).
       systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
     };
-    const latestPersonalJoinMessageId =
-      await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);
+    const joinSession =
+      await this.findJoinSession(params.roomId, params.userId);
     matchStage.$and = [
-      personalJoinSessionGuard(params.userId, latestPersonalJoinMessageId),
+      ...joinSessionGuard(params.userId, joinSession),
       // MODERATION-restricted broadcast lines — owner/admin/moderator only.
       ...moderationSystemGuard(params.viewerRole),
     ];
@@ -1959,7 +1986,7 @@ export class GeneralRoomMessageRepository {
      */
     readCutoff?: Date | null;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
-    const [raw, latestPersonalJoinMessageId] = await Promise.all([
+    const [raw, joinSession] = await Promise.all([
       this.prisma.generalRoomMessage.findMany({
         where: {
           roomId: params.roomId,
@@ -1979,8 +2006,8 @@ export class GeneralRoomMessageRepository {
         take: params.limit + 1,
       }),
       (params.viewerIsActiveMember ?? true)
-        ? this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
-        : Promise.resolve(null),
+        ? this.findJoinSession(params.roomId, params.userId)
+        : Promise.resolve(NO_JOIN_SESSION),
     ]);
 
     const hasMore = raw.length > params.limit;
@@ -1995,10 +2022,10 @@ export class GeneralRoomMessageRepository {
           params.viewerIsActiveMember ?? true,
           params.viewerRole
         ) &&
-        isLatestPersonalJoinSessionForUser(
+        isInJoinSession(
           msg,
           params.userId,
-          latestPersonalJoinMessageId
+          joinSession
         )
       );
     });
@@ -2048,7 +2075,7 @@ export class GeneralRoomMessageRepository {
     hasMore: boolean;
     nextRevision: number | null;
   }> {
-    const [raw, latestPersonalJoinMessageId] = await Promise.all([
+    const [raw, joinSession] = await Promise.all([
       this.prisma.generalRoomMessage.findMany({
         where: {
           roomId: params.roomId,
@@ -2062,8 +2089,8 @@ export class GeneralRoomMessageRepository {
         take: params.limit + 1,
       }),
       (params.viewerIsActiveMember ?? true)
-        ? this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
-        : Promise.resolve(null),
+        ? this.findJoinSession(params.roomId, params.userId)
+        : Promise.resolve(NO_JOIN_SESSION),
     ]);
 
     const hasMore = raw.length > params.limit;
@@ -2080,10 +2107,10 @@ export class GeneralRoomMessageRepository {
           params.viewerIsActiveMember ?? true,
           params.viewerRole
         ) &&
-        isLatestPersonalJoinSessionForUser(
+        isInJoinSession(
           msg,
           params.userId,
-          latestPersonalJoinMessageId
+          joinSession
         )
       );
     });

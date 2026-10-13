@@ -126,6 +126,21 @@ describe("sendPush — platform collapse/grouping headers", () => {
     expect(arg.android.notification.channelId).toBe("calls_v2");
   });
 
+  it("keeps the caller avatar off the OS-drawn CALL_MISSED Android card (it renders full-bleed)", async () => {
+    await sendPush({
+      token: "tok1",
+      title: "Missed call",
+      body: "from Alice",
+      platform: "ANDROID",
+      imageUrl: "https://cdn.example/alice.jpg",
+      data: { type: "CALL_MISSED", callId: "call123" },
+    });
+
+    const arg = sendMock.mock.calls[0][0];
+    expect(arg.android.notification.channelId).toBe("calls_v2");
+    expect(arg.android.notification.imageUrl).toBeUndefined();
+  });
+
   it("does not stamp channelId on non-CALL_MISSED Android notifications", async () => {
     await sendPush({
       token: "tok1",

@@ -42,6 +42,8 @@ export function createNotificationsAliasRouter(
         deviceType?: unknown;
         deviceId?: unknown;
         tokenType?: unknown;
+        timezone?: unknown;
+        lang?: unknown;
       };
 
       // Accept the canonical shape plus common client aliases. Anything invalid
@@ -59,6 +61,8 @@ export function createNotificationsAliasRouter(
       // PushKit token stored as FCM is sent over FCM, which never reaches
       // PushKit — the device silently stops ringing for incoming calls.
       if (body.tokenType !== undefined) forwardBody.tokenType = body.tokenType;
+      if (body.timezone !== undefined) forwardBody.timezone = body.timezone;
+      if (body.lang !== undefined) forwardBody.lang = body.lang;
 
       return forward(req, res, upstreamUrl, "POST", forwardBody);
     })
@@ -136,6 +140,9 @@ async function forward(
           : {}),
         ...(typeof req.headers["x-lang"] === "string"
           ? { "x-lang": req.headers["x-lang"] }
+          : {}),
+        ...(typeof req.headers["x-timezone"] === "string"
+          ? { "x-timezone": req.headers["x-timezone"] }
           : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),

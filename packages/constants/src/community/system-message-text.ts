@@ -1,5 +1,7 @@
 import { t } from "../i18n.js";
 import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
+import { currentTimeZone } from "../locale-context.js";
+import { formatDurationShort, formatViewerDateTime } from "../time-format.js";
 import {
   administratorActorLabel,
   BACKOFFICE_SOURCE,
@@ -7,8 +9,9 @@ import {
   formatNameList,
   groupedTargetLabels,
   memberChangeText,
+  namedActorLabel,
+  PLATFORM_ACTOR_ROLE,
   PLATFORM_ADMIN_ACTOR_ID,
-  roleActorLabel,
   SYSTEM_ACTOR_ID,
   systemActorLabel,
 } from "../member-change-text.js";
@@ -84,51 +87,12 @@ export function formatMuteDuration(
   );
 }
 
-/**
- * Human-readable livestream runtime from whole seconds, Telegram-style:
- *   5040 → "1h 24m", 3600 → "1h", 1440 → "24m", 45 → "45s", 0 → "0s".
- * Hours+minutes when ≥ 1h (minutes dropped on the exact hour), minutes when
- * ≥ 1m, otherwise seconds. Used for the LIVE_STREAM_ENDED system message and
- * the livestream-ended push body.
- */
+/** Livestream runtime: "1h 24m" / "24m" / "<1m" — see {@link formatDurationShort}. */
 export function formatStreamDuration(
   totalSeconds: number,
   locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const hours = Math.floor(s / 3600);
-  const minutes = Math.floor((s % 3600) / 60);
-  if (hours > 0) {
-    return minutes > 0
-      ? t("SYS_STREAM_DURATION_HM", locale, { hours, minutes })
-      : t("SYS_STREAM_DURATION_H", locale, { hours });
-  }
-  if (minutes > 0) return t("SYS_STREAM_DURATION_M", locale, { minutes });
-  return t("SYS_STREAM_DURATION_S", locale, { seconds: s });
-}
-
-const INTL_LOCALE: Record<SupportedLocale, string> = {
-  en: "en-US",
-  vi: "vi-VN",
-  th: "th-TH",
-};
-
-/**
- * Absolute mute-expiry timestamp inside a system line.
- *
- * English keeps `toUTCString()` verbatim: that exact string is what gets BAKED
- * into the stored row, and rewriting it would silently change every historical
- * MEMBER_MUTED sentence. Other locales format through `Intl` (still UTC) since
- * an RFC-1123 English date inside a Thai sentence reads as untranslated.
- */
-function formatSystemDateTime(ms: number, locale: SupportedLocale): string {
-  const at = new Date(ms);
-  if (locale === "en") return at.toUTCString();
-  return `${new Intl.DateTimeFormat(INTL_LOCALE[locale], {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  }).format(at)} UTC`;
+  return formatDurationShort(totalSeconds, locale);
 }
 
 /** "MODERATOR" → "moderator", "ADMIN" → "admin". */
@@ -140,11 +104,11 @@ function roleArticleForm(role: string, locale: SupportedLocale): string {
 }
 
 function actorUserIdOf(metadata: Record<string, unknown>): string {
-  return String(metadata.actorUserId ?? "").trim();
+  return String(metadata.actorUserId ?? metadata.actorId ?? "").trim();
 }
 
 function targetUserIdOf(metadata: Record<string, unknown>): string {
-  return String(metadata.targetUserId ?? "").trim();
+  return String(metadata.targetUserId ?? metadata.targetId ?? "").trim();
 }
 
 function visibilityOf(value: unknown): string {
@@ -154,9 +118,9 @@ function visibilityOf(value: unknown): string {
 }
 
 /**
- * Localized text per community SYSTEM subtype (Telegram phrasing). When
- * `viewerUserId` is set and matches the actor or subject, names are replaced
- * with first-person "You …" forms for that viewer.
+ * Localized text per community SYSTEM subtype, from the VIEWER's point of view
+ * (actor / affected person / everyone else). v2 rows carry an `actorRole`
+ * snapshot and name the actor "Minh (Admin)"; rows without one render as before.
  */
 export function buildCommunitySystemFallbackText(
   type: CommunitySystemMessageTypeValue,
@@ -164,24 +128,28 @@ export function buildCommunitySystemFallbackText(
   actorName: string,
   targetName: string,
   viewerUserId?: string | null,
-  locale: SupportedLocale = STORED_TEXT_LOCALE
+  locale: SupportedLocale = STORED_TEXT_LOCALE,
+  timeZone: string = currentTimeZone()
 ): string {
-  // A Super Admin acting from Backoffice (`source: "BO"`, stamped on new and
-  // legacy rows alike) is named "Administrator" for every reader and is never
-  // anybody's "You" — whatever id or name the row also carries.
+  // Platform staff (Backoffice `source: "BO"`, legacy platform id, or the v2
+  // PLATFORM role) is "AI Mess Administrator" for every reader, never "You".
   const byBackoffice =
     metadata.source === BACKOFFICE_SOURCE ||
-    actorUserIdOf(metadata) === PLATFORM_ADMIN_ACTOR_ID;
-  // A moderation line stamps the actor's role at action time (`actorRole`):
-  // admins and moderators are named by that role, never by their name.
-  const actor = byBackoffice
+    actorUserIdOf(metadata) === PLATFORM_ADMIN_ACTOR_ID ||
+    visibilityOf(metadata.actorRole) === PLATFORM_ACTOR_ROLE;
+  const rawActorName = actorName || String(metadata.actorName ?? "");
+  const named = byBackoffice
     ? administratorActorLabel(locale)
-    : roleActorLabel(metadata.actorRole, locale) ??
-      (actorName || t("SYS_NAME_SOMEONE", locale));
+    : namedActorLabel(rawActorName, metadata.actorRole, locale);
+  const v2 = named !== null;
+  const plainActor = rawActorName || t("SYS_NAME_SOMEONE", locale);
+  const actor = named ?? plainActor;
   const target =
     (metadata.targetName as string) ||
     targetName ||
     t("SYS_NAME_A_MEMBER_CAP", locale);
+  const midTarget =
+    (metadata.targetName as string) || targetName || t("SYS_NAME_A_MEMBER", locale);
 
   const actorId = actorUserIdOf(metadata);
   const targetId = targetUserIdOf(metadata);
@@ -189,29 +157,30 @@ export function buildCommunitySystemFallbackText(
   const isActor = Boolean(
     !byBackoffice && viewer && actorId && viewer === actorId
   );
-  const isTarget = Boolean(viewer && targetId && viewer === targetId);
-  // A moderation line names its actor to the other moderators only when a person
-  // acted: the auto-unmute sweeper posts `source: "auto"` with the "system" actor,
-  // and legacy rows may carry no actorUserId — both stay passive ("X was unmuted").
+  const isTarget =
+    type === "ROLE_CHANGED_SELF" ||
+    Boolean(viewer && targetId && viewer === targetId);
+  // Auto-unmute sweeper (`source: "auto"`, "system" actor) and legacy rows
+  // without an actor stay passive ("X was unmuted").
   const namesActor =
     byBackoffice ||
     Boolean(actorId && actorId !== "system" && metadata.source !== "auto");
-  // Labels for the shared member-change sentence (member-change-text.ts).
-  // `communityName` is captured when the line is posted; a row written before
-  // that reads "… to the community".
+  const you = t("SYS_SENDER_YOU", locale);
+  const youObject = t("SYS_NAME_YOU_OBJECT", locale);
+  const entity = entityLabel(metadata.communityName as string, "COMMUNITY", locale);
+  // Legacy shared member-change sentence (member-change-text.ts).
   const memberChangeLabels = () => ({
     actor: isActor
-      ? t("SYS_SENDER_YOU", locale)
+      ? you
       : actorId === SYSTEM_ACTOR_ID && !byBackoffice
         ? systemActorLabel(locale)
         : actor,
-    // Mid-sentence, so the lower-case "a member" fallback, not the line-initial one.
-    target: isTarget
-      ? t("SYS_SENDER_YOU", locale)
-      : (metadata.targetName as string) ||
-        targetName ||
-        t("SYS_NAME_A_MEMBER", locale),
-    entity: entityLabel(metadata.communityName as string, "COMMUNITY", locale),
+    target: isTarget ? youObject : midTarget,
+    entity,
+  });
+  const v2Labels = () => ({
+    actor: isActor ? you : actor,
+    target: isTarget ? youObject : midTarget,
   });
 
   switch (type) {
@@ -219,22 +188,41 @@ export function buildCommunitySystemFallbackText(
       return t("SYS_COMMUNITY_CREATED", locale);
     case "COMMUNITY_NAME_UPDATED": {
       const newName = ((metadata.newName as string) || "").trim();
+      if (v2 && newName) {
+        return isActor
+          ? t("SYS_COMMUNITY_RENAMED_SELF", locale, { name: newName })
+          : t("SYS_COMMUNITY_RENAMED_BY", locale, { actor, name: newName });
+      }
       return newName
         ? t("SYS_COMMUNITY_RENAMED", locale, { name: newName })
         : t("SYS_COMMUNITY_NAME_UPDATED", locale);
     }
-    case "COMMUNITY_DESCRIPTION_UPDATED":
-      return t("SYS_COMMUNITY_DESCRIPTION_UPDATED", locale);
     case "COMMUNITY_AVATAR_UPDATED":
-      return t("SYS_COMMUNITY_AVATAR_UPDATED", locale);
     case "COMMUNITY_BANNER_UPDATED":
-      return t("SYS_COMMUNITY_BANNER_UPDATED", locale);
+      if (v2) {
+        return isActor
+          ? t("SYS_COMMUNITY_PHOTO_CHANGED_SELF", locale)
+          : t("SYS_COMMUNITY_PHOTO_CHANGED_BY", locale, { actor });
+      }
+      return t(
+        type === "COMMUNITY_AVATAR_UPDATED"
+          ? "SYS_COMMUNITY_AVATAR_UPDATED"
+          : "SYS_COMMUNITY_BANNER_UPDATED",
+        locale
+      );
+    case "COMMUNITY_DESCRIPTION_UPDATED":
     case "COMMUNITY_HANDLE_UPDATED":
-      return t("SYS_COMMUNITY_HANDLE_UPDATED", locale);
     case "COMMUNITY_UPDATED": {
-      // Actor-less by contract. A single known change still gets its specific
-      // sentence; legacy rows (pre-COMMUNITY_PRIVACY_CHANGED) whose only change
-      // was visibility say which way it went — never who did it (not stored).
+      if (v2) {
+        return isActor
+          ? t("SYS_COMMUNITY_SETTINGS_UPDATED_SELF", locale)
+          : t("SYS_COMMUNITY_SETTINGS_UPDATED_BY", locale, { actor });
+      }
+      if (type === "COMMUNITY_DESCRIPTION_UPDATED")
+        return t("SYS_COMMUNITY_DESCRIPTION_UPDATED", locale);
+      if (type === "COMMUNITY_HANDLE_UPDATED")
+        return t("SYS_COMMUNITY_HANDLE_UPDATED", locale);
+      // Legacy rows: a single known change keeps its specific sentence.
       const fields = Array.isArray(metadata.changedFields)
         ? (metadata.changedFields as unknown[])
         : [];
@@ -263,113 +251,105 @@ export function buildCommunitySystemFallbackText(
       return t("SYS_COMMUNITY_UPDATED", locale);
     }
     case "LIVE_STREAM_STARTED":
-      // Host-named (Telegram group video-chat parity). "You started …" for the
-      // host's own view; "{host} started …" for everyone else.
+      // The host is named plainly: starting a stream is not a role action.
       return isActor
         ? t("SYS_COMMUNITY_LIVESTREAM_STARTED_SELF", locale)
-        : t("SYS_COMMUNITY_LIVESTREAM_STARTED", locale, { actor });
+        : t("SYS_COMMUNITY_LIVESTREAM_STARTED", locale, {
+            actor: byBackoffice ? actor : plainActor,
+          });
     case "LIVE_STREAM_ENDED": {
-      // Stored fallback stays single-line so the community-list preview is clean;
-      // the client composes the richer two-line "…ended the livestream / Duration:
-      // {duration}" from systemMessageType + systemMetadata.duration.
-      // `durationSeconds` re-derives the label in the reader's language; the baked
-      // `duration` string is English and only covers rows written without it.
+      // `durationSeconds` re-derives the label per reader; the baked `duration`
+      // only covers rows written without it.
       const duration =
         typeof metadata.durationSeconds === "number"
-          ? formatStreamDuration(metadata.durationSeconds, locale)
+          ? formatDurationShort(metadata.durationSeconds, locale)
           : ((metadata.duration as string) || "").trim();
-      // `endedReason: "ADMIN"` = a Super Admin ended it from Backoffice: every
-      // viewer reads "Administrator ended {host}'s livestream", never the
-      // admin's name (that row's actor IS the host); the host reads
-      // "Administrator ended the livestream". "SYSTEM" = the platform
-      // (moderation, account ban, timeouts). A community admin's end names
-      // both: "{admin} ended {host}'s livestream", the host being the target.
-      // A host's own end, and every legacy row, keeps "{host} ended the
-      // livestream". No host name ⇒ the host-less form, never a blank.
+      const reason = String(metadata.endedReason ?? "");
+      // "ADMIN" = platform staff ended it (that row's actor IS the host).
       const endedHost = (
         (metadata.targetName as string) ||
         targetName ||
-        (metadata.endedReason === "ADMIN" ? actorName : "") ||
+        (reason === "ADMIN" || reason === "CONNECTION_LOST" ? rawActorName : "") ||
         ""
       ).trim();
       const viewerIsHost = Boolean(
-        viewer && viewer === ((metadata.hostUserId as string) || actorId)
+        viewer &&
+          viewer === ((metadata.hostUserId as string) || targetId || actorId)
       );
+      if (reason === "CONNECTION_LOST" && viewerIsHost) {
+        return t("SYS_COMMUNITY_LIVESTREAM_LOST_SELF", locale);
+      }
+      const platform = administratorActorLabel(locale);
       const lead =
-        metadata.endedReason === "ADMIN"
-          ? endedHost && !viewerIsHost
-            ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST", locale, {
-                host: endedHost,
-              })
-            : t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN", locale)
-          : metadata.endedReason === "SYSTEM"
-            ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale)
-            : endedHost && targetId && targetId !== actorId
-              ? isActor
-                ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_HOST_SELF", locale, {
-                    host: endedHost,
-                  })
-                : t("SYS_COMMUNITY_LIVESTREAM_ENDED_HOST", locale, {
-                    actor,
-                    host: endedHost,
-                  })
-              : isActor
-                ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)
-                : t("SYS_COMMUNITY_LIVESTREAM_ENDED", locale, { actor });
+        reason === "CONNECTION_LOST"
+          ? t("SYS_COMMUNITY_LIVESTREAM_LOST", locale, { host: endedHost || plainActor })
+          : reason === "ADMIN"
+            ? viewerIsHost
+              ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_YOURS", locale, { actor: platform })
+              : endedHost
+                ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN_HOST", locale, { host: endedHost })
+                : t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_ADMIN", locale)
+            : reason === "SYSTEM"
+              ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_BY_SYSTEM", locale)
+              : endedHost && targetId && targetId !== actorId
+                ? isActor
+                  ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_HOST_SELF", locale, { host: endedHost })
+                  : viewerIsHost
+                    ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_YOURS", locale, { actor })
+                    : t("SYS_COMMUNITY_LIVESTREAM_ENDED_HOST", locale, { actor, host: endedHost })
+                : isActor
+                  ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_SELF", locale)
+                  : t("SYS_COMMUNITY_LIVESTREAM_ENDED", locale, { actor: plainActor });
       return duration
-        ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION", locale, {
-            lead,
-            duration,
-          })
+        ? t("SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION", locale, { lead, duration })
         : lead;
     }
 
     case "ROLE_CHANGED":
-    case "MEMBER_ROLE_CHANGED": {
-      if (isTarget) {
-        return buildCommunitySystemFallbackText(
-          "ROLE_CHANGED_SELF",
-          metadata,
-          "",
-          "",
-          viewer,
-          locale
-        );
-      }
-      const newRole = ((metadata.newRole as string) || "").toUpperCase();
-      const oldRole = ((metadata.oldRole as string) || "").toUpperCase();
-      // Admin promotion is an ownership hand-off — there is exactly ONE admin, so
-      // phrase it as "the community admin" (Telegram-style) rather than "an admin".
-      if (newRole === "ADMIN") {
-        return t("SYS_COMMUNITY_ROLE_ADMIN", locale, { target });
-      }
-      if (
-        newRole === "MEMBER" &&
-        (oldRole === "ADMIN" || oldRole === "MODERATOR")
-      ) {
-        return t("SYS_COMMUNITY_ROLE_MEMBER", locale, { target });
-      }
-      return t("SYS_COMMUNITY_ROLE_CHANGED", locale, {
-        target,
-        role: roleArticleForm(newRole, locale),
-      });
-    }
-
+    case "MEMBER_ROLE_CHANGED":
     case "ROLE_CHANGED_SELF": {
       const newRole = ((metadata.newRole as string) || "").toUpperCase();
       const oldRole = ((metadata.oldRole as string) || "").toUpperCase();
+      const auto = metadata.auto === true;
+      if (newRole === "ADMIN" && (auto || v2)) {
+        if (auto || !namesActor) {
+          if (isTarget) return t("SYS_COMMUNITY_NOW_ADMIN_SELF", locale, { entity });
+          if (viewer && viewer === String(metadata.formerAdminUserId ?? ""))
+            return t("SYS_COMMUNITY_NOW_MODERATOR_SELF", locale, { entity });
+          return t("SYS_COMMUNITY_NOW_ADMIN", locale, { target });
+        }
+        if (isActor) return t("SYS_COMMUNITY_MADE_ADMIN_ACTOR", locale, { target: midTarget });
+        if (isTarget) return t("SYS_COMMUNITY_MADE_ADMIN_TARGET", locale, { actor });
+        return t("SYS_COMMUNITY_MADE_ADMIN", locale, { actor, target: midTarget });
+      }
+      if (v2 && newRole === "MODERATOR" && oldRole !== "ADMIN") {
+        if (isActor) return t("SYS_COMMUNITY_MADE_MODERATOR_ACTOR", locale, { target: midTarget });
+        if (isTarget) return t("SYS_COMMUNITY_MADE_MODERATOR_TARGET", locale, { actor });
+        return t("SYS_COMMUNITY_MADE_MODERATOR", locale, { actor, target: midTarget });
+      }
+      if (v2 && newRole === "MEMBER" && oldRole === "MODERATOR") {
+        if (isActor) return t("SYS_COMMUNITY_REMOVED_MODERATOR_ACTOR", locale, { target: midTarget });
+        if (isTarget) return t("SYS_COMMUNITY_REMOVED_MODERATOR_TARGET", locale, { actor });
+        return t("SYS_COMMUNITY_REMOVED_MODERATOR", locale, { actor, target: midTarget });
+      }
+      // Legacy rows (no actorRole): role-state wording.
       if (newRole === "ADMIN") {
-        return t("SYS_COMMUNITY_ROLE_ADMIN_SELF", locale);
+        return isTarget
+          ? t("SYS_COMMUNITY_ROLE_ADMIN_SELF", locale)
+          : t("SYS_COMMUNITY_ROLE_ADMIN", locale, { target });
       }
       if (
         newRole === "MEMBER" &&
         (oldRole === "ADMIN" || oldRole === "MODERATOR")
       ) {
-        return t("SYS_COMMUNITY_ROLE_MEMBER_SELF", locale);
+        return isTarget
+          ? t("SYS_COMMUNITY_ROLE_MEMBER_SELF", locale)
+          : t("SYS_COMMUNITY_ROLE_MEMBER", locale, { target });
       }
-      return t("SYS_COMMUNITY_ROLE_CHANGED_SELF", locale, {
-        role: roleArticleForm(newRole, locale),
-      });
+      const role = roleArticleForm(newRole, locale);
+      return isTarget
+        ? t("SYS_COMMUNITY_ROLE_CHANGED_SELF", locale, { role })
+        : t("SYS_COMMUNITY_ROLE_CHANGED", locale, { target, role });
     }
 
     case "MEMBER_JOINED":
@@ -381,15 +361,13 @@ export function buildCommunitySystemFallbackText(
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_LEFT_SELF", locale);
       return t("SYS_COMMUNITY_MEMBER_LEFT", locale, { target });
 
-    // Hidden from every read path (HIDDEN_SYSTEM_MESSAGE_TYPES — removal is
-    // silent in chat); rendered with the shared sentence for any surface that
-    // still resolves a legacy row.
     case "MEMBER_REMOVED":
-      return memberChangeText("REMOVED", memberChangeLabels(), locale);
+      return v2
+        ? t("SYS_COMMUNITY_MEMBER_REMOVED", locale, v2Labels())
+        : memberChangeText("REMOVED", memberChangeLabels(), locale);
 
-    // Ban / unban / mute / unmute: the target's own wording is checked FIRST and is
-    // unchanged; the acting moderator reads "You …"; every other moderator reads
-    // "{actor} … {target}", or the passive form when no person acted.
+    // The target's own wording first, then the acting moderator's "You …",
+    // then the other moderators' "{actor} … {target}" (passive when no person acted).
     case "MEMBER_BANNED":
       if (isTarget) return t("SYS_COMMUNITY_MEMBER_BANNED_SELF", locale);
       if (isActor)
@@ -407,27 +385,28 @@ export function buildCommunitySystemFallbackText(
       return t("SYS_COMMUNITY_MEMBER_UNBANNED", locale, { target });
 
     case "MEMBER_MUTED": {
-      // Show the concrete expiry timestamp so the user knows exactly when they
-      // can post again; a permanent mute names no duration.
       const mutedUntilMs = Number(metadata.mutedUntil);
-      if (Number.isFinite(mutedUntilMs) && mutedUntilMs > 0) {
-        const until = formatSystemDateTime(mutedUntilMs, locale);
-        if (isTarget)
-          return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_SELF", locale, { until });
+      const until =
+        Number.isFinite(mutedUntilMs) && mutedUntilMs > 0
+          ? formatViewerDateTime(mutedUntilMs, locale, timeZone)
+          : null;
+      if (isTarget) {
+        if (v2 && namesActor) {
+          return until
+            ? t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_TARGET", locale, { actor, until })
+            : t("SYS_COMMUNITY_MEMBER_MUTED_TARGET", locale, { actor });
+        }
+        return until
+          ? t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_SELF", locale, { until })
+          : t("SYS_COMMUNITY_MEMBER_MUTED_SELF", locale);
+      }
+      if (until) {
         if (isActor)
-          return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_ACTOR", locale, {
-            target,
-            until,
-          });
+          return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_ACTOR", locale, { target, until });
         if (namesActor)
-          return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_BY", locale, {
-            actor,
-            target,
-            until,
-          });
+          return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL_BY", locale, { actor, target, until });
         return t("SYS_COMMUNITY_MEMBER_MUTED_UNTIL", locale, { target, until });
       }
-      if (isTarget) return t("SYS_COMMUNITY_MEMBER_MUTED_SELF", locale);
       if (isActor)
         return t("SYS_COMMUNITY_MEMBER_MUTED_ACTOR", locale, { target });
       if (namesActor)
@@ -436,19 +415,14 @@ export function buildCommunitySystemFallbackText(
     }
 
     case "MEMBER_UNMUTED":
-      if (isTarget) return t("SYS_COMMUNITY_MEMBER_UNMUTED_SELF", locale);
+      // Manual unmute and auto-expiry read the same for the affected member.
+      if (isTarget) return t("SYS_COMMUNITY_CAN_CHAT_AGAIN", locale, { entity });
       if (isActor)
         return t("SYS_COMMUNITY_MEMBER_UNMUTED_ACTOR", locale, { target });
       if (namesActor)
         return t("SYS_COMMUNITY_MEMBER_UNMUTED_BY", locale, { actor, target });
       return t("SYS_COMMUNITY_MEMBER_UNMUTED", locale, { target });
 
-    // The ACTOR is a person, never the community — a pin is performed by an
-    // admin/moderator, so the line reads "{actor} pinned a message". Symmetrical
-    // with UNPINNED_MESSAGE below. `actor` is the pinner's displayName, resolved
-    // upstream from the user snapshot (see resolvePersonDisplayName).
-    // metadata.communityName is still carried for clients that render the
-    // community context alongside the line, but it is NOT the actor.
     case "PINNED_MESSAGE":
       if (isActor) return t("SYS_COMMUNITY_MESSAGE_PINNED_SELF", locale);
       return t("SYS_COMMUNITY_MESSAGE_PINNED", locale, { actor });
@@ -461,20 +435,37 @@ export function buildCommunitySystemFallbackText(
       if (isActor) return t("SYS_COMMUNITY_INVITE_CREATED_SELF", locale);
       return t("SYS_COMMUNITY_INVITE_CREATED", locale, { actor });
 
-    // JOIN_REQUEST_APPROVED is no longer written (the approval path now posts
-    // COMMUNITY_JOINED — the line must describe the membership outcome, not the
-    // admin's decision), but rows persisted before that change still exist and
-    // must re-render as the current copy rather than the retired sentence.
+    case "MESSAGE_DELETED": {
+      const senderId = String(metadata.senderId ?? "").trim();
+      if (isActor) return t("SYS_MESSAGE_DELETED_ACTOR", locale);
+      if (viewer && senderId && viewer === senderId)
+        return t("SYS_MESSAGE_DELETED_SENDER", locale, { actor });
+      return t("SYS_MESSAGE_DELETED", locale, { actor });
+    }
+
+    case "COMMUNITY_CLOSED":
+      if (isActor) return t("SYS_COMMUNITY_CLOSED_SELF", locale);
+      return t("SYS_COMMUNITY_CLOSED", locale, { actor });
+
+    case "COMMUNITY_REOPENED":
+      if (isActor) return t("SYS_COMMUNITY_REOPENED_SELF", locale);
+      return t("SYS_COMMUNITY_REOPENED", locale, { actor });
+
+    // JOIN_REQUEST_APPROVED is retired; legacy rows render as COMMUNITY_JOINED.
     case "COMMUNITY_JOINED":
     case "JOIN_REQUEST_APPROVED":
       return t("SYS_COMMUNITY_MEMBER_JOINED_SELF", locale);
-    // Two copies, same subtype (see MODERATION_TYPES_WITH_PERSONAL_COPY): the
-    // added member's own PERSONAL notice and the MODERATION audit line read by
-    // owner/admin/moderators. Both are the shared "{actor} added {target} to
-    // {community}" sentence; only the reader's own side changes to "You".
     case "MEMBER_ADDED": {
       // Batch add (one operation ⇒ one audit line) lists every target, like groups.
-      const grouped = groupedTargetLabels(metadata, viewer, locale);
+      if (v2) {
+        const grouped = groupedTargetLabels(metadata, viewer, locale, youObject);
+        const labels = v2Labels();
+        return t("SYS_MEMBER_ADDED", locale, {
+          ...labels,
+          target: grouped ? formatNameList(grouped, locale) : labels.target,
+        });
+      }
+      const grouped = groupedTargetLabels(metadata, viewer, locale, youObject);
       const labels = memberChangeLabels();
       return memberChangeText(
         "ADDED",
@@ -517,6 +508,8 @@ export function resolveCommunitySystemSubjectUserId(
     case "COMMUNITY_INVITE_CREATED":
     case "COMMUNITY_PRIVACY_CHANGED":
       return actorId || null;
+    case "MESSAGE_DELETED":
+      return String(metadata.senderId ?? "").trim() || null;
     default:
       return null;
   }
@@ -529,18 +522,9 @@ export function buildCommunitySystemSelfPreview(
   actorName: string,
   targetName: string,
   subjectUserId: string,
-  locale: SupportedLocale = STORED_TEXT_LOCALE
+  locale: SupportedLocale = STORED_TEXT_LOCALE,
+  timeZone: string = currentTimeZone()
 ): string {
-  if (type === "ROLE_CHANGED" || type === "MEMBER_ROLE_CHANGED") {
-    return buildCommunitySystemFallbackText(
-      "ROLE_CHANGED_SELF",
-      metadata,
-      "",
-      "",
-      subjectUserId,
-      locale
-    );
-  }
   if (type === "MEMBER_JOINED") {
     return buildCommunitySystemFallbackText(
       "COMMUNITY_JOINED",
@@ -557,7 +541,8 @@ export function buildCommunitySystemSelfPreview(
     actorName,
     targetName,
     subjectUserId,
-    locale
+    locale,
+    timeZone
   );
 }
 
@@ -574,7 +559,8 @@ export function personalizeCommunitySystemMessageForViewer(
   actorName: string,
   targetName: string,
   viewerUserId: string,
-  locale: SupportedLocale = STORED_TEXT_LOCALE
+  locale: SupportedLocale = STORED_TEXT_LOCALE,
+  timeZone: string = currentTimeZone()
 ): string {
   if (!viewerUserId.trim() && locale === STORED_TEXT_LOCALE) {
     return thirdPersonText;
@@ -585,7 +571,8 @@ export function personalizeCommunitySystemMessageForViewer(
     actorName,
     targetName,
     viewerUserId,
-    locale
+    locale,
+    timeZone
   );
   return personalized === thirdPersonText ? thirdPersonText : personalized;
 }

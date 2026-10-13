@@ -677,7 +677,8 @@ export const listOtherGroupMembersQuerySchema = z
   .object({
     q: z.string().trim().min(1).optional(),
     search: z.string().trim().min(1).optional(),
-    role: otherMemberRoleEnum.optional(),
+    // Groups are leader (ADMIN, alias OWNER) + members only.
+    role: z.enum(["ADMIN", "MEMBER", "OWNER"]).optional(),
     page: z.coerce.number().int().min(1).max(1000).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
   })

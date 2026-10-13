@@ -220,43 +220,173 @@ describe("POST /api/chat/group-members/:roomId/leave", () => {
     );
   });
 
-  // A MODERATOR leaves exactly like a MEMBER: the ONLY role the leave gate
-  // rejects is ADMIN, so moderation rights never trap someone in a group.
-  it("POSITIVE: a MODERATOR can leave, same as a plain member", async () => {
+  it("NEGATIVE: 409 when the leader leaves without a successor while others remain", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "MODERATOR",
+      role: "ADMIN",
     });
-    mocks.groupMemberRepo.updateStatus.mockResolvedValue({ status: "LEFT" });
+    mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(3);
+    mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue(["m1", "m2"]);
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/leave`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("CHAT_LEADER_SUCCESSOR_REQUIRED");
+    expect(mocks.groupRoomRepo.disband).not.toHaveBeenCalled();
+    expect(mocks.groupMemberRepo.transferLeadership).not.toHaveBeenCalled();
+  });
+
+  it("POSITIVE: leader leaves with a successor — atomic handover, LEADER_CHANGED then MEMBER_LEFT", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(3);
+    mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue(["m1", "successor-1"]);
+    mocks.groupMemberRepo.transferLeadership.mockResolvedValue(true);
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "LEFT",
+      role: "MEMBER",
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/leave`)
+      .set(bearer(makeAccessToken()))
+      .send({ successorId: "successor-1" });
+
+    expect(res.status).toBe(200);
+    expect(mocks.groupMemberRepo.transferLeadership).toHaveBeenCalledWith(
+      ROOM,
+      TEST_USER_ID,
+      "successor-1",
+      expect.any(Date)
+    );
+    expect(mocks.groupMemberRepo.leaveIfActive).not.toHaveBeenCalled();
+    expect(mocks.groupRoomRepo.incMemberCount).toHaveBeenCalledWith(ROOM, -1);
+    const lines = mocks.groupMessageRepo.create.mock.calls.map(
+      (c: [{ systemEvent: string; systemData: Record<string, unknown> }]) => c[0]
+    );
+    expect(lines.map((l: { systemEvent: string }) => l.systemEvent)).toEqual([
+      "LEADER_CHANGED",
+      "MEMBER_LEFT",
+    ]);
+    expect(lines[0].systemData).toEqual(
+      expect.objectContaining({
+        actorId: TEST_USER_ID,
+        targetUserId: "successor-1",
+      })
+    );
+  });
+
+  it("NEGATIVE: 409 when the successor is not an active member (never joined or LEFT) — nothing written", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(3);
+    mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue(["m1", "m2"]);
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/leave`)
+      .set(bearer(makeAccessToken()))
+      .send({ successorId: "ghost-user" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("CHAT_LEADER_SUCCESSOR_REQUIRED");
+    expect(mocks.groupMemberRepo.transferLeadership).not.toHaveBeenCalled();
+    expect(mocks.groupRoomRepo.incMemberCount).not.toHaveBeenCalled();
+    expect(mocks.groupMessageRepo.create).not.toHaveBeenCalled();
+  });
+
+  it("NEGATIVE: 409 when the successor lost eligibility mid-handover (left meanwhile)", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue(["member-1"]);
+    mocks.groupMemberRepo.transferLeadership.mockResolvedValue(false);
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/leave`)
+      .set(bearer(makeAccessToken()))
+      .send({ successorId: "member-1" });
+
+    expect(res.status).toBe(409);
+    expect(mocks.groupRoomRepo.incMemberCount).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["banned", "aimess:user:banned:bad-1", "1"],
+    ["suspended", "aimess:user:suspended:bad-1", String(Date.now() + 60_000)],
+  ])("NEGATIVE: 409 when the successor is a %s account", async (_kind, key, value) => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue(["bad-1", "ok-1"]);
+    mocks.redis.get.mockImplementation(async (k: string) => (k === key ? value : null));
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/leave`)
+      .set(bearer(makeAccessToken()))
+      .send({ successorId: "bad-1" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("CHAT_LEADER_SUCCESSOR_REQUIRED");
+    expect(mocks.groupMemberRepo.transferLeadership).not.toHaveBeenCalled();
+  });
+
+  it("POSITIVE: everyone else is banned/suspended → no successor needed, leaving closes the group", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(4);
+    // Deleted accounts: GroupMemberService eligibility unit tests (group-leader-succession).
+    mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue([
+      "banned-1",
+      "susp-1",
+    ]);
+    mocks.redis.get.mockImplementation(async (k: string) =>
+      k === "aimess:user:banned:banned-1"
+        ? "1"
+        : k === "aimess:user:suspended:susp-1"
+          ? String(Date.now() + 60_000)
+          : null
+    );
+    mocks.groupMemberRepo.findActiveMembers.mockResolvedValue([
+      { userId: TEST_USER_ID },
+    ]);
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({ status: "LEFT" });
+    mocks.groupRoomRepo.disband.mockResolvedValue({
+      roomId: ROOM,
+      status: "DISBANDED",
+      disbandedAt: new Date(),
+    });
 
     const res = await request(app)
       .post(`/api/chat/group-members/${ROOM}/leave`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(mocks.groupMemberRepo.updateStatus).toHaveBeenCalledWith(
+    expect(mocks.groupRoomRepo.disband).toHaveBeenCalledWith(
       ROOM,
       TEST_USER_ID,
-      "LEFT",
-      expect.objectContaining({ leftAt: expect.any(Date) })
+      expect.any(Map),
+      { asLastMember: false }
     );
-    expect(mocks.redis.publish).toHaveBeenCalledWith(
-      `user:${TEST_USER_ID}`,
-      expect.stringContaining('"reason":"LEAVE"')
-    );
+    expect(mocks.groupMemberRepo.transferLeadership).not.toHaveBeenCalled();
   });
 
-  it("NEGATIVE: 400 when the ADMIN leaves while other members remain", async () => {
+  it("NEGATIVE: 409 when the leader names themselves as successor", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "ADMIN",
     });
-    mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(3);
+    mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(2);
 
     const res = await request(app)
       .post(`/api/chat/group-members/${ROOM}/leave`)
-      .set(bearer(makeAccessToken()));
+      .set(bearer(makeAccessToken()))
+      .send({ successorId: TEST_USER_ID });
 
-    expect(res.status).toBe(400);
-    expect(mocks.groupRoomRepo.disband).not.toHaveBeenCalled();
+    expect(res.status).toBe(409);
+    expect(mocks.groupMemberRepo.transferLeadership).not.toHaveBeenCalled();
   });
 
   it("POSITIVE: the ADMIN as last member leaves and the group is disbanded", async () => {
@@ -340,7 +470,8 @@ describe("POST /api/chat/group-members/:roomId/leave", () => {
     expect(mocks.groupMemberRepo.leaveIfActive).toHaveBeenCalledWith(
       ROOM,
       TEST_USER_ID,
-      expect.any(Date)
+      expect.any(Date),
+      "ADMIN"
     );
     expect(mocks.redis.publish).toHaveBeenCalledWith(
       `user:${TEST_USER_ID}`,
@@ -352,11 +483,12 @@ describe("POST /api/chat/group-members/:roomId/leave", () => {
     );
   });
 
-  it("NEGATIVE: ADMIN of a CLOSED group with others remaining → 400 (transfer rule unchanged)", async () => {
+  it("NEGATIVE: ADMIN of a CLOSED group with others remaining → 409 (successor rule unchanged)", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "ADMIN",
     });
     mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(3);
+    mocks.groupMemberRepo.findSuccessionCandidates.mockResolvedValue(["m1"]);
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: ROOM,
       status: "CLOSED",
@@ -366,7 +498,7 @@ describe("POST /api/chat/group-members/:roomId/leave", () => {
       .post(`/api/chat/group-members/${ROOM}/leave`)
       .set(bearer(makeAccessToken()));
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
     expect(mocks.groupMemberRepo.leaveIfActive).not.toHaveBeenCalled();
   });
 
@@ -428,10 +560,10 @@ describe("POST /api/chat/group-members/kick", () => {
     expect(res.status).toBe(400);
   });
 
-  it("SECURITY: 400 when trying to kick an equal-or-higher role", async () => {
+  it("SECURITY: 400 when a legacy MODERATOR tries to kick — leader only", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser
       .mockResolvedValueOnce({ role: "MODERATOR" }) // actor
-      .mockResolvedValueOnce({ role: "ADMIN" }); // target (higher)
+      .mockResolvedValueOnce({ role: "MEMBER" }); // target
 
     const res = await request(app)
       .post("/api/chat/group-members/kick")
@@ -444,33 +576,28 @@ describe("POST /api/chat/group-members/kick", () => {
 });
 
 describe("POST /api/chat/group-members/role", () => {
-  it("POSITIVE: ADMIN promotes a member to MODERATOR", async () => {
+  it.each(["MODERATOR", "MEMBER", "OWNER", "admin", ""])(
+    "NEGATIVE: 400 for role %p — only ADMIN (leader handover)",
+    async (role) => {
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+        role: "ADMIN",
+      });
+      const res = await request(app)
+        .post("/api/chat/group-members/role")
+        .set(bearer(makeAccessToken()))
+        .send({ roomId: ROOM, userId: "target-user", role });
+
+      expect(res.status).toBe(400);
+      expect(mocks.groupMemberRepo.transferLeadership).not.toHaveBeenCalled();
+    }
+  );
+
+  it("POSITIVE: leader hands over — atomic transfer + LEADER_CHANGED line", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser
       .mockResolvedValueOnce({ role: "ADMIN" }) // actor
       .mockResolvedValueOnce({ role: "MEMBER" }); // target
-    mocks.groupMemberRepo.updateRole.mockResolvedValue({ role: "MODERATOR" });
-
-    const res = await request(app)
-      .post("/api/chat/group-members/role")
-      .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: "target-user", role: "MODERATOR" });
-
-    expect(res.status).toBe(200);
-    expect(mocks.groupMemberRepo.updateRole).toHaveBeenCalledWith(
-      ROOM,
-      "target-user",
-      "MODERATOR"
-    );
-  });
-
-  // "Make Admin" is a full hand-off — there is exactly one ADMIN per group, so
-  // promoting the target also demotes the caller to MEMBER in the same call.
-  // This merges what used to be a separate "Transfer Ownership" action.
-  it("POSITIVE: ADMIN makes a member the admin and steps down to MEMBER", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser
-      .mockResolvedValueOnce({ role: "ADMIN" }) // actor
-      .mockResolvedValueOnce({ role: "MODERATOR" }); // target
-    mocks.groupMemberRepo.updateRole.mockResolvedValue({ role: "ADMIN" });
+    mocks.groupMemberRepo.transferLeadership.mockResolvedValue(true);
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({ role: "ADMIN" });
 
     const res = await request(app)
       .post("/api/chat/group-members/role")
@@ -478,49 +605,38 @@ describe("POST /api/chat/group-members/role", () => {
       .send({ roomId: ROOM, userId: "target-user", role: "ADMIN" });
 
     expect(res.status).toBe(200);
-    expect(mocks.groupMemberRepo.updateRole).toHaveBeenCalledWith(
+    expect(mocks.groupMemberRepo.transferLeadership).toHaveBeenCalledWith(
       ROOM,
       TEST_USER_ID,
-      "MEMBER"
+      "target-user"
     );
-    expect(mocks.groupMemberRepo.updateRole).toHaveBeenCalledWith(
-      ROOM,
-      "target-user",
-      "ADMIN"
+    expect(mocks.groupMessageRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ systemEvent: "LEADER_CHANGED" })
     );
   });
 
-  it("SECURITY: 400 when a MODERATOR tries to change any role", async () => {
+  it("SECURITY: 400 when a non-leader tries to hand over", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "MODERATOR",
+      role: "MEMBER",
     });
 
     const res = await request(app)
       .post("/api/chat/group-members/role")
       .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: "target-user", role: "MODERATOR" });
+      .send({ roomId: ROOM, userId: "target-user", role: "ADMIN" });
 
     expect(res.status).toBe(400);
-    expect(mocks.groupMemberRepo.updateRole).not.toHaveBeenCalled();
+    expect(mocks.groupMemberRepo.transferLeadership).not.toHaveBeenCalled();
   });
 
-  it("SECURITY: 400 when the caller tries to change their own role", async () => {
+  it("SECURITY: 400 when the caller targets themselves", async () => {
     const res = await request(app)
       .post("/api/chat/group-members/role")
       .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: TEST_USER_ID, role: "MEMBER" });
+      .send({ roomId: ROOM, userId: TEST_USER_ID, role: "ADMIN" });
 
     expect(res.status).toBe(400);
-    expect(mocks.groupMemberRepo.updateRole).not.toHaveBeenCalled();
-  });
-
-  it("NEGATIVE: 400 for an invalid role enum value", async () => {
-    const res = await request(app)
-      .post("/api/chat/group-members/role")
-      .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: "target-user", role: "SUPERADMIN" });
-
-    expect(res.status).toBe(400);
+    expect(mocks.groupMemberRepo.transferLeadership).not.toHaveBeenCalled();
   });
 });
 

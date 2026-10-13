@@ -53,7 +53,17 @@ describe("DELETE /api/chat/groups/rooms/:roomId (delete conversation)", () => {
     expect(mocks.groupRoomRepo.incMemberCount).not.toHaveBeenCalled();
   });
 
-  it.each(["LEFT", "KICKED"])(
+  it("POSITIVE: a REMOVED (KICKED) member's delete takes the read-only row out of their list", async () => {
+    member("KICKED");
+    mocks.groupMemberRepo.setDismissed.mockResolvedValue(true);
+    const res = await del();
+    expect(res.status).toBe(200);
+    expect(mocks.groupMemberRepo.setDismissed).toHaveBeenCalledWith(ROOM, TEST_USER_ID);
+    expect(mocks.groupMemberRepo.setClearedAt).not.toHaveBeenCalled();
+    expect(mocks.groupMemberRepo.updateStatus).not.toHaveBeenCalled();
+  });
+
+  it.each(["LEFT"])(
     "POSITIVE: a %s member can delete their read-only row",
     async (status) => {
       member(status);

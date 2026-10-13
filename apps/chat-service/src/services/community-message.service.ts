@@ -98,12 +98,14 @@ import type { CommunitySystemMessageService } from "./community-system-message.s
 import {
   assertCommunityMember,
   assertCommunityMemberNotMuted,
+  assertCommunityOpenFor,
   assertCommunityReadAccess,
   assertCommunityRoomWritable,
   assertRoomMemberActive,
   getCommunityLiveRole,
   canDeleteOthersMessage,
 } from "../lib/access-guard.js";
+import { publishAdminActiveSafe } from "../events/publish-community-activity.js";
 import {
   EMPTY_AROUND_CURSORS,
   type AroundCursors,
@@ -409,7 +411,10 @@ export class CommunityMessageService {
       assertCommunityMember(this.memberRepo, params.roomId, params.sentBy),
     ]);
     if (roomRes.status === "rejected") throw roomRes.reason;
-    assertCommunityRoomWritable(roomRes.value);
+    assertCommunityRoomWritable(
+      roomRes.value,
+      senderRes.status === "fulfilled" ? senderRes.value : null
+    );
     if (senderRes.status === "rejected") throw senderRes.reason;
     // …and not moderation-muted. Reuses the row just loaded (no extra I/O); the
     // mute is mirrored from community-service, so this blocks every send path
@@ -2759,7 +2764,8 @@ export class CommunityMessageService {
       () => new NotFoundError("CHAT_MESSAGE_NOT_FOUND")
     );
     assertCommunityRoomWritable(
-      await this.roomRepo.findRoomById(message.roomId)
+      await this.roomRepo.findRoomById(message.roomId),
+      member
     );
     return member;
   }
@@ -2910,7 +2916,10 @@ if (!params.content?.text?.trim())
     // A muted member can neither add NOR remove a reaction (this path toggles).
     assertCommunityMemberNotMuted(member);
     // ...and only when the community room is open (closed/suspended → read-only).
-    assertCommunityRoomWritable(await this.roomRepo.findRoomById(first.roomId));
+    assertCommunityRoomWritable(
+      await this.roomRepo.findRoomById(first.roomId),
+      member
+    );
 
     // Compare-and-swap loop: two concurrent reacts on the same message would
     // otherwise both read the same stale `reactions` map and each write back
@@ -3161,8 +3170,9 @@ if (!params.content?.text?.trim())
     // RoomMember.role `member` carries. roomId === communityId for community
     // general rooms.
     let deletedType: "SELF_DELETE" | "ADMIN_DELETE";
+    let liveRole = "";
     if (message.sentBy !== userId) {
-      const liveRole = await getCommunityLiveRole(message.roomId, userId);
+      liveRole = await getCommunityLiveRole(message.roomId, userId);
       // A MODERATOR may not delete an ADMIN's (or a peer MODERATOR's) message —
       // the sender's role is resolved from the SAME live source, and only in the
       // moderator branch so an admin delete still costs one lookup.
@@ -3192,6 +3202,21 @@ if (!params.content?.text?.trim())
       deletedBy: userId,
       revision,
     });
+    if (deleted && deletedType === "ADMIN_DELETE") {
+      // roomId === communityId for community general rooms.
+      await this.systemMessageService?.post({
+        communityId: message.roomId,
+        systemMessageType: "MESSAGE_DELETED" as CommunitySystemMessageType,
+        metadata: {
+          actorId: userId,
+          actorRole: liveRole === "owner" ? "ADMIN" : liveRole.toUpperCase(),
+          senderId: message.sentBy,
+          senderName: message.senderName ?? "",
+          messageId,
+        },
+        triggeredByUserId: userId,
+      });
+    }
     publishAdminActivitySafe({
       actorId: userId,
       action: USER_AUDIT_ACTIONS.MESSAGE_DELETED,
@@ -3450,7 +3475,7 @@ if (!params.content?.text?.trim())
 
     const room = await this.roomRepo.findRoomById(params.roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
-    assertCommunityRoomWritable(room);
+    assertCommunityRoomWritable(room, member);
     const pinnedIds: string[] = Array.isArray(room.listPinedMessage)
       ? (room.listPinedMessage as string[])
       : [];
@@ -3509,6 +3534,14 @@ if (!params.content?.text?.trim())
     // Left/removed/never-a-member (and PUBLIC non-members, who hold no row at
     // all) still have no read state to advance.
     if (!readerIsBanned) assertRoomMemberActive(member);
+    if (member?.role === "admin" && !readerIsBanned) {
+      publishAdminActiveSafe(params.communityId, params.readerId);
+    } else {
+      assertCommunityOpenFor(
+        await this.roomRepo.findRoomById(params.roomId),
+        null
+      );
+    }
 
     // Fetch the message to get its createdAt (advanceReadPointer is forward-only).
     const message = await this.messageRepo.findById(params.upToMessageId);
@@ -3990,7 +4023,7 @@ if (!params.content?.text?.trim())
 
     const room = await this.roomRepo.findRoomById(params.roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
-    assertCommunityRoomWritable(room);
+    assertCommunityRoomWritable(room, member);
     const pinnedIds: string[] = Array.isArray(room.listPinedMessage)
       ? (room.listPinedMessage as string[])
       : [];

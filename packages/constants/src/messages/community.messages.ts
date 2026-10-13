@@ -730,6 +730,17 @@ export const COMMUNITY_MESSAGES = {
     en: "Liked communities fetched",
     th: "ดึงรายการคอมมูนิตี้ที่ถูกใจแล้ว",
   },
+  // v2: community Warn removed (platform action now).
+  COMMUNITY_FEATURE_REMOVED: {
+    vi: "Tính năng này không còn khả dụng trong cộng đồng",
+    en: "This feature is no longer available in communities",
+    th: "ฟีเจอร์นี้ไม่มีในคอมมูนิตี้แล้ว",
+  },
+  COMMUNITY_INSUFFICIENT_PERMISSIONS: {
+    vi: "Bạn không có quyền thực hiện thao tác này",
+    en: "You don’t have permission to do this",
+    th: "คุณไม่มีสิทธิ์ทำรายการนี้",
+  },
 } as const satisfies MessageCatalog;
 
 export type CommunityMessageKey = keyof typeof COMMUNITY_MESSAGES;

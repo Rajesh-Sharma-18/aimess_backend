@@ -50,29 +50,8 @@ export const ADMIN_ACTIVITY_BY_SYSTEM_EVENT: Partial<
   ADMIN_ASSIGNED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
   ADMIN_REMOVED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
   OWNERSHIP_TRANSFERRED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
+  LEADER_CHANGED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
 };
-
-/**
- * ROLE_CHANGED covers moderator grants, admin hand-offs and plain demotions
- * alike. Moderator grants/removals are their own mandatory audit category, so
- * the `newRole`/`oldRole` the caller already puts in `systemData` splits them
- * out; everything else stays the generic role change.
- */
-function refineGroupAuditAction(
-  systemEvent: SystemEvent,
-  systemData: Record<string, unknown>
-): string | undefined {
-  const mirrored = ADMIN_ACTIVITY_BY_SYSTEM_EVENT[systemEvent];
-  if (mirrored !== USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED) return mirrored;
-
-  const newRole = String(systemData.newRole ?? "").toUpperCase();
-  const oldRole = String(systemData.oldRole ?? "").toUpperCase();
-  if (newRole === "MODERATOR")
-    return USER_AUDIT_ACTIONS.GROUP_MODERATOR_PROMOTED;
-  if (oldRole === "MODERATOR")
-    return USER_AUDIT_ACTIONS.GROUP_MODERATOR_DEMOTED;
-  return mirrored;
-}
 
 export interface PostSystemMessageParams {
   roomId: string;
@@ -111,11 +90,12 @@ export interface PostSystemMessageParams {
   /**
    * When set, the real-time `message:new` fan-out to `conv:<roomId>` skips this
    * user's own sockets (the gateway honors an envelope-level `excludeUserId`).
-   * Used by ban/kick so the removed member never receives the room line
-   * announcing their own removal, while every other member still does. The row
-   * is still persisted for the remaining members' history.
+   * Kick pairs it with `notifyUserId`, so the removed member gets the line once,
+   * on their own channel.
    */
   excludeUserId?: string | null;
+  /** Also delivers the line on this user's own channel (the removed member's "An removed you"). */
+  notifyUserId?: string | null;
   /**
    * Self-only line (clear/delete conversation) — see the private twin. Persisted
    * hidden for every other member, stamped after this cutoff, never bumps the
@@ -139,13 +119,6 @@ export interface PostSystemMessageParams {
  * badges. The whole operation is best-effort: failures are logged, never thrown,
  * so a lifecycle action never fails because its system message did.
  */
-const ROLE_NAMED_EVENTS = new Set<string>([
-  "MEMBER_ADDED",
-  "MEMBER_REMOVED",
-  "MEMBER_BANNED",
-  "MEMBER_UNBANNED",
-]);
-
 export class GroupSystemMessageService {
   constructor(
     private readonly messageRepo: GroupMessageRepository,
@@ -185,7 +158,7 @@ export class GroupSystemMessageService {
     // the canonical row with the acting admin's identity on it.
     const mirrored = params.skipAdminActivity
       ? undefined
-      : refineGroupAuditAction(systemEvent, inData);
+      : ADMIN_ACTIVITY_BY_SYSTEM_EVENT[systemEvent];
     if (mirrored) {
       // A membership/role event is about the PERSON; a room-level event is about
       // the room. The other id stays in the metadata either way.
@@ -204,7 +177,9 @@ export class GroupSystemMessageService {
     }
 
     try {
-      const ids = [actorId, targetUserId, ...targetUserIds].filter(
+      const senderId =
+        typeof inData.senderId === "string" ? inData.senderId : null;
+      const ids = [actorId, targetUserId, senderId, ...targetUserIds].filter(
         (id): id is string => Boolean(id)
       );
       const snapshots = ids.length
@@ -224,23 +199,6 @@ export class GroupSystemMessageService {
 
       const targetNames = targetUserIds.map((id) => this.nameOf(snapshots, id));
 
-      // A moderation line names an admin/moderator by role ("Admin removed Tom …"),
-      // stamped at action time; a Backoffice line is already "Administrator".
-      let actorRole: string | undefined;
-      if (
-        ROLE_NAMED_EVENTS.has(systemEvent) &&
-        actorId &&
-        !params.skipAdminActivity &&
-        !inData.actorRole
-      ) {
-        try {
-          actorRole = (await this.memberRepo.findByRoomAndUser(roomId, actorId))
-            ?.role;
-        } catch {
-          // No role: the line names the person, as before.
-        }
-      }
-
       // Member added / removed read "{actor} added {target} to {group}", so the
       // group's name is captured with the line — the same event-time snapshot
       // the names above are. Best-effort: no row → the line reads "… the group".
@@ -258,8 +216,8 @@ export class GroupSystemMessageService {
         actorName,
         ...(targetUserId ? { targetUserId, targetName } : {}),
         ...(targetUserIds.length ? { targetUserIds, targetNames } : {}),
+        ...(senderId ? { senderName: this.nameOf(snapshots, senderId) } : {}),
         ...(groupName ? { groupName } : {}),
-        ...(actorRole && actorRole !== "MEMBER" ? { actorRole } : {}),
       };
 
       const text = buildGroupSystemFallbackText(systemEvent, systemData);
@@ -392,41 +350,42 @@ export class GroupSystemMessageService {
         });
       }
 
-      this.redis
-        .publish(
-          selfOnly ? `user:${actorId}` : `conv:${roomId}`,
-          JSON.stringify({
-            event: "message:new",
-            ...(params.excludeUserId
-              ? { excludeUserId: params.excludeUserId }
-              : {}),
-            data: buildChatMessageEvent({
-              id: message.id,
-              roomId,
-              conversationType: "GROUP",
-              senderId: actorId ?? "",
-              senderName: actorName,
-              senderAvatar: actorAvatarUrl,
-              messageType,
-              content: message.content ?? content,
-              reactions: [],
-              serverTs: sysServerTs,
-              sequenceNumber: seq,
-              systemEvent,
-              systemData,
-              countInUnread: (
-                message as unknown as {
-                  countInUnread?: boolean | null;
-                }
-              ).countInUnread,
-            }),
-          })
-        )
-        .catch((err: unknown) => {
-          logger.warn(
-            `GroupSystemMessageService|publish failed room=${roomId}: ${String(err)}`
-          );
-        });
+      const liveData = buildChatMessageEvent({
+        id: message.id,
+        roomId,
+        conversationType: "GROUP",
+        senderId: actorId ?? "",
+        senderName: actorName,
+        senderAvatar: actorAvatarUrl,
+        messageType,
+        content: message.content ?? content,
+        reactions: [],
+        serverTs: sysServerTs,
+        sequenceNumber: seq,
+        systemEvent,
+        systemData,
+        countInUnread: (
+          message as unknown as {
+            countInUnread?: boolean | null;
+          }
+        ).countInUnread,
+      });
+      const publish = (channel: string, envelope: Record<string, unknown>) =>
+        this.redis
+          .publish(
+            channel,
+            JSON.stringify({ event: "message:new", ...envelope, data: liveData })
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `GroupSystemMessageService|publish failed room=${roomId}: ${String(err)}`
+            );
+          });
+      void publish(
+        selfOnly ? `user:${actorId}` : `conv:${roomId}`,
+        params.excludeUserId ? { excludeUserId: params.excludeUserId } : {}
+      );
+      if (params.notifyUserId) void publish(`user:${params.notifyUserId}`, {});
       return message.id;
     } catch (err) {
       logger.warn(

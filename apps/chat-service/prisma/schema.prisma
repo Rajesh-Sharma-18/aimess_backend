@@ -544,9 +544,30 @@ model GroupInviteLink {
   usedCount Int       @default(0)
   shareName String    @default("")
   createdAt DateTime  @default(now())
+  // = roomId while this is the group's shared link; null once revoked. Partial
+  // unique index (server.ts) => at most one shared ACTIVE link per group.
+  activeKey String?
 
   @@index([roomId, status, createdAt(sort: Desc)])
   @@map("group_invite_links")
+}
+
+// Private group (settings.joinApproval): an invite-link join waits here for an ADMIN.
+model GroupJoinRequest {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId      String
+  userId      String
+  status      String    @default("PENDING") // PENDING | APPROVED | REJECTED | CANCELLED | AUTO_RESOLVED
+  inviteToken String?
+  invitedBy   String?
+  decidedBy   String?
+  decidedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([roomId, status, createdAt(sort: Desc)])
+  @@index([userId, status])
+  @@map("group_join_requests")
 }
 
 // -----------------------------------------------------------------------------

@@ -686,6 +686,7 @@ export type CommunityAuditAction =
   | "MEMBER_WARNED"
   | "ADMIN_TRANSFERRED"
   | "COMMUNITY_JOINED"
+  | "MEMBER_ADDED"
   | "COMMUNITY_DELETED"
   | "COMMUNITY_CLOSED"
   | "COMMUNITY_REOPENED"
@@ -1034,13 +1035,13 @@ export type MyReportData = CommunityReportData & {
 /** A single audit-log row returned by the audit-log endpoint. */
 export type CommunityAuditLogData = {
   id: string;
-  communityId: string;
-  actorId: string;
   action: CommunityAuditAction;
-  targetUserId: string | null;
-  reason: string | null;
+  /** Epoch ms. */
+  createdAt: number;
+  /** Name/role snapshotted at write time (role: ADMIN | MODERATOR | MEMBER | PLATFORM | null for automatic). */
+  actor: { id: string; name: string; role: string | null };
+  target: { id: string; name: string } | null;
+  reason?: string;
   /** Action-specific structured context (as stored); null when absent. */
   metadata: unknown;
-  /** ISO-8601 timestamp of when the action was recorded. */
-  createdAt: string;
 };

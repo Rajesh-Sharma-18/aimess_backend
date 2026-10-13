@@ -45,14 +45,14 @@ export const AUTH_MESSAGES = {
   // Permanent Super Admin system ban. Deliberately NOT the community-scoped
   // USER_BANNED key (community.messages.ts), which reads "You are banned from
   // this community" and would be the wrong sentence on a login screen.
-  // Product copy: the banned user is told "suspended", never "banned".
+  // v2: banned reads "permanently banned"; suspension is ACCOUNT_SUSPENDED*.
   // Returned as HTTP 403 with error.code === "ACCOUNT_BANNED" by every
   // authentication surface (password, Google, Apple, refresh, forgot-password,
   // password reset, QR device link) and by the shared authenticated-route guard.
   ACCOUNT_BANNED: {
-    vi: "Tài khoản này đã bị đình chỉ.",
-    en: "This account has been suspended.",
-    th: "บัญชีนี้ถูกระงับการใช้งาน",
+    vi: "Tài khoản của bạn đã bị cấm vĩnh viễn.",
+    en: "Your account has been permanently banned.",
+    th: "บัญชีของคุณถูกแบนถาวร",
   },
   // A soft-deleted account (auth_users.deletedAt set, status PENDING_DELETION).
   // Deliberately NOT AUTH_ACCOUNT_NOT_ACTIVE above: "disabled, contact support"
@@ -514,6 +514,27 @@ export const AUTH_MESSAGES = {
     vi: "Mật khẩu nhập vào không chính xác",
     en: "The password you entered is incorrect.",
     th: "รหัสผ่านที่คุณกรอกไม่ถูกต้อง",
+  },
+  // v2 sign-in errors; render via accountBannedMessage / accountSuspendedMessage.
+  ACCOUNT_BANNED_REASON: {
+    vi: "Tài khoản của bạn đã bị cấm vĩnh viễn. Lý do: {{reason}}",
+    en: "Your account has been permanently banned. Reason: {{reason}}",
+    th: "บัญชีของคุณถูกแบนถาวร เหตุผล: {{reason}}",
+  },
+  ACCOUNT_SUSPENDED: {
+    vi: "Tài khoản của bạn bị tạm khóa.",
+    en: "Your account is suspended.",
+    th: "บัญชีของคุณถูกระงับ",
+  },
+  ACCOUNT_SUSPENDED_UNTIL: {
+    vi: "Tài khoản của bạn bị tạm khóa đến {{until}}",
+    en: "Your account is suspended until {{until}}",
+    th: "บัญชีของคุณถูกระงับจนถึง {{until}}",
+  },
+  ACCOUNT_SUSPENDED_UNTIL_REASON: {
+    vi: "Tài khoản của bạn bị tạm khóa đến {{until}}. Lý do: {{reason}}",
+    en: "Your account is suspended until {{until}}. Reason: {{reason}}",
+    th: "บัญชีของคุณถูกระงับจนถึง {{until}} เหตุผล: {{reason}}",
   },
 } as const satisfies MessageCatalog;
 

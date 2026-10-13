@@ -2474,7 +2474,7 @@ export class LivestreamService {
         if (isCdnStream(stream)) {
           const downMs = Date.now() - (stream.disconnectedAt?.getTime() ?? 0);
           if (downMs < env.STREAM_CDN_RECONNECT_GRACE_MS) continue;
-          await this.finalizeAsEnded(stream);
+          await this.finalizeAsEnded(stream, "CONNECTION_LOST");
           logger.info(
             `sweepStaleReconnectingStreams: ended CDN stream=${stream.id} community=${stream.communityId}`
           );
@@ -2500,7 +2500,7 @@ export class LivestreamService {
           );
           continue;
         }
-        await this.finalizeAsEnded(stream);
+        await this.finalizeAsEnded(stream, "CONNECTION_LOST");
         logger.info(
           `sweepStaleReconnectingStreams: ended stream=${stream.id} community=${stream.communityId}`
         );

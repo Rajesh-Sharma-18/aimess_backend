@@ -1,5 +1,9 @@
 import type { RequestHandler } from "express";
-import { runWithLocale } from "@aimess/constants";
+import {
+  resolveTimeZone,
+  runWithLocale,
+  runWithTimeZone,
+} from "@aimess/constants";
 
 import { resolveLocaleFromRequest } from "./resolve-locale.js";
 
@@ -7,6 +11,8 @@ declare global {
   namespace Express {
     interface Request {
       locale: import("@aimess/constants").SupportedLocale;
+      /** Viewer IANA zone from `x-timezone`; "UTC" when missing/invalid. */
+      timeZone: string;
     }
   }
 }
@@ -19,5 +25,6 @@ declare global {
  */
 export const localeMiddleware: RequestHandler = (req, _res, next) => {
   req.locale = resolveLocaleFromRequest(req);
-  runWithLocale(req.locale, next);
+  req.timeZone = resolveTimeZone(req.header("x-timezone"));
+  runWithLocale(req.locale, () => runWithTimeZone(req.timeZone, next));
 };

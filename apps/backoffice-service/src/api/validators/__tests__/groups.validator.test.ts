@@ -17,6 +17,7 @@ import {
   disbandGroupSchema,
   removeGroupMemberSchema,
 } from "../groups.validator.js";
+import { listOtherGroupMembersQuerySchema } from "../users.validator.js";
 
 describe("listGroupsQuerySchema — pagination defaults & bounds", () => {
   it("applies defaults when nothing is provided", () => {
@@ -146,7 +147,7 @@ describe("listGroupMembersQuerySchema", () => {
   });
 
   it("accepts each valid role enum value", () => {
-    for (const role of ["ADMIN", "MODERATOR", "MEMBER"]) {
+    for (const role of ["ADMIN", "MEMBER"]) {
       const r = listGroupMembersQuerySchema.safeParse({ role });
       assert.equal(r.success, true, `role=${role} should be valid`);
       assert.equal(r.data?.role, role);
@@ -156,6 +157,19 @@ describe("listGroupMembersQuerySchema", () => {
   it("rejects an unknown role value", () => {
     const r = listGroupMembersQuerySchema.safeParse({ role: "GUEST" });
     assert.equal(r.success, false);
+  });
+
+  it("rejects MODERATOR — groups are leader + members only", () => {
+    const r = listGroupMembersQuerySchema.safeParse({ role: "MODERATOR" });
+    assert.equal(r.success, false);
+    assert.equal(
+      listOtherGroupMembersQuerySchema.safeParse({ role: "MODERATOR" }).success,
+      false
+    );
+    assert.equal(
+      listOtherGroupMembersQuerySchema.safeParse({ role: "OWNER" }).data?.role,
+      "ADMIN"
+    );
   });
 
   it("rejects a lower-case role (enum is case-sensitive)", () => {

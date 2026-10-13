@@ -1,12 +1,9 @@
 /**
  * Group list synchronization when a membership ends (leave / admin removal).
  *
- * The group chat used to stay in the ex-member's list read-only, WhatsApp-style
- * — `getInboxMemberships` fed the inbox ACTIVE + LEFT + KICKED rows, and
- * `assertGroupReadAccess` let those rows keep reading history. The product rule
- * is now the opposite: the instant a membership ends, the group leaves that
- * user's list and every read is refused, while the group itself and every
- * remaining member are untouched.
+ * A voluntary leave takes the group out of the leaver's list and every read is
+ * refused. An admin REMOVAL keeps a read-only row up to the removal line
+ * (contract §8). The group itself and every remaining member are untouched.
  *
  * A DISBANDED room is the one case that still reads past ACTIVE: a disband
  * marks every membership LEFT, and an open client has to keep rendering the
@@ -55,7 +52,7 @@ beforeEach(() => {
 
 // ── 1. The list query ────────────────────────────────────────────────────────
 describe("GroupMemberRepository.getInboxMemberships", () => {
-  it("LIST: selects ACTIVE, non-dismissed memberships only — a LEFT/KICKED row, or a CLOSED group the member deleted, can never reach the inbox", async () => {
+  it("LIST: ACTIVE + REMOVED (KICKED with a cutoff), non-dismissed — a LEFT row, or a row the member deleted, never reaches the inbox", async () => {
     let where: Record<string, unknown> | undefined;
     const prisma = {
       groupMember: {
@@ -69,8 +66,11 @@ describe("GroupMemberRepository.getInboxMemberships", () => {
 
     expect(where).toEqual({
       userId: "u1",
-      status: "ACTIVE",
       dismissedAt: { isSet: false },
+      OR: [
+        { status: "ACTIVE" },
+        { status: "KICKED", kickedAt: { not: null } },
+      ],
     });
   });
 });
@@ -104,14 +104,11 @@ describe("assertGroupReadAccess after removal", () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("DENIES a member an admin removed from a live group", async () => {
-    findByRoomAndUser.mockResolvedValue({
-      status: "KICKED",
-      kickedAt: new Date(),
-    });
-    await expect(
-      assertGroupReadAccess(memberRepo, ROOM, TARGET, roomRepo)
-    ).rejects.toBeInstanceOf(ForbiddenError);
+  it("ADMITS a removed member read-only, capped at the removal line (contract §8)", async () => {
+    const kickedAt = new Date();
+    findByRoomAndUser.mockResolvedValue({ status: "KICKED", kickedAt });
+    const result = await assertGroupReadAccess(memberRepo, ROOM, TARGET, roomRepo);
+    expect(result.readCutoffBefore).toEqual(kickedAt);
   });
 
   it("REGRESSION: a DISBANDED room stays readable up to the disband instant", async () => {
@@ -133,11 +130,16 @@ describe("assertGroupReadAccess after removal", () => {
 });
 
 describe("GET /api/chat/groups/rooms/:roomId/messages after removal", () => {
-  it("ACCESS: a kicked member can no longer fetch the group's messages", async () => {
+  it("ACCESS: a kicked member pages history only up to their removal line", async () => {
+    const kickedAt = new Date();
     mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       userId: TEST_USER_ID,
       status: "KICKED",
-      kickedAt: new Date(),
+      kickedAt,
+    });
+    mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [],
+      hasMore: false,
     });
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
     mocks.groupRoomRepo.findByRoomId.mockResolvedValue({
@@ -149,7 +151,10 @@ describe("GET /api/chat/groups/rooms/:roomId/messages after removal", () => {
       .get(`/api/chat/groups/rooms/${ROOM}/messages`)
       .set(bearer(makeAccessToken()));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    expect(mocks.groupMessageRepo.findByRoomIdTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ readCutoffBefore: kickedAt })
+    );
   });
 });
 

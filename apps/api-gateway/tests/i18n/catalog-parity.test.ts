@@ -29,6 +29,9 @@ import {
  */
 const IDENTICAL_ALLOWED = new Set([
   "SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION",
+  // v2: "AI Mess Administrator" is never translated; "{{name}} ({{role}})" is punctuation.
+  "SYS_NAME_ADMINISTRATOR",
+  "SYS_ACTOR_WITH_ROLE",
   "NOTIF_CHAT_COMMUNITY_BODY",
   // "{{label}} {{duration}}" — the completed-call preview. The label is itself
   // a translated string, so there is no prose here to translate.
@@ -141,7 +144,7 @@ describe("system message rendering per locale", () => {
     const en = buildGroupSystemFallbackText("MEMBER_REMOVED", data, null, "en");
     const vi = buildGroupSystemFallbackText("MEMBER_REMOVED", data, null, "vi");
     const th = buildGroupSystemFallbackText("MEMBER_REMOVED", data, null, "th");
-    expect(en).toBe("Alex removed Jim from the group");
+    expect(en).toBe("Alex removed Jim");
     expect(new Set([en, vi, th]).size).toBe(3);
     for (const text of [en, vi, th]) {
       expect(text).toContain("Alex");
@@ -155,12 +158,12 @@ describe("system message rendering per locale", () => {
     ).toBe("Alex นำคุณออกจากกลุ่ม");
     expect(
       buildGroupSystemFallbackText("MEMBER_REMOVED", data, "t1", "vi")
-    ).toBe("Alex đã xóa Bạn khỏi nhóm");
+    ).toBe("Alex đã xóa bạn khỏi nhóm");
   });
 
   it("defaults to English so stored SYSTEM text never shifts language", () => {
     expect(buildGroupSystemFallbackText("MEMBER_REMOVED", data)).toBe(
-      "Alex removed Jim from the group"
+      "Alex removed Jim"
     );
     expect(
       buildPrivateSystemFallbackText("FRIENDSHIP_BLOCKED", {

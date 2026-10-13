@@ -16,6 +16,10 @@ import {
 } from "../lib/keyset-cursor.js";
 import { adminUserRepository } from "./admin-user.repository.js";
 import { moderationActionRepository } from "./moderation-action.repository.js";
+import {
+  publishAccountWarnedSafe,
+  publishReportOutcomeSafe,
+} from "../messaging/publish-admin-user-notify.js";
 import { reportFixtures } from "./__fixtures__/reports.fixture.js";
 import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 import type {
@@ -1210,6 +1214,13 @@ export class PrismaReportRepository implements ReportRepository {
       );
     });
 
+    publishReportOutcomeSafe(before.reporterId, "ACTIONED", id);
+    const warnedUserId =
+      before.reportedUserId ?? (before.type === "user" ? before.targetId : null);
+    if (input.actionOnReportedUser === "WARN" && warnedUserId) {
+      publishAccountWarnedSafe(warnedUserId, input.note ?? "");
+    }
+
     return {
       reportId: id,
       status: "RESOLVED",
@@ -1262,6 +1273,8 @@ export class PrismaReportRepository implements ReportRepository {
         tx
       );
     });
+
+    publishReportOutcomeSafe(before.reporterId, "NO_ACTION", id);
 
     return {
       reportId: id,

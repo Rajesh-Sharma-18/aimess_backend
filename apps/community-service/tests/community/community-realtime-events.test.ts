@@ -241,22 +241,14 @@ describe("kickMember — real-time broadcasts", () => {
     ).resolves.not.toThrow();
   });
 
-  it("posts NO MEMBER_REMOVED chat system message (removal is silent)", async () => {
+  it("posts the moderator-only MEMBER_REMOVED line (v2: Admin + Moderators see who removed whom)", async () => {
     await communityService.kickMember(CID, ADMIN, TARGET, "violating rules");
 
-    // This assertion used to be inverted, on the premise that "only
-    // MEMBER_LEFT / MEMBER_JOINED are hidden". That is not the policy:
-    // `HIDDEN_SYSTEM_MESSAGE_TYPES` in packages/constants lists MEMBER_REMOVED
-    // and MEMBER_BANNED as well, and its policy table spells out the rule —
-    // "Member removed by admin | chat system msg: No (HIDDEN)". The removed
-    // user learns via `community:membership:removed` on their personal channel
-    // and other members via the `community:member:removed` roster event; no
-    // "{name} was removed" text may reach chat history, sync, lastActivity, or
-    // any API surface. Moderation history lives in the audit log.
-    const postedTypes = pubSysMsg.mock.calls.map(
-      ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
-    );
-    expect(postedTypes).not.toContain("MEMBER_REMOVED");
+    const removed = pubSysMsg.mock.calls
+      .map(([arg]) => arg as { systemMessageType?: string; visibleToUserId?: string })
+      .filter((a) => a.systemMessageType === "MEMBER_REMOVED");
+    expect(removed).toHaveLength(1);
+    expect(removed[0].visibleToUserId).toBeUndefined();
   });
 
   it("does NOT write removal to lastActivity (removal never becomes the list preview)", async () => {

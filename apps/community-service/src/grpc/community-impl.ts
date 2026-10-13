@@ -997,11 +997,6 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                   link.usedCount >= link.maxUses
                 )
                   linkStatus = "REVOKED";
-                else if (
-                  link.expiresAt &&
-                  link.expiresAt.getTime() <= Date.now()
-                )
-                  linkStatus = "EXPIRED";
                 else linkStatus = "ACTIVE";
               } else if (community.invitationCode === code) {
                 // LEGACY permanent code: nothing mints these any more, but the
@@ -1946,6 +1941,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           userId?: string;
           actorAdminId?: string;
           reason?: string;
+          reasonCode?: string;
         };
         const userId = (req.userId || "").trim();
         if (!userId) {
@@ -1961,7 +1957,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         const result = await communityService.adminApplySystemBan(
           userId,
           req.actorAdminId?.trim() || "system",
-          req.reason?.trim() || null
+          req.reason?.trim() || null,
+          req.reasonCode === "ADMIN_SUSPENDED" ? "ADMIN_SUSPENDED" : "ADMIN_BANNED"
         );
         callback(null, { ok: true, ...result, errorCode: "" });
       } catch (err) {

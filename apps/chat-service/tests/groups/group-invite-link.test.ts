@@ -274,7 +274,7 @@ describe("POST /api/chat/invite-links/join", () => {
       .send({ token: TOKEN });
 
     expect(res.status).toBe(200);
-    expect(mocks.groupInviteLinkRepo.incrementUsedCount).toHaveBeenCalledWith(
+    expect(mocks.groupInviteLinkRepo.claimUse).toHaveBeenCalledWith(
       TOKEN
     );
     // The invitation that admitted them is recorded on the member row: it is
@@ -342,18 +342,22 @@ describe("GET /api/chat/invite-links/room/:roomId", () => {
     expect(res.body.data.data).toHaveLength(1);
   });
 
-  // AUDIT H4 — live join tokens must not be listable by any authed user.
-  it("SECURITY: 403 when a plain MEMBER lists invite links", async () => {
+  // Every role shares the group link (community parity); AUDIT H4 still bars non-members below.
+  it("a plain MEMBER can list the group's invite links", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
+    mocks.groupInviteLinkRepo.findActiveByRoom.mockResolvedValue([
+      { token: TOKEN, roomId: ROOM },
+    ]);
+    mocks.groupInviteLinkRepo.countActiveByRoom.mockResolvedValue(1);
 
     const res = await request(app)
       .get(`/api/chat/invite-links/room/${ROOM}`)
       .set(bearer(makeAccessToken()));
 
-    expect(res.status).toBe(403);
-    expect(mocks.groupInviteLinkRepo.findActiveByRoom).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(1);
   });
 
   it("SECURITY: 403 when a non-member lists invite links", async () => {
@@ -659,7 +663,7 @@ describe("invite-link lifetime — a link lives until it is revoked", () => {
       .send({ token: TOKEN });
 
     expect(res.status).toBe(200);
-    expect(mocks.groupInviteLinkRepo.incrementUsedCount).toHaveBeenCalledWith(
+    expect(mocks.groupInviteLinkRepo.claimUse).toHaveBeenCalledWith(
       TOKEN
     );
   });

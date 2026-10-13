@@ -47,11 +47,16 @@ describe("assertGroupReadAccess", () => {
     await expect(assertRead()).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("denies a REMOVED (kicked) member of a live group", async () => {
-    findByRoomAndUser.mockResolvedValue({
-      status: "KICKED",
-      kickedAt: new Date("2026-02-02T00:00:00.000Z"),
+  it("admits a REMOVED (kicked) member read-only, capped at the removal line", async () => {
+    const kickedAt = new Date("2026-02-02T00:00:00.000Z");
+    findByRoomAndUser.mockResolvedValue({ status: "KICKED", kickedAt });
+    await expect(assertRead()).resolves.toMatchObject({
+      readCutoffBefore: kickedAt,
     });
+  });
+
+  it("denies a KICKED row with no kickedAt (no cutoff to read up to)", async () => {
+    findByRoomAndUser.mockResolvedValue({ status: "KICKED", kickedAt: null });
     await expect(assertRead()).rejects.toBeInstanceOf(ForbiddenError);
   });
 
@@ -106,12 +111,12 @@ describe("assertGroupReadAccess", () => {
       await expect(assertRead()).rejects.toBeInstanceOf(ForbiddenError);
     });
 
-    it("still denies a member an admin removed before the disband", async () => {
-      findByRoomAndUser.mockResolvedValue({
-        status: "KICKED",
-        kickedAt: new Date("2026-02-02T00:00:00.000Z"),
+    it("a member removed before the disband still reads only up to their removal", async () => {
+      const kickedAt = new Date("2026-02-02T00:00:00.000Z");
+      findByRoomAndUser.mockResolvedValue({ status: "KICKED", kickedAt });
+      await expect(assertRead()).resolves.toMatchObject({
+        readCutoffBefore: kickedAt,
       });
-      await expect(assertRead()).rejects.toBeInstanceOf(ForbiddenError);
     });
   });
 });

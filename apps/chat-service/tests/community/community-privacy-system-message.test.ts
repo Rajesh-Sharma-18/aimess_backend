@@ -46,16 +46,16 @@ const render = (
 describe("COMMUNITY_PRIVACY_CHANGED — PUBLIC → PRIVATE", () => {
   const meta = row("PUBLIC", "PRIVATE");
   it("actor reads first-person", () => {
-    expect(render(meta, ACTOR)).toBe("You changed the community to private");
+    expect(render(meta, ACTOR)).toBe("You made the community private");
   });
   it("another member reads the actor's display name", () => {
     expect(render(meta, MEMBER)).toBe(
-      "Smiley Creatures changed the community to private"
+      "Smiley Creatures made the community private"
     );
   });
   it("Super Admin (no viewer id) never sees 'You'", () => {
     expect(render(meta, null)).toBe(
-      "Smiley Creatures changed the community to private"
+      "Smiley Creatures made the community private"
     );
     expect(render(meta, "")).not.toMatch(/^You/);
   });
@@ -64,16 +64,16 @@ describe("COMMUNITY_PRIVACY_CHANGED — PUBLIC → PRIVATE", () => {
 describe("COMMUNITY_PRIVACY_CHANGED — PRIVATE → PUBLIC", () => {
   const meta = row("PRIVATE", "PUBLIC");
   it("actor reads first-person", () => {
-    expect(render(meta, ACTOR)).toBe("You changed the community to public");
+    expect(render(meta, ACTOR)).toBe("You made the community public");
   });
   it("another member reads the actor's display name", () => {
     expect(render(meta, MEMBER)).toBe(
-      "Smiley Creatures changed the community to public"
+      "Smiley Creatures made the community public"
     );
   });
   it("Super Admin viewer reads the factual actor line", () => {
     expect(render(meta, null)).toBe(
-      "Smiley Creatures changed the community to public"
+      "Smiley Creatures made the community public"
     );
   });
 });
@@ -89,10 +89,10 @@ describe("COMMUNITY_PRIVACY_CHANGED — localization", () => {
   });
   it("th", () => {
     expect(render(row("PUBLIC", "PRIVATE"), ACTOR, "th")).toBe(
-      "คุณเปลี่ยนคอมมูนิตี้เป็นแบบส่วนตัว"
+      "คุณตั้งคอมมูนิตี้เป็นแบบส่วนตัว"
     );
     expect(render(row("PRIVATE", "PUBLIC"), null, "th")).toBe(
-      "Smiley Creatures เปลี่ยนคอมมูนิตี้เป็นแบบสาธารณะ"
+      "Smiley Creatures ตั้งคอมมูนิตี้เป็นแบบสาธารณะ"
     );
   });
   it("no raw keys or unfilled placeholders in any locale", () => {
@@ -147,7 +147,7 @@ describe("COMMUNITY_PRIVACY_CHANGED — contract / safety", () => {
         "",
         ACTOR
       )
-    ).toBe("You changed the community to private");
+    ).toBe("You made the community private");
   });
 
   it("per-viewer rewrite of the stored third-person text", () => {
@@ -162,7 +162,7 @@ describe("COMMUNITY_PRIVACY_CHANGED — contract / safety", () => {
         "",
         ACTOR
       )
-    ).toBe("You changed the community to public");
+    ).toBe("You made the community public");
     expect(
       personalizeCommunitySystemMessageForViewer(
         "COMMUNITY_PRIVACY_CHANGED",
@@ -190,7 +190,7 @@ describe("COMMUNITY_PRIVACY_CHANGED — contract / safety", () => {
         "",
         MEMBER
       )
-    ).toBe("Someone changed the community to private");
+    ).toBe("Someone made the community private");
   });
 });
 

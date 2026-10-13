@@ -374,7 +374,12 @@ export class ConversationBulkService {
  */
 function toLeaveErrorCode(err: unknown): BulkLeaveErrorCode {
   const code = (err as { message?: string })?.message ?? "";
-  if (code === "CHAT_OWNER_CANNOT_LEAVE") return "OWNER_CANNOT_LEAVE";
+  // Bulk leave names no successor, so a leader with members left stays put.
+  if (
+    code === "CHAT_OWNER_CANNOT_LEAVE" ||
+    code === "CHAT_LEADER_SUCCESSOR_REQUIRED"
+  )
+    return "OWNER_CANNOT_LEAVE";
   if (code === "CHAT_NOT_A_MEMBER") return "NOT_MEMBER";
   // The private-room guard's own "you aren't in this room" code — same meaning
   // as CHAT_NOT_A_MEMBER, so it must report NOT_MEMBER rather than degrading to

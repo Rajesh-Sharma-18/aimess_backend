@@ -754,6 +754,8 @@ export interface GroupInvitationSystemAction {
    * has no viewer to resolve it for) can omit it.
    */
   state?: GroupInviteState;
+  /** Private group: CAN_JOIN means "Request to join", not "Join". */
+  requiresApproval?: boolean;
   canOpen: boolean;
 }
 
@@ -786,6 +788,7 @@ export function buildGroupInvitationAction(params: {
   alreadyJoined: boolean;
   status: GroupInvitationStatus;
   state?: GroupInviteState;
+  requiresApproval?: boolean;
 }): GroupInvitationSystemAction {
   const {
     groupId,
@@ -797,6 +800,7 @@ export function buildGroupInvitationAction(params: {
     alreadyJoined,
     status,
     state,
+    requiresApproval,
   } = params;
   const canOpen =
     status !== "DELETED" && (alreadyJoined || status === "ACTIVE");
@@ -811,6 +815,7 @@ export function buildGroupInvitationAction(params: {
     alreadyJoined,
     status,
     ...(state ? { state } : {}),
+    ...(requiresApproval === undefined ? {} : { requiresApproval }),
     canOpen,
   };
 }

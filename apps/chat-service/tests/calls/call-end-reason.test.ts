@@ -144,8 +144,10 @@ describe("constants", () => {
 
   it("list preview is per viewer and never shows duration", () => {
     const base = { callType: "AUDIO", durationSec: 0, locale: "en" as const };
-    expect(buildCallListPreviewText({ ...base, endReason: "declined", viewerIsCaller: true })).toBe("Voice call");
-    expect(buildCallListPreviewText({ ...base, endReason: "declined", viewerIsCaller: false })).toBe("Missed voice call");
+    expect(buildCallListPreviewText({ ...base, endReason: "declined", viewerIsCaller: true })).toBe("Call declined");
+    expect(buildCallListPreviewText({ ...base, endReason: "declined", viewerIsCaller: false })).toBe("You declined a voice call");
+    expect(buildCallListPreviewText({ ...base, endReason: "no_answer", viewerIsCaller: true })).toBe("No answer");
+    expect(buildCallListPreviewText({ ...base, endReason: "no_answer", viewerIsCaller: false })).toBe("Missed voice call");
     expect(buildCallListPreviewText({ ...base, callType: "VIDEO", endReason: "completed", durationSec: 90, viewerIsCaller: false })).toBe("Video call");
   });
 });

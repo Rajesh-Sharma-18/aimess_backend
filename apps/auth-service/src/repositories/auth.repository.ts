@@ -69,6 +69,8 @@ const loginUserSelect = {
   emailVerified: true,
   passwordHash: true,
   status: true,
+  suspendedReason: true,
+  suspendedUntil: true,
   lockedUntil: true,
   deletedAt: true,
   isProfileCompleted: true,
@@ -118,6 +120,8 @@ export const authRepository = {
         emailVerified: true,
         passwordHash: true,
         status: true,
+        suspendedReason: true,
+        suspendedUntil: true,
         deletedAt: true,
       },
     });

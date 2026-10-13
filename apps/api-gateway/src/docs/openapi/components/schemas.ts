@@ -9886,7 +9886,7 @@ export const openApiSchemas = {
       isMemberMuted: {
         type: "boolean",
         description:
-          "True when an admin/moderator has silenced the CALLER — they keep full read access but every write is rejected with CHAT_MUTED_IN_GROUP. Distinct from `isMuted` (the caller's own notification mute). Present on GET /groups/{roomId} and the inbox rows, so a client restores the disabled composer on a cold open or after a reconnect that missed the `group:member:muted` socket event. Mirrors community's `isMemberMuted`.",
+          "Always false: groups have no moderation mute (kept for older clients). Distinct from `isMuted` (the caller's own notification mute).",
       },
       memberMutedUntil: {
         type: "string",
@@ -10013,7 +10013,7 @@ export const openApiSchemas = {
       userId: { type: "string", minLength: 5 },
       role: {
         type: "string",
-        enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+        enum: ["ADMIN"],
       },
     },
     required: ["roomId", "userId", "role"],

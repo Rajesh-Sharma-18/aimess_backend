@@ -3,7 +3,10 @@ import { createServer, type Server } from "node:http";
 import { logger } from "@aimess/logger";
 import { startUserPurgedConsumer } from "@aimess/messaging";
 
-import { handleUserPurged } from "./handlers/user-purged.handler.js";
+import {
+  handleUserPurged,
+  setPurgedLeaderSuccession,
+} from "./handlers/user-purged.handler.js";
 import { ensureBuckets } from "@aimess/storage";
 
 import { env } from "./config/env.js";
@@ -21,6 +24,7 @@ import { GroupRoomRepository } from "./repositories/group-room.repository.js";
 import { GroupMessageRepository } from "./repositories/group-message.repository.js";
 import { GroupMemberRepository } from "./repositories/group-member.repository.js";
 import { GroupInviteLinkRepository } from "./repositories/group-invite-link.repository.js";
+import { GroupJoinRequestRepository } from "./repositories/group-join-request.repository.js";
 import { GroupMessagePinRepository } from "./repositories/group-message-pin.repository.js";
 import { CommunityMessagePinRepository } from "./repositories/community-message-pin.repository.js";
 import { GeneralRoomRepository } from "./repositories/general-room.repository.js";
@@ -54,6 +58,7 @@ import { GroupSystemMessageService } from "./services/group-system-message.servi
 import { GroupMessageService } from "./services/group-message.service.js";
 import { GroupMemberService } from "./services/group-member.service.js";
 import { GroupInviteLinkService } from "./services/group-invite-link.service.js";
+import { GroupJoinRequestService } from "./services/group-join-request.service.js";
 import { GroupPinService } from "./services/group-pin.service.js";
 import { CommunityPinService } from "./services/community-pin.service.js";
 import { NotificationService } from "./services/notification.service.js";
@@ -85,6 +90,7 @@ import { GroupRoomController } from "./api/controllers/group-room.controller.js"
 import { GroupMessageController } from "./api/controllers/group-message.controller.js";
 import { GroupMemberController } from "./api/controllers/group-member.controller.js";
 import { GroupInviteLinkController } from "./api/controllers/group-invite-link.controller.js";
+import { GroupJoinRequestController } from "./api/controllers/group-join-request.controller.js";
 import { NotificationController } from "./api/controllers/notification.controller.js";
 import { UnreadSummaryController } from "./api/controllers/unread-summary.controller.js";
 import { CommunityController } from "./api/controllers/community.controller.js";
@@ -118,14 +124,9 @@ import {
 
 let httpServer: Server | undefined;
 let callTimeoutSweepHandle: ReturnType<typeof setInterval> | undefined;
-let groupMuteSweepHandle: ReturnType<typeof setInterval> | undefined;
 let autoDeleteSweepHandle: ReturnType<typeof setInterval> | undefined;
 let loginExpirySweepHandle: ReturnType<typeof setInterval> | undefined;
 let presenceSweepHandle: ReturnType<typeof setInterval> | undefined;
-
-/** Backstop so a huge mute backlog can't hold the DB for a whole tick — the
- *  remainder drains on the next tick. Mirrors community's sweeper. */
-const GROUP_MUTE_SWEEP_MAX_BATCHES = 50;
 
 /** Same backstop for the auto-delete sweep. */
 const AUTO_DELETE_SWEEP_MAX_BATCHES = 50;
@@ -407,6 +408,31 @@ const startServer = async () => {
     // existing deployments pick it up without a `prisma db push`.
     // updatedAt trails the pair; [userId, status] is the prefix every
     // by-user read (unread summary, findSearchScope) is served by.
+    // One shared ACTIVE invite link per group - makes reset/create race-safe.
+    try {
+      await ensureMongoIndex(prisma, "group_invite_links", {
+        key: { activeKey: 1 },
+        name: "group_invite_links_active_unique",
+        unique: true,
+        partialFilterExpression: { activeKey: { $type: "string" } },
+      });
+    } catch (err) {
+      logger.warn("Failed to create group_invite_links_active_unique - continuing");
+      logger.warn(err);
+    }
+    // One PENDING join request per (group, user) - makes requestViaLink race-safe.
+    try {
+      await ensureMongoIndex(prisma, "group_join_requests", {
+        key: { roomId: 1, userId: 1 },
+        name: "group_join_requests_pending_unique",
+        unique: true,
+        partialFilterExpression: { status: "PENDING" },
+      });
+    } catch (err) {
+      logger.warn("Failed to create group_join_requests_pending_unique - continuing");
+      logger.warn(err);
+    }
+
     try {
       await ensureMongoIndex(prisma, "room_members", {
         key: { userId: 1, status: 1, updatedAt: -1 },
@@ -528,6 +554,7 @@ const startServer = async () => {
     const groupMessageRepo = new GroupMessageRepository(prisma, groupRoomRepo);
     const groupMemberRepo = new GroupMemberRepository(prisma);
     const groupInviteLinkRepo = new GroupInviteLinkRepository(prisma);
+    const groupJoinRequestRepo = new GroupJoinRequestRepository(prisma);
     const groupMessagePinRepo = new GroupMessagePinRepository(prisma);
     const communityMessagePinRepo = new CommunityMessagePinRepository(prisma);
     const generalRoomRepo = new GeneralRoomRepository(prisma);
@@ -605,7 +632,8 @@ const startServer = async () => {
       redis,
       groupRoomRepo,
       groupMemberRepo,
-      groupInviteLinkRepo
+      groupInviteLinkRepo,
+      groupJoinRequestRepo
     );
 
     const groupSystemMessageService = new GroupSystemMessageService(
@@ -626,6 +654,15 @@ const startServer = async () => {
       userSnapshotService,
       cacheRepo
     );
+    const groupJoinRequestService = new GroupJoinRequestService(
+      groupJoinRequestRepo,
+      groupRoomRepo,
+      groupMemberRepo,
+      redis,
+      groupInviteLinkRepo,
+      userSnapshotService,
+      cacheRepo
+    );
     const groupMemberService = new GroupMemberService(
       groupMemberRepo,
       groupRoomRepo,
@@ -634,7 +671,12 @@ const startServer = async () => {
       userServiceClient,
       userSnapshotService,
       cacheRepo,
-      groupRoomService
+      groupRoomService,
+      groupJoinRequestService
+    );
+    // user.purged hands the groups a deleted leader led to their successors.
+    setPurgedLeaderSuccession((userId) =>
+      groupMemberService.autoSucceedEverywhere(userId, true)
     );
     // Admin Group Management (backoffice gRPC): reads plus the two moderation
     // writes, which delegate to the group services above so disband/remove keep
@@ -655,7 +697,8 @@ const startServer = async () => {
       cacheRepo,
       userSnapshotService,
       presenceService,
-      redis
+      redis,
+      groupSystemMessageService
     );
     // Wire presence-connect delivered-tick backfill: on offline→online,
     // PresenceService now walks both surfaces and marks pending messages
@@ -672,7 +715,8 @@ const startServer = async () => {
       privateMessageRepo,
       userSnapshotService,
       cacheRepo,
-      redis
+      redis,
+      groupJoinRequestService
     );
     const groupPinService = new GroupPinService(
       groupMessagePinRepo,
@@ -1023,6 +1067,10 @@ const startServer = async () => {
         groupInviteLinkService,
         groupMemberService
       ),
+      groupJoinRequestCtrl: new GroupJoinRequestController(
+        groupJoinRequestService,
+        groupMemberService
+      ),
       notificationCtrl: new NotificationController(
         notificationService,
         notificationCatalogueService
@@ -1179,33 +1227,6 @@ const startServer = async () => {
       callTimeoutSweepHandle.unref();
     }
 
-    // Group auto-unmute sweep — the counterpart of community-service's
-    // mute-sweeper job. Correctness does NOT depend on it (mute enforcement
-    // applies lazy expiry the instant `moderationMutedUntil` passes); it exists
-    // to emit `group:member:unmuted` so the composer re-enables on every device
-    // without a refresh, and to clear the stale flag. Exactly-once across nodes
-    // via the atomic per-row claim, so no distributed lock is needed. Drains in
-    // pages so one tick can never monopolise the DB.
-    groupMuteSweepHandle = setInterval(() => {
-      void (async () => {
-        try {
-          for (let i = 0; i < GROUP_MUTE_SWEEP_MAX_BATCHES; i++) {
-            const n = await groupMemberService.expireDueModerationMutes(
-              env.GROUP_MUTE_SWEEP_BATCH
-            );
-            if (n > 0)
-              logger.info(`Group auto-unmute sweep expired ${n} mute(s)`);
-            if (n < env.GROUP_MUTE_SWEEP_BATCH) break; // drained
-          }
-        } catch (err) {
-          logger.warn(`groupMuteSweep failed: ${String(err)}`);
-        }
-      })();
-    }, env.GROUP_MUTE_SWEEP_INTERVAL_SEC * 1000);
-    if (typeof groupMuteSweepHandle.unref === "function") {
-      groupMuteSweepHandle.unref();
-    }
-
     // Auto-delete (disappearing messages) sweep. Unlike the mute sweep this one
     // is load-bearing: it performs the actual deletion, server-side, so a
     // message disappears on schedule even when neither client is running
@@ -1350,11 +1371,6 @@ async function shutdown(signal: string): Promise<void> {
   if (callTimeoutSweepHandle) {
     clearInterval(callTimeoutSweepHandle);
     callTimeoutSweepHandle = undefined;
-  }
-
-  if (groupMuteSweepHandle) {
-    clearInterval(groupMuteSweepHandle);
-    groupMuteSweepHandle = undefined;
   }
 
   if (autoDeleteSweepHandle) {

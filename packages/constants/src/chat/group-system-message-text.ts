@@ -4,11 +4,8 @@ import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
 import {
   administratorActorLabel,
   BACKOFFICE_SOURCE,
-  entityLabel,
   formatNameList,
   groupedTargetLabels,
-  memberChangeText,
-  roleActorLabel,
   SYSTEM_ACTOR_ID,
   systemActorLabel,
 } from "../member-change-text.js";
@@ -45,6 +42,12 @@ export const ChatSystemMessageType = {
   /** Caller cleared / deleted their own copy of the history. Visible to that caller only. */
   CONVERSATION_CLEARED: "CONVERSATION_CLEARED",
   CONVERSATION_DELETED: "CONVERSATION_DELETED",
+  /** Leader handover. data: actorId, actorName, targetUserId, targetName;
+   *  automatic succession: auto: true, actorId null. */
+  LEADER_CHANGED: "LEADER_CHANGED",
+  /** Leader deleted another member's message. data: actorId, actorName,
+   *  senderId, senderName, messageId. */
+  MESSAGE_DELETED: "MESSAGE_DELETED",
 } as const;
 
 export type ChatSystemMessageType =
@@ -92,6 +95,8 @@ export const CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   // emptied row keeps reading as empty).
   CONVERSATION_CLEARED: false,
   CONVERSATION_DELETED: false,
+  LEADER_CHANGED: true,
+  MESSAGE_DELETED: false,
 };
 
 /**
@@ -246,16 +251,15 @@ export function buildGroupSystemFallbackText(
 ): string {
   const historyLine = conversationHistoryText(event, locale);
   if (historyLine) return historyLine;
-  // Same legacy invite aliasing as buildPrivateSystemFallbackText below. An
-  // admin acting in that role (`actorRole`) is named by the role.
+  // Same legacy invite aliasing as buildPrivateSystemFallbackText below.
+  // Groups always name people plainly (no role label).
   const actor =
-    roleActorLabel(data.actorRole, locale) ??
-    ((data.actorName as string) ||
-      (data.inviterName as string) ||
-      t("SYS_NAME_SOMEONE", locale));
+    (data.actorName as string) ||
+    (data.inviterName as string) ||
+    t("SYS_NAME_SOMEONE", locale);
   const target = (data.targetName as string) || t("SYS_NAME_A_MEMBER", locale);
   const actorId = String(data.actorId ?? data.inviterId ?? "").trim();
-  const targetId = String(data.targetUserId ?? "").trim();
+  const targetId = String(data.targetUserId ?? data.targetId ?? "").trim();
   const viewer = viewerUserId?.trim() ?? "";
   const isActor = Boolean(viewer && actorId && viewer === actorId);
   const isTarget = Boolean(viewer && targetId && viewer === targetId);
@@ -269,20 +273,18 @@ export function buildGroupSystemFallbackText(
       if (isActor) return t("SYS_GROUP_CREATED_SELF", locale);
       return t("SYS_GROUP_CREATED", locale, { actor });
 
-    // "{actor} added {target} to {group}" / "{actor} removed {target} from
-    // {group}" — the shared member-change sentence (member-change-text.ts), with
-    // the reader's own side as "You". `groupName` is captured when the line is
-    // posted; rows written before that read "… to the group".
+    // v2 chat line: "You added Binh, Chi and Dung" / "An added you" /
+    // "An removed Binh"; the push keeps "… to/from {group}".
     case "MEMBER_ADDED":
     case "MEMBER_REMOVED": {
-      // Batch add (one operation, many members) → ONE grouped line listing
-      // every target; the reader, if one of them, is hoisted to the front.
+      const youObject = t("SYS_NAME_YOU_OBJECT", locale);
       const grouped =
         event === "MEMBER_ADDED"
-          ? groupedTargetLabels(data, viewer, locale)
+          ? groupedTargetLabels(data, viewer, locale, youObject)
           : null;
-      return memberChangeText(
-        event === "MEMBER_ADDED" ? "ADDED" : "REMOVED",
+      return t(
+        event === "MEMBER_ADDED" ? "SYS_MEMBER_ADDED" : "SYS_GROUP_MEMBER_REMOVED",
+        locale,
         {
           actor: byBackoffice
             ? lineActor
@@ -294,12 +296,28 @@ export function buildGroupSystemFallbackText(
           target: grouped
             ? formatNameList(grouped, locale)
             : isTarget
-              ? t("SYS_SENDER_YOU", locale)
+              ? youObject
               : target,
-          entity: entityLabel(data.groupName as string, "GROUP", locale),
-        },
-        locale
+        }
       );
+    }
+
+    case "LEADER_CHANGED":
+      if (data.auto === true || !actorId) {
+        return isTarget
+          ? t("SYS_GROUP_ROLE_ADMIN_SELF", locale)
+          : t("SYS_GROUP_ROLE_ADMIN", locale, { target });
+      }
+      if (isActor) return t("SYS_GROUP_LEADER_MADE_ACTOR", locale, { target });
+      if (isTarget) return t("SYS_GROUP_LEADER_MADE_TARGET", locale, { actor });
+      return t("SYS_GROUP_LEADER_MADE", locale, { actor, target });
+
+    case "MESSAGE_DELETED": {
+      const senderId = String(data.senderId ?? "").trim();
+      if (isActor) return t("SYS_MESSAGE_DELETED_ACTOR", locale);
+      if (viewer && senderId && viewer === senderId)
+        return t("SYS_MESSAGE_DELETED_SENDER", locale, { actor });
+      return t("SYS_MESSAGE_DELETED", locale, { actor });
     }
 
     case "MEMBER_JOINED":
@@ -545,7 +563,19 @@ export function buildCallListPreviewText(params: {
   const reason = params.endReason
     ? normalizeCallEndReason(params.endReason, params.durationSec)
     : null;
-  if (reason && reason !== "completed" && !params.viewerIsCaller) {
+  if (reason && reason !== "completed") {
+    if (params.viewerIsCaller) {
+      return t(
+        reason === "declined" ? "SYS_CALL_DECLINED_OUTGOING" : "SYS_CALL_NO_ANSWER",
+        locale
+      );
+    }
+    if (reason === "declined") {
+      return t(
+        video ? "SYS_CALL_DECLINED_INCOMING_VIDEO" : "SYS_CALL_DECLINED_INCOMING_VOICE",
+        locale
+      );
+    }
     return t(
       video ? "SYS_CALL_PREVIEW_MISSED_VIDEO" : "SYS_CALL_PREVIEW_MISSED_VOICE",
       locale
@@ -595,20 +625,28 @@ export function buildCallTimelineText(params: {
       return t("SYS_CALL_RINGING", locale, { label });
     case "ANSWERED":
       return t("SYS_CALL_ONGOING", locale, { label });
-    // One rule for every call that never connected, whoever ended it. AiMess
-    // has no user-facing "cancelled" or "declined" call — see
-    // `buildCallActivityText`, which resolves the same three outcomes the same
-    // way for the Notification Center. Without a direction this is the stored
-    // text both participants read, so it stays neutral rather than picking a
-    // side.
+    // Declined is told apart (contract §6); every other non-connect is
+    // "No answer" for the caller and "Missed …" for the callee. Without a
+    // direction this is the stored text both sides read, so it stays neutral.
     case "DECLINED":
     case "CANCELLED":
     case "FAILED":
     case "MISSED": {
+      const video = String(params.callType ?? "").toUpperCase() === "VIDEO";
+      const declined = status === "DECLINED";
       if (params.direction === "OUTGOING")
-        return t("SYS_CALL_NO_ANSWER", locale, { label });
-      if (params.direction === "INCOMING")
-        return t("SYS_CALL_MISSED_CALL", locale, { label });
+        return t(declined ? "SYS_CALL_DECLINED_OUTGOING" : "SYS_CALL_NO_ANSWER", locale);
+      if (params.direction === "INCOMING") {
+        if (declined)
+          return t(
+            video ? "SYS_CALL_DECLINED_INCOMING_VIDEO" : "SYS_CALL_DECLINED_INCOMING_VOICE",
+            locale
+          );
+        return t(
+          video ? "SYS_CALL_PREVIEW_MISSED_VIDEO" : "SYS_CALL_PREVIEW_MISSED_VOICE",
+          locale
+        );
+      }
       return t("SYS_CALL_MISSED", locale, { label });
     }
     default:
@@ -751,14 +789,17 @@ export function resolveGroupSystemSubjectUserId(
   event: string,
   data: Record<string, unknown>
 ): string | null {
-  const targetId = String(data.targetUserId ?? "").trim();
+  const targetId = String(data.targetUserId ?? data.targetId ?? "").trim();
   switch (event) {
     case "MEMBER_ADDED":
     case "MEMBER_BANNED":
     case "MEMBER_UNBANNED":
     case "OWNERSHIP_TRANSFERRED":
     case "ROLE_CHANGED":
+    case "LEADER_CHANGED":
       return targetId || null;
+    case "MESSAGE_DELETED":
+      return String(data.senderId ?? "").trim() || null;
     default:
       return null;
   }

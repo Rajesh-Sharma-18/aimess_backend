@@ -45,6 +45,9 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMembership: jest.fn(),
     countActiveInviteLinksByCreator: jest.fn(),
     createInviteLink: jest.fn(),
+    findLatestReusableInviteLink: jest.fn(async () => null),
+    revokeAllInviteLinks: jest.fn(async () => ({ count: 0 })),
+    clearInvitationCode: jest.fn(async () => ({ count: 0 })),
     createAuditLog: jest.fn(),
   },
 }));

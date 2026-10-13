@@ -151,6 +151,17 @@ const envSchema = z.object({
   MUTE_SWEEPER_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   /** Expired-mute rows processed per batch (drains across ticks; bounds DB load). */
   MUTE_SWEEPER_BATCH_SIZE: z.coerce.number().int().positive().default(200),
+
+  // --- Admin inactivity (day-20/27 reminders, day-30 handover) ---
+  ADMIN_INACTIVITY_JOB_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+  ADMIN_INACTIVITY_JOB_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(86_400_000),
 });
 
 // `FOO_FILE=/run/secrets/foo` supplies `FOO`, so a secret can be a mounted

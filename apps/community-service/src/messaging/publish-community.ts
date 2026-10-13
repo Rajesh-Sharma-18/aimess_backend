@@ -3,6 +3,7 @@ import amqp from "amqplib";
 
 import {
   CommunityEvents,
+  type CommunityAdminInactiveReminderPayload,
   type CommunityAdminTransferredPayload,
   type CommunityClosedNotifyPayload,
   type CommunityDeletedPayload,
@@ -132,6 +133,16 @@ export function publishCommunityAdminTransferredSafe(
     CommunityEvents.ADMIN_TRANSFERRED,
     data,
     "community.admin_transferred"
+  );
+}
+
+export function publishCommunityAdminInactiveReminderSafe(
+  data: CommunityAdminInactiveReminderPayload
+): void {
+  publishSafe(
+    CommunityEvents.ADMIN_INACTIVE_REMINDER,
+    data,
+    "community.admin_inactive_reminder"
   );
 }
 

@@ -239,7 +239,7 @@ describe("MEMBER_ADDED via self_join — no duplicate welcome push", () => {
     expect(push).toHaveBeenCalledTimes(1);
     expect(push.mock.calls[0][0].userId).toBe(USER_ID);
     const body = push.mock.calls[0][0].copy("en").body as string;
-    expect(body).toBe("You're now a member of Cool Community");
+    expect(body).toBe("You’re now a member of Cool Community");
     expect(body).not.toMatch(/added|approved/i);
     // The admin who flipped privacy is the actor — excluded from the mod fan-out.
     expect(pushMany).not.toHaveBeenCalled();

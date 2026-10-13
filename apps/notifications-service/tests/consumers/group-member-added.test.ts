@@ -47,7 +47,7 @@ beforeEach(() => {
   getDisplayName.mockReset();
 });
 
-it("pushes '{actor} added You to {group}' to the added member", async () => {
+it("pushes '{actor} added you to {group}' to the added member", async () => {
   getDisplayName.mockImplementation(
     async (id: string) =>
       ({ [KRISTI]: "Kristi Noem", [BOYD]: "Boyd Stevens" })[id] ?? null
@@ -66,7 +66,7 @@ it("pushes '{actor} added You to {group}' to the added member", async () => {
   expect(arg.actorId).toBe(KRISTI);
   expect(arg.copy("en", BOYD)).toMatchObject({
     title: "Weekend Trip",
-    body: "Kristi Noem added You to Weekend Trip",
+    body: "Kristi Noem added you to Weekend Trip",
   });
   expect(arg.copy.descriptor).toEqual({
     ref: "group.memberAdded",
@@ -84,6 +84,6 @@ it("an unresolvable actor name falls back to 'Someone', never undefined", async 
     eventAt: "2026-10-05T10:00:00.000Z",
   });
   expect(push.mock.calls[0][0].copy("en", BOYD).body).toBe(
-    "Someone added You to Weekend Trip"
+    "Someone added you to Weekend Trip"
   );
 });

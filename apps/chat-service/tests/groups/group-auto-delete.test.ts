@@ -110,14 +110,14 @@ describe("permission", () => {
     expect(res.body.data.label).toBe("7 days");
   });
 
-  it("lets a MODERATOR set it too", async () => {
+  it("refuses a legacy MODERATOR row — leader only", async () => {
     asRole("MODERATOR");
     const res = await request(app)
       .put(url)
       .set(bearer(makeAccessToken()))
       .send({ mode: "TIMER", ttlSeconds: 86400 });
-    expect(res.status).toBe(200);
-    expect(mocks.groupRoomRepo.setAutoDelete).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(403);
+    expect(mocks.groupRoomRepo.setAutoDelete).not.toHaveBeenCalled();
   });
 
   it("reports canEdit per ROLE so the client can grey out the picker", async () => {

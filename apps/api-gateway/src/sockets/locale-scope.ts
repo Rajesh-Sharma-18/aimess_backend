@@ -6,6 +6,7 @@ import {
   DEFAULT_LOCALE,
   parseSupportedLocale,
   runWithLocale,
+  runWithTimeZone,
   SOCKET_IN,
   type SupportedLocale,
 } from "@aimess/constants";
@@ -28,7 +29,9 @@ export function scopeSocketLocale(socket: Socket, redisPub?: Redis): void {
   socket.use((_packet, next) => {
     const locale =
       (socket.data.locale as SupportedLocale | undefined) ?? DEFAULT_LOCALE;
-    runWithLocale(locale, next);
+    runWithLocale(locale, () =>
+      runWithTimeZone(String(socket.data.tz ?? "UTC"), next)
+    );
   });
 
   socket.on(SOCKET_IN.LOCALE_SET, (payload: unknown, ack?: unknown) => {

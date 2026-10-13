@@ -37,7 +37,7 @@ const added = (locale: "en" | "vi" | "th", target: string) =>
     entity: "Flute Class10",
   });
 const selfLine = (locale: "en" | "vi" | "th") =>
-  added(locale, t("SYS_SENDER_YOU", locale));
+  added(locale, t("SYS_NAME_YOU_OBJECT", locale));
 const modLine = (locale: "en" | "vi" | "th") => added(locale, "Mind Flayer");
 
 /** The payload community-service publishes for an admin-initiated add. */
@@ -210,7 +210,7 @@ describe("group:added — the same rebuild on the DB snapshot shape", () => {
 
   it("rebuilds a SYSTEM snapshot that names its type `messageType`", () => {
     expect(textOf(personalizeConvUpdatedPreview(GROUP_ADDED, "x", "en"))).toBe(
-      "Alex added Jim to the group"
+      "Alex added Jim"
     );
     expect(
       textOf(personalizeConvUpdatedPreview(GROUP_ADDED, "x", "vi"))
@@ -220,6 +220,6 @@ describe("group:added — the same rebuild on the DB snapshot shape", () => {
   it("gives the ADDED member their own first-person line, in their language", () => {
     expect(
       textOf(personalizeConvUpdatedPreview(GROUP_ADDED, "target-1", "th"))
-    ).toBe("Alex เพิ่มคุณเข้ากลุ่ม");
+    ).toBe("Alex เพิ่มคุณ");
   });
 });

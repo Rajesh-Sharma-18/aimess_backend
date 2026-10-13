@@ -1,14 +1,10 @@
 /**
- * ROLE HIERARCHY FOR DELETING SOMEONE ELSE'S MESSAGE (Issue 52).
- *
- * `GroupMessageService.deleteMessage` used to ask only "is the actor ADMIN or MODERATOR?" and
- * never looked at the SENDER's role, so a MODERATOR could delete the ADMIN's message. The rule
- * (shared with communities via `canDeleteOthersMessage`, and matching kick/mute/ban's outrank
- * check in group-member.service.ts) is:
- *
- *   ADMIN     -> may delete anyone's message
- *   MODERATOR -> may delete a plain MEMBER's message only
- *   MEMBER    -> own messages only
+ * Deleting SOMEONE ELSE's group message (System Messages v2 §3): groups are
+ * leader + members only, so the leader (ADMIN) may delete any message and
+ * nobody else may delete another member's. A leader delete posts ONE
+ * MESSAGE_DELETED line {actorId, actorName, senderId, senderName, messageId};
+ * an own-message delete posts none. `canDeleteOthersMessage` stays the
+ * community rule.
  *
  * Route: POST /api/chat/groups/messages/delete
  */
@@ -59,9 +55,15 @@ const deleteMessage = () =>
     .set(bearer(makeAccessToken()))
     .send({ messageId: MSG, roomId: ROOM });
 
-describe("POST /messages/delete — role hierarchy", () => {
-  it("SECURITY: a MODERATOR cannot delete an ADMIN's message", async () => {
-    programRoles("MODERATOR", "ADMIN");
+function systemLines(): Array<{ systemEvent: string; systemData: any }> {
+  return mocks.groupMessageRepo.create.mock.calls.map(
+    (c: [{ systemEvent: string; systemData: any }]) => c[0]
+  );
+}
+
+describe("POST /messages/delete — leader only", () => {
+  it("SECURITY: a plain MEMBER cannot delete another member's message", async () => {
+    programRoles("MEMBER", "MEMBER");
 
     const res = await deleteMessage();
 
@@ -69,43 +71,86 @@ describe("POST /messages/delete — role hierarchy", () => {
     expect(mocks.groupMessageRepo.deleteForEveryone).not.toHaveBeenCalled();
   });
 
-  it("SECURITY: a MODERATOR cannot delete a peer MODERATOR's message", async () => {
-    programRoles("MODERATOR", "MODERATOR");
-
-    const res = await deleteMessage();
-
-    expect(res.status).toBe(400);
-    expect(mocks.groupMessageRepo.deleteForEveryone).not.toHaveBeenCalled();
-  });
-
-  it("POSITIVE: a MODERATOR can delete a plain MEMBER's message", async () => {
+  it("SECURITY: a legacy MODERATOR row has no delete power", async () => {
     programRoles("MODERATOR", "MEMBER");
 
     const res = await deleteMessage();
 
-    expect(res.status).toBe(200);
-    expect(mocks.groupMessageRepo.deleteForEveryone).toHaveBeenCalled();
+    expect(res.status).toBe(400);
+    expect(mocks.groupMessageRepo.deleteForEveryone).not.toHaveBeenCalled();
   });
 
-  it("POSITIVE: a departed sender (no member row) ranks as MEMBER, so a MODERATOR may delete", async () => {
-    programRoles("MODERATOR", null);
+  it("POSITIVE: the leader deletes a member's message → MESSAGE_DELETED line", async () => {
+    programRoles("ADMIN", "MEMBER");
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(
+      new Map([
+        [TEST_USER_ID, { firstName: "An", lastName: "" }],
+        [SENDER, { firstName: "Binh", lastName: "" }],
+      ])
+    );
 
     const res = await deleteMessage();
 
     expect(res.status).toBe(200);
+    expect(mocks.groupMessageRepo.deleteForEveryone).toHaveBeenCalledWith(
+      MSG,
+      ROOM,
+      TEST_USER_ID,
+      "ADMIN_DELETE"
+    );
+    const lines = systemLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.systemEvent).toBe("MESSAGE_DELETED");
+    expect(lines[0]!.systemData).toEqual(
+      expect.objectContaining({
+        actorId: TEST_USER_ID,
+        actorName: expect.any(String),
+        senderId: SENDER,
+        senderName: expect.any(String),
+        messageId: MSG,
+      })
+    );
   });
 
-  it("POSITIVE: an ADMIN can delete a MODERATOR's message", async () => {
-    programRoles("ADMIN", "MODERATOR");
+  it("POSITIVE: a departed sender's message is still deletable by the leader", async () => {
+    programRoles("ADMIN", null);
 
     const res = await deleteMessage();
 
     expect(res.status).toBe(200);
-    expect(mocks.groupMessageRepo.deleteForEveryone).toHaveBeenCalled();
+    expect(systemLines().map((l) => l.systemEvent)).toEqual(["MESSAGE_DELETED"]);
+  });
+
+  it("NEGATIVE: deleting your own message posts no line", async () => {
+    programRoles("ADMIN", "MEMBER");
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: MSG,
+      senderId: TEST_USER_ID,
+      roomId: ROOM,
+    });
+
+    const res = await deleteMessage();
+
+    expect(res.status).toBe(200);
+    expect(systemLines()).toHaveLength(0);
+  });
+
+  it("NEGATIVE: re-deleting an already deleted message posts no second line", async () => {
+    programRoles("ADMIN", "MEMBER");
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: MSG,
+      senderId: SENDER,
+      roomId: ROOM,
+      isDeleted: true,
+    });
+
+    await deleteMessage();
+
+    expect(systemLines()).toHaveLength(0);
   });
 });
 
-describe("canDeleteOthersMessage (shared group + community rule)", () => {
+describe("canDeleteOthersMessage (community rule)", () => {
   it("is case-insensitive, so community's lowercase live roles decide the same way", () => {
     expect(canDeleteOthersMessage("moderator", "admin")).toBe(false);
     expect(canDeleteOthersMessage("moderator", "moderator")).toBe(false);

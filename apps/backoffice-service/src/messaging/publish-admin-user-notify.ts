@@ -41,3 +41,31 @@ export function publishAdminUserNotifySafe(data: AdminUserNotifyPayload): void {
     logger.error("Failed to publish admin.user.notify event", { error });
   });
 }
+
+// Never names the reported party: the reporter only learns the outcome.
+export function publishReportOutcomeSafe(
+  reporterId: string,
+  outcome: "ACTIONED" | "NO_ACTION",
+  reportId: string
+): void {
+  publishAdminUserNotifySafe({
+    userId: reporterId,
+    type: "REPORT_OUTCOME",
+    title: "AI Mess Administrator",
+    body:
+      outcome === "ACTIONED"
+        ? "We reviewed your report and took action"
+        : "We reviewed your report. No action was needed",
+    data: { outcome, reportId },
+  });
+}
+
+export function publishAccountWarnedSafe(userId: string, note: string): void {
+  publishAdminUserNotifySafe({
+    userId,
+    type: "ACCOUNT_WARNED",
+    title: "AI Mess Administrator",
+    body: `AI Mess Administrator warned you: ${note}`,
+    data: { note },
+  });
+}

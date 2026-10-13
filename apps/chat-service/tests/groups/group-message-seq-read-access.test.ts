@@ -9,9 +9,8 @@
  * the SAME read-access contract as the timestamp path — never a looser or a
  * stricter one of their own.
  *
- * The contract they pin: a membership that has ENDED (LEFT, KICKED, BANNED)
- * reads nothing, because the group is gone from that user's list and must not
- * be reachable by roomId either. The one exception is a room a DISBAND killed,
+ * The contract they pin: a voluntary leaver reads nothing; a REMOVED (KICKED)
+ * member reads up to the removal line (contract §8). The other exception is a room a DISBAND killed,
  * where every membership was ended at the room's own `disbandedAt` and an open
  * client still has to render the history it holds.
  */
@@ -126,14 +125,15 @@ describe("GroupMessageService.getMessagesSeq — read access", () => {
     expect(findByRoomIdSeq).not.toHaveBeenCalled();
   });
 
-  it("KICKED member: rejected", async () => {
-    const { service, findByRoomAndUser } = buildService();
-    findByRoomAndUser.mockResolvedValue({
-      status: "KICKED",
-      kickedAt: new Date("2026-07-01T00:00:00Z"),
-    });
+  it("KICKED member: reads read-only, capped at the removal line", async () => {
+    const { service, findByRoomIdSeq, findByRoomAndUser } = buildService();
+    const kickedAt = new Date("2026-07-01T00:00:00Z");
+    findByRoomAndUser.mockResolvedValue({ status: "KICKED", kickedAt });
 
-    await expect(readSeq(service)).rejects.toBeInstanceOf(ForbiddenError);
+    await readSeq(service);
+    expect(findByRoomIdSeq).toHaveBeenCalledWith(
+      expect.objectContaining({ readCutoffBefore: kickedAt })
+    );
   });
 
   it("never a member: rejected", async () => {

@@ -215,7 +215,7 @@ describe("notifyMemberJoined — community:added lastActivity (Test 1: Admin add
       username: null,
       // An admin adding someone is not that someone joining — the list preview
       // says what happened, matching the MEMBER_ADDED line posted to them.
-      preview: "Someone added You to Test Community",
+      preview: "Someone added you to Test Community",
       systemMessageType: "MEMBER_ADDED",
     });
   });
@@ -254,7 +254,7 @@ describe("notifyMemberJoined — community:added lastActivity (Test 1: Admin add
 
   it("community:added lastActivity is present for all via values, worded per path", async () => {
     const expectedPreview: Record<string, string> = {
-      add_members: "Someone added You to Test Community",
+      add_members: "Someone added you to Test Community",
       // The approval is the admin's action; what the requester experiences is
       // becoming a member, so their row reads like every other join.
       join_request_approved: "You joined the community",

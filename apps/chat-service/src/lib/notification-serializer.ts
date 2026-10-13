@@ -3,6 +3,7 @@ import {
   currentLocale,
   DATA_REF_KEY,
   DELETED_ACCOUNT_DISPLAY_NAME,
+  deletedAccountDisplayName,
   describeCopyTicket,
   renderNotificationCopy,
   renderNotificationData,
@@ -268,7 +269,8 @@ const EMPTY_REFRESH: AvatarRefreshMaps = {
 function scrubDeletedActor(
   payloadObj: { title?: string; body?: string; data?: Record<string, string> },
   data: Record<string, string>,
-  staleNames: string[]
+  staleNames: string[],
+  locale: SupportedLocale
 ): {
   payload: Record<string, unknown>;
   title: string | undefined;
@@ -282,8 +284,8 @@ function scrubDeletedActor(
   const replaceNames = (text: string | undefined): string | undefined => {
     if (!text) return text;
     let out = text;
-    for (const name of names)
-      out = out.split(name).join(DELETED_ACCOUNT_DISPLAY_NAME);
+    const deleted = deletedAccountDisplayName(locale);
+    for (const name of names) out = out.split(name).join(deleted);
     return out;
   };
 
@@ -510,7 +512,7 @@ export async function serializeNotification(
     data.decidedByDisplayName ?? "",
   ];
   const scrubbed = freshActor?.isDeleted
-    ? scrubDeletedActor(payloadObj, data, publishedActorNames)
+    ? scrubDeletedActor(payloadObj, data, publishedActorNames, locale)
     : null;
 
   // Stale actor name refresh: the actor snapshot at publish time may have been

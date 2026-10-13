@@ -79,8 +79,9 @@ interface StreamEndedData {
 export function streamEndedReason(
   reason?: string,
   byPlatformAdmin?: boolean
-): "USER" | "ADMIN" | "SYSTEM" {
+): "USER" | "ADMIN" | "SYSTEM" | "CONNECTION_LOST" {
   if (byPlatformAdmin) return "ADMIN";
+  if (reason === "CONNECTION_LOST") return "CONNECTION_LOST";
   return !reason || reason === "HOST_ENDED" || reason === "COMMUNITY_ADMIN_ENDED"
     ? "USER"
     : "SYSTEM";
@@ -277,8 +278,13 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
   // Nobody is pushed about their own End Live: the host on their own end, the
   // community admin on End for Everyone (the host IS told). A Super Admin is not
   // a member, so the host is told too. A SYSTEM end keeps the host out, as before.
+  // CONNECTION_LOST keeps the host in: they get the inbox row only (no push).
   const pushExcluded =
-    endedReason === "ADMIN" ? null : endedReason === "SYSTEM" ? creatorId : actorId;
+    endedReason === "ADMIN" || endedReason === "CONNECTION_LOST"
+      ? null
+      : endedReason === "SYSTEM"
+        ? creatorId
+        : actorId;
   const [recipientIds, host, actor, communityAvatarView] = await Promise.all([
     resolveRecipients(communityId, pushExcluded),
     resolveHost(communityId, creatorId),

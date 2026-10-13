@@ -179,7 +179,7 @@ describe("handleStreamEnded", () => {
       endedAt: 1,
       durationSeconds: 0,
     });
-    expect(sysMsg.mock.calls[0][0].metadata.duration).toBe("0s");
+    expect(sysMsg.mock.calls[0][0].metadata.duration).toBe("<1m");
   });
 
   it("host End Live (HOST_ENDED) is endedReason USER", async () => {

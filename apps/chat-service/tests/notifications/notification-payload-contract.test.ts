@@ -213,12 +213,12 @@ describe("notification payload contract", () => {
     );
     const stored = ticketedRow("community.member_added", copy, {
       title: "Gokuldham Society",
-      body: "John Smith added You to Gokuldham Society",
+      body: "John Smith added you to Gokuldham Society",
     });
 
     const asTarget = await serializeNotification(stored, "u-tom");
     const asThird = await serializeNotification(stored, "u-other");
-    expect(asTarget.body).toBe("John Smith added You to Gokuldham Society");
+    expect(asTarget.body).toBe("John Smith added you to Gokuldham Society");
     expect(asThird.body).toBe(
       "John Smith added Tom Brown to Gokuldham Society"
     );

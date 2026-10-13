@@ -99,6 +99,27 @@ describe("POST /api/v1/notifications/fcm-token (alias → notifications-service)
     });
   });
 
+  it("forwards the device lang and timezone", async () => {
+    const fetchMock = jest.fn(async () => ({
+      status: 200,
+      text: async () => JSON.stringify({ success: true }),
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await request(makeApp())
+      .post(URL)
+      .set("Authorization", TOKEN)
+      .send({ token: "fcm-abc", platform: "ANDROID", lang: "vi", timezone: "Asia/Ho_Chi_Minh" });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      token: "fcm-abc",
+      platform: "ANDROID",
+      lang: "vi",
+      timezone: "Asia/Ho_Chi_Minh",
+    });
+  });
+
   it("relays a 400 validation error from notifications-service verbatim", async () => {
     global.fetch = jest.fn(async () => ({
       status: 400,

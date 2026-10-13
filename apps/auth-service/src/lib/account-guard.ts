@@ -2,6 +2,7 @@ import { ForbiddenError, UnauthorizedError } from "@aimess/errors";
 
 import { AccountStatus } from "../generated/prisma/client.js";
 import { authRepository } from "../repositories/auth.repository.js";
+import { accountBanService } from "../services/account-ban.service.js";
 
 // A permanent Super Admin ban gets its own status + code on every entry point.
 //
@@ -17,6 +18,49 @@ export function assertNotBanned(status: AccountStatus): void {
   if (status === AccountStatus.BANNED) {
     throw new ForbiddenError("ACCOUNT_BANNED");
   }
+}
+
+// 403 carrying the restriction's reason (and a suspension's end, epoch ms) for the sign-in screen.
+export class AccountRestrictedError extends ForbiddenError {
+  constructor(
+    code: "ACCOUNT_BANNED" | "ACCOUNT_SUSPENDED",
+    readonly reason: string | null = null,
+    readonly until: number | null = null
+  ) {
+    super(code);
+  }
+}
+
+type Restrictable = {
+  id: string;
+  status: AccountStatus;
+  suspendedReason: string | null;
+  suspendedUntil: Date | null;
+};
+
+// Throws for a ban or a live suspension; lifts an elapsed suspension and returns the new status.
+// `disclose` gates reason/until behind a proven credential.
+export async function assertNotRestricted(
+  user: Restrictable,
+  disclose: boolean
+): Promise<AccountStatus> {
+  if (user.status === AccountStatus.BANNED) {
+    throw new AccountRestrictedError(
+      "ACCOUNT_BANNED",
+      disclose ? user.suspendedReason : null
+    );
+  }
+  if (user.status !== AccountStatus.SUSPENDED) return user.status;
+  const until = user.suspendedUntil?.getTime() ?? null;
+  if (until !== null && until <= Date.now()) {
+    await accountBanService.liftExpiredSuspension(user.id);
+    return AccountStatus.ACTIVE;
+  }
+  throw new AccountRestrictedError(
+    "ACCOUNT_SUSPENDED",
+    disclose ? user.suspendedReason : null,
+    disclose ? until : null
+  );
 }
 
 // A soft-deleted account gets its own code, for the same reason a ban does.
@@ -60,9 +104,8 @@ export async function loadActiveAuthUser(
   }
 
   assertNotDeleted(user.deletedAt);
-  assertNotBanned(user.status);
 
-  if (user.status !== AccountStatus.ACTIVE) {
+  if ((await assertNotRestricted(user, true)) !== AccountStatus.ACTIVE) {
     throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
   }
 

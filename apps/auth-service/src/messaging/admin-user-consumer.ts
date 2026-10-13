@@ -113,14 +113,23 @@ async function isSuperseded(
 }
 
 /** Re-publish a notify-ready message for notifications-service (best-effort). */
-function notify(type: string, data: AdminUserEventPayload): void {
+async function notify(type: string, data: AdminUserEventPayload): Promise<void> {
   const copy = NOTIFY_COPY[type];
   if (!copy) return;
+  // Suspend/ban also email the account, but only a verified address.
+  const account =
+    type === AdminUserEvents.USER_UNBANNED
+      ? null
+      : await prisma.authUser.findUnique({
+          where: { id: data.userId },
+          select: { email: true, emailVerified: true },
+        });
   publishAdminUserNotifySafe({
     userId: data.userId,
     type,
     title: copy.title,
     body: copy.body,
+    ...(account?.email && account.emailVerified ? { email: account.email } : {}),
     data: {
       ...(data.reason ? { reason: data.reason } : {}),
       ...(data.suspendedUntil ? { suspendedUntil: data.suspendedUntil } : {}),
@@ -150,19 +159,30 @@ async function handleAdminUserEvent(
         });
       }
       if (data.notifyUser) {
-        notify(type, data);
+        await notify(type, data);
       }
       break;
     }
 
-    // Time-boxed suspend keeps its original behaviour: sessions only. It must
-    // NOT write BANNED — that status is permanent and nothing expires it.
+    // Time-boxed: SUSPENDED + until (never BANNED), sessions revoked; login auto-lifts once it elapses.
     case AdminUserEvents.USER_SUSPENDED: {
-      if (data.forceLogout) {
+      const until = data.suspendedUntil ? new Date(data.suspendedUntil) : null;
+      if (await isSuperseded(data.userId, data.at)) {
+        logger.warn(
+          `Skipping superseded admin.user_suspended for user=${data.userId}`
+        );
+      } else if (until && until.getTime() > Date.now()) {
+        await accountBanService.suspend({
+          userId: data.userId,
+          reason: data.reason ?? null,
+          actorAdminId: data.actorId,
+          until,
+        });
+      } else if (data.forceLogout) {
         await forceLogout(data.userId);
       }
       if (data.notifyUser) {
-        notify(type, data);
+        await notify(type, data);
       }
       break;
     }
@@ -185,7 +205,7 @@ async function handleAdminUserEvent(
           });
       }
       if (data.notifyUser) {
-        notify(type, data);
+        await notify(type, data);
       }
       break;
     }

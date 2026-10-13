@@ -59,7 +59,10 @@ export type AuthenticateAccessTokenOptions = {
   //
   // Never consulted on the admin-token fallback below — `req.auth.userId` is an
   // AdminUser.id there, which shares no id space with AuthUser.
-  assertUserBanned?: (userId: string) => Promise<boolean>;
+  // true / "ACCOUNT_BANNED" = permanent ban; "ACCOUNT_SUSPENDED" = live suspension.
+  assertUserBanned?: (
+    userId: string
+  ) => Promise<boolean | "ACCOUNT_BANNED" | "ACCOUNT_SUSPENDED">;
 };
 
 /**
@@ -104,9 +107,11 @@ export function createAuthenticateAccessToken(
         // A distinct code lets every client tell "sign in again" apart from
         // "this account is permanently banned" and stop retrying.
         if (options.assertUserBanned) {
-          const banned = await options.assertUserBanned(auth.userId);
-          if (banned) {
-            throw new ForbiddenError("ACCOUNT_BANNED");
+          const blocked = await options.assertUserBanned(auth.userId);
+          if (blocked) {
+            throw new ForbiddenError(
+              blocked === true ? "ACCOUNT_BANNED" : blocked
+            );
           }
         }
 

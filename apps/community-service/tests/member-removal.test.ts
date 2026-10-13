@@ -112,24 +112,65 @@ function setupBanMocks(): void {
   repo.createAuditLog.mockResolvedValue(undefined);
 }
 
+// Groups lost their moderators; communities keep them (Admin / Moderator / Member).
+describe("community MODERATOR regression", () => {
+  beforeEach(() => {
+    setupKickMocks();
+    repo.findMembership.mockResolvedValue({ ...mockCallerMembership, role: "MODERATOR" });
+  });
+
+  it("a moderator can still remove a member, named by role", async () => {
+    await communityService.kickMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
+
+    expect(repo.updateMemberStatus).toHaveBeenCalled();
+    expect(publishSystemMsg.mock.calls[0][0]).toMatchObject({
+      systemMessageType: "MEMBER_REMOVED",
+      metadata: { actorRole: "MODERATOR" },
+    });
+  });
+
+  it("a moderator can still mute a member", async () => {
+    repo.upsertMemberMute.mockResolvedValue({
+      userId: TARGET_ID,
+      mutedBy: CALLER_ID,
+      mutedAt: new Date(),
+      mutedUntil: null,
+      reason: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await expect(
+      communityService.muteMember(COMMUNITY_ID, CALLER_ID, TARGET_ID, null)
+    ).resolves.toBeDefined();
+    expect(repo.upsertMemberMute).toHaveBeenCalled();
+  });
+
+  it("a moderator cannot remove a peer moderator (outrank rule)", async () => {
+    repo.findMemberByUserId.mockResolvedValue({ ...mockTargetMember, role: "MODERATOR" });
+
+    await expect(
+      communityService.kickMember(COMMUNITY_ID, CALLER_ID, TARGET_ID)
+    ).rejects.toBeDefined();
+    expect(repo.updateMemberStatus).not.toHaveBeenCalled();
+  });
+});
+
 // ─── kickMember ──────────────────────────────────────────────────────────────
 
 describe("kickMember — silent-chat policy", () => {
   beforeEach(setupKickMocks);
 
-  it("does NOT publish any MEMBER_REMOVED chat system message", async () => {
+  it("posts ONE moderator-only MEMBER_REMOVED line naming the actor by role (v2)", async () => {
     await communityService.kickMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
 
-    const removalCalls = publishSystemMsg.mock.calls.filter(
-      (call: any[]) => call[0]?.systemMessageType === "MEMBER_REMOVED"
-    );
-    expect(removalCalls).toHaveLength(0);
-  });
-
-  it("does NOT call publishCommunitySystemMessageForChatSafe at all during kick", async () => {
-    await communityService.kickMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
-
-    expect(publishSystemMsg).not.toHaveBeenCalled();
+    expect(publishSystemMsg).toHaveBeenCalledTimes(1);
+    const [payload] = publishSystemMsg.mock.calls[0];
+    expect(payload).toMatchObject({
+      systemMessageType: "MEMBER_REMOVED",
+      metadata: { targetUserId: TARGET_ID, actorRole: mockCallerMembership.role },
+    });
+    expect(payload.visibleToUserId).toBeUndefined();
   });
 
   it("publishes community:membership:removed (not :restricted) to the kicked user's personal channel — the community disappears from their list; they rejoin via the normal flow", async () => {
@@ -275,9 +316,11 @@ describe("banMember — chat system-message policy", () => {
 // ─── Policy constants ─────────────────────────────────────────────────────────
 
 describe("HIDDEN_SYSTEM_MESSAGE_TYPES policy contract", () => {
-  it("MEMBER_REMOVED is hidden — removal is silent in chat", async () => {
-    const { isHiddenSystemMessage } = await import("@aimess/constants");
-    expect(isHiddenSystemMessage("MEMBER_REMOVED")).toBe(true);
+  it("MEMBER_REMOVED is a moderator-only line (v2), never hidden", async () => {
+    const { isHiddenSystemMessage, isModerationOnlySystemMessage } =
+      await import("@aimess/constants");
+    expect(isHiddenSystemMessage("MEMBER_REMOVED")).toBe(false);
+    expect(isModerationOnlySystemMessage("MEMBER_REMOVED")).toBe(true);
   });
 
   it("MEMBER_BANNED is NOT hidden but IS moderation-scoped — an audit line for moderators, no bubble for the banned user", async () => {

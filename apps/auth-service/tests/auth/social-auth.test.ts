@@ -431,7 +431,7 @@ describe("POST /api/auth/google", () => {
 
   it("returns 401 when the linked account is not ACTIVE", async () => {
     linkRepo.findByProvider.mockResolvedValue({
-      user: activeUser({ status: "SUSPENDED" }),
+      user: activeUser({ status: "PENDING_DELETION" }),
     });
 
     const res = await request(app)
