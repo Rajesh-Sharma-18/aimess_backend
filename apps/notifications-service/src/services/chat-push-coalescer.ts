@@ -39,7 +39,8 @@ import { pushToUser } from "./push.service.js";
  * In-process, like the gateway's socket batcher: several notifications-service
  * replicas each coalesce their own share. Worst case that is one notification
  * per replica per burst instead of one — still bounded by replica count, never
- * by message count — and the collapse key makes the tray show the newest.
+ * by message count — and on Android/Web the collapse key makes the tray show the newest
+ * (iOS stacks chat cards; see sendPush).
  */
 
 /** Debounce window. A push is a background wake, so a couple of seconds of
@@ -370,8 +371,9 @@ async function flush(key: string): Promise<void> {
       // Collapse ONLY the coalesced summary. The historical objection to a
       // collapse key on chat — FCM keeps just the newest message per key while
       // a device is unreachable, so earlier ones are lost — does not apply to a
-      // summary: a newer summary is strictly a better thing to show than an
-      // older one, and the client's catch-up sync owns the actual history.
+      // summary on Android/Web: a newer summary is strictly a better thing to
+      // show than an older one, and the client's catch-up sync owns the actual
+      // history. iOS gets no apns-collapse-id for chat, so its cards stack.
       // A mention collapses on its OWN key, so a later ordinary summary for the
       // same room cannot replace "X mentioned you" in the tray.
       collapseKey: lead

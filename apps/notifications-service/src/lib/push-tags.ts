@@ -4,7 +4,8 @@
  * The tag is the push's `collapseKey`, and push.service carries it everywhere a
  * card is drawn so any device can find the card again and close it:
  *  - Android: `data.tag`, used as the `NotificationManager` tag,
- *  - iOS: `apns-collapse-id`, which becomes the delivered request's identifier,
+ *  - iOS: `apns-collapse-id` (the delivered request's identifier) plus `data.tag`;
+ *    chat (`conv:`/`mention:`) cards carry `data.tag` only so they stack,
  *  - Web: `webpush.notification.tag` and `data.tag`.
  *
  * Never derived from text, sender, device or message id (except `msg:` cards,
