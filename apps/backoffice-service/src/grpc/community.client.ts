@@ -229,6 +229,28 @@ export interface AdminSetModerationStatusRes {
   errorCode: string;
 }
 
+/** Each field applies only when its has* flag is true. */
+export interface AdminUpdateCommunityReq {
+  communityId: string;
+  actorAdminId: string;
+  name: string;
+  hasName: boolean;
+  description: string;
+  hasDescription: boolean;
+  avatarObjectKey: string;
+  hasAvatar: boolean;
+  categoryId: string;
+  hasCategory: boolean;
+  type: string;
+  hasType: boolean;
+}
+
+export interface AdminUpdateCommunityRes {
+  ok: boolean;
+  changedFields: string[];
+  errorCode: string;
+}
+
 export interface AdminMemberModerationReq {
   communityId: string;
   targetUserId: string;
@@ -394,6 +416,18 @@ export const adminListUserCommunitiesBreaker: Breaker<
   (req: AdminListUserCommunitiesReq) =>
     call<AdminListUserCommunitiesReq, AdminListUserCommunitiesRes>(
       "adminListUserCommunities",
+      req
+    )
+);
+
+export const adminUpdateCommunityBreaker: Breaker<
+  AdminUpdateCommunityReq,
+  AdminUpdateCommunityRes
+> = makeBreaker(
+  "community.adminUpdateCommunity",
+  (req: AdminUpdateCommunityReq) =>
+    call<AdminUpdateCommunityReq, AdminUpdateCommunityRes>(
+      "adminUpdateCommunity",
       req
     )
 );
@@ -597,6 +631,11 @@ export const communityClient = {
     req: AdminSetModerationStatusReq
   ): Promise<AdminSetModerationStatusRes> {
     return adminSetModerationStatusBreaker.fire(req);
+  },
+  adminUpdateCommunity(
+    req: AdminUpdateCommunityReq
+  ): Promise<AdminUpdateCommunityRes> {
+    return adminUpdateCommunityBreaker.fire(req);
   },
   // Admin Reports search: communityIds matching a name search term. Empty term → no call.
   async adminSearchCommunityIds(search: string): Promise<string[]> {

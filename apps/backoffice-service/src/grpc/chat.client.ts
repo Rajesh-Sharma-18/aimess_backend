@@ -47,6 +47,7 @@ export interface RawAdminGroupRow {
   ownerAccountStatus: string;
   disbandedAt: string;
   lastMessageAt: string;
+  joinApproval: boolean;
 }
 
 export interface AdminListGroupsReq {
@@ -132,6 +133,20 @@ export interface AdminListUserGroupsRes {
 export interface AdminDisbandGroupReq {
   groupId: string;
   actorAdminId: string;
+}
+
+/** Each field applies only when its has* flag is true. */
+export interface AdminUpdateGroupReq {
+  groupId: string;
+  actorAdminId: string;
+  name: string;
+  hasName: boolean;
+  description: string;
+  hasDescription: boolean;
+  avatar: string;
+  hasAvatar: boolean;
+  joinApproval: boolean;
+  hasJoinApproval: boolean;
 }
 
 export interface AdminRemoveGroupMemberReq {
@@ -576,6 +591,13 @@ export const adminDisbandGroupBreaker: Breaker<
   call<AdminDisbandGroupReq, AdminGroupMutationRes>("adminDisbandGroup", req)
 );
 
+export const adminUpdateGroupBreaker: Breaker<
+  AdminUpdateGroupReq,
+  AdminGroupMutationRes
+> = makeBreaker("chat.adminUpdateGroup", (req: AdminUpdateGroupReq) =>
+  call<AdminUpdateGroupReq, AdminGroupMutationRes>("adminUpdateGroup", req)
+);
+
 export const adminRemoveGroupMemberBreaker: Breaker<
   AdminRemoveGroupMemberReq,
   AdminGroupMutationRes
@@ -732,6 +754,9 @@ export const chatClient = {
   },
   adminDisbandGroup(req: AdminDisbandGroupReq): Promise<AdminGroupMutationRes> {
     return adminDisbandGroupBreaker.fire(req);
+  },
+  adminUpdateGroup(req: AdminUpdateGroupReq): Promise<AdminGroupMutationRes> {
+    return adminUpdateGroupBreaker.fire(req);
   },
   adminRemoveGroupMember(
     req: AdminRemoveGroupMemberReq

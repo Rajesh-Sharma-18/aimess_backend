@@ -1,4 +1,8 @@
-import { currentLocale, MAX_GROUP_MEMBERS } from "@aimess/constants";
+import {
+  BACKOFFICE_SOURCE,
+  currentLocale,
+  MAX_GROUP_MEMBERS,
+} from "@aimess/constants";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import {
@@ -877,22 +881,35 @@ export class GroupRoomService {
       avatar?: string;
       memberLimit?: number;
       joinApproval?: boolean;
-    }
+    },
+    // asPlatformAdmin: backoffice edit — skips the owner check, names the actor
+    // "Administrator" in system lines and leaves the audit row to backoffice.
+    opts?: { asPlatformAdmin?: boolean }
   ): Promise<GroupRoom> {
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      roomId,
-      userId
-    );
-    if (!member)
-      throw await groupWriteDeniedError(
-        this.memberRepo,
+    const asPlatformAdmin = opts?.asPlatformAdmin === true;
+    if (!asPlatformAdmin) {
+      const member = await this.memberRepo.findActiveByRoomAndUser(
         roomId,
-        userId,
-        new NotFoundError("CHAT_NOT_A_MEMBER")
+        userId
       );
-    if (member.role !== "ADMIN") {
-      throw new BadRequestError("CHAT_ONLY_OWNER_ADMIN_UPDATE");
+      if (!member)
+        throw await groupWriteDeniedError(
+          this.memberRepo,
+          roomId,
+          userId,
+          new NotFoundError("CHAT_NOT_A_MEMBER")
+        );
+      if (member.role !== "ADMIN") {
+        throw new BadRequestError("CHAT_ONLY_OWNER_ADMIN_UPDATE");
+      }
     }
+    const sysActor = asPlatformAdmin
+      ? {
+          actorId: null,
+          source: { source: BACKOFFICE_SOURCE },
+          skipAdminActivity: true,
+        }
+      : { actorId: userId, source: {}, skipAdminActivity: false };
 
     // Snapshot the pre-update values so we only post system messages for fields
     // that actually changed (a client may re-send unchanged values).
@@ -921,23 +938,28 @@ export class GroupRoomService {
     if (data.name != null && data.name !== room.name) {
       await this.sysMsg.post({
         roomId,
-        actorId: userId,
+        actorId: sysActor.actorId,
         systemEvent: SystemEvent.ROOM_RENAMED,
-        systemData: { newName: data.name },
+        systemData: { newName: data.name, ...sysActor.source },
+        skipAdminActivity: sysActor.skipAdminActivity,
       });
     }
     if (data.avatar != null && data.avatar !== room.avatar) {
       await this.sysMsg.post({
         roomId,
-        actorId: userId,
+        actorId: sysActor.actorId,
         systemEvent: SystemEvent.AVATAR_CHANGED,
+        systemData: sysActor.source,
+        skipAdminActivity: sysActor.skipAdminActivity,
       });
     }
     if (data.description != null && data.description !== room.description) {
       await this.sysMsg.post({
         roomId,
-        actorId: userId,
+        actorId: sysActor.actorId,
         systemEvent: SystemEvent.DESCRIPTION_CHANGED,
+        systemData: sysActor.source,
+        skipAdminActivity: sysActor.skipAdminActivity,
       });
     }
 

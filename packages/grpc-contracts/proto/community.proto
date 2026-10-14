@@ -84,6 +84,10 @@ service CommunityService {
   // given user is an ACTIVE member of. Searchable by community name/id, sortable.
   rpc AdminListUserCommunities (AdminListUserCommunitiesRequest) returns (AdminListUserCommunitiesResponse);
   rpc AdminSetModerationStatus (AdminSetModerationStatusRequest) returns (AdminSetModerationStatusResponse);
+  // Admin edit of a community's name / description / avatar / category / privacy.
+  // Same effects as the owner's PATCH (system line, meta sync, sockets) but the
+  // caller is backoffice-service, so no membership role is required.
+  rpc AdminUpdateCommunity (AdminUpdateCommunityRequest) returns (AdminUpdateCommunityResponse);
   // Admin Reports search: community name lookup, returns matching communityIds
   // only (capped) for the caller to combine into an id-set filter.
   rpc AdminSearchCommunityIds (AdminSearchCommunityIdsRequest) returns (AdminSearchCommunityIdsResponse);
@@ -602,6 +606,30 @@ message AdminSetModerationStatusResponse {
   int64  closed_at  = 3; // epoch ms; 0 when ACTIVE
   // "" on success, else COMMUNITY_NOT_FOUND | COMMUNITY_ALREADY_CLOSED | COMMUNITY_NOT_CLOSED
   string error_code = 4;
+}
+
+// Each field applies only when its has_* flag is true.
+message AdminUpdateCommunityRequest {
+  string community_id       = 1;
+  string actor_admin_id     = 2; // backoffice AdminUser.id
+  string name               = 3;
+  bool   has_name           = 4;
+  string description        = 5; // "" clears it
+  bool   has_description    = 6;
+  string avatar_object_key  = 7; // community/avatar/{community_id}/… minted by backoffice
+  bool   has_avatar         = 8;
+  string category_id        = 9;
+  bool   has_category       = 10;
+  string type               = 11; // PUBLIC | PRIVATE
+  bool   has_type           = 12;
+}
+
+message AdminUpdateCommunityResponse {
+  bool            ok             = 1;
+  repeated string changed_fields = 2; // name | description | avatar | category | visibility
+  // "" on success, else COMMUNITY_NOT_FOUND | COMMUNITY_IS_CLOSED | COMMUNITY_SUSPENDED |
+  // COMMUNITY_NAME_TAKEN | COMMUNITY_CATEGORY_INVALID | COMMUNITY_IMAGE_*
+  string          error_code     = 3;
 }
 
 // ---- Backoffice Category Management ----

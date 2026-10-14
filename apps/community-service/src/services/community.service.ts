@@ -2955,17 +2955,65 @@ export const communityService = {
     community: CommunityData;
     changedFields: string[];
   }> {
+    const changedFields = await this.applyCommunityUpdate(
+      communityId,
+      callerId,
+      input,
+      false
+    );
+    // Same caller view as GET /communities/:id. Building it from `updated` alone
+    // defaulted every field this method doesn't own — liveStreams to [] (so
+    // isLive:false mid-stream), the caller's mute + notification switches to
+    // their defaults — and a client that cached the response dropped Live /
+    // Watch Now and flipped the toggles on every edit.
+    return {
+      community: await this.getById(communityId, callerId),
+      changedFields,
+    };
+  },
+
+  /**
+   * Admin panel edit — trusted platform-admin variant of {@link updateWithChanges}.
+   * No membership gate (the caller is backoffice-service); system lines read
+   * "AI Mess Administrator"; backoffice writes the canonical admin audit row,
+   * so the admin_db mirror is skipped. Avatar keys are minted under the
+   * community id (`community/avatar/{communityId}/…`), not a user id.
+   */
+  async adminUpdate(
+    communityId: string,
+    actorAdminId: string,
+    input: Pick<
+      UpdateCommunityInput,
+      "name" | "description" | "avatarObjectKey" | "categoryId" | "type"
+    >
+  ): Promise<string[]> {
+    return this.applyCommunityUpdate(communityId, actorAdminId, input, true);
+  },
+
+  /** Shared write + side effects of updateWithChanges / adminUpdate; returns changed fields. */
+  async applyCommunityUpdate(
+    communityId: string,
+    callerId: string,
+    input: UpdateCommunityInput,
+    asPlatformAdmin: boolean
+  ): Promise<string[]> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    const membership = await communityRepository.findMembership(
-      communityId,
-      callerId
-    );
-    assertCommunityRole(membership, CommunityMemberRole.ADMIN);
+    if (!asPlatformAdmin) {
+      const membership = await communityRepository.findMembership(
+        communityId,
+        callerId
+      );
+      assertCommunityRole(membership, CommunityMemberRole.ADMIN);
+    }
     communityAccessPolicy.assertWritable(community);
+    const actorRole = asPlatformAdmin
+      ? PLATFORM_ACTOR_ROLE
+      : CommunityMemberRole.ADMIN;
+    const actorExtra = asPlatformAdmin ? { source: "BO" } : {};
 
     const data: Prisma.CommunityUpdateInput = {};
     let nextName: string | undefined;
@@ -3022,7 +3070,7 @@ export const communityService = {
         input.avatarObjectKey === null
           ? null
           : await communityImageService.resolveObjectKeyForCommunity(
-              callerId,
+              asPlatformAdmin ? communityId : callerId,
               input.avatarObjectKey
             );
     }
@@ -3107,7 +3155,8 @@ export const communityService = {
         metadata: {
           actorUserId: callerId,
           actorName: "",
-          actorRole: CommunityMemberRole.ADMIN,
+          actorRole,
+          ...actorExtra,
           oldVisibility: community.type,
           newVisibility: updated.type,
         },
@@ -3125,7 +3174,8 @@ export const communityService = {
         metadata: {
           actorUserId: callerId,
           actorName: "",
-          actorRole: CommunityMemberRole.ADMIN,
+          actorRole,
+          ...actorExtra,
           changedFields: otherChangedFields,
           ...(systemMessageType === "COMMUNITY_NAME_UPDATED"
             ? { newName: nextName }
@@ -3215,7 +3265,7 @@ export const communityService = {
       await this.autoResolveJoinRequestsOnPublic(updated, callerId);
     }
 
-    if (changedFields.length > 0) {
+    if (changedFields.length > 0 && !asPlatformAdmin) {
       publishAdminActivitySafe({
         actorId: callerId,
         action: USER_AUDIT_ACTIONS.COMMUNITY_UPDATED,
@@ -3226,15 +3276,7 @@ export const communityService = {
       });
     }
 
-    // Same caller view as GET /communities/:id. Building it from `updated` alone
-    // defaulted every field this method doesn't own — liveStreams to [] (so
-    // isLive:false mid-stream), the caller's mute + notification switches to
-    // their defaults — and a client that cached the response dropped Live /
-    // Watch Now and flipped the toggles on every edit.
-    return {
-      community: await this.getById(communityId, callerId),
-      changedFields,
-    };
+    return changedFields;
   },
 
   /**
