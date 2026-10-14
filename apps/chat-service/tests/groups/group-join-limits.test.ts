@@ -350,7 +350,7 @@ describe("resolveGroupInviteState — priority table", () => {
     ).toBe("CAN_JOIN");
   });
 
-  it("a room's own memberLimit can only LOWER the cap, never raise it", () => {
+  it("every group is capped at exactly 256, whatever legacy memberLimit it stores", () => {
     // Legacy row from when the schema allowed 5000.
     expect(
       resolveGroupInviteState({
@@ -362,13 +362,13 @@ describe("resolveGroupInviteState — priority table", () => {
         },
       })
     ).toBe("GROUP_FULL");
-    // A deliberately smaller group is still honoured.
+    // A legacy smaller limit (Android's old 50) no longer blocks below 256.
     expect(
       resolveGroupInviteState({
         ...base,
-        room: { status: "ACTIVE", memberCount: 10, memberLimit: 10 },
+        room: { status: "ACTIVE", memberCount: 50, memberLimit: 50 },
       })
-    ).toBe("GROUP_FULL");
+    ).toBe("CAN_JOIN");
   });
 });
 

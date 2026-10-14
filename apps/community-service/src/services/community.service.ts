@@ -86,7 +86,6 @@ import {
 import {
   CLOSE_REASON_ADMIN_BANNED,
   CLOSE_REASON_LAST_MEMBER_LEFT,
-  COMMUNITY_MEMBER_LIMIT,
 } from "../constants/index.js";
 import { isCommunityMuted } from "../lib/community-notification-pref.js";
 import { touchAdminActivity } from "../lib/admin-activity.js";
@@ -1134,7 +1133,6 @@ async function toCommunityData(
     creatorId: community.creatorId,
     adminId: community.adminId,
     memberCount: community.memberCount,
-    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     avatar,
@@ -1324,7 +1322,6 @@ async function toDiscoverItem(
       name: localizeCategoryName(community.category.name),
     },
     memberCount: community.memberCount,
-    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     avatar,
@@ -1557,7 +1554,6 @@ async function toEmbeddedCommunitySummary(community: {
     handle: community.handle,
     type: community.type,
     memberCount: community.memberCount,
-    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     avatar,
@@ -2153,7 +2149,6 @@ async function enrichMineCommunities(
         handle: row.handle,
         type: row.type,
         memberCount: row.memberCount,
-        memberLimit: COMMUNITY_MEMBER_LIMIT,
         avatarUrl: avatarView?.url ?? null,
         avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
         avatar,

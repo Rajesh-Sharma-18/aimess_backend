@@ -6344,12 +6344,6 @@ export const openApiSchemas = {
       creatorId: { type: "string", format: "uuid" },
       adminId: { type: "string", format: "uuid" },
       memberCount: { type: "integer", example: 1 },
-      memberLimit: {
-        type: "integer",
-        example: 256,
-        description:
-          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
-      },
       avatarUrl: {
         type: "string",
         format: "uri",
@@ -6465,7 +6459,6 @@ export const openApiSchemas = {
       "creatorId",
       "adminId",
       "memberCount",
-      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
       "coverUrl",
@@ -6742,12 +6735,6 @@ export const openApiSchemas = {
       handle: { type: "string" },
       type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
       memberCount: { type: "integer" },
-      memberLimit: {
-        type: "integer",
-        example: 256,
-        description:
-          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
-      },
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
@@ -6851,7 +6838,6 @@ export const openApiSchemas = {
       "handle",
       "type",
       "memberCount",
-      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
       "role",
@@ -6968,12 +6954,6 @@ export const openApiSchemas = {
         required: ["id", "name"],
       },
       memberCount: { type: "integer" },
-      memberLimit: {
-        type: "integer",
-        example: 256,
-        description:
-          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
-      },
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
@@ -7047,7 +7027,6 @@ export const openApiSchemas = {
       "type",
       "category",
       "memberCount",
-      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
       "isJoined",
@@ -7555,12 +7534,6 @@ export const openApiSchemas = {
       handle: { type: "string" },
       type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
       memberCount: { type: "integer" },
-      memberLimit: {
-        type: "integer",
-        example: 256,
-        description:
-          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
-      },
       avatarUrl: { type: "string", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
@@ -7571,7 +7544,6 @@ export const openApiSchemas = {
       "handle",
       "type",
       "memberCount",
-      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
     ],
@@ -9910,7 +9882,11 @@ export const openApiSchemas = {
       name: { type: "string", minLength: 1, maxLength: 100 },
       description: { type: "string", maxLength: 1000 },
       avatar: { type: "string" },
-      memberLimit: { type: "integer", minimum: 1, maximum: 256, default: 256 },
+      memberLimit: {
+        type: "integer",
+        deprecated: true,
+        description: "Ignored — every group holds 256 members (AIMESS-237).",
+      },
     },
     required: ["name"],
   },

@@ -1,7 +1,7 @@
 /**
- * One-off backfill (AIMESS-231): Android created every group with memberLimit=50,
- * so those groups enforce 50 while the product cap is 256. Lifts exactly-50 rows to
- * MAX_GROUP_MEMBERS; deliberate small limits (1, 2 — limit tests) are left alone.
+ * One-off backfill (AIMESS-231, AIMESS-237): every group holds 256 members, so any
+ * stored memberLimit other than MAX_GROUP_MEMBERS (Android's old 50, test rows,
+ * legacy 5000) is normalised to it.
  *
  * Safe to re-run — idempotent.
  *
@@ -13,10 +13,10 @@ import { prisma } from "../src/config/prisma.js";
 
 async function backfillGroupMemberLimit() {
   const result = await prisma.groupRoom.updateMany({
-    where: { memberLimit: 50 },
+    where: { memberLimit: { not: MAX_GROUP_MEMBERS } },
     data: { memberLimit: MAX_GROUP_MEMBERS },
   });
-  console.log(`Done — updated ${result.count} GroupRoom row(s) memberLimit 50 -> ${MAX_GROUP_MEMBERS}.`);
+  console.log(`Done — updated ${result.count} GroupRoom row(s) memberLimit -> ${MAX_GROUP_MEMBERS}.`);
 }
 
 backfillGroupMemberLimit()

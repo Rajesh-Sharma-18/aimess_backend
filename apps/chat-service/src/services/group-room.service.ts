@@ -702,7 +702,7 @@ export class GroupRoomService {
       description: params.description || "",
       avatar: params.avatar || "",
       createdBy: params.createdBy,
-      memberLimit: params.memberLimit || MAX_GROUP_MEMBERS,
+      memberLimit: MAX_GROUP_MEMBERS, // AIMESS-237: fixed; a client-sent limit is ignored
       memberCount: 1,
       settings: {
         allowMemberInviteLink: true,
@@ -902,7 +902,8 @@ export class GroupRoomService {
     // would post a system line into a room nobody may write to.
     assertGroupRoomWritable(room);
 
-    const { joinApproval, ...fields } = data;
+    // memberLimit is accepted from old clients but never stored — the cap is fixed (AIMESS-237).
+    const { joinApproval, memberLimit: _memberLimit, ...fields } = data;
     const updated = await this.roomRepo.updateRoom(
       roomId,
       joinApproval === undefined

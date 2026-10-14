@@ -144,11 +144,11 @@ describe("POST /api/chat/group-members/add", () => {
     expect(res.status).toBe(404);
   });
 
-  it("EDGE: 400 when the group is at member limit", async () => {
+  it("EDGE: 400 when the group is at the 256 member limit", async () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: ROOM,
-      memberCount: 50,
-      memberLimit: 50,
+      memberCount: 256,
+      memberLimit: 50, // legacy stored value is ignored — the cap is 256
     });
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "ADMIN",
