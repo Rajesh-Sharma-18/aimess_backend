@@ -54,6 +54,8 @@ export interface InboxItem {
   pinnedCount: number;
   // PRIVATE-only
   peer: PrivateRoomPeer | null;
+  /** PRIVATE-only: the viewer's own "Message yourself" room. */
+  isSelf?: boolean;
   /**
    * Community-style normalized last-activity DTO
    * ({type,userId,username,preview,dateTime}) — `username` always carries the
@@ -335,11 +337,12 @@ export class InboxService {
           userId
         ) ?? null,
       lastMessageReadStatus: room.lastMessageReadStatus ?? null,
-      unreadCount: unreadByUser[userId] ?? 0,
+      unreadCount: room.isSelf ? 0 : (unreadByUser[userId] ?? 0),
       lastReadMessageId: readByUser[userId] ?? null,
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: room.peer,
+      isSelf: room.isSelf,
       lastActivity:
         room.lastActivity && room.lastMessage
           ? {

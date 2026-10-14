@@ -80,7 +80,8 @@ export function nonUserIdKind(
  */
 export function assertPrivateParticipants(participants: string[]): void {
   const [a, b] = participants;
-  if (participants.length !== 2 || !isUserId(a) || !isUserId(b) || a === b) {
+  // a === b is the owner's self room ("Message yourself").
+  if (participants.length !== 2 || !isUserId(a) || !isUserId(b)) {
     throw new BadRequestError("CHAT_INVALID_ID_FORMAT");
   }
 }
