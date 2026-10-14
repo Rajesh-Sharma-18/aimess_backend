@@ -251,6 +251,16 @@ describe("communityService.create — 5 owned communities per account", () => {
     expect(repo.createCommunity).not.toHaveBeenCalled();
   });
 
+  it("assertCanCreate refuses at 5 with the same key, before any form is filled", async () => {
+    repo.countOwnedCommunities.mockResolvedValue(5);
+    await expect(communityService.assertCanCreate(CREATOR)).rejects.toMatchObject({
+      statusCode: 400,
+      messageKey: "COMMUNITY_CREATE_LIMIT_REACHED",
+    });
+    repo.countOwnedCommunities.mockResolvedValue(4);
+    await expect(communityService.assertCanCreate(CREATOR)).resolves.toBeUndefined();
+  });
+
   it("allows the 5th", async () => {
     repo.countOwnedCommunities.mockResolvedValue(4);
     await communityService.create(CREATOR, inputWithMembers);

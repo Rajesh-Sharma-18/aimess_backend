@@ -75,6 +75,12 @@ export class GroupRoomController {
       .json(new ApiResponse(room, t("CHAT_GROUP_DISBANDED", req.locale)));
   });
 
+  canCreate = asyncHandler(async (req: Request, res: Response) => {
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse({ allowed: true }, t("CHAT_GROUP_CREATE_ALLOWED", req.locale)));
+  });
+
   getUserGroups = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const cursor = req.query.cursor as string | undefined;

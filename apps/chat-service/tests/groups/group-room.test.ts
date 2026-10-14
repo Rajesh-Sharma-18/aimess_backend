@@ -60,6 +60,24 @@ describe("POST /api/chat/groups (create)", () => {
     expect(res.headers["retry-after"]).toBeDefined();
   });
 
+  it("GET /can-create peeks the same bucket without spending it, then refuses with the create error", async () => {
+    mocks.groupRoomRepo.create.mockResolvedValue({ roomId: "grp_new" });
+    mocks.groupMemberRepo.create.mockResolvedValue({ role: "ADMIN" });
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({ roomId: "grp_new" });
+    const auth = bearer(makeAccessToken({ userId: "55555555-5555-4555-8555-555555555555" }));
+
+    for (let i = 0; i < 20; i += 1) {
+      expect((await request(app).get("/api/chat/groups/can-create").set(auth)).status).toBe(200);
+    }
+    for (let i = 0; i < 10; i += 1) {
+      expect((await request(app).post("/api/chat/groups").set(auth).send({ name: `g${i}` })).status).toBe(201);
+    }
+    const res = await request(app).get("/api/chat/groups/can-create").set(auth);
+
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("CHAT_GROUP_CREATE_LIMIT_REACHED");
+  });
+
   it("POSITIVE: creates a group and returns 201 with room + member", async () => {
     mocks.groupRoomRepo.create.mockResolvedValue({
       roomId: "grp_new",

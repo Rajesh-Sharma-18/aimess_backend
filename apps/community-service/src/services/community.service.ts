@@ -2533,16 +2533,20 @@ export const communityService = {
     };
   },
 
-  async create(
-    creatorId: string,
-    input: CreateCommunityInput
-  ): Promise<CommunityData> {
+  async assertCanCreate(creatorId: string): Promise<void> {
     if (
       (await communityRepository.countOwnedCommunities(creatorId)) >=
       MAX_OWNED_COMMUNITIES
     ) {
       throw new BadRequestError("COMMUNITY_CREATE_LIMIT_REACHED");
     }
+  },
+
+  async create(
+    creatorId: string,
+    input: CreateCommunityInput
+  ): Promise<CommunityData> {
+    await this.assertCanCreate(creatorId);
 
     const name = normalizeName(input.name);
     const handle = normalizeHandle(input.handle);
