@@ -113,3 +113,18 @@ describe("transferAdmin lifts the new admin's active mute", () => {
     expect(unmutedTo()).toEqual([]);
   });
 });
+
+describe("a promoted target gets the moderation unmute line only", () => {
+  it("emits one MEMBER_UNMUTED line, not a duplicate personal copy", async () => {
+    repo.handOverAdmin.mockResolvedValue(true);
+    repo.findMemberMute.mockResolvedValue({ mutedUntil: null });
+    const emit = jest.spyOn(communityService, "emitMemberSystemMessage");
+
+    await communityService.transferAdmin(CID, CALLER, TARGET);
+
+    const unmutedLines = emit.mock.calls.filter((c) => c[0].systemMessageType === "MEMBER_UNMUTED");
+    expect(unmutedLines).toHaveLength(1);
+    expect(unmutedLines[0][0].visibleToUserId).toBeUndefined();
+    emit.mockRestore();
+  });
+});

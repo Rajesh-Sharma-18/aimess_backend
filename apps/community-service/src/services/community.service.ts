@@ -6650,7 +6650,7 @@ export const communityService = {
       targetUserId
     );
     if (mute && (!mute.mutedUntil || mute.mutedUntil.getTime() > Date.now())) {
-      await this._liftMemberMute(communityId, actorId, actorRole, targetUserId);
+      await this._liftMemberMute(communityId, actorId, actorRole, targetUserId, true);
     }
   },
 
@@ -6658,7 +6658,8 @@ export const communityService = {
     communityId: string,
     actorId: string,
     actorRole: CommunityMemberRole | undefined,
-    targetUserId: string
+    targetUserId: string,
+    targetIsStaff = false
   ): Promise<void> {
     await communityRepository.deleteMemberMute(communityId, targetUserId);
 
@@ -6711,7 +6712,8 @@ export const communityService = {
     // MODERATION line (Admin + Moderators) plus the member's PERSONAL
     // "You can chat in X again" copy.
     const eventAt = new Date().toISOString();
-    for (const visibleToUserId of [undefined, targetUserId]) {
+    // A promoted target already sees the moderation line; a personal copy would duplicate it.
+    for (const visibleToUserId of targetIsStaff ? [undefined] : [undefined, targetUserId]) {
       this.emitMemberSystemMessage({
         communityId,
         systemMessageType: "MEMBER_UNMUTED",
