@@ -10,6 +10,9 @@ import { prisma } from "../config/prisma.js";
 import { redis } from "../config/redis.js";
 import { CacheRepository } from "../repositories/cache.repository.js";
 import { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+
+const DM_PEER_FANOUT_CAP = 1000;
 
 /**
  * Invalidates chat-service's cached user snapshot whenever user-service
@@ -34,6 +37,7 @@ export class UserProfileEventConsumer {
   private channel: Channel | null = null;
   private cacheRepo = new CacheRepository(redis);
   private groupMemberRepo = new GroupMemberRepository(prisma);
+  private privateRoomRepo = new PrivateRoomRepository(prisma);
 
   /**
    * Realtime half of account deletion, for viewers who are looking at the
@@ -129,16 +133,38 @@ export class UserProfileEventConsumer {
    * the message and replay the invalidation.
    */
   private async broadcastProfileUpdated(
-    userId: string,
-    updatedAt: string
+    data: UserProfileUpdatedPayload
   ): Promise<void> {
-    const payload = { userId, updatedAt };
+    const { userId, updatedAt } = data;
+    // Values ride along so DM peers apply a rename without a refetch per peer. An incomplete
+    // profile's username is not allocated yet, so it is never sent.
+    const payload = data.isProfileCompleted
+      ? {
+          userId,
+          updatedAt,
+          username: data.username,
+          displayName: data.displayName,
+          avatarObjectKey: data.avatarObjectKey ?? "",
+        }
+      : { userId, updatedAt };
     await publishChatUserEvent(
       redis,
       userId,
       "user:profile_updated",
       payload
     ).catch(() => undefined);
+
+    // DM peers don't necessarily hold a presence subscription, so `user:<id>` alone misses them.
+    const peers = await this.privateRoomRepo
+      .findPeersForUser(userId, DM_PEER_FANOUT_CAP)
+      .catch(() => [] as Array<{ peerId: string }>);
+    await Promise.all(
+      [...new Set(peers.map((p) => p.peerId))].map((peerId) =>
+        publishChatUserEvent(redis, peerId, "user:profile_updated", payload).catch(
+          () => undefined
+        )
+      )
+    );
 
     const roomIds = await this.groupMemberRepo
       .getActiveRoomIds(userId)
@@ -195,8 +221,8 @@ export class UserProfileEventConsumer {
           `Invalidated user snapshot cache for ${event.data.userId}`
         );
 
-        // Both branches emit a client-facing signal, and both carry identity
-        // values of exactly zero — the recipient refetches. Deletion keeps its
+        // Both branches emit a client-facing signal; a completed profile's
+        // update carries its new identity values. Deletion keeps its
         // own event because its consumers do more than re-read a name (drop
         // presence, gate profile navigation, freeze member actions).
         if (event.data.isDeleted === true) {
@@ -205,10 +231,7 @@ export class UserProfileEventConsumer {
             event.data.updatedAt
           );
         } else {
-          await this.broadcastProfileUpdated(
-            event.data.userId,
-            event.data.updatedAt
-          );
+          await this.broadcastProfileUpdated(event.data);
         }
       } else {
         logger.warn(
