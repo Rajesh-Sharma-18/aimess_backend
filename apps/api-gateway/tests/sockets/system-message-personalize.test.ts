@@ -1,4 +1,7 @@
-import { personalizeGroupSocketMessage } from "../../src/sockets/system-message-personalize.js";
+import {
+  personalizeConvUpdatedPreview,
+  personalizeGroupSocketMessage,
+} from "../../src/sockets/system-message-personalize.js";
 
 describe("personalizeGroupSocketMessage", () => {
   it("leaves a PRIVATE CALL_ENDED system message unchanged", () => {
@@ -68,5 +71,25 @@ describe("personalizeGroupSocketMessage", () => {
         files: [],
       },
     });
+  });
+});
+
+describe("personalizeConvUpdatedPreview — call rows (contract §9)", () => {
+  const bump = {
+    type: "PRIVATE",
+    lastMessage: {
+      contentType: "VOICE_CALL",
+      text: "Voice call was not answered",
+      systemEvent: "CALL_ENDED",
+      systemData: { callType: "AUDIO", status: "CANCELLED", callerId: "a", endReason: "declined" },
+    },
+  };
+  const text = (viewer: string, locale: "en" | "vi" | "th") =>
+    (personalizeConvUpdatedPreview(bump, viewer, locale) as typeof bump).lastMessage.text;
+
+  it("is per viewer in English too", () => {
+    expect(text("a", "en")).toBe("Call declined");
+    expect(text("b", "en")).toBe("You declined a voice call");
+    expect(text("b", "th")).toBe("คุณปฏิเสธสายสนทนา");
   });
 });

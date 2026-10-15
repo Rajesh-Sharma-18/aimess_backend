@@ -1539,6 +1539,19 @@ const PDF_ACTIVE_CONTENT: Array<[string, string]> = [
   ["/XFA", "XFA form"],
 ];
 
+// PDF whitespace + delimiters end a name token.
+const PDF_NAME_END = new Set(Buffer.from("\0\t\n\f\r ()<>[]{}/%"));
+
+// Whole name only: a raw substring check matched font subsets like /AAAAAA+SegoeUI.
+function hasPdfName(b: Buffer, name: string): boolean {
+  const needle = Buffer.from(name);
+  for (let i = b.indexOf(needle); i >= 0; i = b.indexOf(needle, i + 1)) {
+    const next = i + needle.length;
+    if (next >= b.length || PDF_NAME_END.has(b[next])) return true;
+  }
+  return false;
+}
+
 function inspectPdf(
   input: DeepInspectInput,
   base: DeepInspectResult
@@ -1563,7 +1576,7 @@ function inspectPdf(
   }
 
   for (const [needle, label] of PDF_ACTIVE_CONTENT) {
-    if (b.includes(Buffer.from(needle))) {
+    if (hasPdfName(b, needle)) {
       reject("SUSPICIOUS_CONTENT", `PDF contains ${label} (${needle})`);
     }
   }

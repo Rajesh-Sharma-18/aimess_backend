@@ -32,6 +32,7 @@ import {
   encodePeopleCursor,
   normalizeForSearch,
   rankByUsername,
+  buildNormalizedFullName,
 } from "../lib/user-search.util.js";
 import type {
   GroupSearchQuery,
@@ -76,6 +77,8 @@ export type SearchUserItem = {
    * the other direction.
    */
   isBlockedByMe: boolean;
+  /** The viewer's own row — opens their "Message yourself" room. */
+  isSelf?: boolean;
   /**
    * This user blocked the VIEWER. Normally such a user is subtracted from every
    * result (`hiddenIds`) and never reaches the client — with ONE exception: a
@@ -154,6 +157,23 @@ type BasicProfile = {
     whoCanSendFriendRequests?: string | null;
   } | null;
 };
+
+const SELF_ALIASES = ["you", "yourself", "messageyourself"];
+
+/** "You" / "yourself" / "Message yourself" / own name / own @handle find the self room. */
+export function matchesSelf(
+  profile: { username: string; firstName: string; lastName: string },
+  normalizedQ: string
+): boolean {
+  if (!normalizedQ) return false;
+  return [
+    ...SELF_ALIASES,
+    normalizeForSearch(profile.username ?? ""),
+    normalizeForSearch(profile.firstName ?? ""),
+    normalizeForSearch(profile.lastName ?? ""),
+    buildNormalizedFullName(profile.firstName ?? "", profile.lastName ?? ""),
+  ].some((token) => token.length > 0 && token.startsWith(normalizedQ));
+}
 
 async function resolveAvatar(stored: string | null) {
   const view = await avatarService.resolveViewUrlForClient(stored);
@@ -502,7 +522,7 @@ export const userSearchService = {
     const normalizedQ = q ? normalizeForSearch(q) : "";
     // An existing DM keeps the peer findable whatever their `whoCanFindMe` says.
     const roomPeerIds = [...peerRoomByUserId.keys()];
-    const [exactHandleHit, chatUserProfiles, chatGroupSummaries] =
+    const [exactHandleHit, chatUserProfiles, chatGroupSummaries, selfProfile] =
       await Promise.all([
         normalizedQ
           ? userProfileRepository.findDiscoverableByNormalizedUsername(
@@ -522,6 +542,9 @@ export const userSearchService = {
         cursor
           ? Promise.resolve([])
           : messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
+        !cursor && normalizedQ
+          ? userProfileRepository.findByUserId(viewerId)
+          : Promise.resolve(null),
       ]);
 
     // Self is never a search result, and a peer who blocked the viewer with no
@@ -560,6 +583,9 @@ export const userSearchService = {
             ]
           : chatRanked;
 
+      if (selfProfile && !selfProfile.deletedAt && matchesSelf(selfProfile, normalizedQ)) {
+        chat.push({ ...(await toItem(selfProfile)), isSelf: true });
+      }
       // Rows are independent, so the per-row avatar headObject + presigns run
       // together rather than one round-trip after another.
       chat.push(

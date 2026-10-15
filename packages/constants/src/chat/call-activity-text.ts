@@ -2,7 +2,10 @@ import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
 import { t } from "../i18n.js";
 import type { MessageKey } from "../messages/index.js";
 
-import { formatCallDuration } from "./group-system-message-text.js";
+import {
+  formatCallDurationText,
+  resolveCallOutcome,
+} from "./group-system-message-text.js";
 
 /**
  * Which end of the call the READER was on. Derived from the call record itself
@@ -53,13 +56,13 @@ type CallCopyBase =
  * one call reads consistently in the DM, in the conversation list and in the
  * Notification Center.
  *
- * Declined reads "Call declined" / "You declined a … call" (v2 contract §6);
- * every other call that never connected is "No answer" for the caller and
- * "Missed … call" for the callee.
+ * The outcome comes from `resolveCallOutcome` (endReason over status), the same
+ * rule the timeline, preview and push use (contract §9).
  */
 export function buildCallActivityText(params: {
   callType?: string | null;
   status?: string | null;
+  endReason?: string | null;
   direction: CallActivityDirection;
   durationSec?: number | null;
   /** Ring length in seconds (`endedAt - initiatedAt`) — CANCELLED only. */
@@ -74,25 +77,19 @@ export function buildCallActivityText(params: {
   const key = (base: CallCopyBase): MessageKey =>
     `${base}_${video ? "VIDEO" : "VOICE"}`;
   const outgoing = params.direction === "OUTGOING";
-  const status = String(params.status ?? "ENDED").toUpperCase();
 
-  switch (status) {
-    // Live states never reach the inbox today (only terminal outcomes are
-    // projected), but a ringing row must still read sanely if one ever does.
-    case "RINGING":
-    case "ANSWERED":
+  switch (resolveCallOutcome(params)) {
+    case "live":
       return t(
         key(outgoing ? "NOTIF_CALL_OUTGOING" : "NOTIF_CALL_INCOMING"),
         locale
       );
-    case "DECLINED":
+    case "declined":
       return t(
         key(outgoing ? "NOTIF_CALL_DECLINED" : "NOTIF_CALL_YOU_DECLINED"),
         locale
       );
-    case "MISSED":
-    case "CANCELLED":
-    case "FAILED":
+    case "unanswered":
       return t(
         key(outgoing ? "NOTIF_CALL_NO_ANSWER" : "NOTIF_CALL_MISSED"),
         locale
@@ -102,36 +99,45 @@ export function buildCallActivityText(params: {
       // No duration recorded → say "Voice call", never a fabricated 00:00.
       return seconds > 0
         ? t(key("NOTIF_CALL_ENDED"), locale, {
-            duration: formatCallDuration(seconds),
+            duration: formatCallDurationText(seconds, locale),
           })
         : t(key("NOTIF_CALL_COMPLETED"), locale);
     }
   }
 }
 
-/** True when this outcome is the one the reader should be BADGED about. */
+/**
+ * True when the reader should be BADGED (and the callee pushed): only the
+ * callee of an UNANSWERED call. Declined is the callee's own action — the row
+ * lands read and no push goes out (contract §9).
+ */
 export function isUnreadCallActivity(
   status: string,
   direction: CallActivityDirection,
-  ringDurationSec?: number | null
+  ringDurationSec?: number | null,
+  endReason?: string | null,
+  durationSec?: number | null
 ): boolean {
   if (direction === "OUTGOING") return false;
-  const s = String(status ?? "").toUpperCase();
-  // A ring the callee never answered is the missed call they need to see —
-  // whether it timed out (MISSED) or the caller gave up on a ring that had
-  // already run long enough to be missable (CANCELLED past the grace window).
-  // A caller who cancels inside that window leaves a read history row only.
-  //
-  // DECLINED badges as well: the decline is taken on ONE device, and the
-  // reader's other devices still need the row surfaced rather than arriving
-  // pre-read. The call was never answered on those, which is what the badge
-  // is about.
-  // FAILED sits here rather than in the default branch so the two halves of
-  // this module agree. `buildCallActivityText` already renders FAILED with the
-  // missed-call copy — telling the callee they missed a call while leaving the
-  // row unbadged is a contradiction that would surface the first time anything
-  // wrote it. Nothing writes it today (there is deliberately no producer), so
-  // this changes no current behaviour; it removes the trap.
-  if (s === "MISSED" || s === "DECLINED" || s === "FAILED") return true;
-  return s === "CANCELLED" && cancelCountsAsMissed(ringDurationSec);
+  if (resolveCallOutcome({ status, endReason, durationSec }) !== "unanswered")
+    return false;
+  return (
+    String(status ?? "").toUpperCase() !== "CANCELLED" ||
+    cancelCountsAsMissed(ringDurationSec)
+  );
+}
+
+/** Missed-call push body for N unread missed calls from one caller (§9.1). */
+export function buildMissedCallPushText(
+  kind: "VOICE" | "VIDEO" | "MIXED",
+  count: number,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): string {
+  if (count <= 1) {
+    return t(
+      kind === "VIDEO" ? "NOTIF_CALL_MISSED_VIDEO" : "NOTIF_CALL_MISSED_VOICE",
+      locale
+    );
+  }
+  return t(`NOTIF_CALL_MISSED_MANY_${kind}`, locale, { count });
 }

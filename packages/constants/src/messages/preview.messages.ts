@@ -138,7 +138,7 @@ export const PREVIEW_MESSAGES = {
   QUOTE_VIDEO_CALL: {
     vi: "📹 Cuộc gọi video",
     en: "📹 Video call",
-    th: "📹 สายวิดีโอ",
+    th: "📹 วิดีโอคอล",
   },
   QUOTE_DELETED: {
     vi: "Tin nhắn đã bị xóa",

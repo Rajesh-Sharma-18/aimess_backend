@@ -38,12 +38,15 @@ describe("assertPrivateParticipants", () => {
     ["a community ObjectId", [PEER_ID, "6a7bf9214d6c5b8b86a11aa8"]],
     ["a private room id", [PEER_ID, "prv_OrqmmJAT8sHO8Ds5"]],
     ["an empty string", [PEER_ID, ""]],
-    ["the same user twice", [PEER_ID, PEER_ID]],
     ["a single participant", [PEER_ID]],
   ])("rejects %s", (_label, participants) => {
     expect(() => assertPrivateParticipants(participants)).toThrow(
       "CHAT_INVALID_ID_FORMAT"
     );
+  });
+
+  it("accepts the owner twice — the self room", () => {
+    expect(() => assertPrivateParticipants([PEER_ID, PEER_ID])).not.toThrow();
   });
 
   it("accepts two distinct user UUIDs", () => {

@@ -10,6 +10,7 @@ import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 import type { Redis, Cluster } from "ioredis";
 
+import { isSelfRoom, privateRoomPeerId } from "../lib/access-guard.js";
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import {
@@ -360,6 +361,8 @@ export type EnrichedPrivateRoom = PrivateRoom & {
    * (the real read source of truth — `PrivateMessage.readBy` is dead/unpopulated).
    */
   lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
+  /** The viewer's own "Message yourself" room — peer is the viewer. */
+  isSelf: boolean;
 };
 
 /**
@@ -401,6 +404,7 @@ export interface PrivateConversationListItem extends PeerFriendshipRelationship 
   isMuted: boolean;
   friendship: WireFriendship;
   lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
+  isSelf: boolean;
 }
 
 function toConversationListItem(
@@ -428,6 +432,7 @@ function toConversationListItem(
     isMuted: room.isMuted,
     friendship: toWireFriendship(room.friendship),
     lastMessageReadStatus: room.lastMessageReadStatus,
+    isSelf: room.isSelf,
     ...toPeerFriendshipRelationship(room.friendship),
   };
 }
@@ -444,6 +449,7 @@ export interface PrivateRoomDetailsData extends PeerFriendshipRelationship {
   roomId: string;
   participants: string[];
   peerId: string;
+  isSelf?: boolean;
   user: {
     id: string;
     displayName: string;
@@ -565,10 +571,9 @@ export class PrivateRoomService {
     );
     if (existing) return existing;
 
-    const friends = await this.userServiceClient.checkFriendship(
-      userId,
-      peerId
-    );
+    const friends =
+      userId === peerId ||
+      (await this.userServiceClient.checkFriendship(userId, peerId));
     if (!friends) {
       throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
     }
@@ -608,9 +613,6 @@ export class PrivateRoomService {
     userId: string,
     peerId: string
   ): Promise<PrivateRoomDetailsData | PrivatePairStateData> {
-    if (userId === peerId) {
-      throw new BadRequestError("CHAT_CANNOT_MESSAGE_SELF");
-    }
     const existing = await this.privateRoomRepo.findByParticipantsKey(
       buildParticipantsKey(userId, peerId)
     );
@@ -624,10 +626,10 @@ export class PrivateRoomService {
     // resolved below. That check fails OPEN on an upstream blip, and a friend
     // who cannot open their own chat because a lookup flickered is a worse
     // outcome than a room created a moment early.
-    const friends = await this.userServiceClient.checkFriendship(
-      userId,
-      peerId
-    );
+    // The self room ("Message yourself") is minted on first open.
+    const friends =
+      userId === peerId ||
+      (await this.userServiceClient.checkFriendship(userId, peerId));
     if (friends) {
       const room = await ensurePrivateRoom(
         {
@@ -707,6 +709,7 @@ export class PrivateRoomService {
     lastSequence: number;
     peerUnavailable: boolean;
     friendship: ChatFriendshipInfo;
+    isSelf?: boolean;
   }): Promise<PrivatePairStateInfo> {
     // `lastSequence <= 0` means nothing was ever written to the room, so the
     // message probe is skipped entirely for every silent room.
@@ -725,7 +728,7 @@ export class PrivateRoomService {
       blockedByPeer: params.friendship.blockedByPeer ?? false,
       conversationId: params.roomId,
       hasHistory,
-      isFriend: params.friendship.status === "FRIEND",
+      isFriend: params.isSelf === true || params.friendship.status === "FRIEND",
       isPending: params.friendship.status === "PENDING",
       canSendRequest: params.friendship.canSendRequest ?? false,
     });
@@ -834,6 +837,7 @@ export class PrivateRoomService {
       roomId: enriched.roomId,
       participants: enriched.participants,
       peerId: enriched.peerId,
+      isSelf: enriched.isSelf,
       user: {
         id: enriched.peer.id,
         displayName: enriched.peer.displayName,
@@ -862,6 +866,7 @@ export class PrivateRoomService {
         // Same two conditions the write path refuses with CHAT_PEER_BANNED.
         peerUnavailable: enriched.peer.isDeletedUser || enriched.peer.isBanned,
         friendship: enriched.friendship,
+        isSelf: enriched.isSelf,
       }),
       autoDelete: buildAutoDeleteWire(readRoomAutoDelete(enriched), {
         conversationType: "PRIVATE",
@@ -952,7 +957,7 @@ export class PrivateRoomService {
     userId: string
   ): Promise<EnrichedPrivateRoom[]> {
     const peerIds = rooms
-      .map((room) => (room.participants || []).find((p) => p !== userId) || "")
+      .map((room) => privateRoomPeerId(room, userId))
       .filter(Boolean);
 
     // Corrupt rooms (a group/community id stored as the peer) still exist until
@@ -1014,14 +1019,14 @@ export class PrivateRoomService {
 
     const friendshipByPeer = await this.friendshipsOrUnavailable(
       userId,
-      peerIds
+      peerIds.filter((id) => id !== userId)
     );
     // A peer who blocked the viewer keeps their name but not their photo. The live
     // friendship verdict decides it: the room's denormalized `blockedBy` is only
     // written by the block consumer and can lag or miss the real block.
     const avatarHiddenPeers = new Set(
       rooms.flatMap((room) => {
-        const peer = (room.participants || []).find((p) => p !== userId) || "";
+        const peer = privateRoomPeerId(room, userId);
         const blockedByPeer =
           friendshipByPeer.get(peer)?.blockedByPeer === true ||
           (Array.isArray(room.blockedBy) &&
@@ -1152,7 +1157,7 @@ export class PrivateRoomService {
         hiddenForStatus
       )
         continue;
-      const peerId = (room.participants || []).find((p) => p !== userId) || "";
+      const peerId = privateRoomPeerId(room, userId);
       // The EXPOSABLE pointer (frozen while the peer's receipts are off), never
       // the plain read one — see `privateReceiptCursorOf`.
       const peerCursor = privateReceiptCursorOf(room, peerId);
@@ -1233,7 +1238,8 @@ export class PrivateRoomService {
 
     const now = Date.now();
     return rooms.map((room) => {
-      const peerId = (room.participants || []).find((p) => p !== userId) || "";
+      const peerId = privateRoomPeerId(room, userId);
+      const isSelf = isSelfRoom(room);
       const snapshot = (snapshots.get(peerId) || {}) as Record<string, unknown>;
       const mutedBy = (room.mutedBy ?? {}) as Record<
         string,
@@ -1457,7 +1463,8 @@ export class PrivateRoomService {
         },
         lastActivityAt,
         lastActivity,
-        unreadMessageCount: unreadCountByUser[userId] ?? 0,
+        unreadMessageCount: isSelf ? 0 : (unreadCountByUser[userId] ?? 0),
+        isSelf,
         // The status itself stays factual (they ARE still your friend on
         // record, and unfriend cleanup depends on that), but nothing about the
         // relationship is actionable any more — every one of these buttons
@@ -1471,7 +1478,10 @@ export class PrivateRoomService {
               canSendRequest: false,
             }
           : (friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP),
-        lastMessageReadStatus: readStatusByRoom.get(room.roomId) ?? null,
+        lastMessageReadStatus:
+          isSelf && readStatusByRoom.has(room.roomId)
+            ? "READ"
+            : (readStatusByRoom.get(room.roomId) ?? null),
       };
     });
   }

@@ -107,6 +107,17 @@ describe("unread increment follows the countability policy", () => {
     expect(incFor(album.calls[0]!)).toBe(4);
   });
 
+  it("AIMESS-215: credits nobody in a self room (receiver is the sender)", async () => {
+    const { repo, calls } = repoCapturingUpdate();
+    await repo.updateRoomOnNewMessage({
+      roomId: ROOM,
+      message: message({ senderId: ME }),
+      receiverId: ME,
+      unreadIncrement: 1,
+    });
+    expect(calls[0]!.$inc).toBeUndefined();
+  });
+
   it("credits nobody when the recipient could not be resolved", async () => {
     const { repo, calls } = repoCapturingUpdate();
     await repo.updateRoomOnNewMessage({

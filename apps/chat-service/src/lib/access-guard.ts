@@ -45,9 +45,17 @@ export async function assertPrivateParticipant(
   });
   if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
   if (!room.participants?.includes(userId)) {
+    // Someone else's self room does not exist for the caller (no enumeration).
+    if (isSelfRoom(room)) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
     throw new ForbiddenError("CHAT_NOT_PARTICIPANT");
   }
   return room;
+}
+
+/** The owner's "Message yourself" room: both participant slots hold the owner. */
+export function isSelfRoom(room: Pick<PrivateRoom, "participants">): boolean {
+  const [a, b] = room.participants ?? [];
+  return !!a && a === b;
 }
 
 /**
@@ -60,12 +68,14 @@ export async function assertPrivateParticipant(
  * who is not in the room at all.
  *
  * Returns `""` for a malformed room (no second participant) so callers degrade
- * to "no peer" rather than fanning out to an empty-string channel.
+ * to "no peer" rather than fanning out to an empty-string channel. A self room's
+ * peer is its owner.
  */
 export function privateRoomPeerId(
   room: Pick<PrivateRoom, "participants">,
   userId: string
 ): string {
+  if (isSelfRoom(room)) return room.participants[0] === userId ? userId : "";
   return (room.participants ?? []).find((id) => id && id !== userId) ?? "";
 }
 

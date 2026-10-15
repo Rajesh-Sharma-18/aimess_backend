@@ -16,7 +16,7 @@ const findMany = jest.fn().mockResolvedValue([]);
 const findFirst = jest.fn().mockResolvedValue(null);
 
 jest.mock("../../src/config/prisma.js", () => ({
-  prisma: { userProfile: { findMany, findFirst } },
+  prisma: { userProfile: { findMany, findFirst, findUnique: jest.fn().mockResolvedValue(null) } },
 }));
 jest.mock("../../src/repositories/friendship.repository.js", () => ({
   friendshipRepository: {

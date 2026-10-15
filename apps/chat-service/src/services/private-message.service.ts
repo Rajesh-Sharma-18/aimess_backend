@@ -52,6 +52,7 @@ import {
 } from "../lib/chat-message.serializer.js";
 import {
   assertPrivateParticipant,
+  isSelfRoom,
   privateRoomPeerId,
 } from "../lib/access-guard.js";
 import {
@@ -275,10 +276,13 @@ export class PrivateMessageService {
       { participants: roster },
       params.senderId
     );
+    const isSelf = receiverId === params.senderId;
 
-    await withPeerGateCache(params.senderId, receiverId, () =>
-      this.assertPeerInteractionAllowed(params.senderId, receiverId)
-    );
+    if (!isSelf) {
+      await withPeerGateCache(params.senderId, receiverId, () =>
+        this.assertPeerInteractionAllowed(params.senderId, receiverId)
+      );
+    }
 
     // Idempotency: if clientMessageId provided, check for existing message (album
     // batch includes `base:N` sibling rows).
@@ -485,8 +489,9 @@ export class PrivateMessageService {
     // @aimess/redis chat-attention), stamped by the gateway on `conv:join
     // {active:true}` and cleared on leave/disconnect. Fails OPEN: an unreadable
     // or absent key counts the message, which is the old behaviour.
-    let unreadIncrement = countable;
-    if (countable > 0 && receiverId && this.redis) {
+    // The self room's reader is the sender: never unread.
+    let unreadIncrement = isSelf ? 0 : countable;
+    if (unreadIncrement > 0 && receiverId && this.redis) {
       try {
         const looking = await this.redis.exists(
           chatOpenRoomKey(receiverId, params.roomId)
@@ -540,7 +545,7 @@ export class PrivateMessageService {
           },
         });
         this.redis.publish(`user:${params.senderId}`, payload).catch(() => {});
-        if (receiverId) {
+        if (receiverId && !isSelf) {
           this.redis.publish(`user:${receiverId}`, payload).catch(() => {});
         }
       }
@@ -622,6 +627,7 @@ export class PrivateMessageService {
   ): Promise<void> {
     const peerId = await this.getPeerId(roomId, userId);
     if (!peerId) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    if (peerId === userId) return;
     await this.assertPeerInteractionAllowed(userId, peerId);
   }
 
@@ -634,7 +640,7 @@ export class PrivateMessageService {
   async getPeerId(roomId: string, userId: string): Promise<string | null> {
     const room = await this.roomRepo.findByRoomId(roomId);
     if (!room) return null;
-    return (room.participants ?? []).find((id) => id !== userId) ?? null;
+    return privateRoomPeerId(room, userId) || null;
   }
 
   /**
@@ -1197,6 +1203,8 @@ export class PrivateMessageService {
   async getPeerReadSeq(roomId: string, userId: string): Promise<number> {
     const room = await this.roomRepo.findByRoomId(roomId);
     if (!room) return 0;
+    // The owner reads their self room as they write it.
+    if (isSelfRoom(room)) return room.participants[0] === userId ? room.lastSequence : 0;
     const peerId = (room.participants ?? []).find((id) => id !== userId);
     if (!peerId) return 0;
     // Settings → Chat → Read Receipt, reciprocal, applied HERE rather than only
@@ -1235,6 +1243,7 @@ export class PrivateMessageService {
   async getPeerDeliveredSeq(roomId: string, userId: string): Promise<number> {
     const room = await this.roomRepo.findByRoomId(roomId);
     if (!room) return 0;
+    if (isSelfRoom(room)) return room.participants[0] === userId ? room.lastSequence : 0;
     const peerId = (room.participants ?? []).find((id) => id !== userId);
     if (!peerId) return 0;
     return this.messageRepo.getNewestDeliveredSeq(roomId, userId, peerId);
@@ -2350,10 +2359,13 @@ if (!params.content?.text?.trim())
       params.senderId
     );
     const receiverId = privateRoomPeerId(targetRoom, params.senderId);
+    const isSelf = receiverId === params.senderId;
 
     // Friend-only gate — shared with `sendMessage`, which also closes the gap
     // where this path checked friendship but never the block.
-    await this.assertPeerInteractionAllowed(params.senderId, receiverId);
+    if (!isSelf) {
+      await this.assertPeerInteractionAllowed(params.senderId, receiverId);
+    }
 
     // idempotency
     if (params.clientMessageId) {
@@ -2439,7 +2451,7 @@ if (!params.content?.text?.trim())
           revision: message.revision,
         },
         receiverId,
-        unreadIncrement: shouldCountInUnread({
+        unreadIncrement: !isSelf && shouldCountInUnread({
           messageType: message.messageType,
           systemEvent: message.systemEvent,
           explicit: (message as unknown as { countInUnread?: boolean | null })

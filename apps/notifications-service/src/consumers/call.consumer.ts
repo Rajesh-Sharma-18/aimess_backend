@@ -1,7 +1,9 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
 import {
+  buildMissedCallPushText,
   isUnreadCallActivity,
+  resolveCallOutcome,
   t,
   type CallActivityDirection,
 } from "@aimess/constants";
@@ -12,7 +14,9 @@ import { userIdentityClient } from "../grpc/user-identity.client.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { callCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
+import { clearMissedCalls, countMissedCall } from "../lib/missed-calls.js";
 import { pushTag } from "../lib/push-tags.js";
+import { dismissTrayCards } from "../services/push-dismiss.js";
 import { pushToUser } from "../services/push.service.js";
 
 /**
@@ -126,6 +130,8 @@ interface CallActivityPayload {
   durationSec: number;
   /** Ring length in seconds; disambiguates a cancelled ring (see grace window). */
   ringDurationSec?: number;
+  /** Why it ended; wins over `status` (contract §9). */
+  endReason?: string;
   privateRoomId: string;
   endedAt: number;
   callerName: string;
@@ -307,16 +313,14 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
  *
  *   - `call.missed` (handleCallMissed) — the caller cut the ring, the caller's
  *     client reported NO_ANSWER, or the server timeout sweep reaped it.
- *   - `call.activity` (handleCallActivity) — every OTHER terminal settle of an
- *     unanswered ring: the callee ended it, or declined it. These never emit a
- *     `call.missed`, so before this they created the badged history row with no
- *     push. Now the same predicate that badges the row (`isUnreadCallActivity`)
- *     also fires this.
+ *   - `call.activity` (handleCallActivity) — every OTHER unanswered settle
+ *     (busy, callee-side hangup that is not a decline), via the same predicate
+ *     that badges the row (`isUnreadCallActivity`). Declined never pushes.
  *
  * The shared `claimPushOnce("call.missed", …)` claim makes the two idempotent
  * against EACH OTHER: on the caller-cut path both events arrive, and whichever
  * lands first sends the single push. `excludeSessionId` skips the callee device
- * that just ended/declined the ring — present only on the `call.activity` path.
+ * that just ended the ring — present only on the `call.activity` path.
  */
 async function sendMissedCallPush(data: {
   callId: string;
@@ -344,6 +348,13 @@ async function sendMissedCallPush(data: {
   }
 
   const isVideo = String(data.callType).toUpperCase() === "VIDEO";
+  // One tray card per caller, counting this chat's unread missed calls (§9.1).
+  const tally = data.privateRoomId
+    ? await countMissedCall(data.calleeId, data.privateRoomId, data.callerId, isVideo)
+    : { voice: isVideo ? 0 : 1, video: isVideo ? 1 : 0 };
+  const count = tally.voice + tally.video;
+  const kind =
+    tally.voice > 0 && tally.video > 0 ? "MIXED" : isVideo ? "VIDEO" : "VOICE";
   const callerName = await callerNameFor(data.callerId, data.callerName);
   const caller = callerName || "Someone";
   // The DM, not the call. A missed call is over — there is nothing to open on
@@ -356,16 +367,14 @@ async function sendMissedCallPush(data: {
     userId: data.calleeId,
     category: "callEnabled",
     type: "CALL_MISSED",
-    copy: callCopy.missed(caller, isVideo ? "VIDEO" : "VOICE"),
+    copy: callCopy.missed(caller, kind, count),
     actorId: data.callerId,
     deepLink,
     // Distinct from the ring's `call:<id>` collapse key — the ring is long over
     // by the time this fires, no need to share/replace it.
-    // Per ROOM when known: it is in `roomTags`, so reading the chat on any
-    // device closes it (AIMESS-43 S11b). Legacy per-call key otherwise.
-    collapseKey: data.privateRoomId
-      ? pushTag.missedCall(data.privateRoomId)
-      : `call:missed:${data.callId}`,
+    // Per CALLER: each new missed call replaces the card; read/answer closes it.
+    collapseKey: pushTag.missedCall(data.callerId),
+    renotify: true,
     // The device that just ended/declined the ring already knows it is over;
     // re-buzzing it is the stale-ring-resurfacing wake the cancel push also
     // guards against. Absent on the caller-cut/sweep path (no callee actor).
@@ -379,10 +388,7 @@ async function sendMissedCallPush(data: {
     // row per call. Two writers for the same call produced two cards.
     skipInbox: true,
     showPreviewOverride: (locale) =>
-      t(
-        isVideo ? "NOTIF_CALL_MISSED_VIDEO" : "NOTIF_CALL_MISSED_VOICE",
-        locale
-      ),
+      buildMissedCallPushText(kind, count, locale),
     data: {
       type: "CALL_MISSED",
       callId: data.callId,
@@ -391,6 +397,7 @@ async function sendMissedCallPush(data: {
       callerAvatar: data.callerAvatar ?? "",
       callType: isVideo ? "VIDEO" : "AUDIO",
       missedAt: String(data.missedAt ?? ""),
+      missedCount: String(count),
       idempotencyKey: data.callId,
       deepLink,
     },
@@ -562,9 +569,9 @@ async function handleCallHandled(data: CallHandledPayload): Promise<void> {
  * second one, exactly like the friend request → accepted flow. `resurface:false`
  * keeps a late duplicate from flipping a read card back to unread.
  *
- * Only a call the reader never answered arrives unread (isUnreadCallActivity):
- * an outgoing call, and a call the reader was present for, are history — not
- * something to badge them about.
+ * Only the callee of an UNANSWERED call arrives unread (isUnreadCallActivity);
+ * outgoing, connected and declined calls are history. The outcome is read from
+ * `endReason` over `status` (contract §9).
  */
 export async function handleCallActivity(
   data: CallActivityPayload
@@ -631,7 +638,8 @@ export async function handleCallActivity(
           status,
           side.direction,
           durationSec,
-          ringDurationSec
+          ringDurationSec,
+          data.endReason
         ),
         // The peer's name is the card heading; the body is the call line.
         inboxTitle: side.peerName || null,
@@ -646,6 +654,7 @@ export async function handleCallActivity(
           callId: data.callId,
           callType,
           callStatus: status,
+          ...(data.endReason ? { endReason: data.endReason } : {}),
           callDirection: side.direction,
           durationSec: String(durationSec),
           peerId: side.peerId,
@@ -668,7 +677,13 @@ export async function handleCallActivity(
           // A settled call must not jump back to unread when a late duplicate
           // transition rewrites it.
           resurface: "false",
-          ...(isUnreadCallActivity(status, side.direction, ringDurationSec)
+          ...(isUnreadCallActivity(
+            status,
+            side.direction,
+            ringDurationSec,
+            data.endReason,
+            durationSec
+          )
             ? {}
             : { markRead: "true" }),
         },
@@ -676,18 +691,27 @@ export async function handleCallActivity(
     )
   );
 
-  // The missed-call PUSH lives here too, keyed on the SAME predicate that badges
-  // the callee's row (`isUnreadCallActivity`), so a badged "Missed call" entry
-  // and its push can never drift apart again. This covers every settle path that
-  // does NOT emit a `call.missed`: the callee ended an unanswered ring, or
-  // declined it. On the caller-cut/sweep paths `call.missed` also arrives, and
-  // the shared `claimPushOnce("call.missed", …)` keeps it to one push total.
-  //
-  // Only the callee's INCOMING side can badge missed (isUnreadCallActivity is
-  // false for OUTGOING), so the caller never gets a missed push. Fired
-  // independently of the inbox rows above: pushToUser swallows its own failures,
-  // and the dedup claim makes a redelivery after the throw below a no-op.
-  if (isUnreadCallActivity(status, "INCOMING", ringDurationSec)) {
+  // The missed-call PUSH follows the SAME predicate that badges the callee's row,
+  // so badge and push never drift: unanswered (incl. busy) pushes, declined does
+  // not (contract §9), the caller never does. `claimPushOnce` dedups against the
+  // `call.missed` that the caller-cut/sweep paths also send.
+  // Answering a call from this caller resets their missed-call card (§9.1).
+  if (
+    data.privateRoomId &&
+    resolveCallOutcome({ status, endReason: data.endReason, durationSec }) ===
+      "connected" &&
+    (await clearMissedCalls(data.calleeId, data.privateRoomId))
+  ) {
+    await dismissTrayCards({
+      userId: data.calleeId,
+      tags: [pushTag.missedCall(data.callerId)],
+      reason: "ANSWERED",
+    });
+  }
+
+  if (
+    isUnreadCallActivity(status, "INCOMING", ringDurationSec, data.endReason, durationSec)
+  ) {
     await sendMissedCallPush({
       callId: data.callId,
       calleeId: data.calleeId,

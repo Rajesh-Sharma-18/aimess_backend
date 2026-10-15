@@ -13,7 +13,7 @@
  */
 import {
   buildCallActivityText,
-  formatCallDuration,
+  formatCallDurationText,
   isUnreadCallActivity,
   CALL_CANCEL_GRACE_SEC,
 } from "@aimess/constants";
@@ -202,7 +202,7 @@ describe("buildCallActivityText", () => {
         direction: "OUTGOING",
         durationSec: 734,
       })
-    ).toBe(`Voice call • ${formatCallDuration(734)}`);
+    ).toBe(`Voice call · ${formatCallDurationText(734)}`);
     expect(
       buildCallActivityText({
         ...video,
@@ -210,7 +210,7 @@ describe("buildCallActivityText", () => {
         direction: "INCOMING",
         durationSec: 65,
       })
-    ).toBe("Video call • 01:05");
+    ).toBe("Video call · 1m 5s");
   });
 
   it("never invents a duration when none was recorded", () => {
@@ -228,7 +228,8 @@ describe("buildCallActivityText", () => {
         direction: "INCOMING",
         durationSec: 0,
       })
-    ).toBe("Video call");
+      // 0s never connected: unanswered (contract §9).
+    ).toBe("Missed video call");
   });
 
   it("localizes per reader — the stored English line is only a fallback", () => {
@@ -250,8 +251,8 @@ describe("isUnreadCallActivity", () => {
     expect(
       isUnreadCallActivity("CANCELLED", "INCOMING", CALL_CANCEL_GRACE_SEC)
     ).toBe(true);
-    // Declined on one device still badges the reader's other devices.
-    expect(isUnreadCallActivity("DECLINED", "INCOMING")).toBe(true);
+    // Declined is the callee's own action: read, no push (contract §9).
+    expect(isUnreadCallActivity("DECLINED", "INCOMING")).toBe(false);
     expect(isUnreadCallActivity("ENDED", "INCOMING")).toBe(false);
     // FAILED badges like every other outcome where the ring was never taken.
     // It used to be excluded, which contradicted `buildCallActivityText` —
