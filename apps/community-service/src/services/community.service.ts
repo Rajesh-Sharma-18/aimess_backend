@@ -11899,10 +11899,9 @@ export const communityService = {
         // Legacy permanent code: no expiry, same as every link minted today.
         expiresAt: null,
         creatorId: communityByCode.adminId,
+        closed: communityByCode.status === "CLOSED",
       };
     }
-
-    assertInviteLinkActive(link);
 
     const community = await communityRepository.findById(link.communityId);
     if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
@@ -11933,6 +11932,8 @@ export const communityService = {
     const pendingRow = isLiveJoinRequest(community.type, pendingRequest?.status)
       ? pendingRequest
       : null;
+    // AIMESS-268: a member and a pending request outlive a link reset (View / Cancel Request).
+    if (!isJoined && !pendingRow) assertInviteLinkActive(link);
 
     const avatarView = await communityImageService.resolveViewUrlForClient(
       community.avatarUrl
@@ -11959,6 +11960,7 @@ export const communityService = {
       // LEGACY field: links no longer expire, so this is always null.
       expiresAt: null,
       creatorId: link.createdBy,
+      closed: community.status === "CLOSED",
     };
   },
 };

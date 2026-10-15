@@ -776,6 +776,8 @@ export type InviteLinkPreviewData = {
   appDeepLink: string;
   expiresAt: number | null;
   creatorId: string;
+  /** AIMESS-268: closed community — clients show a disabled "Closed Community". */
+  closed: boolean;
 };
 
 /**

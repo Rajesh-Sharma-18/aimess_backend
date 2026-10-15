@@ -136,6 +136,48 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
     expect(res.body.data).toHaveProperty("pagination");
   });
 
+  it("AIMESS-268: an old (reset) and a new card for one community each read their OWN link", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+      deletedFor: {},
+    });
+    const row = (id: string, code: string) => ({
+      id,
+      senderId: "peer",
+      messageType: "SYSTEM",
+      systemEvent: "COMMUNITY_INVITE",
+      systemData: { communityId: "community-1", communityName: "C", linkCode: code },
+      content: { text: "invite" },
+      createdAt: new Date(1000),
+    });
+    mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [row("m-new", "new-code"), row("m-old", "old-code")],
+      hasMore: false,
+    });
+    mocks.privateMessageRepo.countTimeline.mockResolvedValue(2);
+    const ctx = (linkStatus: string) => ({
+      communityId: "community-1",
+      found: true,
+      communityName: "C",
+      communityHandle: "c",
+      isMember: false,
+      communityType: "PUBLIC",
+      joinRequestPending: false,
+      linkStatus,
+    });
+    mocks.communityClient.getCommunityInviteContexts.mockResolvedValue([ctx("ACTIVE"), ctx("REVOKED")]);
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    const cta = (id: string) =>
+      res.body.data.data.find((m: { id: string }) => m.id === id).content.invitation.cta;
+    expect(cta("m-new")).toBe("join");
+    expect(cta("m-old")).toBe("expired");
+  });
+
   // BACKWARD COMPAT: this row is stored the LEGACY way — `messageType: "SYSTEM"`
   // with everything in `systemData` and no structured `content.invitation`. It
   // must still come back on the current contract, with no migration.

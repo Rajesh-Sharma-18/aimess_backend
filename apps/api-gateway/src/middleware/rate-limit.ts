@@ -516,16 +516,33 @@ export const livekitWebhookRateLimiter = createLimiter({
   scope: "ip",
 });
 
+/** True when the caller carries a VERIFIED user access token. */
+function isVerifiedUser(req: Request): boolean {
+  return credentialKey(req)?.startsWith("u:") === true;
+}
+
 /**
- * Public invite-link preview (GET /communities/invite-links/:code). No auth →
- * enumeration risk, so IP-scoped by design.
+ * Public invite-link preview (GET /communities/invite-links/:code). Anonymous /
+ * unverifiable callers → enumeration risk, so IP-scoped and tight. A signed-in
+ * app re-resolves every invite card it shows (AIMESS-268), so verified users get
+ * their own per-user bucket instead of sharing 30/IP behind one NAT.
  */
-export const inviteLinkPreviewRateLimiter = createLimiter({
-  rule: "community.invite-preview",
-  windowMs: 15 * 60 * 1000,
-  max: 30,
-  scope: "ip",
-});
+export const inviteLinkPreviewRateLimiter = [
+  createLimiter({
+    rule: "community.invite-preview.user",
+    windowMs: 15 * 60 * 1000,
+    max: 600,
+    scope: "session",
+    skip: (req) => !isVerifiedUser(req),
+  }),
+  createLimiter({
+    rule: "community.invite-preview",
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    scope: "ip",
+    skip: isVerifiedUser,
+  }),
+];
 
 /**
  * Forgot-password OTP endpoints. Looser than `auth.sensitive` because users

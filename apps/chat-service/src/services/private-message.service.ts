@@ -2836,17 +2836,18 @@ if (!params.content?.text?.trim())
         const code = String(sd.linkCode ?? "");
         queriesByKey.set(`${communityId}::${code}`, { communityId, code });
       }
+      const queryKeys = [...queriesByKey.keys()];
       const contexts = this.communityClient
         ? await this.communityClient.getCommunityInviteContexts(
             viewerId ?? "",
             [...queriesByKey.values()]
           )
         : [];
-      // Re-matched by communityId alone: `getCommunityInviteContexts` doesn't
-      // echo `code` back, and in practice every invite card for the same
-      // community on one page (one room/conversation) shares the same code.
-      const contextByCommunityId = new Map(
-        contexts.map((c) => [c.communityId, c])
+      // One context per query, in query order. Keyed by communityId+code: after
+      // a link reset the same page holds an old (revoked) and a new card for one
+      // community, and each must read its own link (AIMESS-268).
+      const contextByKey = new Map(
+        contexts.map((c, i) => [queryKeys[i], c])
       );
 
       for (const m of inviteMessages) {
@@ -2878,7 +2879,7 @@ if (!params.content?.text?.trim())
           stored?.deepLink ?? sd.inviteDeepLink ?? sd.inviteUrl ?? ""
         );
         const ctx = communityId
-          ? contextByCommunityId.get(communityId)
+          ? contextByKey.get(`${communityId}::${String(sd.linkCode ?? "")}`)
           : undefined;
         // What the row itself recorded about the link when the card was written.
         // Rows from before invitations carried structured content have none —

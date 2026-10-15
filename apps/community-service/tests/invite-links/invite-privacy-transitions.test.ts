@@ -1151,3 +1151,27 @@ describe("regressions", () => {
     expect(community!.type).toBe("PRIVATE");
   });
 });
+
+describe("AIMESS-268 — preview after reset / close", () => {
+  it("a pending request outlives a reset: the old link still previews as PENDING (cancellable)", async () => {
+    await communityService.redeemInviteLink(LINK_A, A);
+    await communityService.resetInviteLinks(CID, ADMIN);
+    const preview = await communityService.lookupInviteLink(LINK_A, A);
+    expect(preview.joinRequestStatus).toBe("PENDING");
+    await expect(communityService.lookupInviteLink(LINK_A, B)).rejects.toThrow(
+      "COMMUNITY_INVITE_LINK_REVOKED_ERROR"
+    );
+  });
+
+  it("an active member still previews the reset link as joined", async () => {
+    seedMember(B);
+    await communityService.resetInviteLinks(CID, ADMIN);
+    expect((await communityService.lookupInviteLink(LINK_A, B)).isJoined).toBe(true);
+  });
+
+  it("reports closed so clients render Closed Community", async () => {
+    expect((await communityService.lookupInviteLink(LINK_A, A)).closed).toBe(false);
+    (community as unknown as { status: string }).status = "CLOSED";
+    expect((await communityService.lookupInviteLink(LINK_A, A)).closed).toBe(true);
+  });
+});
