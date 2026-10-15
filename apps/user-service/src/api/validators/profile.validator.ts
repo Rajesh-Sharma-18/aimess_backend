@@ -6,6 +6,7 @@ import {
   TEXT_CUSTOM_STATUS_MAX_RAW_LENGTH,
   TEXT_NAME_MAX_LENGTH,
   TEXT_NAME_MAX_RAW_LENGTH,
+  normalizeVisibleText,
 } from "@aimess/constants";
 
 import {
@@ -20,13 +21,13 @@ import { usernameSchema } from "./username.validator.js";
  * `.max()` alone counts UTF-16 code units, which would hand a Thai or emoji
  * name half the field — so the cheap raw cap only keeps a pathological string
  * away from the segmenter, and the real limit is the grapheme count. Validated
- * AFTER `.trim()`, matching how the value is stored. Both messages are message
+ * AFTER `normalizeVisibleText`, matching how the value is stored. Both messages are message
  * KEYS: `validateBody` renders them in the caller's locale.
  */
 const personNameSchema = (requiredMessage: string, maxMessage: string) =>
   z
     .string()
-    .trim()
+    .overwrite(normalizeVisibleText)
     .min(1, requiredMessage)
     .max(TEXT_NAME_MAX_RAW_LENGTH, maxMessage)
     .refine((v) => countCharacters(v) <= TEXT_NAME_MAX_LENGTH, maxMessage);
@@ -87,7 +88,7 @@ export const updateProfileSchema = z
     username: usernameSchema.optional(),
     bio: z
       .string()
-      .trim()
+      .overwrite(normalizeVisibleText)
       .max(280, "Bio must be at most 280 characters")
       .nullable()
       .optional(),
@@ -132,7 +133,7 @@ export const setCustomStatusSchema = z
       .transform(emptyToNull),
     text: z
       .string({ error: "USER_CUSTOM_STATUS_TEXT_INVALID" })
-      .trim()
+      .overwrite(normalizeVisibleText)
       .max(TEXT_CUSTOM_STATUS_MAX_RAW_LENGTH, "USER_CUSTOM_STATUS_TEXT_TOO_LONG")
       .refine((v) => !CONTROL_CHARS.test(v), "USER_CUSTOM_STATUS_TEXT_INVALID")
       .refine(

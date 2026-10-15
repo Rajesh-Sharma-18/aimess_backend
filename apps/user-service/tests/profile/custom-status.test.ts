@@ -147,7 +147,12 @@ describe("PUT /profiles/me/custom-status", () => {
     expect(repo.setCustomStatus).not.toHaveBeenCalled();
   });
 
-  it.each([[{ durationSeconds: 3600 }], [{ text: "   ", emoji: null, durationSeconds: 3600 }]])(
+  it.each([
+    [{ durationSeconds: 3600 }],
+    [{ text: "   ", emoji: null, durationSeconds: 3600 }],
+    [{ text: "\u200B\u2800\u3164", emoji: null, durationSeconds: 3600 }],
+    [{ text: "\uFEFF\u200D \u3000", durationSeconds: 3600 }],
+  ])(
     "rejects an empty status %j",
     async (body) => {
       const res = await put(body);

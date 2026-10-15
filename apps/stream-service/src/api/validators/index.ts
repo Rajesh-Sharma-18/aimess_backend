@@ -1,11 +1,13 @@
 import { z } from "zod";
 
+import { hasVisibleText, normalizeVisibleText } from "@aimess/constants";
+
 /** POST /streams body — go-live request. */
 export const createStreamSchema = z.object({
   communityId: z.string().min(1),
   // Trimmed first so a whitespace-only title is rejected, matching the clients.
-  title: z.string().trim().min(1).max(256),
-  description: z.string().max(1000).optional(),
+  title: z.string().overwrite(normalizeVisibleText).min(1).max(256),
+  description: z.string().overwrite(normalizeVisibleText).max(1000).optional(),
   thumbnail: z.string().url().optional(),
   sourceType: z
     .enum(["PHONE_CAMERA", "OBS_RTMP", "URL", "YOUTUBE"])
@@ -65,8 +67,8 @@ export const listStreamsQuerySchema = z.object({
 /** PATCH /streams/:id body — owner updates stream metadata. At least one field required. */
 export const updateStreamSchema = z
   .object({
-    title: z.string().trim().min(1).max(256).optional(),
-    description: z.string().max(1000).optional(),
+    title: z.string().overwrite(normalizeVisibleText).min(1).max(256).optional(),
+    description: z.string().overwrite(normalizeVisibleText).max(1000).optional(),
     thumbnail: z.string().url().optional(),
   })
   .refine(
@@ -142,7 +144,7 @@ export const reportCommentSchema = z
     details: z.string().max(500).optional(),
   })
   .refine(
-    (d) => d.reason !== "OTHER" || (!!d.details && d.details.trim().length > 0),
+    (d) => d.reason !== "OTHER" || hasVisibleText(d.details),
     { message: "Details are required when reason is OTHER", path: ["details"] }
   );
 

@@ -1,5 +1,6 @@
 import {
   countCharacters,
+  normalizeVisibleText,
   TEXT_NAME_MAX_LENGTH,
   TEXT_NAME_MAX_RAW_LENGTH,
 } from "@aimess/constants";
@@ -17,7 +18,7 @@ export {
 const nameSchema = (minLength: number, minMessage: string, maxKey: string) =>
   z
     .string()
-    .trim()
+    .overwrite(normalizeVisibleText)
     .min(minLength, minMessage)
     .max(TEXT_NAME_MAX_RAW_LENGTH, maxKey)
     .refine((v) => countCharacters(v) <= TEXT_NAME_MAX_LENGTH, maxKey);
@@ -33,7 +34,7 @@ export const updateCommunitySchema = z
     ).optional(),
     description: z
       .string()
-      .trim()
+      .overwrite(normalizeVisibleText)
       .max(500, "Description must be at most 500 characters")
       .nullable()
       .optional(),
@@ -57,7 +58,7 @@ export const updateGroupSchema = z
       "Group name is required",
       "VALIDATION_GROUP_NAME_MAX_LENGTH"
     ).optional(),
-    description: z.string().trim().max(1000).optional(),
+    description: z.string().overwrite(normalizeVisibleText).max(1000).optional(),
     // true = private: invite-link joins become admin-approved requests.
     joinApproval: z.boolean().optional(),
     // Key from POST /groups/:groupId/avatar/upload-url.

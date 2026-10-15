@@ -37,6 +37,7 @@ import {
   isCommunityContentType,
   sanitizeCommunitySystemMetadata,
   type CommunitySystemMessageType,
+  hasVisibleText,
   withinMessageTextLimit,
 } from "@aimess/constants";
 import {
@@ -378,6 +379,13 @@ export class CommunityMessageService {
     }
     if (!isCommunityContentType(params.messageType || "")) {
       throw new BadRequestError("CHAT_UNSUPPORTED_CONTENT_TYPE");
+    }
+    if (
+      !params.forwardData &&
+      params.messageType?.toUpperCase() === "TEXT" &&
+      !hasVisibleText(params.message)
+    ) {
+      throw new BadRequestError("CHAT_TEXT_REQUIRED");
     }
     assertAttachmentsValid(params.messageType, params.attachments);
     // See private-message.service.ts — this verifies the OBJECT (scan verdict,
@@ -2797,7 +2805,7 @@ export class CommunityMessageService {
     // also tolerates any legacy lower-case rows. Mirrors private/group (!== "TEXT").
     if (normalizeMessageType(message.messageType) !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
-if (!params.content?.text?.trim())
+if (!hasVisibleText(params.content?.text))
       throw new BadRequestError("CHAT_TEXT_REQUIRED");
     if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS))
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");

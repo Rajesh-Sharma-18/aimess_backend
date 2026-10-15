@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { CONTENT_TYPES, withinMessageTextLimit } from "@aimess/constants";
+import {
+  CONTENT_TYPES,
+  normalizeVisibleText,
+  withinMessageTextLimit,
+} from "@aimess/constants";
 import { httpUrlSchema } from "./private-message.validator.js";
 
 import {
@@ -48,7 +52,7 @@ const groupMentionsSchema = z
   .max(200);
 
 export const reportGroupMessageSchema = z.object({
-  reportReason: z.string().min(1).max(200).trim(),
+  reportReason: z.string().overwrite(normalizeVisibleText).min(1).max(200),
   /** Reporter's free text for the "OTHER" reason — was dropped before. */
   description: z.string().max(1000).default(""),
 });
