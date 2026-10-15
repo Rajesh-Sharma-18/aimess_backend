@@ -7,8 +7,10 @@ import {
   CommunityMemberRole,
   CommunityMemberStatus,
   CommunityModerationStatus,
+  CommunityStatus,
   CommunityType,
 } from "../generated/prisma/index.js";
+import { CLOSE_REASON_OWNER_CLOSED } from "../constants/index.js";
 import { communityRepository } from "../repositories/community.repository.js";
 import { communityService } from "../services/community.service.js";
 import { communityImageService } from "../services/community-image.service.js";
@@ -19,6 +21,19 @@ import {
   type CommunityNotificationPrefField,
 } from "../lib/community-notification-pref.js";
 import { getChatClient } from "./chat.client.js";
+
+/**
+ * Owner-axis close reason for the Super Admin RPCs. A plain owner close
+ * (app/web "Close community") writes no reason code, so report
+ * OWNER_CLOSED — otherwise the panel sees "" and lists it as Active.
+ */
+function adminClosedReasonCode(c: {
+  status: CommunityStatus | null;
+  statusClosedReasonCode: string | null;
+}): string {
+  if (c.statusClosedReasonCode) return c.statusClosedReasonCode;
+  return c.status === CommunityStatus.CLOSED ? CLOSE_REASON_OWNER_CLOSED : "";
+}
 
 /** Resolve the admin moderation "status" string of a community row, treating an
  * unset moderationStatus (legacy rows) as ACTIVE. SUSPENDED → "CLOSED". */
@@ -1302,7 +1317,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
               // Why it closed, on the OWNER status axis. `status` above is the
               // separate platform-moderation axis, so this is the only signal
               // that distinguishes a ban-close from an owner close.
-              statusClosedReasonCode: r.statusClosedReasonCode ?? "",
+              statusClosedReasonCode: adminClosedReasonCode(r),
             };
           })
         );
@@ -1498,7 +1513,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
             livestreamCount: 0, // STUB until stream-service is wired
             createdAt: c.createdAt instanceof Date ? c.createdAt.getTime() : 0,
             communityAvatarUrl: communityAvatarView?.url ?? "",
-            statusClosedReasonCode: c.statusClosedReasonCode ?? "",
+            statusClosedReasonCode: adminClosedReasonCode(c),
           },
           description: c.description ?? "",
           coverUrl: coverView?.url ?? "",
