@@ -3779,23 +3779,13 @@ export const communityService = {
       role
     );
 
-    // Staff can't be muted: promoting a muted member lifts the mute in the same flow.
     if (role !== CommunityMemberRole.MEMBER) {
-      const mute = await communityRepository.findMemberMute(
+      await this._liftMuteOnPromotion(
         communityId,
+        callerId,
+        callerMembership?.role,
         targetUserId
       );
-      if (
-        mute &&
-        (!mute.mutedUntil || mute.mutedUntil.getTime() > Date.now())
-      ) {
-        await this._liftMemberMute(
-          communityId,
-          callerId,
-          callerMembership?.role,
-          targetUserId
-        );
-      }
     }
 
     await this.recordAudit({
@@ -6648,6 +6638,22 @@ export const communityService = {
   },
 
   /** Clears an active mute and fans the unmute out (chat gate, sockets, streams, audit). */
+  // Staff can't be muted: promoting a muted member (role change or admin handover) lifts the mute.
+  async _liftMuteOnPromotion(
+    communityId: string,
+    actorId: string,
+    actorRole: CommunityMemberRole | undefined,
+    targetUserId: string
+  ): Promise<void> {
+    const mute = await communityRepository.findMemberMute(
+      communityId,
+      targetUserId
+    );
+    if (mute && (!mute.mutedUntil || mute.mutedUntil.getTime() > Date.now())) {
+      await this._liftMemberMute(communityId, actorId, actorRole, targetUserId);
+    }
+  },
+
   async _liftMemberMute(
     communityId: string,
     actorId: string,
@@ -7444,6 +7450,13 @@ export const communityService = {
       targetUserId: newAdminId,
       metadata: { reason, formerAdminId },
     });
+
+    await this._liftMuteOnPromotion(
+      communityId,
+      auto ? "system" : formerAdminId,
+      auto ? undefined : CommunityMemberRole.ADMIN,
+      newAdminId
+    );
 
     // notifications-service: new admin "You're now the admin of X", former admin
     // "You're now a moderator in X".
