@@ -4757,7 +4757,7 @@ export function createCommunityImpl(
               await deps.communityMessageService.recalculateLastMessageAfterDelete(
                 result.roomId,
                 req.messageId,
-                { reactionRetired }
+                { reactionRetired, repaint: true }
               );
             if (forEveryoneRecalc !== null) {
               // Persist the ROLLED-BACK activity — the previous visible

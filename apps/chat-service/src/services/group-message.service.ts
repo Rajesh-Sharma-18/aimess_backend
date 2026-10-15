@@ -1785,7 +1785,8 @@ export class GroupMessageService {
           .countInUnread,
       })
     ) {
-      this.memberRepo
+      // Awaited: the delete recalc reads the post-delete count right after this.
+      await this.memberRepo
         .decrementUnreadForMessage({
           roomId,
           senderId: message.senderId,

@@ -454,6 +454,11 @@ export class PrivateMessageController {
               deletedMessageSeq: result.sequenceNumber ?? 0,
               resolveLosers: (rid, seq, ids) =>
                 this.messageService.resolveEffectiveLastLosers(rid, seq, ids),
+              deletedMessageId: messageId,
+              resolveUnreadCounts: () =>
+                this.messageService.getUnreadCountsByUser(result.roomId),
+              snapshot: () =>
+                this.messageService.getRoomBumpSnapshot(result.roomId),
             });
           }
           const preview = buildMessagePreview(
@@ -489,6 +494,7 @@ export class PrivateMessageController {
             // Without this the bump is discarded by the client's monotonic list
             // guard — it points BACKWARD at the previous visible message.
             deleteRecalc: true,
+            deleteRecalcId: messageId,
             // The DELETE's own room revision, not the surviving message's — this
             // projection update is newer than everything before it even though its
             // `lastMessageAt` is older. Same rule as the socket path's orchestrator.
@@ -554,6 +560,7 @@ export class PrivateMessageController {
             resolveUnreadCounts: () =>
               this.messageService.getUnreadCountsByUser(result.roomId),
             deleteRecalc: true,
+            deleteRecalcId: messageId,
             senderId: recalc.senderId,
             // A PRIVATE row is titled by the peer, never by a
             // "<sender>: <preview>" prefix, so there is no name to carry here

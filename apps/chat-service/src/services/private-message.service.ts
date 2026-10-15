@@ -1586,7 +1586,8 @@ export class PrivateMessageService {
       }) &&
       message.receiverId
     ) {
-      this.roomRepo
+      // Awaited: the delete recalc reads the post-delete count right after this.
+      await this.roomRepo
         .decrementUnreadForMessage({
           roomId: message.roomId,
           recipientId: message.receiverId,

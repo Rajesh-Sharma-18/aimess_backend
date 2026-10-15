@@ -3254,7 +3254,11 @@ if (!params.content?.text?.trim())
     roomId: string,
     deletedMessageId: string,
     /** community-service just retired a reaction line about the removed message: re-announce the row even though its last message stands. */
-    opts: { reactionRetired?: boolean } = {}
+    opts: {
+      reactionRetired?: boolean;
+      /** A real delete: re-announce the unchanged row so it can carry the members' unread deltas. */
+      repaint?: boolean;
+    } = {}
   ): Promise<{
     prevMessageId: string | null;
     preview: string;
@@ -3305,7 +3309,7 @@ if (!params.content?.text?.trim())
       room.lastMessageId !== deletedMessageId &&
       room.lastMessageId === (prev?.id ?? null)
     ) {
-      return opts.reactionRetired && prev
+      return (opts.reactionRetired || opts.repaint) && prev
         ? { ...resultFor(prev), unchanged: true }
         : null;
     }

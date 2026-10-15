@@ -1204,6 +1204,15 @@ export class ChatMessageOrchestrator {
                       ids
                     ),
               projectionRevision: result.revision ?? 0,
+              deletedMessageId: params.messageId,
+              resolveUnreadCounts: () =>
+                conversationType === "GROUP"
+                  ? this.groupMessageService.getUnreadCountsByUser(rId)
+                  : this.privateMessageService.getUnreadCountsByUser(rId),
+              snapshot: () =>
+                conversationType === "GROUP"
+                  ? this.groupMessageService.getRoomBumpSnapshot(rId)
+                  : this.privateMessageService.getRoomBumpSnapshot(rId),
             });
           }
           const preview = buildMessagePreview(
@@ -1237,6 +1246,7 @@ export class ChatMessageOrchestrator {
               // Without this the bump is discarded by the client's monotonic
               // list guard — it points BACKWARD at the previous visible message.
               deleteRecalc: true,
+              deleteRecalcId: params.messageId,
               // The DELETE's own room revision, not the surviving message's:
               // this projection update is newer than everything before it even
               // though its `lastMessageAt` is older. Lets a client order by one
@@ -1277,6 +1287,7 @@ export class ChatMessageOrchestrator {
               resolveUnreadCounts: () =>
                 this.privateMessageService.getUnreadCountsByUser(rId),
               deleteRecalc: true,
+              deleteRecalcId: params.messageId,
               // See the GROUP branch above — the delete's revision, not the
               // surviving message's.
               projectionRevision: result.revision ?? 0,
@@ -1349,6 +1360,7 @@ export class ChatMessageOrchestrator {
                 ? this.groupMessageService.getUnreadCountsByUser(rId)
                 : this.privateMessageService.getUnreadCountsByUser(rId),
             deleteRecalc: true,
+            deleteRecalcId: params.messageId,
             senderId: recalc.senderId ?? "",
             senderName: recalcSenderName,
             lastMessageId: recalc.prevMessageId ?? "",

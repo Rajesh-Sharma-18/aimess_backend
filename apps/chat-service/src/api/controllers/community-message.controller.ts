@@ -927,7 +927,7 @@ export class CommunityMessageController {
       const recalc = await this.service.recalculateLastMessageAfterDelete(
         roomId,
         deletedMessageId,
-        { reactionRetired }
+        { reactionRetired, repaint: deletedMessage != null }
       );
       if (recalc === null) {
         // The SHARED snapshot did not move — but a member who had personally
