@@ -8,6 +8,7 @@ import { prisma } from "../config/prisma.js";
 import { redis } from "../config/redis.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 import { fetchAccountsBatch, fetchUsersBatch } from "../lib/user-service-client.js";
+import { normalizePersonName } from "@aimess/constants";
 
 /**
  * V2 §4: durable queue carrying "a message was sent" to notifications-service,
@@ -180,9 +181,10 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
       // not persisted (notifications-service forwards this into the FCM payload).
       const senderAvatar = await resolveMediaUrl(p.senderAvatar);
       // Several producers pass "" for the sender; the tray then reads "Someone".
-      const senderName = p.senderName?.trim()
-        ? p.senderName
-        : await senderNameFallback(p.senderId);
+      // Blank = blank by the AIMESS-258 name rule (invisible-only names included).
+      const senderName =
+        normalizePersonName(p.senderName ?? "") ||
+        (await senderNameFallback(p.senderId));
       const previewImageUrl = p.previewImageKey
         ? await resolveMediaUrl(p.previewImageKey).catch(() => "")
         : "";
@@ -329,7 +331,8 @@ async function senderNameFallback(senderId: string | undefined): Promise<string>
   if (!senderId) return "";
   try {
     const user = (await fetchUsersBatch([senderId]))?.[0];
-    const name = user?.displayName?.trim() || user?.username?.trim();
+    const name =
+      normalizePersonName(user?.displayName ?? "") || user?.username?.trim();
     if (name) return name;
     return (await fetchAccountsBatch([senderId]))?.[0]?.account?.trim() ?? "";
   } catch {
