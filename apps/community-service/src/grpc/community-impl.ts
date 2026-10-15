@@ -932,6 +932,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 communityType: "",
                 joinRequestPending: false,
                 membershipViaCode: false,
+                closed: false,
+                joinBlocked: false,
               };
             }
 
@@ -947,6 +949,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 communityType: "",
                 joinRequestPending: false,
                 membershipViaCode: false,
+                closed: false,
+                joinBlocked: false,
               };
             }
 
@@ -1032,6 +1036,9 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
               communityType: community.type,
               joinRequestPending,
               membershipViaCode,
+              closed: community.status === "CLOSED",
+              // A kick (LEFT + removedAt) may rejoin; only a ban locks the door.
+              joinBlocked: membership?.status === CommunityMemberStatus.BANNED,
             };
           })
         );

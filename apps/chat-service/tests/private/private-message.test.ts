@@ -205,6 +205,7 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
       communityType: "PRIVATE",
       status: "ACTIVE",
       canOpen: true,
+      cta: "cancel_request",
     };
     const row = res.body.data.data[0];
     // The stored kind was "SYSTEM"; the read projects it onto the invitation kind.
@@ -293,13 +294,11 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
       memberCount: 15,
       inviteCode: "code3",
       deepLink: "aimess://join?code=code3",
-      // …membership is re-resolved live, never trusted from the stored copy…
+      // AIMESS-268: membership AND the link are live — a member still sees View.
       alreadyJoined: true,
-      // …but the LINK verdict is the card's own, frozen when it was sent: the
-      // reset that produced the REVOKED answer above must not rewrite an
-      // invitation already delivered.
-      status: "ACTIVE",
+      status: "REVOKED",
       canOpen: true,
+      cta: "view",
     });
     // The fallback line is rendered per viewer, like every other private
     // lifecycle row — NOT the old generic "… updated the chat".
@@ -390,7 +389,7 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
    * names. Resetting a link must only affect links/cards created AFTER it — an
    * invite already sitting in a conversation keeps the words it was sent with.
    */
-  describe("a reset link does not rewrite invitations already sent", () => {
+  describe("AIMESS-268: the card is a live view of the invitation", () => {
     const storedGroupCard = {
       type: "GROUP_INVITATION",
       groupId: "grp_1",
@@ -520,17 +519,18 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
       return res.body.data.data[0];
     };
 
-    it("GROUP: a revoked token leaves the card joinable, exactly as sent", async () => {
+    it("GROUP: a revoked token reads Link Expired on the old card", async () => {
       seedGroupInviteRow();
       mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
       mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
 
       const row = await readFirstRow();
       expect(row.content.invitation).toMatchObject({
-        state: "CAN_JOIN",
-        status: "ACTIVE",
+        state: "LINK_REVOKED",
+        status: "REVOKED",
         alreadyJoined: false,
-        canOpen: true,
+        cta: "expired",
+        canOpen: false,
       });
     });
 
@@ -550,7 +550,7 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
     });
 
     // Scenario C/D — the regression this whole rule exists for.
-    it("GROUP: joining through the NEW link leaves the OLD card untouched", async () => {
+    it("GROUP: an active member sees View on every card, old link or new", async () => {
       seedTwoGroupInvitations();
       // They joined with ABV, the link that replaced ABC.
       const member = { status: "ACTIVE", joinedViaToken: "ABV" };
@@ -563,8 +563,8 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
         alreadyJoined: true,
       });
       expect(cards["m-abc"]).toMatchObject({
-        state: "CAN_JOIN",
-        alreadyJoined: false,
+        state: "ALREADY_MEMBER",
+        alreadyJoined: true,
         // …and still not a word about the reset.
         status: "ACTIVE",
       });
@@ -581,11 +581,11 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
 
       const cards = await readRows();
       expect(cards["m-abv"]).toMatchObject({ state: "ALREADY_MEMBER" });
-      expect(cards["m-abc"]).toMatchObject({ state: "CAN_JOIN" });
+      expect(cards["m-abc"]).toMatchObject({ state: "ALREADY_MEMBER" });
     });
 
     // Scenario A — the card must NOT turn into "You can't join this group".
-    it("GROUP: a removed member keeps the ordinary button", async () => {
+    it("GROUP: a removed member reads Can't join", async () => {
       seedTwoGroupInvitations();
       const member = { status: "KICKED", joinedViaToken: "ABC" };
       mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(member);
@@ -594,13 +594,13 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
       const cards = await readRows();
       for (const id of ["m-abc", "m-abv"]) {
         expect(cards[id]).toMatchObject({
-          state: "CAN_JOIN",
+          state: expect.stringMatching(/^(JOIN_BLOCKED|LINK_REVOKED)$/),
           alreadyJoined: false,
         });
       }
     });
 
-    it("COMMUNITY: a revoked link leaves the card as sent for a non-member", async () => {
+    it("COMMUNITY: a revoked link reads Link Expired for a non-member", async () => {
       mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
         roomId: ROOM,
         participants: [TEST_USER_ID, "peer"],
@@ -659,15 +659,16 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
 
       const row = await readFirstRow();
       expect(row.content.invitation).toMatchObject({
-        status: "ACTIVE",
+        status: "REVOKED",
+        cta: "expired",
         alreadyJoined: false,
-        canOpen: true,
+        canOpen: false,
       });
     });
 
     // Scenario C, community side: the RPC reports the membership AND that it
     // did not come through this card's code.
-    it("COMMUNITY: a member who joined through a LATER code keeps this card joinable", async () => {
+    it("COMMUNITY: a member who joined through a LATER code sees View", async () => {
       mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
         roomId: ROOM,
         participants: [TEST_USER_ID, "peer"],
@@ -725,7 +726,7 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
       ]);
 
       const row = await readFirstRow();
-      expect(row.content.invitation).toMatchObject({ alreadyJoined: false });
+      expect(row.content.invitation).toMatchObject({ alreadyJoined: true, cta: "view" });
     });
   });
 

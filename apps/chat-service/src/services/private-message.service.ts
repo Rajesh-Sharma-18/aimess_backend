@@ -45,6 +45,7 @@ import {
   toWireMessage,
   isCommunityInvitationMessage,
   buildCommunityInvitationAction,
+  type InviteCta,
   isGroupInvitationMessage,
   buildGroupInvitationAction,
   readInvitationContent,
@@ -125,7 +126,10 @@ import type { PrivateRoomRepository } from "../repositories/private-room.reposit
 import { isBlockedRoom } from "../lib/blocked-room.js";
 import type { PrivateMessageReportRepository } from "../repositories/private-message-report.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
-import type { CommunityReconcileClient } from "../grpc/community.client.js";
+import type {
+  CommunityInviteContext,
+  CommunityReconcileClient,
+} from "../grpc/community.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
@@ -140,7 +144,6 @@ import { resolveSystemActorName } from "../lib/localize-system-preview.js";
 import {
   isDeadLinkState,
   isGroupGoneState,
-  groupMembershipAppliesToInvitation,
   loadGroupInviteState,
 } from "../lib/group-invite-state.js";
 import {
@@ -2896,15 +2899,9 @@ if (!params.content?.text?.trim())
                 ...base,
                 communityName: ctx.found ? ctx.communityName : communityName,
                 communityHandle: ctx.found ? ctx.communityHandle : null,
-                // Membership flips this card only when the membership belongs to
-                // THIS invitation — the code they were admitted with, or one
-                // that is still the community's live link. A card for a code
-                // that has since been reset keeps offering to join, so one join
-                // cannot rewrite every invitation ever sent for the community.
-                alreadyJoined: ctx.isMember && ctx.membershipViaCode !== false,
-                // Resolved per read alongside membership, so the card's button
-                // is right after a join, a cancel, an approval OR an admin
-                // "Add Member" — including on a cold reload.
+                // AIMESS-268: live view, same verdict as the landing — any active
+                // member sees View, a reset link reads Link Expired, a ban Can't join.
+                alreadyJoined: ctx.isMember,
                 communityType:
                   ctx.found && ctx.communityType === "PRIVATE"
                     ? "PRIVATE"
@@ -2914,16 +2911,8 @@ if (!params.content?.text?.trim())
                 joinRequestPending: ctx.found
                   ? Boolean(ctx.joinRequestPending)
                   : false,
-                // The LINK verdict is the card's OWN, frozen when it was sent —
-                // an admin resetting the community's link must not rewrite every
-                // invitation already sitting in every conversation. Membership
-                // and the pending request above stay live, because those are
-                // what the reader can still act on. A tap still tells the truth:
-                // redeeming a revoked code answers
-                // COMMUNITY_INVITE_LINK_REVOKED_ERROR and the client raises the
-                // "this invite link was reset" dialog. A community that is GONE
-                // is not a link state, so it still overrides.
-                status: ctx.found ? storedStatus : "DELETED",
+                status: !ctx.found || ctx.closed ? "DELETED" : ctx.linkStatus,
+                cta: communityInviteCta(ctx),
               })
             : // gRPC unresolved/unavailable — fail open using the message's own
               // stored data rather than telling every past invite it's dead.
@@ -2970,49 +2959,19 @@ if (!params.content?.text?.trim())
         // explicitly: a card whose token was revoked still knows which group it
         // points at, which is what keeps "View Group" working for a member.
         //
-        // A card is a record of ONE share, not a live view of the link it names.
-        // Read as such (see `GroupInviteStateInput.card`): the reset that killed
-        // this token must not rewrite an invitation already delivered, and the
-        // rejoin block belongs in the dialog the join raises, not on the button.
-        // The group itself, its capacity and its roster count stay live.
-        //
-        // `membershipApplies` is what keeps one join from rewriting every card:
-        // "View Group" is offered only by the invitation this membership
-        // actually came through, or by one that is still the group's live link.
+        // AIMESS-268: a card is a LIVE view, same verdict as the landing — a reset link reads
+        // Link Expired, a removed member Can't join, and any active member View.
         const deps = {
           inviteLinkRepo: this.groupInviteLinkRepo ?? null,
           roomRepo: this.groupRoomRepo,
           memberRepo: this.groupMemberRepo,
           joinRequestRepo: this.groupJoinRequestRepo ?? null,
         };
-        const [linkRow, memberRow] = await Promise.all([
-          token
-            ? ((await this.groupInviteLinkRepo?.findByToken(token)) ?? null)
-            : null,
-          groupId && viewerId
-            ? await this.groupMemberRepo.findByRoomAndUser(groupId, viewerId)
-            : null,
-        ]);
         const { state, room, requiresApproval } = await loadGroupInviteState<
           { roomId: string; name: string; avatar: string; memberCount: number },
           { roomId: string },
           { status?: string | null }
-        >(deps, {
-          token,
-          roomId: groupId,
-          viewerId,
-          card: {
-            membershipApplies: groupMembershipAppliesToInvitation({
-              cardToken: token,
-              joinedViaToken: (
-                memberRow as { joinedViaToken?: string | null } | null
-              )?.joinedViaToken,
-              link: linkRow as {
-                status?: string | null;
-              } | null,
-            }),
-          },
-        });
+        >(deps, { token, roomId: groupId, viewerId });
         const alreadyJoined = state === "ALREADY_MEMBER";
         // Legacy LINK-only status, kept for clients that predate `state`. It
         // cannot express the group/capacity/block cases at all — that is exactly
@@ -3192,4 +3151,14 @@ if (!params.content?.text?.trim())
       };
     });
   }
+}
+
+/** AIMESS-268 card order: closed → member → pending (outlives a reset) → expired → banned → join. */
+function communityInviteCta(ctx: CommunityInviteContext): InviteCta {
+  if (!ctx.found || ctx.closed) return "closed";
+  if (ctx.isMember) return "view";
+  if (ctx.joinRequestPending) return "cancel_request";
+  if (ctx.linkStatus !== "ACTIVE") return "expired";
+  if (ctx.joinBlocked) return "cant_join";
+  return ctx.communityType === "PRIVATE" ? "request" : "join";
 }

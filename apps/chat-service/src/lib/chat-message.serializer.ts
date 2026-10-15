@@ -613,6 +613,22 @@ export function flattenStoredReactions(
   return out;
 }
 
+/**
+ * AIMESS-268: the ONE button verdict every client maps to a label, for groups and
+ * communities alike. Card: view → "View …", join/request/cancel_request → "Join Now",
+ * the rest disabled. Information screen: join → "Join …", request → "Request to Join …",
+ * cancel_request → "Cancel Request". `full` is never produced for a community.
+ */
+export type InviteCta =
+  | "view"
+  | "join"
+  | "request"
+  | "cancel_request"
+  | "expired"
+  | "closed"
+  | "full"
+  | "cant_join";
+
 export type CommunityInvitationStatus =
   | "ACTIVE"
   | "EXPIRED"
@@ -652,6 +668,8 @@ export interface CommunityInvitationSystemAction {
   joinRequestPending?: boolean;
   status: CommunityInvitationStatus;
   canOpen: boolean;
+  /** Per-reader verdict; absent on the live send-time card (no reader yet). */
+  cta?: InviteCta;
 }
 
 /**
@@ -693,6 +711,7 @@ export function buildCommunityInvitationAction(params: {
   communityType?: "PUBLIC" | "PRIVATE" | null;
   joinRequestPending?: boolean;
   status: CommunityInvitationStatus;
+  cta?: InviteCta;
 }): CommunityInvitationSystemAction {
   const {
     communityId,
@@ -706,6 +725,7 @@ export function buildCommunityInvitationAction(params: {
     communityType = null,
     joinRequestPending = false,
     status,
+    cta,
   } = params;
   // A deleted community can never be opened. Otherwise the viewer can open it
   // either because they're already a member (the invite/link state is moot at
@@ -727,6 +747,7 @@ export function buildCommunityInvitationAction(params: {
     communityType,
     status,
     canOpen,
+    ...(cta ? { cta } : {}),
   };
 }
 
@@ -757,6 +778,8 @@ export interface GroupInvitationSystemAction {
   /** Private group: CAN_JOIN means "Request to join", not "Join". */
   requiresApproval?: boolean;
   canOpen: boolean;
+  /** Per-reader verdict derived from `state`; see {@link InviteCta}. */
+  cta?: InviteCta;
 }
 
 /** True for a stored message that carries a GROUP_INVITE card — see
@@ -817,7 +840,36 @@ export function buildGroupInvitationAction(params: {
     ...(state ? { state } : {}),
     ...(requiresApproval === undefined ? {} : { requiresApproval }),
     canOpen,
+    ...(state ? { cta: groupInviteCta(state, requiresApproval === true) } : {}),
   };
+}
+
+export function groupInviteCta(
+  state: GroupInviteState,
+  requiresApproval: boolean
+): InviteCta {
+  switch (state) {
+    case "ALREADY_MEMBER":
+      return "view";
+    case "GROUP_NOT_FOUND":
+    case "GROUP_DISBANDED":
+    case "GROUP_CLOSED":
+    case "GROUP_NO_ADMIN":
+      return "closed";
+    case "LINK_NOT_FOUND":
+    case "LINK_REVOKED":
+    case "LINK_EXPIRED":
+    case "LINK_USED_UP":
+      return "expired";
+    case "JOIN_BLOCKED":
+      return "cant_join";
+    case "GROUP_FULL":
+      return "full";
+    case "REQUEST_PENDING":
+      return "cancel_request";
+    case "CAN_JOIN":
+      return requiresApproval ? "request" : "join";
+  }
 }
 
 /**

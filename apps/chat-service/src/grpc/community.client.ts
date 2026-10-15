@@ -97,6 +97,8 @@ export interface CommunityInviteContext {
    *  still the community's live link). An invitation card speaks for one code,
    *  so only the one that admitted them may become "View Community". */
   membershipViaCode?: boolean;
+  closed?: boolean;
+  joinBlocked?: boolean;
 }
 
 export interface CommunityReconcileClient {

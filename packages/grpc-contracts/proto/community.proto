@@ -718,6 +718,9 @@ message CommunityInviteContext {
   // invitation card speaks for ONE code, so only the one that admitted them may
   // turn into "View Community". Always false when `is_member` is false.
   bool   membership_via_code = 9;
+  // AIMESS-268: community CLOSED (hidden, takes no one) and viewer BANNED (cannot rejoin).
+  bool   closed = 10;
+  bool   join_blocked = 11;
 }
 message GetCommunityInviteContextsResponse {
   repeated CommunityInviteContext contexts = 1;
