@@ -510,6 +510,9 @@ export class GroupInviteLinkService {
         groupName: room.name,
         groupAvatarUrl,
         memberCount: room.memberCount,
+        requiresApproval:
+          (room as { settings?: { joinApproval?: unknown } | null }).settings
+            ?.joinApproval === true,
         token: link.token,
         shareNonce,
       });
@@ -554,6 +557,7 @@ export class GroupInviteLinkService {
     groupName: string;
     groupAvatarUrl: string;
     memberCount: number;
+    requiresApproval: boolean;
     token: string;
     shareNonce: string;
   }): Promise<void> {
@@ -565,6 +569,7 @@ export class GroupInviteLinkService {
       groupName,
       groupAvatarUrl,
       memberCount,
+      requiresApproval,
       token,
       shareNonce,
     } = params;
@@ -612,6 +617,8 @@ export class GroupInviteLinkService {
       deepLink: inviteDeepLink,
       alreadyJoined: false,
       status: "ACTIVE",
+      // Group-level, so safe on the stored card; the per-viewer `state` stays read-time only.
+      requiresApproval,
     });
     const content = buildInvitationContent(previewText, invitation);
     const systemData: Record<string, unknown> = {

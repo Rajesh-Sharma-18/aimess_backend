@@ -79,6 +79,7 @@ describe("group invite DM — message contract", () => {
       deepLink: `aimess://join-group?token=${TOKEN}`,
       alreadyJoined: false,
       status: "ACTIVE",
+      requiresApproval: false,
       canOpen: true,
     });
     // Nothing presentational is duplicated out of content.invitation.
@@ -113,6 +114,25 @@ describe("group invite DM — message contract", () => {
     expect(envelope.data.systemAction).toEqual(
       envelope.data.content.invitation
     );
+  });
+
+  // AIMESS-265: the live card used to omit this, so clients drew "Join Group" until a reload.
+  it("marks a private group's live card requiresApproval, stored and broadcast alike", async () => {
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      name: "Greenary",
+      avatar: "",
+      memberCount: 3,
+      settings: { joinApproval: true },
+    });
+    await bulkSend();
+
+    const arg = mocks.privateMessageRepo.createMessage.mock.calls[0][0];
+    expect(arg.content.invitation.requiresApproval).toBe(true);
+    const publish = mocks.redis.publish.mock.calls.find(
+      (c: unknown[]) => c[0] === `conv:${PRIVATE_ROOM}`
+    );
+    expect(JSON.parse(publish![1] as string).data.content.invitation.requiresApproval).toBe(true);
   });
 
   it("still delivers the DM to a recipient who is already a member", async () => {
