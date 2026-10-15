@@ -1,7 +1,10 @@
 import { DELETED_ACCOUNT_DISPLAY_NAME } from "@aimess/constants";
 
 import type { CacheRepository } from "../repositories/cache.repository.js";
-import type { UserSnapshotService } from "../services/user-snapshot.service.js";
+import {
+  resolveRealDisplayName,
+  type UserSnapshotService,
+} from "../services/user-snapshot.service.js";
 
 /**
  * Deleted-account identity scrubbing for the message read paths.
@@ -52,6 +55,8 @@ export type SenderIdentity = {
   isDeleted: boolean;
   /** CURRENT avatar object key from the live profile ("" when unset). */
   avatar: string;
+  /** CURRENT display name ("" when the profile has none to show). */
+  displayName: string;
 };
 
 /**
@@ -83,6 +88,7 @@ export async function collectSenderIdentities(
     identities.set(id, {
       isDeleted: snapshot.isDeletedUser === true,
       avatar: typeof avatar === "string" ? avatar : "",
+      displayName: resolveRealDisplayName(snapshot),
     });
   }
   return identities;
@@ -110,6 +116,42 @@ export async function collectDeletedUserIds(
     if (identity.isDeleted) deleted.add(id);
   }
   return deleted;
+}
+
+/**
+ * Pin rows snapshot the sender's name and avatar KEY at pin time; swap in the
+ * live ones (before media resolution) so a rename or new picture reaches pinned
+ * banners and the pin list. Unresolved senders keep the snapshot.
+ */
+export async function refreshPinSenders<
+  T extends { senderId: string; senderDisplayName: string; senderAvatar: string },
+>(
+  pins: T[],
+  userSnapshotService: UserSnapshotService | undefined,
+  cacheRepo: CacheRepository | undefined
+): Promise<T[]> {
+  if (pins.length === 0 || !userSnapshotService || !cacheRepo) return pins;
+  const identities = await collectSenderIdentities(
+    pins.map((p) => p.senderId),
+    userSnapshotService,
+    cacheRepo
+  );
+  return pins.map((pin) => {
+    const live = identities.get(pin.senderId);
+    if (!live) return pin;
+    if (live.isDeleted) {
+      return {
+        ...pin,
+        senderDisplayName: DELETED_ACCOUNT_DISPLAY_NAME,
+        senderAvatar: "",
+      };
+    }
+    return {
+      ...pin,
+      senderDisplayName: live.displayName || pin.senderDisplayName,
+      senderAvatar: live.avatar,
+    };
+  });
 }
 
 /**
@@ -148,7 +190,10 @@ export function refreshWireSenderAvatar(
         ? wire.sentBy
         : "";
   const identity = senderId ? identities.get(senderId) : undefined;
-  if (identity && !identity.isDeleted) wire.senderAvatar = identity.avatar;
+  if (identity && !identity.isDeleted) {
+    wire.senderAvatar = identity.avatar;
+    if (identity.displayName) wire.senderName = identity.displayName;
+  }
 
   const quote = wire.quoteData as Record<string, unknown> | null | undefined;
   if (quote && typeof quote === "object") {
@@ -160,7 +205,11 @@ export function refreshWireSenderAvatar(
           : "";
     const quoted = quotedId ? identities.get(quotedId) : undefined;
     if (quoted && !quoted.isDeleted) {
-      wire.quoteData = { ...quote, senderAvatar: quoted.avatar };
+      wire.quoteData = {
+        ...quote,
+        senderAvatar: quoted.avatar,
+        ...(quoted.displayName ? { senderName: quoted.displayName } : {}),
+      };
     }
   }
 }

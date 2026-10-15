@@ -727,6 +727,16 @@ export function chatLastMessageToActivity(chat: {
       };
 }
 
+/** Swap a sender-prefixed activity's frozen name for the live one; sender-less lines and unknown senders pass through. */
+export function withLiveSenderName(
+  activity: CommunityLastActivity,
+  liveNames: Map<string, string>
+): CommunityLastActivity {
+  if (activity.username === null || !activity.userId) return activity;
+  const live = liveNames.get(activity.userId);
+  return live ? { ...activity, username: live } : activity;
+}
+
 /** The empty per-viewer state: the viewer has hidden every visible message. A
  *  sender-less, timestamp-zero system line so any real personal line (e.g. "You
  *  joined the community") still wins the subsequent personal overlay. */
@@ -2061,6 +2071,16 @@ async function enrichMineCommunities(
     fetchLiveStreamCounts(communityIds),
     getStreamClient().checkCreatorHasActiveStream(userId),
   ]);
+  // chat-service's per-viewer last message carries the name frozen on the
+  // message row, so its sender needs the same live lookup.
+  const chatSenderIds = [...chatMap.values()]
+    .map((c) => c.lastMessage?.userId)
+    .filter((id): id is string => Boolean(id) && !senderNameMap.has(id!));
+  if (chatSenderIds.length > 0) {
+    const more =
+      await communityRepository.getDisplayNamesByUserIds(chatSenderIds);
+    for (const [id, name] of more) senderNameMap.set(id, name);
+  }
 
   return Promise.all(
     pageRows.map(async (row) => {
@@ -2098,12 +2118,6 @@ async function enrichMineCommunities(
         lastActivityAt: row.lastActivityAt.getTime(),
         lastActivity: buildLastActivity({
           ...row,
-          // Prefer the live member-snapshot name; fall back to the stored
-          // value when the sender has since left every community.
-          lastActivityUsername:
-            (row.lastActivityUserId
-              ? senderNameMap.get(row.lastActivityUserId)
-              : null) ?? row.lastActivityUsername,
           // Self-referential SYSTEM line (role change / join): the viewer who
           // IS the subject sees the first-person "You …" preview; everyone
           // else keeps the third-person text.
@@ -2161,7 +2175,7 @@ async function enrichMineCommunities(
         lastActivityAt,
         unreadMessageCount: chat.unreadMessageCount,
         firstUnreadMessageId: chat.firstUnreadMessageId,
-        lastActivity,
+        lastActivity: withLiveSenderName(lastActivity, senderNameMap),
         ...muteFields(muteMap.get(row.id) ?? null),
         // A banned member no longer has realtime standing in the community —
         // livestream state (inherently "right now", not historical) is hidden

@@ -7,13 +7,17 @@
  * message sent in the same millisecond, and could not order two rows tying on
  * `lastActivityAt`.
  *
- * These pin the identity block `buildLastActivity` now emits — including on
+ * These pin the identity block `buildLastActivity` now emits â€” including on
  * SYSTEM rows, where `userId` is deliberately forced null (so the client never
  * prefixes the preview with a name) but `senderId` must still be populated,
  * because that is what the merge actually keys on.
  */
 
-import { buildLastActivity } from "../../src/services/community.service.js";
+import {
+  buildLastActivity,
+  chatLastMessageToActivity,
+  withLiveSenderName,
+} from "../../src/services/community.service.js";
 
 const CREATED_AT = new Date("2026-06-01T00:00:00.000Z");
 const ACTIVITY_AT = new Date("2026-06-19T12:00:00.000Z");
@@ -32,7 +36,7 @@ function row(overrides: Record<string, unknown> = {}) {
   } as Parameters<typeof buildLastActivity>[0];
 }
 
-describe("buildLastActivity — message identity", () => {
+describe("buildLastActivity â€” message identity", () => {
   it("carries messageId/clientMessageId/seq/senderId/contentType on a USER message row", () => {
     expect(
       buildLastActivity(
@@ -102,7 +106,7 @@ describe("buildLastActivity — message identity", () => {
   });
 
   it("emits an EMPTY identity for the senderless 'created' baseline", () => {
-    // There is no message behind "Community created" — claiming one would let a
+    // There is no message behind "Community created" â€” claiming one would let a
     // client believe a real message exists and never fetch it.
     expect(
       buildLastActivity(row({ lastActivityType: "created" }))
@@ -117,10 +121,50 @@ describe("buildLastActivity — message identity", () => {
   });
 
   it("emits an EMPTY identity for a legacy ineligible activity type", () => {
-    // Falls back to the "created" baseline — its identity must fall back too,
+    // Falls back to the "created" baseline â€” its identity must fall back too,
     // otherwise the row would point at a message the preview isn't describing.
     expect(
       buildLastActivity(row({ lastActivityType: "removal_legacy" }))
     ).toMatchObject({ messageId: "", seq: 0, senderId: null });
+  });
+});
+
+describe("withLiveSenderName — renamed sender on the list preview", () => {
+  const live = new Map([["actor-1", "Kohli Virat"]]);
+
+  it("swaps the frozen column name for the live one", () => {
+    const a = buildLastActivity(
+      row({
+        lastActivityType: "message",
+        lastActivityPreview: "ok",
+        lastActivityUsername: "Peter Parker",
+      })
+    );
+    expect(withLiveSenderName(a, live).username).toBe("Kohli Virat");
+  });
+
+  it("swaps the name on chat-service's per-viewer last message too", () => {
+    const a = chatLastMessageToActivity({
+      username: "Peter Parker",
+      message: "ok",
+      dateTime: 1,
+      userId: "actor-1",
+    });
+    expect(withLiveSenderName(a, live).username).toBe("Kohli Virat");
+  });
+
+  it("leaves sender-less lines and unknown senders alone", () => {
+    const system = buildLastActivity(
+      row({ lastActivityType: "system", lastActivityPreview: "X joined" })
+    );
+    expect(withLiveSenderName(system, live)).toBe(system);
+    const other = buildLastActivity(
+      row({
+        lastActivityType: "message",
+        lastActivityPreview: "hi",
+        lastActivityUserId: "actor-2",
+      })
+    );
+    expect(withLiveSenderName(other, live)).toBe(other);
   });
 });
