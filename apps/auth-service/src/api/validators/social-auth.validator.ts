@@ -1,7 +1,19 @@
 import { z } from "zod";
 
+import { clampCharacters, normalizePersonName } from "@aimess/constants";
+
 import { fcmTokensSchema } from "./auth.validator.js";
 import { deviceInfoField } from "./device-info.validator.js";
+
+// AIMESS-258: a provider name never blocks sign-in; an invisible-only one is dropped, a long one clamped.
+const socialNameSchema = z
+  .string()
+  .max(200)
+  .nullish()
+  .transform((v) => {
+    const name = normalizePersonName(v ?? "");
+    return name ? clampCharacters(name) : null;
+  });
 
 export const googleLoginSchema = z.object({
   idToken: z.string().trim().min(1, "Google ID token is required"),
@@ -23,8 +35,8 @@ export type GoogleLoginInput = z.infer<typeof googleLoginSchema>;
 const appleFullNameSchema = z.union([
   z.string().trim().min(1).max(100),
   z.object({
-    givenName: z.string().trim().max(50).nullish(),
-    familyName: z.string().trim().max(50).nullish(),
+    givenName: socialNameSchema,
+    familyName: socialNameSchema,
   }),
 ]);
 

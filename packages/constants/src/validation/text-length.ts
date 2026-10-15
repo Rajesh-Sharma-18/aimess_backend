@@ -88,3 +88,33 @@ export function withinMessageTextLimit(
   if (!value || value.length <= max) return true;
   return value.length <= max * 4 && countCharacters(value) <= max;
 }
+
+// Control/format chars (zero-width spaces, joiners, bidi marks, BOM) plus blank-rendering letters (Hangul fillers, braille blank).
+const INVISIBLE_CHARS = /[\p{Cc}\p{Cf}ᅟᅠㅤﾠ⠀]/gu;
+// A ZWJ is only visible as part of an emoji sequence (👩‍💻), so it survives only between emoji.
+const STRAY_ZWJ =
+  /(?<![\p{Extended_Pictographic}\p{Emoji_Modifier}️])‍|‍(?![\p{Extended_Pictographic}])/gu;
+
+/** First/last name as stored: invisible chars removed, whitespace runs collapsed, trimmed. */
+export function normalizePersonName(value: string): string {
+  return value
+    .replace(STRAY_ZWJ, "")
+    .replace(INVISIBLE_CHARS, (c) => (c === "‍" ? c : ""))
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+export type PersonNameError = "REQUIRED" | "INVALID" | "MAX_LENGTH";
+
+/** AIMESS-258: one name rule for every platform. REQUIRED = blank, INVALID = only invisible chars. */
+export function validatePersonName(raw: string): {
+  value: string;
+  error: PersonNameError | null;
+} {
+  if (raw.trim() === "") return { value: "", error: "REQUIRED" };
+  if (raw.length > TEXT_NAME_MAX_RAW_LENGTH) return { value: raw, error: "MAX_LENGTH" };
+  const value = normalizePersonName(raw);
+  if (value === "") return { value, error: "INVALID" };
+  if (countCharacters(value) > TEXT_NAME_MAX_LENGTH) return { value, error: "MAX_LENGTH" };
+  return { value, error: null };
+}
