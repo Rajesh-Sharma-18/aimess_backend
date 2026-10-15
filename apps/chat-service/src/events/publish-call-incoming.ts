@@ -122,6 +122,8 @@ export interface CallActivityPayload {
    * (see CALL_CANCEL_GRACE_SEC).
    */
   ringDurationSec: number;
+  /** Why it ended; the outcome is derived from this over `status` (contract §9). */
+  endReason?: string;
   /** Private room the call belongs to. */
   privateRoomId: string;
   /** epoch ms of the terminal transition. */

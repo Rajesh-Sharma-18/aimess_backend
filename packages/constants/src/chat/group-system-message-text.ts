@@ -439,16 +439,30 @@ export function buildGroupSystemFallbackText(
       // this is rendered for a known viewer the line can take their side
       // instead of the neutral stored sentence.
       const callerId = String(data.callerId ?? "").trim();
-      return buildCallTimelineText({
-        callType: data.callType as string,
+      const direction =
+        viewer && callerId ? (viewer === callerId ? "OUTGOING" : "INCOMING") : null;
+      const outcome = resolveCallOutcome({
         status: data.status as string,
         durationSec: data.durationSec as number,
-        direction:
-          viewer && callerId
-            ? viewer === callerId
-              ? "OUTGOING"
-              : "INCOMING"
-            : null,
+      });
+      // Only the members who declined read "You declined…"; every other rung
+      // member missed it. Rows without `declinedBy` predate the tracking.
+      const declinedBy = Array.isArray(data.declinedBy)
+        ? data.declinedBy.map(String)
+        : null;
+      const status =
+        direction === "INCOMING" &&
+        declinedBy &&
+        (outcome === "declined" || outcome === "unanswered")
+          ? declinedBy.includes(viewer)
+            ? "DECLINED"
+            : "MISSED"
+          : (data.status as string);
+      return buildCallTimelineText({
+        callType: data.callType as string,
+        status,
+        durationSec: data.durationSec as number,
+        direction,
         locale,
       });
     }
@@ -459,16 +473,27 @@ export function buildGroupSystemFallbackText(
   }
 }
 
-export function formatCallDuration(durationSec: number): string {
-  const total = Math.max(0, Math.floor(durationSec));
+/** Call duration (contract §9.1): 45s / 2m 14s / 1h 2m, localized. */
+export function formatCallDurationText(
+  durationSec: number,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): string {
+  const total = Math.max(0, Math.floor(Number(durationSec) || 0));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
-  const mm = String(minutes).padStart(2, "0");
-  const ss = String(seconds).padStart(2, "0");
-  return hours > 0
-    ? `${String(hours).padStart(2, "0")}:${mm}:${ss}`
-    : `${mm}:${ss}`;
+  // Zero parts are dropped: 120s → "2m", 3600s → "1h".
+  if (hours > 0) {
+    return minutes > 0
+      ? t("SYS_STREAM_DURATION_HM", locale, { hours, minutes })
+      : t("SYS_STREAM_DURATION_H", locale, { hours });
+  }
+  if (minutes > 0) {
+    return seconds > 0
+      ? t("SYS_CALL_DURATION_MS", locale, { minutes, seconds })
+      : t("SYS_STREAM_DURATION_M", locale, { minutes });
+  }
+  return t("SYS_CALL_DURATION_S", locale, { seconds });
 }
 
 /**
@@ -550,6 +575,58 @@ export function normalizeCallEndReason(
   return Math.floor(Number(durationSec ?? 0)) >= 1 ? "completed" : "failed";
 }
 
+export type CallOutcome = "live" | "connected" | "declined" | "unanswered";
+
+/**
+ * The ONE call outcome (contract §9) every builder reads: `endReason` wins over
+ * `status`, so a callee rejecting a ring (stored CANCELLED + declined) is
+ * declined everywhere, and BUSY / FAILED / CANCELLED / ENDED under 1s are all
+ * unanswered.
+ */
+export function resolveCallOutcome(params: {
+  status?: string | null;
+  endReason?: string | null;
+  durationSec?: number | null;
+}): CallOutcome {
+  const given = String(params.endReason ?? "").toLowerCase() as CallEndReason;
+  const reason = (CALL_END_REASONS as readonly string[]).includes(given)
+    ? given
+    : resolveCallEndReason({
+        status: String(params.status ?? "ENDED"),
+        // Unknown duration is not evidence of a failed connect.
+        durationSec: params.durationSec ?? 1,
+      });
+  if (!reason) return "live";
+  const normalized = normalizeCallEndReason(reason, params.durationSec);
+  if (normalized === "completed") return "connected";
+  return normalized === "declined" ? "declined" : "unanswered";
+}
+
+/** Per-side phrase of a call that never connected (contract §6). */
+function callNotConnectedText(
+  outcome: "declined" | "unanswered",
+  viewerIsCaller: boolean,
+  video: boolean,
+  locale: SupportedLocale
+): string {
+  if (viewerIsCaller) {
+    return t(
+      outcome === "declined" ? "SYS_CALL_DECLINED_OUTGOING" : "SYS_CALL_NO_ANSWER",
+      locale
+    );
+  }
+  if (outcome === "declined") {
+    return t(
+      video ? "SYS_CALL_DECLINED_INCOMING_VIDEO" : "SYS_CALL_DECLINED_INCOMING_VOICE",
+      locale
+    );
+  }
+  return t(
+    video ? "SYS_CALL_PREVIEW_MISSED_VIDEO" : "SYS_CALL_PREVIEW_MISSED_VOICE",
+    locale
+  );
+}
+
 /** Conversation-list line per viewer (spec §4) — never shows a duration. */
 export function buildCallListPreviewText(params: {
   callType?: string | null;
@@ -560,26 +637,12 @@ export function buildCallListPreviewText(params: {
 }): string {
   const locale = params.locale ?? STORED_TEXT_LOCALE;
   const video = String(params.callType ?? "").toUpperCase() === "VIDEO";
-  const reason = params.endReason
-    ? normalizeCallEndReason(params.endReason, params.durationSec)
-    : null;
-  if (reason && reason !== "completed") {
-    if (params.viewerIsCaller) {
-      return t(
-        reason === "declined" ? "SYS_CALL_DECLINED_OUTGOING" : "SYS_CALL_NO_ANSWER",
-        locale
-      );
-    }
-    if (reason === "declined") {
-      return t(
-        video ? "SYS_CALL_DECLINED_INCOMING_VIDEO" : "SYS_CALL_DECLINED_INCOMING_VOICE",
-        locale
-      );
-    }
-    return t(
-      video ? "SYS_CALL_PREVIEW_MISSED_VIDEO" : "SYS_CALL_PREVIEW_MISSED_VOICE",
-      locale
-    );
+  const outcome = resolveCallOutcome({
+    endReason: params.endReason,
+    durationSec: params.durationSec,
+  });
+  if (outcome === "declined" || outcome === "unanswered") {
+    return callNotConnectedText(outcome, params.viewerIsCaller, video, locale);
   }
   return t(video ? "SYS_CALL_LABEL_VIDEO" : "SYS_CALL_LABEL_VOICE", locale);
 }
@@ -610,6 +673,7 @@ export function buildCallTimelineText(params: {
    * falls back to the neutral "was not answered".
    */
   direction?: "INCOMING" | "OUTGOING" | null;
+  endReason?: string | null;
   locale?: SupportedLocale;
 }): string {
   const locale = params.locale ?? STORED_TEXT_LOCALE;
@@ -619,50 +683,26 @@ export function buildCallTimelineText(params: {
       : "SYS_CALL_LABEL_VOICE",
     locale
   );
-  const status = String(params.status ?? "ENDED").toUpperCase();
-  switch (status) {
-    case "RINGING":
-      return t("SYS_CALL_RINGING", locale, { label });
-    case "ANSWERED":
-      return t("SYS_CALL_ONGOING", locale, { label });
-    // Declined is told apart (contract §6); every other non-connect is
-    // "No answer" for the caller and "Missed …" for the callee. Without a
-    // direction this is the stored text both sides read, so it stays neutral.
-    case "DECLINED":
-    case "CANCELLED":
-    case "FAILED":
-    case "MISSED": {
-      const video = String(params.callType ?? "").toUpperCase() === "VIDEO";
-      const declined = status === "DECLINED";
-      if (params.direction === "OUTGOING")
-        return t(declined ? "SYS_CALL_DECLINED_OUTGOING" : "SYS_CALL_NO_ANSWER", locale);
-      if (params.direction === "INCOMING") {
-        if (declined)
-          return t(
-            video ? "SYS_CALL_DECLINED_INCOMING_VIDEO" : "SYS_CALL_DECLINED_INCOMING_VOICE",
-            locale
-          );
-        return t(
-          video ? "SYS_CALL_PREVIEW_MISSED_VIDEO" : "SYS_CALL_PREVIEW_MISSED_VOICE",
-          locale
-        );
-      }
-      return t("SYS_CALL_MISSED", locale, { label });
-    }
-    default:
-      // Title-cased label here only: this line stands alone as the chat-list
-      // preview and must read exactly like the card's heading, unlike every
-      // branch above where the label sits inside a sentence.
-      return t("SYS_CALL_ENDED", locale, {
-        label: t(
-          String(params.callType ?? "").toUpperCase() === "VIDEO"
-            ? "SYS_CALL_TITLE_VIDEO"
-            : "SYS_CALL_TITLE_VOICE",
-          locale
-        ),
-        duration: formatCallDuration(Number(params.durationSec ?? 0)),
-      });
+  const outcome = resolveCallOutcome(params);
+  if (outcome === "live") {
+    return String(params.status ?? "").toUpperCase() === "RINGING"
+      ? t("SYS_CALL_RINGING", locale, { label })
+      : t("SYS_CALL_ONGOING", locale, { label });
   }
+  if (outcome === "declined" || outcome === "unanswered") {
+    // No direction = the stored text both sides read, so it stays neutral.
+    if (!params.direction) return t("SYS_CALL_MISSED", locale, { label });
+    return callNotConnectedText(
+      outcome,
+      params.direction === "OUTGOING",
+      String(params.callType ?? "").toUpperCase() === "VIDEO",
+      locale
+    );
+  }
+  return t("SYS_CALL_ENDED", locale, {
+    label,
+    duration: formatCallDurationText(Number(params.durationSec ?? 0), locale),
+  });
 }
 
 /** Shared localized text for Private SYSTEM events. */
@@ -836,11 +876,11 @@ export function personalizePrivateSystemMessageForViewer(
   if (!viewerUserId.trim() && locale === STORED_TEXT_LOCALE) {
     return thirdPersonText;
   }
-  // Call rows carry no viewer-relative wording, but they DO need translating —
-  // only the personalization pass is skipped, not the locale rebuild.
+  // A call row without a callerId has no viewer side; English keeps its line.
   if (
     (event === "CALL_ENDED" || event === "CALL_STARTED") &&
-    locale === STORED_TEXT_LOCALE
+    locale === STORED_TEXT_LOCALE &&
+    !systemData.callerId
   ) {
     return thirdPersonText;
   }

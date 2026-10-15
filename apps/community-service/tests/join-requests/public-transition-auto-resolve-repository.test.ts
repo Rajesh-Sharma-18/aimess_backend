@@ -178,7 +178,7 @@ describe("settleJoinRequestToMember — community guard (close/delete race)", ()
     const guard = communityUpdateMany.mock.calls[0][0];
     expect(guard.where).toEqual({
       id: CID,
-      deletedAt: { isSet: false },
+      AND: [{ OR: [{ deletedAt: { isSet: false } }, { deletedAt: null }] }],
       status: { not: "CLOSED" },
       moderationStatus: { not: "SUSPENDED" },
     });

@@ -10,6 +10,7 @@ import type { GroupMemberRepository } from "../repositories/group-member.reposit
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
+import { privateRoomPeerId } from "../lib/access-guard.js";
 import { isVisibleToUser } from "../repositories/general-room-message.repository.js";
 import {
   buildSearchCursor,
@@ -129,7 +130,7 @@ export class MessageSearchService {
       privateCutoffs.set(room.roomId, getPrivateDeletionCutoff(room, userId));
       peerByRoom.set(
         room.roomId,
-        room.participants.find((id) => id !== userId) ?? null
+        privateRoomPeerId(room, userId) || null
       );
     }
     // A DISBANDED group hides everywhere (VISIBLE_ROOM_STATUS), but its member

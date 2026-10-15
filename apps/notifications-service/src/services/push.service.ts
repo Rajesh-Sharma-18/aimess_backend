@@ -409,6 +409,8 @@ export interface PushInput {
    * ask for it again.
    */
   actions?: (locale: SupportedLocale) => ReadonlyArray<PushAction>;
+  /** Web: re-alert when this card replaces one with the same tag. */
+  renotify?: boolean;
   /**
    * Chat message alert: when Chat-off or quiet hours drops it, still send the
    * silent delivery wake so the sender gets ✓✓.
@@ -566,6 +568,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     excludeSessionId,
     excludeSessionIds,
     apnsCategory,
+    renotify,
   } = input;
 
   // A visible card's collapse key IS its tray tag (lib/push-tags.ts). Carried in
@@ -986,6 +989,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
               platform,
               apnsCategory,
               actions: view.actions,
+              renotify,
             });
       if (result.invalidToken) {
         try {

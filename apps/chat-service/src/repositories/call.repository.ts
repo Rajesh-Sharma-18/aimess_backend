@@ -316,7 +316,11 @@ export class CallRepository {
     const call = await this.prisma.call.findUnique({ where: { callId } });
     if (!call) return null;
     const calleeIds = call.calleeIds.filter((id) => id !== userId);
-    return this.prisma.call.update({ where: { callId }, data: { calleeIds } });
+    const declinedBy = [...new Set([...(call.declinedBy ?? []), userId])];
+    return this.prisma.call.update({
+      where: { callId },
+      data: { calleeIds, declinedBy },
+    });
   }
 
   /**

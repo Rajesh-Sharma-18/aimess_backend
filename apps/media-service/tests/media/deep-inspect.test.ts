@@ -339,10 +339,19 @@ describe("inspectMedia — PDF active content", () => {
     ["/OpenAction", "<</OpenAction 2 0 R>>"],
     ["/Launch", "<</S/Launch/F(cmd.exe)>>"],
     ["/EmbeddedFile", "<</Type/EmbeddedFile>>"],
+    ["/AA", "<</Type/Page/AA<</O 3 0 R>>>>"],
+    ["/JS", "<</S/JavaScript/JS(x)>>"],
   ])("rejects a PDF containing %s", (_label, body) => {
     const result = inspect(pdf(body), "application/pdf");
     expect(result.ok).toBe(false);
     expect(result.code).toBe("SUSPICIOUS_CONTENT");
+  });
+
+  // Chrome "Save as PDF" subsets fonts as /AAAAAA+Name — a name that only starts with /AA.
+  it("accepts a PDF whose font subset name starts with /AA or /JS", () => {
+    const body =
+      "<</Type/Font/BaseFont/AAAAAA+SegoeUI-Bold>> <</BaseFont/JSAAAA+Mono>>";
+    expect(inspect(pdf(body), "application/pdf").ok).toBe(true);
   });
 
   it("rejects a PDF with no %%EOF", () => {

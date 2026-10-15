@@ -18,6 +18,7 @@ import {
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
+import { privateRoomPeerId } from "../lib/access-guard.js";
 import { assertPrivateParticipants } from "../lib/room-id.js";
 import {
   shouldCountInUnread,
@@ -229,7 +230,8 @@ export class PrivateRoomRepository {
       take: limit,
     });
     return rooms.flatMap((r) => {
-      const peerId = r.participants.find((p) => p !== userId);
+      // A self room lists its owner as the peer so search can surface it.
+      const peerId = privateRoomPeerId(r, userId);
       const clearedAt = (r.clearFor as Record<string, string> | null)?.[userId];
       const live =
         isVisibleAfterDelete(r, userId) &&
@@ -708,7 +710,8 @@ export class PrivateRoomRepository {
     // counter could never be reconciled back down — one permanent unread
     // conversation on the nav badge. This is the one choke point every private
     // send passes through, so the rule belongs here.
-    const unreadIncrement = receiverId
+    // Nobody is unread on their own message — the self room's receiver is its sender.
+    const unreadIncrement = receiverId && receiverId !== message.senderId
       ? (params.unreadIncrement ??
         (shouldCountInUnread({
           messageType: message.messageType,

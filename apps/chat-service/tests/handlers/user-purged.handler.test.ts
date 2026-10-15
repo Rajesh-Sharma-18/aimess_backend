@@ -12,6 +12,7 @@ let privateMessages: Message[] = [];
 let groupMessages: Message[] = [];
 let generalMessages: Message[] = [];
 let closureMembers: Message[] = [];
+let privateRooms: Message[] = [];
 
 function updater(rows: () => Message[], idField: string) {
   return async ({
@@ -34,7 +35,22 @@ function updater(rows: () => Message[], idField: string) {
 
 jest.mock("../../src/config/prisma.js", () => ({
   prisma: {
-    privateMessage: { updateMany: updater(() => privateMessages, "senderId") },
+    privateMessage: {
+      updateMany: updater(() => privateMessages, "senderId"),
+      deleteMany: async ({ where }: { where: { roomId: string } }) => {
+        const before = privateMessages.length;
+        privateMessages = privateMessages.filter((m) => m.roomId !== where.roomId);
+        return { count: before - privateMessages.length };
+      },
+    },
+    privateRoom: {
+      findUnique: async ({ where }: { where: { participantsKey: string } }) =>
+        privateRooms.find((r) => r.participantsKey === where.participantsKey) ??
+        null,
+      delete: async ({ where }: { where: { roomId: string } }) => {
+        privateRooms = privateRooms.filter((r) => r.roomId !== where.roomId);
+      },
+    },
     groupMessage: { updateMany: updater(() => groupMessages, "senderId") },
     generalRoomMessage: {
       updateMany: updater(() => generalMessages, "sentBy"),
@@ -52,6 +68,7 @@ const { handleUserPurged, setPurgedLeaderSuccession } =
 const USER = "user-1";
 
 beforeEach(() => {
+  privateRooms = [];
   privateMessages = [
     {
       id: "p1",
@@ -93,6 +110,22 @@ beforeEach(() => {
       avatar: "avatars/jane.jpg",
     },
   ];
+});
+
+describe("user.purged — self room (AIMESS-215 N9)", () => {
+  it("purges the purged user's own self room and its notes", async () => {
+    privateRooms = [
+      { roomId: "prv_self", participantsKey: `${USER}:${USER}` },
+      { roomId: "prv_pair", participantsKey: `${USER}:user-2` },
+    ];
+    privateMessages.push({ id: "s1", roomId: "prv_self", senderId: USER });
+
+    await handleUserPurged({ userId: USER } as never);
+
+    expect(privateRooms.map((r) => r.roomId)).toEqual(["prv_pair"]);
+    expect(privateMessages.some((m) => m.roomId === "prv_self")).toBe(false);
+    expect(privateMessages).toHaveLength(2);
+  });
 });
 
 describe("user.purged — chat sender snapshots", () => {

@@ -292,6 +292,18 @@ async function sharesSpace(
 }
 
 export const userProfileService = {
+  /** Chat `@handle` tap. An unallocated (incomplete-profile) username is not a handle yet → same 404. */
+  async getPublicProfileByUsername(
+    viewerId: string,
+    username: string
+  ): Promise<PublicUserProfileData> {
+    const profile = await userProfileRepository.findByUsername(username);
+    if (!profile || !allocatedUsername(profile)) {
+      throw new NotFoundError("USER_PROFILE_NOT_FOUND");
+    }
+    return this.getPublicProfile(viewerId, profile.userId);
+  },
+
   /**
    * Another user's profile, viewer-scoped. Blocks 404 (never 403 — a 403 would
    * confirm the account exists). The `whoCanViewProfile` / `whoCanSeeOnlineStatus`

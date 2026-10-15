@@ -32,6 +32,7 @@ export function setPurgedLeaderSuccession(
 export async function handleUserPurged(data: UserPurgedPayload): Promise<void> {
   // Groups this account led pass to the longest-standing member (idempotent).
   await purgedLeaderSuccession?.(data.userId);
+  await purgeSelfRoom(data.userId);
 
   // Private, group and community-room messages each keep their own copy of the
   // snapshot, under slightly different column names.
@@ -67,4 +68,16 @@ export async function handleUserPurged(data: UserPurgedPayload): Promise<void> {
       `user.purged: erased sender identity on ${String(total)} message(s) for ${data.userId}`
     );
   }
+}
+
+/** AIMESS-215 N9: the "Message yourself" room has no other reader — purge it outright. */
+async function purgeSelfRoom(userId: string): Promise<void> {
+  const room = await prisma.privateRoom.findUnique({
+    where: { participantsKey: `${userId}:${userId}` },
+    select: { roomId: true },
+  });
+  if (!room) return;
+  await prisma.privateMessage.deleteMany({ where: { roomId: room.roomId } });
+  await prisma.privateRoom.delete({ where: { roomId: room.roomId } });
+  logger.info(`user.purged: removed self room ${room.roomId} for ${userId}`);
 }

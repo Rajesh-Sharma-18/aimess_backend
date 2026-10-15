@@ -1,5 +1,6 @@
 import {
   currentLocale,
+  isCallContentType,
   isPersonalizableSystemContentType,
   localizeMessagePreview,
   personalizeGroupSystemMessageForViewer,
@@ -43,7 +44,11 @@ export function withLocalizedSystemPreview<
   const contentType = String(
     preview.contentType ?? preview.messageType ?? ""
   ).toUpperCase();
-  if (!isPersonalizableSystemContentType(contentType)) {
+  // Call rows rebuild like SYSTEM rows: per viewer side and language (contract §9).
+  if (
+    !isPersonalizableSystemContentType(contentType) &&
+    !(isCallContentType(contentType) && preview.systemEvent)
+  ) {
     // Not a SYSTEM row — but a media/structured row previews as a LABEL
     // ("🎤 Voice Message"), baked in English at write time exactly like a
     // system sentence, so it needs the same per-reader rebuild.

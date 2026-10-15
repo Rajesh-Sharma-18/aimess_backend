@@ -903,6 +903,9 @@ model Call {
   // GROUP calls only: every rung member (excludes the caller). Empty for 1:1
   // calls, where calleeId alone is authoritative.
   calleeIds     String[]  @default([])
+  // GROUP calls only: members who declined, so the card says "You declined"
+  // to them alone (contract §9).
+  declinedBy    String[]  @default([])
   initiatedAt   DateTime  @default(now())
   answeredAt    DateTime?
   endedAt       DateTime?
