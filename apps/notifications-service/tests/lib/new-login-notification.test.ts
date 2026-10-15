@@ -47,7 +47,7 @@ describe("buildNewLoginNotification", () => {
     expect(out.bypassSettings).toBeUndefined();
     expect(out.copy("en").title).toBe("Login Detected");
     expect(out.copy("en").body).toBe(
-      "New login detected on a chrome from India. If this wasn’t you, Terminate Session"
+      "New login detected on a chrome from India."
     );
     expect(out.data).toMatchObject({
       actionType: "SESSION_CREATED",
@@ -69,7 +69,7 @@ describe("buildNewLoginNotification", () => {
     });
 
     expect(out.copy("en").body).toBe(
-      "New login detected on a new device. If this wasn’t you, Terminate Session"
+      "New login detected on a new device."
     );
     expect(out.data).toMatchObject({
       actionType: "SESSION_CREATED",

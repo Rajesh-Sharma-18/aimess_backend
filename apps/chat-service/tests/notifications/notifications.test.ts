@@ -311,7 +311,7 @@ describe("PATCH /api/chat/notifications/:id/action — who may answer a login al
     updatedAt: new Date(1000),
     payload: {
       title: "Login Detected",
-      body: "New login detected on a chrome. If this wasn’t you, Terminate Session",
+      body: "New login detected on a chrome.",
       data: { sessionId: loginSessionId, browser: "Chrome" },
     },
   });

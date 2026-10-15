@@ -158,7 +158,7 @@ describe("recordAction() — one winner at the deadline", () => {
 
   it("keeps a login alert's description — the status goes to actionTaken ONLY", async () => {
     const description =
-      "New login detected on a chrome from San Francisco. If this wasn’t you, Terminate Session";
+      "New login detected on a chrome from San Francisco.";
     const prisma = fakePrisma({
       findFirst: jest.fn(async () =>
         loginRow({

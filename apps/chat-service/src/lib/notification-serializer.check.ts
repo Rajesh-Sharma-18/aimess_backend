@@ -101,7 +101,7 @@ async function run() {
   const repaired = await serializeNotification(clobberedLogin, "viewer1");
   assert.equal(
     repaired.body,
-    "New login detected on a chrome from San Francisco. If this wasn't you, Terminate Session"
+    "New login detected on a chrome from San Francisco."
   );
   assert.equal(repaired.actionTaken, "TRUSTED");
 
@@ -110,13 +110,13 @@ async function run() {
     ...clobberedLogin,
     payload: {
       title: "Login Detected",
-      body: "New login detected on a firefox. If this wasn't you, Terminate Session",
+      body: "New login detected on a firefox.",
       data: { sessionId: "s1", browser: "Firefox" },
     },
   } as unknown as Parameters<typeof serializeNotification>[0];
   assert.equal(
     (await serializeNotification(healthyLogin, "viewer1")).body,
-    "New login detected on a firefox. If this wasn't you, Terminate Session"
+    "New login detected on a firefox."
   );
 
   // Who may answer a Login Detected alert. The account is the same on every
@@ -128,7 +128,7 @@ async function run() {
     loginResolvedAt: null,
     payload: {
       title: "Login Detected",
-      body: "New login detected on a chrome. If this wasn't you, Terminate Session",
+      body: "New login detected on a chrome.",
       data: { sessionId: "sessionB", browser: "Chrome" },
     },
   } as unknown as Parameters<typeof serializeNotification>[0];
