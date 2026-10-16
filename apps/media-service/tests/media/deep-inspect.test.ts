@@ -209,6 +209,69 @@ describe("inspectMedia — polyglot files", () => {
     expect(result.height).toBe(4080);
   });
 
+  // Samsung trailer layout: blocks [u16 0][u16 type][u32 nameLen][name][data], then SEFH dir, then u32le dirLen + "SEFT".
+  const seft = (blocks: Array<{ type: number; name: string; data: Buffer }>) => {
+    const bodies = blocks.map(({ type, name, data }) => {
+      const head = Buffer.alloc(8);
+      head.writeUInt16LE(type, 2);
+      head.writeUInt32LE(name.length, 4);
+      return Buffer.concat([head, Buffer.from(name, "latin1"), data]);
+    });
+    const total = bodies.reduce((n, b) => n + b.length, 0);
+    const dir = Buffer.alloc(12 + blocks.length * 12);
+    dir.write("SEFH", 0, "latin1");
+    dir.writeUInt32LE(107, 4);
+    dir.writeUInt32LE(blocks.length, 8);
+    let offset = total;
+    bodies.forEach((body, i) => {
+      dir.writeUInt16LE(blocks[i]!.type, 12 + i * 12 + 2);
+      dir.writeUInt32LE(offset, 12 + i * 12 + 4);
+      dir.writeUInt32LE(body.length, 12 + i * 12 + 8);
+      offset -= body.length;
+    });
+    const end = Buffer.alloc(8);
+    end.writeUInt32LE(dir.length, 0);
+    end.write("SEFT", 4, "latin1");
+    return Buffer.concat([...bodies, dir, end]);
+  };
+  const SAMSUNG = seft([
+    { type: 0x0a01, name: "Image_UTC_Data", data: Buffer.from("1792060273440") },
+    { type: 0x0ba1, name: "Original_Path_Hash_Key", data: Buffer.from("abc123") },
+  ]);
+
+  it("accepts a Samsung Gallery/screenshot JPEG with its SEFT trailer", () => {
+    const result = inspect(validJpeg({ width: 64, height: 48, trailing: SAMSUNG }), "image/jpeg");
+    expect(result.ok).toBe(true);
+    expect(result.width).toBe(64);
+  });
+
+  it("accepts a Samsung HDR JPEG: gain map then SEFT trailer", () => {
+    const gainMap = validJpeg({ width: 32, height: 24 });
+    const result = inspect(
+      validJpeg({ trailing: Buffer.concat([gainMap, SAMSUNG]) }),
+      "image/jpeg"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    ["a payload before the trailer", () => Buffer.concat([ZIP, SAMSUNG])],
+    ["a payload after SEFT", () => Buffer.concat([SAMSUNG, ZIP])],
+    ["a bare SEFT tag", () => Buffer.concat([ZIP, Buffer.from("\x00\x00\x00\x00SEFT", "latin1")])],
+    [
+      "a block whose header names another type",
+      () => {
+        const forged = Buffer.from(SAMSUNG);
+        forged.writeUInt16LE(0xffff, 2);
+        return forged;
+      },
+    ],
+  ])("still rejects %s", (_name, trailing) => {
+    const result = inspect(validJpeg({ trailing: trailing() }), "image/jpeg");
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("TRAILING_DATA");
+  });
+
   it("still rejects a payload appended after the gain map", () => {
     const gainMap = validJpeg({ width: 32, height: 24 });
     const result = inspect(
