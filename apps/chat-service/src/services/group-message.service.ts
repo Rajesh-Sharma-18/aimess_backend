@@ -3093,9 +3093,6 @@ if (!params.content?.text?.trim())
     userId: string;
     upToMessageId: string;
   }): Promise<{ readToSeq: number; remainingUnread: number }> {
-    if (!isObjectId(params.upToMessageId))
-      return { readToSeq: 0, remainingUnread: 0 };
-
     const member = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
       params.userId
@@ -3108,16 +3105,28 @@ if (!params.content?.text?.trim())
       );
       const cut = row?.status === "KICKED" ? groupReadCutoff(row) : null;
       const target = cut
-        ? await this.messageRepo.findById(params.upToMessageId)
+        ? await this.findReadTarget(params.roomId, params.upToMessageId)
         : null;
       if (cut && target && target.createdAt > cut)
         throw new ForbiddenError("CHAT_NOT_GROUP_MEMBER");
       return { readToSeq: 0, remainingUnread: 0 };
     }
 
-    const message = await this.messageRepo.findById(params.upToMessageId);
-    if (!message || message.roomId !== params.roomId)
-      return { readToSeq: 0, remainingUnread: 0 };
+    const message = await this.findReadTarget(
+      params.roomId,
+      params.upToMessageId
+    );
+    // Unknown target: answer with the member's REAL pointer and unread, never a fake "0 unread"
+    // success — that hid every lost read from the client.
+    if (!message)
+      return {
+        readToSeq: member.lastReadMessageId
+          ? await this.getMessageSequence(member.lastReadMessageId).catch(
+              () => 0
+            )
+          : 0,
+        remainingUnread: member.unreadCount ?? 0,
+      };
 
     const remainingUnread = await this.messageRepo
       .countUnreadAfter({
@@ -3161,6 +3170,21 @@ if (!params.content?.text?.trim())
       readToSeq: await this.getMessageSequence(acceptedId).catch(() => 0),
       remainingUnread: updated?.unreadCount ?? remainingUnread,
     };
+  }
+
+  // A server id, or the sender's clientMessageId (mobile UUIDs are uppercase) — always bound to this room.
+  private async findReadTarget(roomId: string, id: string) {
+    if (isObjectId(id)) {
+      const byId = await this.messageRepo.findById(id);
+      return byId?.roomId === roomId ? byId : null;
+    }
+    if (!id) return null;
+    return (
+      (await this.messageRepo.findByClientMessageId(roomId, id)) ??
+      (id === id.toUpperCase()
+        ? null
+        : await this.messageRepo.findByClientMessageId(roomId, id.toUpperCase()))
+    );
   }
 
   /**

@@ -1093,6 +1093,15 @@ export class PrivateMessageRepository {
     });
   }
 
+  async findInRoomByClientMessageId(
+    roomId: string,
+    clientMessageId: string
+  ): Promise<PrivateMessage | null> {
+    return this.prisma.privateMessage.findFirst({
+      where: { roomId, clientMessageId },
+    });
+  }
+
   /** All rows from one album send (base id + `base:N` siblings), seq-ordered. */
   async findAlbumBatchByClientMessageId(
     roomId: string,

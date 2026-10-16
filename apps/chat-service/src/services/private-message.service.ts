@@ -21,6 +21,7 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import { assertAttachmentsVerified } from "../lib/attachment-guard.js";
+import { isObjectId } from "../lib/object-id.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import {
   buildMessagePreview,
@@ -1100,7 +1101,17 @@ export class PrivateMessageService {
     // Bind the target to the room before anything is written. `findById`
     // already returns null for a non-ObjectId, which covers optimistic "tmp-…"
     // client ids as well as outright malformed input.
-    const target = await this.messageRepo.findById(params.lastMessageId);
+    // A client UUID (mobile sends uppercase) resolves within this room instead of silently no-oping.
+    const id = params.lastMessageId;
+    const target =
+      (await this.messageRepo.findById(id)) ??
+      (id && !isObjectId(id)
+        ? ((await this.messageRepo.findInRoomByClientMessageId(params.roomId, id)) ??
+          (await this.messageRepo.findInRoomByClientMessageId(
+            params.roomId,
+            id.toUpperCase()
+          )))
+        : null);
     if (!target || target.roomId !== params.roomId) return null;
     const acceptedSeq =
       typeof (target as { sequenceNumber?: number }).sequenceNumber === "number"
@@ -1110,7 +1121,7 @@ export class PrivateMessageService {
     const room = await this.roomRepo.markReadUpTo({
       roomId: params.roomId,
       userId: params.userId,
-      upToMessageId: params.lastMessageId,
+      upToMessageId: target.id,
       // Settings → Chat → Read Receipt at the instant of the READ. Off, the
       // read still happens (unread, badges, arming) but the exposable pointer
       // freezes, so nothing about it can be published now or later.
