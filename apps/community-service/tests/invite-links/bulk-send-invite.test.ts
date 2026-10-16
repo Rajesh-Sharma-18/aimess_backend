@@ -311,7 +311,7 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     ]);
   });
 
-  it("the caller themselves is skipped, not failed", async () => {
+  it("AIMESS-268: the caller may send the invite to their own self chat", async () => {
     const res = await communityService.bulkSendInviteLink(CID, CALLER, {
       userIds: [CALLER, UID_A],
       linkId: LINK_ID,
@@ -319,11 +319,13 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
 
     expect(res.summary).toEqual({
       requested: 2,
-      sent: 1,
+      sent: 2,
       failed: 0,
-      skipped: 1,
+      skipped: 0,
     });
-    expect(res.sentUserIds).toEqual([UID_A]);
+    expect(res.sentUserIds).toEqual([CALLER, UID_A]);
+    // Self is never run through the block/eligibility gate.
+    expect(ineligible).toHaveBeenCalledWith(CALLER, [UID_A]);
   });
 
   it("user-service UNAVAILABLE → fail open, valid sends still go out", async () => {
@@ -616,10 +618,10 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
         action: "INVITE_LINK_BULK_SENT",
         metadata: expect.objectContaining({
           linkId: LINK_ID,
-          requested: 3, // UID_A + UID_B + CALLER (unique count, pre-self-skip)
-          sent: 2, // UID_A + UID_B (an ACTIVE member is invited again)
+          requested: 3, // UID_A + UID_B + CALLER
+          sent: 3, // incl. an ACTIVE member and the caller's own self chat
           failed: 0,
-          skipped: 1, // CALLER (self)
+          skipped: 0,
         }),
       })
     );

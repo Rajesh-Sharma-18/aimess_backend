@@ -11462,12 +11462,15 @@ export const communityService = {
     // never hides the valid ones (non-atomic, partial-success contract).
     const requestedIds = [...new Set(input.userIds)];
 
-    // A user never receives their own invite — counted as skipped, not failed.
-    const candidateIds = requestedIds.filter((id) => id !== callerId);
-    const selfSkipped = requestedIds.length - candidateIds.length;
+    // The caller may target themselves: "Message yourself" is a DM like any other (AIMESS-268/215).
+    const candidateIds = requestedIds;
+    const selfSkipped = 0;
 
     const [ineligible, memberRows] = await Promise.all([
-      fetchInviteIneligibility(callerId, candidateIds),
+      fetchInviteIneligibility(
+        callerId,
+        candidateIds.filter((id) => id !== callerId)
+      ),
       candidateIds.length
         ? communityRepository.findMembersByUserIds(communityId, candidateIds)
         : Promise.resolve(

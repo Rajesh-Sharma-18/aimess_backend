@@ -148,6 +148,28 @@ describe("group invite DM — message contract", () => {
     expect(mocks.privateMessageRepo.createMessage).toHaveBeenCalled();
   });
 
+  it("AIMESS-268: the caller can share the invite to their own self chat", async () => {
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue({
+      roomId: PRIVATE_ROOM,
+      participants: [TEST_USER_ID, TEST_USER_ID],
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/invite-links/room/${ROOM}/bulk-send`)
+      .set(bearer(makeAccessToken()))
+      .send({ userIds: [TEST_USER_ID], token: TOKEN });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.results).toEqual([{ userId: TEST_USER_ID, status: "SENT" }]);
+    expect(mocks.privateRoomRepo.findByParticipantsKey).toHaveBeenCalledWith(
+      `${TEST_USER_ID}:${TEST_USER_ID}`
+    );
+    expect(mocks.privateMessageRepo.createMessage.mock.calls[0][0]).toMatchObject({
+      senderId: TEST_USER_ID,
+      receiverId: TEST_USER_ID,
+    });
+  });
+
   it("NEGATIVE: 404 for a token that does not belong to the room", async () => {
     mocks.groupInviteLinkRepo.findActiveByToken.mockResolvedValue({
       token: TOKEN,

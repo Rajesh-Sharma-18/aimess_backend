@@ -461,9 +461,8 @@ export class GroupInviteLinkService {
       link = active[0] ?? (await this.create({ roomId, userId: callerId }));
     }
 
-    const userIds = [
-      ...new Set(params.userIds.filter((id) => id !== callerId)),
-    ];
+    // The caller may target themselves: "Message yourself" is a DM like any other (AIMESS-268/215).
+    const userIds = [...new Set(params.userIds)];
     if (!userIds.length) return { token: link.token, results: [] };
 
     const groupAvatarUrl = await resolveMediaUrl(room.avatar);
@@ -482,7 +481,10 @@ export class GroupInviteLinkService {
     // batch for the whole send. Same helper + codes as community-service's
     // invite paths — an invite DM must never be written to a recipient who
     // cannot act on it, and never across a block in either direction.
-    const ineligible = await fetchInviteIneligibility(callerId, userIds);
+    const ineligible = await fetchInviteIneligibility(
+      callerId,
+      userIds.filter((id) => id !== callerId)
+    );
 
     const results: GroupBulkInviteResult[] = [];
     for (const recipientId of userIds) {
@@ -725,7 +727,7 @@ export class GroupInviteLinkService {
         roomId: room.roomId,
         senderId: inviterId,
         senderName: inviterName ?? "",
-        recipientIds: [inviterId, recipientId],
+        recipientIds: [...new Set([inviterId, recipientId])],
         lastMessageId: message.id,
         lastMessageAt: sentAt,
         preview: {
@@ -747,7 +749,8 @@ export class GroupInviteLinkService {
       preview: previewText,
       messageType,
       sentAt,
-      recipientIds: [recipientId],
+      // Self chat (AIMESS-215): no push to yourself.
+      recipientIds: recipientId === inviterId ? [] : [recipientId],
     });
   }
 

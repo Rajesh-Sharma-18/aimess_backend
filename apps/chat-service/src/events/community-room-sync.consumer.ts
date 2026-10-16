@@ -832,7 +832,7 @@ export class CommunityRoomSyncConsumer {
       roomId: room.roomId,
       senderId: inviterId,
       senderName: inviterName ?? "",
-      recipientIds: [inviterId, recipientId],
+      recipientIds: [...new Set([inviterId, recipientId])],
       lastMessageId: message.id,
       lastMessageAt: sentAt,
       preview: {
@@ -856,7 +856,8 @@ export class CommunityRoomSyncConsumer {
       preview: previewText,
       messageType,
       sentAt,
-      recipientIds: [recipientId],
+      // Self chat (AIMESS-215): no push to yourself.
+      recipientIds: recipientId === inviterId ? [] : [recipientId],
       communityId,
       communityName,
     });
