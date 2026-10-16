@@ -69,9 +69,11 @@ export async function resolveAvatarRefresh(
       ])
     ),
     communityById: new Map(
-      communities
-        .filter((c) => c.avatarUrl)
-        .map((c) => [c.communityId, { name: c.name, avatarUrl: c.avatarUrl }])
+      // Every community, not only those with an avatar: its name also re-renders legacy rows (AIMESS-72).
+      communities.map((c) => [
+        c.communityId,
+        { name: c.name, avatarUrl: c.avatarUrl || undefined },
+      ])
     ),
   };
 }

@@ -252,7 +252,14 @@ export async function sendPush({
           // entirely. Every current key is a 41–48 byte `<prefix>:<uuid>`, but
           // omitting an oversized one degrades to the previous (stacking)
           // behaviour instead of losing the push.
-          ...(collapseKey && Buffer.byteLength(collapseKey) <= 64
+          //
+          // Chat MESSAGE pushes skip it: iOS uses the collapse id as the delivered
+          // request identifier, so a shared `conv:<roomId>` replaced the card already
+          // in Notification Centre. Chat cards stack (apns-thread-id groups them)
+          // and are still closed by data.tag.
+          ...(collapseKey &&
+          kind !== "MESSAGE" &&
+          Buffer.byteLength(collapseKey) <= 64
             ? { "apns-collapse-id": collapseKey }
             : {}),
         },

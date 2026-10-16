@@ -8,7 +8,9 @@ import type {
   SetCustomStatusInput,
   UpdateProfileInput,
 } from "../validators/profile.validator.js";
+import type { RelationshipsBatchInput } from "../validators/friendship.validator.js";
 import { customStatusService } from "../../services/custom-status.service.js";
+import { peerIdentityService } from "../../services/peer-identity.service.js";
 import { userProfileService } from "../../services/user-profile.service.js";
 import {
   credentialPlatformFor,
@@ -86,6 +88,18 @@ export const getPublicProfileByUsername = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(profile, t("USER_PROFILE_FETCHED", req.locale)));
+  }
+);
+
+/** `POST /users/identities` — batch identity of the caller's private-chat peers. */
+export const getPeerIdentities = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { userIds } = req.body as RelationshipsBatchInput;
+    const users = await peerIdentityService.identitiesFor(req.auth.userId, userIds);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse({ users }, t("USER_PROFILE_FETCHED", req.locale)));
   }
 );
 

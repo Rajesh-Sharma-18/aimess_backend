@@ -35,6 +35,7 @@ import {
 } from "../lib/recipient-override-render.js";
 import { getCommunityReconcileClient } from "../grpc/community.client.js";
 import { convertMessageToPreview } from "../services/message-preview.service.js";
+import { normalizeMessageType } from "../lib/chat-message.serializer.js";
 
 type Losers = Map<string, RecipientOverride | null>;
 
@@ -88,28 +89,86 @@ export async function publishConvEffectiveLastLoss(p: {
   ) => Promise<Losers>;
   /** The DELETE's own room revision — see the deleteRecalc branches. */
   projectionRevision?: number;
+  /** The removed message's id — the client drops it before applying the count. */
+  deletedMessageId?: string;
+  /**
+   * Post-delete absolute badges. Removing an OLDER unread message lowers the
+   * badge even though the shared row stands, so with `snapshot` every
+   * non-loser also gets the unchanged row repeated with its new count.
+   */
+  resolveUnreadCounts?: () => Promise<Record<string, number>>;
+  snapshot?: () => Promise<ConvRowSnapshot | null>;
 }): Promise<void> {
+  let recipients: string[] = [];
+  try {
+    recipients = await p.recipientIds();
+  } catch (err) {
+    logger.warn(
+      `effectiveLastLoss|recipients failed roomId=${p.roomId}: ${String(err)}`
+    );
+  }
   const losers = await resolveSafely(p.roomId, async () =>
-    p.resolveLosers(p.roomId, p.deletedMessageSeq, await p.recipientIds())
+    p.resolveLosers(p.roomId, p.deletedMessageSeq, recipients)
   );
-  if (!losers.size) return;
-  const overrides = renderConvOverrides(losers);
-  publishConvUpdatedSafe({
+  const common = {
     redis: p.redis,
     type: p.type,
     roomId: p.roomId,
-    // ONLY the affected members: every other row is still correct and must not
-    // be handed the empty shared preview below.
-    recipientIds: [...losers.keys()],
-    resolveOverrides: () => Promise.resolve(overrides),
     // Without this the bump is discarded by the client's monotonic list guard —
     // it points BACKWARD at the member's previous visible message.
     deleteRecalc: true,
+    ...(p.deletedMessageId ? { deleteRecalcId: p.deletedMessageId } : {}),
+    ...(p.resolveUnreadCounts
+      ? { resolveUnreadCounts: p.resolveUnreadCounts }
+      : {}),
     ...(p.projectionRevision !== undefined
       ? { projectionRevision: p.projectionRevision }
       : {}),
-    ...EMPTY_SHARED,
+  };
+  if (losers.size) {
+    const overrides = renderConvOverrides(losers);
+    publishConvUpdatedSafe({
+      ...common,
+      // ONLY the affected members: every other row is still correct and must not
+      // be handed the empty shared preview below.
+      recipientIds: [...losers.keys()],
+      resolveOverrides: () => Promise.resolve(overrides),
+      ...EMPTY_SHARED,
+    });
+  }
+  const others = recipients.filter((id) => !losers.has(id));
+  if (!p.resolveUnreadCounts || !p.snapshot || others.length === 0) return;
+  let snap: ConvRowSnapshot | null = null;
+  try {
+    snap = await p.snapshot();
+  } catch (err) {
+    logger.warn(
+      `effectiveLastLoss|snapshot failed roomId=${p.roomId}: ${String(err)}`
+    );
+  }
+  if (!snap?.lastMessageId) return;
+  publishConvUpdatedSafe({
+    ...common,
+    recipientIds: others,
+    senderId: snap.senderId,
+    senderName: snap.senderName ?? "",
+    lastMessageId: snap.lastMessageId,
+    lastMessageAt: snap.lastMessageAt,
+    preview: {
+      contentType: normalizeMessageType(snap.messageType),
+      text: convertMessageToPreview(snap.messageType, snap.content),
+    },
   });
+}
+
+/** A room's untouched canonical last message (`getRoomBumpSnapshot`). */
+export interface ConvRowSnapshot {
+  lastMessageId: string | null;
+  lastMessageAt: number;
+  senderId: string;
+  senderName?: string;
+  content: unknown;
+  messageType: string;
 }
 
 /** Community (`community:updated`) + the persisted self-hide overlay. */

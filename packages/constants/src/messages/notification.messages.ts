@@ -546,14 +546,14 @@ export const NOTIFICATION_MESSAGES = {
     th: "เบราว์เซอร์{{browser}}",
   },
   NOTIF_AUTH_NEW_LOGIN: {
-    vi: "Phát hiện đăng nhập mới trên {{device}}. Nếu không phải bạn, hãy Chấm dứt phiên",
-    en: "New login detected on {{device}}. If this wasn’t you, Terminate Session",
-    th: "ตรวจพบการเข้าสู่ระบบใหม่จาก{{device}} หากไม่ใช่คุณ กรุณายุติเซสชัน",
+    vi: "Phát hiện đăng nhập mới trên {{device}}.",
+    en: "New login detected on {{device}}.",
+    th: "ตรวจพบการเข้าสู่ระบบใหม่จาก{{device}}",
   },
   NOTIF_AUTH_NEW_LOGIN_LOCATION: {
-    vi: "Phát hiện đăng nhập mới trên {{device}} từ {{location}}. Nếu không phải bạn, hãy Chấm dứt phiên",
-    en: "New login detected on {{device}} from {{location}}. If this wasn’t you, Terminate Session",
-    th: "ตรวจพบการเข้าสู่ระบบใหม่จาก{{device}} ที่ {{location}} หากไม่ใช่คุณ กรุณายุติเซสชัน",
+    vi: "Phát hiện đăng nhập mới trên {{device}} từ {{location}}.",
+    en: "New login detected on {{device}} from {{location}}.",
+    th: "ตรวจพบการเข้าสู่ระบบใหม่จาก{{device}} ที่ {{location}}",
   },
   // ── OTP emails ──────────────────────────────────────────────────────────
   // No recipient account exists yet in these flows (reset / verify), so these

@@ -31,6 +31,13 @@ jest.mock("../../src/repositories/group-member.repository.js", () => ({
   },
 }));
 
+const findPeersForUser = jest.fn(async () => [] as Array<{ peerId: string; roomId: string }>);
+jest.mock("../../src/repositories/private-room.repository.js", () => ({
+  PrivateRoomRepository: class {
+    findPeersForUser = findPeersForUser;
+  },
+}));
+
 import { UserEvents } from "@aimess/shared-types";
 
 import { UserProfileEventConsumer } from "../../src/events/user-profile.consumer.js";
@@ -97,13 +104,14 @@ describe("UserProfileEventConsumer", () => {
     expect(fake.channel.nack).not.toHaveBeenCalled();
   });
 
-  it("broadcasts a signal-only user:profile_updated for an ordinary rename", async () => {
-    // `user:<id>` on /chat is mirrored to that user's presence WATCHERS by the
-    // gateway — exactly the peers rendering this user's row or chat header —
-    // and `conv:<roomId>` reaches their group rooms. The payload must stay
-    // identity-free: it tells a client to re-read, it is never the source of
-    // truth for what the profile now says.
+  it("pushes the new identity to presence watchers, group rooms and every DM peer on a rename", async () => {
+    // `user:<id>` reaches presence watchers, `conv:<roomId>` group rooms, and each DM peer's own
+    // `user:<peerId>` room covers 1:1 chats with no presence subscription (AIMESS-236).
     getActiveRoomIds.mockResolvedValue(["grp_a", "grp_b"]);
+    findPeersForUser.mockResolvedValue([
+      { peerId: "peer-1", roomId: "prv_1" },
+      { peerId: "peer-2", roomId: "prv_2" },
+    ]);
     const fake = makeFakeConnection();
     const consumer = new UserProfileEventConsumer();
     await consumer.start(fake.connection as never);
@@ -121,7 +129,13 @@ describe("UserProfileEventConsumer", () => {
 
     const channels = publish.mock.calls.map((c) => c[0] as string);
     expect(channels).toEqual(
-      expect.arrayContaining([`user:${USER}`, "conv:grp_a", "conv:grp_b"])
+      expect.arrayContaining([
+        `user:${USER}`,
+        "conv:grp_a",
+        "conv:grp_b",
+        "user:peer-1",
+        "user:peer-2",
+      ])
     );
 
     for (const call of publish.mock.calls) {
@@ -130,10 +144,12 @@ describe("UserProfileEventConsumer", () => {
         data: Record<string, unknown>;
       };
       expect(payload.event).toBe("user:profile_updated");
-      expect(payload.data.userId).toBe(USER);
-      expect(payload.data).not.toHaveProperty("displayName");
-      expect(payload.data).not.toHaveProperty("username");
-      expect(payload.data).not.toHaveProperty("avatarObjectKey");
+      expect(payload.data).toMatchObject({
+        userId: USER,
+        username: "himanshu",
+        displayName: "Himanshu Vasu",
+        avatarObjectKey: "avatars/new.png",
+      });
       expect(payload.data).not.toHaveProperty("avatarUrl");
     }
 

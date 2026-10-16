@@ -6,7 +6,17 @@ import {
 import { logger } from "@aimess/logger";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
+import { NotFoundError } from "@aimess/errors";
 import { chatClient } from "../grpc/chat.client.js";
+import type {
+  AvatarUploadUrlInput,
+  UpdateGroupInput,
+} from "../api/validators/index.js";
+import {
+  mintSpaceAvatarUploadUrl,
+  toSpaceEditError,
+} from "./community.service.js";
+import { assertAvatarVerified } from "./user-account.service.js";
 import { getAccountStatuses } from "../repositories/user-directory.repository.js";
 import { groupRepository } from "../repositories/index.js";
 import {
@@ -216,6 +226,80 @@ export const groupService = {
       limit: query.limit,
     });
     return toReactionDetailsPage(res);
+  },
+
+  /** Presigned PUT for a new group photo, filed under the group id. */
+  async createAvatarUploadUrl(groupId: string, input: AvatarUploadUrlInput) {
+    if (!(await groupRepository.getById(groupId))) {
+      throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    }
+    return mintSpaceAvatarUploadUrl(groupId, "GROUP_AVATAR", input);
+  },
+
+  /**
+   * Admin edit of name / description / photo / privacy. chat-service applies it
+   * through the owner's write path (system lines + group:meta:updated fan-out);
+   * audited here per changed field.
+   */
+  async updateGroup(
+    groupId: string,
+    input: UpdateGroupInput,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<GroupItem> {
+    const before = await groupRepository.getById(groupId);
+    if (!before) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    if (input.avatarObjectKey !== undefined) {
+      await assertAvatarVerified(
+        groupId,
+        input.avatarObjectKey,
+        "group-avatars",
+        "GROUP_AVATAR"
+      );
+    }
+
+    const res = await chatClient.adminUpdateGroup({
+      groupId,
+      actorAdminId: actor.id,
+      name: input.name ?? "",
+      hasName: input.name !== undefined,
+      description: input.description ?? "",
+      hasDescription: input.description !== undefined,
+      avatar: input.avatarObjectKey ?? "",
+      hasAvatar: input.avatarObjectKey !== undefined,
+      joinApproval: input.joinApproval === true,
+      hasJoinApproval: input.joinApproval !== undefined,
+    });
+    if (res.errorCode) throw toSpaceEditError(res.errorCode);
+
+    const after = await groupRepository.getById(groupId);
+    if (!after) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    const snapshot = (group: GroupItem): Record<string, string | null> => ({
+      name: group.name,
+      description: group.description,
+      avatar: group.avatar?.objectKey ?? null,
+      visibility: group.joinApproval ? "PRIVATE" : "PUBLIC",
+    });
+    const beforeSnap = snapshot(before);
+    const afterSnap = snapshot(after);
+    const changed = Object.keys(afterSnap).filter(
+      (field) => beforeSnap[field] !== afterSnap[field]
+    );
+    if (changed.length > 0) {
+      const pick = (snap: Record<string, string | null>) =>
+        Object.fromEntries(changed.map((field) => [field, snap[field]]));
+      await auditService.record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.GROUP_UPDATED_BY_ADMIN,
+        targetType: "group",
+        targetId: groupId,
+        before: pick(beforeSnap),
+        after: pick(afterSnap),
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      });
+    }
+    return after;
   },
 
   // Disband a group platform-side. The repository throws NotFound/Conflict on

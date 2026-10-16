@@ -233,6 +233,33 @@ describe("POST /rooms/:roomId/read (mark-read → orchestrator)", () => {
     expect(data.readsLastMessage).toBe(true);
   });
 
+  it("POSITIVE: a client UUID resolves to its server message and advances by the server id", async () => {
+    mocks.privateMessageRepo.findById.mockResolvedValue(null);
+    mocks.privateMessageRepo.findInRoomByClientMessageId.mockImplementation(
+      (roomId: string, cid: string) =>
+        Promise.resolve(
+          roomId === ROOM && cid === "4D74A9D7-EB8B-445A-8F29-C7AEB1E025BD"
+            ? { id: "msg_srv_1", roomId: ROOM, sequenceNumber: 4 }
+            : null
+        )
+    );
+    mocks.privateRoomRepo.markReadUpTo.mockResolvedValue({
+      participants: [TEST_USER_ID, PEER],
+      unreadCountByUser: { [TEST_USER_ID]: 0 },
+      lastReadMessageIdByUser: { [TEST_USER_ID]: "msg_srv_1" },
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/private/rooms/${ROOM}/read`)
+      .set(bearer(makeAccessToken()))
+      .send({ upToMessageId: "4d74a9d7-eb8b-445a-8f29-c7aeb1e025bd" });
+
+    expect(res.status).toBe(200);
+    expect(mocks.privateRoomRepo.markReadUpTo).toHaveBeenCalledWith(
+      expect.objectContaining({ roomId: ROOM, upToMessageId: "msg_srv_1" })
+    );
+  });
+
   it("NEGATIVE: 400 when upToMessageId is missing", async () => {
     const res = await request(app)
       .post(`/api/chat/private/rooms/${ROOM}/read`)

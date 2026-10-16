@@ -9,6 +9,8 @@ import {
   listGroupMembers,
   listGroups,
   removeGroupMember,
+  updateGroup,
+  createGroupAvatarUploadUrl,
 } from "../controllers/index.js";
 import {
   adminAuth,
@@ -18,6 +20,8 @@ import {
   validateQuery,
 } from "../middleware/index.js";
 import {
+  avatarUploadUrlSchema,
+  updateGroupSchema,
   disbandGroupSchema,
   groupIdParamSchema,
   groupMemberParamSchema,
@@ -83,6 +87,20 @@ groupRoutes.get(
 );
 
 // Moderate. Destructive lifecycle actions are POST /<resource>/:id/<verb>.
+groupRoutes.patch(
+  "/groups/:groupId",
+  requirePermission(PERMISSIONS.GROUPS_EDIT),
+  validateParams(groupIdParamSchema),
+  validateBody(updateGroupSchema),
+  updateGroup
+);
+groupRoutes.post(
+  "/groups/:groupId/avatar/upload-url",
+  requirePermission(PERMISSIONS.GROUPS_EDIT),
+  validateParams(groupIdParamSchema),
+  validateBody(avatarUploadUrlSchema),
+  createGroupAvatarUploadUrl
+);
 groupRoutes.post(
   "/groups/:groupId/disband",
   requirePermission(PERMISSIONS.GROUPS_MODERATE),

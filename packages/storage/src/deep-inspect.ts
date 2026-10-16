@@ -446,6 +446,8 @@ function inspectJpeg(
     extras++;
   }
 
+  end = samsungTrailerEnd(b, end, input.totalSize);
+
   if (input.complete)
     out.trailingBytes = measureTrailing(b, end, input.totalSize);
   return out;
@@ -453,6 +455,45 @@ function inspectJpeg(
 
 /** Secondary images an MPF/Ultra HDR JPEG may carry (gain map + thumbnails). */
 const MAX_JPEG_MPF_IMAGES = 8;
+
+/** Directory entries a Samsung trailer may declare before we stop trusting it. */
+const MAX_SAMSUNG_TRAILER_BLOCKS = 64;
+
+/** Past a Samsung SEFH/SEFT trailer (Galaxy Gallery/screenshots) only if its directory accounts for every byte after `end`; else `end`. */
+function samsungTrailerEnd(buf: Buffer, end: number, totalSize: number): number {
+  if (buf.length < totalSize) return end;
+  const tail = totalSize;
+  if (tail - end < 8 + 12) return end;
+  if (buf.toString("latin1", tail - 4, tail) !== "SEFT") return end;
+  const dirLen = buf.readUInt32LE(tail - 8);
+  const dir = tail - 8 - dirLen;
+  if (dirLen < 12 || dir < end) return end;
+  if (buf.toString("latin1", dir, dir + 4) !== "SEFH") return end;
+  const count = buf.readUInt32LE(dir + 8);
+  if (count === 0 || count > MAX_SAMSUNG_TRAILER_BLOCKS || 12 + count * 12 > dirLen) {
+    return end;
+  }
+
+  const blocks: Array<[number, number]> = [];
+  for (let i = 0; i < count; i++) {
+    const entry = dir + 12 + i * 12;
+    const type = buf.readUInt16LE(entry + 2);
+    const start = dir - buf.readUInt32LE(entry + 4);
+    const stop = start + buf.readUInt32LE(entry + 8);
+    // Each block opens with `uint16 0, uint16 type, uint32 nameLen, name`.
+    if (start < end || stop > dir || stop - start < 8) return end;
+    if (buf.readUInt16LE(start) !== 0 || buf.readUInt16LE(start + 2) !== type) return end;
+    if (8 + buf.readUInt32LE(start + 4) > stop - start) return end;
+    blocks.push([start, stop]);
+  }
+  blocks.sort((a, b) => a[0] - b[0]);
+  let cursor = end;
+  for (const [start, stop] of blocks) {
+    if (start !== cursor) return end;
+    cursor = stop;
+  }
+  return cursor === dir ? tail : end;
+}
 
 /**
  * Walk one JPEG image starting just past its SOI and return the offset directly

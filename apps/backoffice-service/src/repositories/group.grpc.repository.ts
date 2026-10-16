@@ -60,6 +60,7 @@ async function rowToGroupItem(r: RawAdminGroupRow): Promise<GroupItem> {
     ownerAccountStatus: r.ownerAccountStatus || "ACTIVE",
     disbandedAt: epochOrNull(r.disbandedAt),
     lastMessageAt: epochOrNull(r.lastMessageAt),
+    joinApproval: r.joinApproval === true,
   };
 }
 

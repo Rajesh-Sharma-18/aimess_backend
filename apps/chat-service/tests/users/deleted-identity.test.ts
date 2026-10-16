@@ -21,6 +21,7 @@ import {
   anonymizeSystemData,
   anonymizeWireSender,
   collectDeletedUserIds,
+  refreshPinSenders,
   refreshWireSenderAvatar,
   collectRowUserIds,
 } from "../../src/lib/deleted-identity.js";
@@ -247,9 +248,9 @@ describe("anonymizeSystemData", () => {
 
 describe("refreshWireSenderAvatar", () => {
   const LIVE = new Map([
-    ["u1", { isDeleted: false, avatar: "avatars/new.png" }],
-    ["u2", { isDeleted: false, avatar: "" }],
-    ["gone", { isDeleted: true, avatar: "" }],
+    ["u1", { isDeleted: false, avatar: "avatars/new.png", displayName: "Juliya Doel" }],
+    ["u2", { isDeleted: false, avatar: "", displayName: "" }],
+    ["gone", { isDeleted: true, avatar: "", displayName: "" }],
   ]);
 
   it("swaps the frozen sender avatar key for the sender's current one", () => {
@@ -315,5 +316,67 @@ describe("refreshWireSenderAvatar", () => {
     expect((wire.quoteData as Record<string, unknown>).senderAvatar).toBe(
       "avatars/new.png"
     );
+  });
+
+  it("swaps the frozen sender name for the current one, sender and quote", () => {
+    const wire: Record<string, unknown> = {
+      senderId: "u1",
+      contentType: "TEXT",
+      senderName: "Juliya",
+      quoteData: { senderId: "u1", senderName: "Juliya" },
+    };
+    refreshWireSenderAvatar(wire, LIVE);
+    expect(wire.senderName).toBe("Juliya Doel");
+    expect((wire.quoteData as Record<string, unknown>).senderName).toBe(
+      "Juliya Doel"
+    );
+  });
+
+  it("keeps the stored name when the live profile has none to show", () => {
+    const wire: Record<string, unknown> = {
+      senderId: "u2",
+      contentType: "TEXT",
+      senderName: "Stored Name",
+    };
+    refreshWireSenderAvatar(wire, LIVE);
+    expect(wire.senderName).toBe("Stored Name");
+  });
+});
+
+describe("refreshPinSenders", () => {
+  const snapshots = new Map<string, Record<string, unknown>>([
+    ["renamed", { fullName: "Juliya Doel", avatar: "avatars/new.png" }],
+    ["gone", { isDeletedUser: true }],
+    ["unresolved", {}],
+  ]);
+  const svc = {
+    getUserSnapshotsMap: jest.fn(async () => snapshots),
+  } as never;
+  const cache = {} as never;
+  const pin = (senderId: string) => ({
+    senderId,
+    senderDisplayName: "Juliya",
+    senderAvatar: "avatars/old.png",
+  });
+
+  it("swaps the pin-time name/avatar for live ones, keeps unresolved", async () => {
+    const [renamed, gone, unresolved] = await refreshPinSenders(
+      [pin("renamed"), pin("gone"), pin("unresolved")],
+      svc,
+      cache
+    );
+    expect(renamed).toEqual({
+      senderId: "renamed",
+      senderDisplayName: "Juliya Doel",
+      senderAvatar: "avatars/new.png",
+    });
+    expect(gone.senderDisplayName).toBe(DELETED_ACCOUNT_DISPLAY_NAME);
+    expect(gone.senderAvatar).toBe("");
+    expect(unresolved).toEqual(pin("unresolved"));
+  });
+
+  it("is a no-op without a snapshot service", async () => {
+    const pins = [pin("renamed")];
+    expect(await refreshPinSenders(pins, undefined, undefined)).toBe(pins);
   });
 });

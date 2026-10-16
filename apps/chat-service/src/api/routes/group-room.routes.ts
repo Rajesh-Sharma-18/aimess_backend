@@ -13,13 +13,15 @@ import { autoDeleteSchema } from "../validators/private-message.validator.js";
 import type { GroupRoomController } from "../controllers/group-room.controller.js";
 
 // Client table: 10 groups per day, then blocked until the window clears.
-const createLimit = createRateLimit({
+const CREATE_LIMIT = {
   windowMs: 86_400_000,
   maxRequests: 10,
   keyPrefix: "gr:create",
-  onCacheError: "fallback",
   messageKey: "CHAT_GROUP_CREATE_LIMIT_REACHED",
-});
+};
+const createLimit = createRateLimit({ ...CREATE_LIMIT, onCacheError: "fallback" });
+// AIMESS-218: same bucket and refusal, read-only — lets clients refuse before the form opens.
+const createLimitPeek = createRateLimit({ ...CREATE_LIMIT, peek: true });
 
 /**
  * Changing the auto-delete policy — low-frequency and abuse-sensitive: each
@@ -43,6 +45,7 @@ export function createGroupRoomRoutes(ctrl: GroupRoomController): Router {
     createLimit,
     ctrl.create
   );
+  router.get("/can-create", authenticate, createLimitPeek, ctrl.canCreate);
   router.get("/my-groups", authenticate, ctrl.getUserGroups);
   router.get("/rooms/:roomId", authenticate, ctrl.getRoom);
   router.patch(

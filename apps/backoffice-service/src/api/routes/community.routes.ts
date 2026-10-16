@@ -7,6 +7,8 @@ import {
   bulkCloseCommunities,
   bulkReopenCommunities,
   closeCommunity,
+  createCommunityAvatarUploadUrl,
+  updateCommunity,
   getCommunityConversationMessages,
   getCommunityMessageReactions,
   getCommunityDetails,
@@ -24,6 +26,8 @@ import {
   validateQuery,
 } from "../middleware/index.js";
 import {
+  avatarUploadUrlSchema,
+  updateCommunitySchema,
   bulkCloseSchema,
   bulkReopenSchema,
   closeCommunitySchema,
@@ -88,6 +92,20 @@ communityRoutes.get(
   validateParams(communityIdParamSchema),
   validateQuery(listMutedMembersQuerySchema),
   listCommunityMutedMembers
+);
+communityRoutes.patch(
+  "/communities/:communityId",
+  requirePermission(PERMISSIONS.COMMUNITIES_EDIT),
+  validateParams(communityIdParamSchema),
+  validateBody(updateCommunitySchema),
+  updateCommunity
+);
+communityRoutes.post(
+  "/communities/:communityId/avatar/upload-url",
+  requirePermission(PERMISSIONS.COMMUNITIES_EDIT),
+  validateParams(communityIdParamSchema),
+  validateBody(avatarUploadUrlSchema),
+  createCommunityAvatarUploadUrl
 );
 communityRoutes.post(
   "/communities/:communityId/close",

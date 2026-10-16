@@ -142,6 +142,81 @@ describe("POST /groups/rooms/:roomId/read (mark-read → orchestrator)", () => {
     expect(mocks.groupMemberRepo.advanceReadPointer).not.toHaveBeenCalled();
   });
 
+  it("POSITIVE: a client UUID resolves to its server message in this room", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      status: "ACTIVE",
+    });
+    const msg = {
+      id: "507f1f77bcf86cd799439011",
+      roomId: ROOM,
+      sequenceNumber: 9,
+      createdAt: new Date(1000),
+    };
+    mocks.groupMessageRepo.findByClientMessageId.mockImplementation(
+      (roomId: string, cid: string) =>
+        Promise.resolve(
+          roomId === ROOM && cid === "4D74A9D7-EB8B-445A-8F29-C7AEB1E025BD"
+            ? msg
+            : null
+        )
+    );
+    mocks.groupMessageRepo.countUnreadAfter.mockResolvedValue(0);
+    mocks.groupMemberRepo.advanceReadPointer.mockResolvedValue({
+      lastReadMessageId: msg.id,
+      unreadCount: 0,
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/groups/rooms/${ROOM}/read`)
+      .set(bearer(makeAccessToken()))
+      .send({ upToMessageId: "4d74a9d7-eb8b-445a-8f29-c7aeb1e025bd" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.readToSeq).toBe(9);
+    expect(mocks.groupMemberRepo.advanceReadPointer).toHaveBeenCalledWith(
+      ROOM,
+      TEST_USER_ID,
+      msg.id,
+      msg.createdAt,
+      0,
+      true
+    );
+  });
+
+  it("NEGATIVE: an unknown target reports the member's REAL pointer + unread, never a fake success", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      status: "ACTIVE",
+      lastReadMessageId: "507f1f77bcf86cd799439011",
+      unreadCount: 1,
+    });
+    mocks.groupMessageRepo.findById.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "507f1f77bcf86cd799439011"
+          ? { id, roomId: ROOM, sequenceNumber: 5, createdAt: new Date(1000) }
+          : null
+      )
+    );
+    mocks.groupMessageRepo.findByClientMessageId.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post(`/api/chat/groups/rooms/${ROOM}/read`)
+      .set(bearer(makeAccessToken()))
+      .send({ upToMessageId: "507f1f77bcf86cd7994390ff" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.readToSeq).toBe(5);
+    expect(mocks.groupMemberRepo.advanceReadPointer).not.toHaveBeenCalled();
+    const readSync = mocks.redis.publish.mock.calls.find(
+      (c: unknown[]) =>
+        c[0] === `user:${TEST_USER_ID}` && String(c[1]).includes("read_sync")
+    );
+    expect(JSON.parse(String(readSync?.[1])).data.unreadCount).toBe(1);
+  });
+
   it("NEGATIVE: 400 when upToMessageId is missing", async () => {
     const res = await request(app)
       .post(`/api/chat/groups/rooms/${ROOM}/read`)

@@ -3,10 +3,23 @@ import {
   STORED_TEXT_LOCALE,
   type SupportedLocale,
 } from "@aimess/constants";
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import { chatClient } from "../grpc/chat.client.js";
+import { communityClient } from "../grpc/community.client.js";
+import { getMediaConfirmClient } from "../grpc/media.client.js";
+import type {
+  AvatarUploadUrlInput,
+  UpdateCommunityInput,
+} from "../api/validators/index.js";
+import { assertAvatarVerified } from "./user-account.service.js";
 import { getAccountStatuses } from "../repositories/user-directory.repository.js";
 import {
   communityMembersRepository,
@@ -213,6 +226,91 @@ export const communityService = {
       limit: query.limit,
     });
     return toReactionDetailsPage(res);
+  },
+
+  /** Presigned PUT for a new community photo, filed under the community id. */
+  async createAvatarUploadUrl(
+    communityId: string,
+    input: AvatarUploadUrlInput
+  ): Promise<{
+    uploadUrl: string;
+    objectKey: string;
+    expiresIn: number;
+    headers: Record<string, string>;
+  }> {
+    if (!(await communityRepository.getById(communityId))) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+    return mintSpaceAvatarUploadUrl(communityId, "COMMUNITY_AVATAR", input);
+  },
+
+  /**
+   * Admin edit of name / description / photo / category / privacy. Applied by
+   * community-service through the same path as the owner's edit, so members
+   * get the same system line and live update; audited here per changed field.
+   */
+  async updateCommunity(
+    communityId: string,
+    input: UpdateCommunityInput,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<CommunityDetail> {
+    const before = await communityRepository.getById(communityId);
+    if (!before) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    if (input.avatarObjectKey !== undefined) {
+      await assertAvatarVerified(
+        communityId,
+        input.avatarObjectKey,
+        "community/avatar",
+        "COMMUNITY_AVATAR"
+      );
+    }
+
+    const res = await communityClient.adminUpdateCommunity({
+      communityId,
+      actorAdminId: actor.id,
+      name: input.name ?? "",
+      hasName: input.name !== undefined,
+      description: input.description ?? "",
+      hasDescription: input.description !== undefined,
+      avatarObjectKey: input.avatarObjectKey ?? "",
+      hasAvatar: input.avatarObjectKey !== undefined,
+      categoryId: input.categoryId ?? "",
+      hasCategory: input.categoryId !== undefined,
+      type: input.type ?? "",
+      hasType: input.type !== undefined,
+    });
+    if (res.errorCode) throw toSpaceEditError(res.errorCode);
+
+    const after = await communityRepository.getById(communityId);
+    if (!after) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    const changed = res.changedFields ?? [];
+    if (changed.length > 0) {
+      const snapshot = (
+        detail: CommunityDetail
+      ): Record<string, string | null> => {
+        const core = detail.community;
+        const all: Record<string, string | null> = {
+          name: core.name,
+          description: core.description,
+          avatar: core.avatar?.objectKey ?? null,
+          category: core.category?.name ?? null,
+          visibility: core.type,
+        };
+        return Object.fromEntries(changed.map((field) => [field, all[field]]));
+      };
+      await auditService.record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.COMMUNITY_UPDATED_BY_ADMIN,
+        targetType: "community",
+        targetId: communityId,
+        before: snapshot(before),
+        after: snapshot(after),
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      });
+    }
+    return after;
   },
 
   async closeCommunity(
@@ -548,4 +646,54 @@ export const communityService = {
 /** Build the repository ActorRef (admin stamp + decision timestamp). */
 function buildActor(actor: RequestAdmin): ActorRef {
   return { moderator: toModerator(actor), at: Date.now() };
+}
+
+/** Presigned avatar PUT filed under a community / group id (not the admin's). */
+export async function mintSpaceAvatarUploadUrl(
+  ownerId: string,
+  category: "COMMUNITY_AVATAR" | "GROUP_AVATAR",
+  input: AvatarUploadUrlInput
+): Promise<{
+  uploadUrl: string;
+  objectKey: string;
+  expiresIn: number;
+  headers: Record<string, string>;
+}> {
+  let res;
+  try {
+    res = await getMediaConfirmClient().generateUserAvatarUploadUrl(
+      ownerId,
+      input.contentType,
+      input.contentLength,
+      category
+    );
+  } catch (err) {
+    logger.warn("space avatar: upload-url mint failed", {
+      ownerId,
+      category,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw new ServiceUnavailableError("MEDIA_REGISTRY_UNAVAILABLE");
+  }
+  return {
+    uploadUrl: res.uploadUrl,
+    objectKey: res.objectKey,
+    expiresIn: res.expiresIn,
+    // The presign signs Content-Type; the PUT must send exactly this.
+    headers: { "Content-Type": input.contentType },
+  };
+}
+
+/** Owning service's business error code → HTTP error for the panel. */
+export function toSpaceEditError(errorCode: string): Error {
+  if (errorCode.endsWith("_NOT_FOUND")) return new NotFoundError(errorCode);
+  if (
+    errorCode.endsWith("_TAKEN") ||
+    errorCode.includes("CLOSED") ||
+    errorCode.includes("DISBANDED") ||
+    errorCode.includes("SUSPENDED")
+  ) {
+    return new ConflictError(errorCode);
+  }
+  return new BadRequestError(errorCode);
 }

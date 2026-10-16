@@ -63,7 +63,8 @@ export const CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   boolean
 > = {
   GROUP_CREATED: true,
-  MEMBER_JOINED: false,
+  // AIMESS-274: a join is the row's latest line for the joiner ("You joined") and everyone else.
+  MEMBER_JOINED: true,
   MEMBER_LEFT: false,
   MEMBER_REMOVED: false,
   MEMBER_ADDED: true,
@@ -202,6 +203,10 @@ const BACKOFFICE_GROUP_EVENTS = new Set([
   "MEMBER_REMOVED",
   "MEMBER_BANNED",
   "MEMBER_UNBANNED",
+  // Admin panel edits of the group's name / photo / description.
+  "ROOM_RENAMED",
+  "AVATAR_CHANGED",
+  "DESCRIPTION_CHANGED",
 ]);
 
 /**
@@ -399,17 +404,19 @@ export function buildGroupSystemFallbackText(
           : t("SYS_GROUP_RENAMED_PLAIN_SELF", locale);
       }
       return name
-        ? t("SYS_GROUP_RENAMED", locale, { actor, name })
-        : t("SYS_GROUP_RENAMED_PLAIN", locale, { actor });
+        ? t("SYS_GROUP_RENAMED", locale, { actor: lineActor, name })
+        : t("SYS_GROUP_RENAMED_PLAIN", locale, { actor: lineActor });
     }
 
     case "AVATAR_CHANGED":
       if (isActor) return t("SYS_GROUP_AVATAR_CHANGED_SELF", locale);
-      return t("SYS_GROUP_AVATAR_CHANGED", locale, { actor });
+      return t("SYS_GROUP_AVATAR_CHANGED", locale, { actor: lineActor });
 
     case "DESCRIPTION_CHANGED":
       if (isActor) return t("SYS_GROUP_DESCRIPTION_CHANGED_SELF", locale);
-      return t("SYS_GROUP_DESCRIPTION_CHANGED", locale, { actor });
+      return t("SYS_GROUP_DESCRIPTION_CHANGED", locale, {
+        actor: lineActor,
+      });
 
     case "INVITE_LINK_CREATED":
       if (isActor) return t("SYS_GROUP_INVITE_LINK_CREATED_SELF", locale);
@@ -840,6 +847,8 @@ export function resolveGroupSystemSubjectUserId(
       return targetId || null;
     case "MESSAGE_DELETED":
       return String(data.senderId ?? "").trim() || null;
+    case "MEMBER_JOINED":
+      return targetId || String(data.actorId ?? "").trim() || null;
     default:
       return null;
   }

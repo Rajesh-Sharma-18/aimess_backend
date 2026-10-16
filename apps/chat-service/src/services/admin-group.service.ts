@@ -40,6 +40,8 @@ export interface AdminGroupRowResult {
   ownerAccountStatus: string;
   /** Epoch ms; 0 when never disbanded. */
   disbandedAt: number;
+  /** settings.joinApproval — true = private group. */
+  joinApproval: boolean;
 }
 export interface AdminGroupMemberRowResult {
   userId: string;
@@ -347,6 +349,30 @@ export class AdminGroupService {
   }
 
   /**
+   * Platform-admin edit. Delegates to GroupRoomService.updateRoom with the owner
+   * check bypassed, so system lines and group:meta:updated match an owner edit.
+   */
+  async updateGroup(
+    groupId: string,
+    actorAdminId: string,
+    data: {
+      name?: string;
+      description?: string;
+      avatar?: string;
+      joinApproval?: boolean;
+    }
+  ): Promise<{ ok: boolean; found: boolean; errorCode: string }> {
+    const row = await this.groupRoomRepo.adminFindByRoomId(groupId);
+    if (!row)
+      return { ok: false, found: false, errorCode: "CHAT_GROUP_NOT_FOUND" };
+    // Closed / disbanded rooms are refused by updateRoom's writable guard.
+    await this.groupRoomService.updateRoom(groupId, actorAdminId, data, {
+      asPlatformAdmin: true,
+    });
+    return { ok: true, found: true, errorCode: "" };
+  }
+
+  /**
    * Platform-admin member removal. Delegates to GroupMemberService.kick so the
    * removed user is actually evicted (`group:removed`) and every other member's
    * roster updates — a bare repository write would leave both stale.
@@ -560,6 +586,9 @@ export class AdminGroupService {
       ownerAccountStatus: authMap.get(ownerId)?.status ?? "",
       disbandedAt:
         row.disbandedAt instanceof Date ? row.disbandedAt.getTime() : 0,
+      joinApproval:
+        (row.settings as { joinApproval?: unknown } | null)?.joinApproval ===
+        true,
     };
   }
 

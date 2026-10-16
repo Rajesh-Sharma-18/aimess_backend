@@ -15,6 +15,7 @@ import {
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
+import { refreshPinSenders } from "../lib/deleted-identity.js";
 import type { CommunityMessagePinRepository } from "../repositories/community-message-pin.repository.js";
 import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
@@ -22,7 +23,10 @@ import type { RoomMemberRepository } from "../repositories/room-member.repositor
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { CommunityMessagePin } from "../generated/prisma/index.js";
 import type { CommunitySystemMessageService } from "./community-system-message.service.js";
-import type { UserSnapshotService } from "./user-snapshot.service.js";
+import {
+  resolveRealDisplayName,
+  type UserSnapshotService,
+} from "./user-snapshot.service.js";
 
 /**
  * FE-header-ready snapshot of a room's currently pinned message. Reuses the
@@ -431,7 +435,13 @@ export class CommunityPinService {
       visible.map((p) => p.messageId),
       userId
     );
-    return resolvePinsMedia(visible.filter((p) => !hiddenIds.has(p.messageId)));
+    return resolvePinsMedia(
+      await refreshPinSenders(
+        visible.filter((p) => !hiddenIds.has(p.messageId)),
+        this.userSnapshotService,
+        this.cacheRepo
+      )
+    );
   }
 
   async countPins(roomId: string): Promise<number> {
@@ -494,26 +504,39 @@ export class CommunityPinService {
     const attachments = Array.isArray(message!.attachments)
       ? (message!.attachments as MediaFileLike[])
       : [];
-    const [media, senderAvatar] = await Promise.all([
-      resolveContentFiles(attachments),
-      resolveMediaUrl(message!.senderAvatar || pin.senderAvatar),
-    ]);
-
     let senderHandle = "";
+    let live: { name: string; avatar: string } | null = null;
     if (this.userSnapshotService && this.cacheRepo) {
       const snaps = await this.userSnapshotService.getUserSnapshotsMap(
         [message!.sentBy],
         this.cacheRepo
       );
-      senderHandle = (snaps.get(message!.sentBy)?.memberId as string) || "";
+      const snap = snaps.get(message!.sentBy);
+      senderHandle = (snap?.memberId as string) || "";
+      // Message rows freeze name/avatar at send time; prefer the live profile.
+      const name = resolveRealDisplayName(snap);
+      if (snap && name) {
+        live = {
+          name,
+          avatar: typeof snap.avatar === "string" ? snap.avatar : "",
+        };
+      }
     }
+
+    const [media, senderAvatar] = await Promise.all([
+      resolveContentFiles(attachments),
+      resolveMediaUrl(
+        live ? live.avatar : message!.senderAvatar || pin.senderAvatar
+      ),
+    ]);
 
     return {
       messageId: message!.id,
       roomId: pin.roomId,
       communityId: pin.communityId || pin.roomId,
       senderId: message!.sentBy,
-      senderName: message!.senderName || pin.senderDisplayName || "",
+      senderName:
+        live?.name || message!.senderName || pin.senderDisplayName || "",
       senderHandle,
       senderAvatar,
       messageType: normalizeMessageType(message!.messageType),

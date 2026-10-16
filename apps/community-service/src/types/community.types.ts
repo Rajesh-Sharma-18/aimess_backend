@@ -56,8 +56,6 @@ export type CommunityData = {
   creatorId: string;
   adminId: string;
   memberCount: number;
-  /** Static platform-wide max members per community (currently a fixed cap). */
-  memberLimit: number;
   /** Presigned GET URL (private bucket); null if no avatar. */
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
@@ -361,8 +359,6 @@ export type CommunityListItem = {
   handle: string;
   type: CommunityType;
   memberCount: number;
-  /** Static platform-wide max members per community (currently a fixed cap). */
-  memberLimit: number;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   /** Nested media object for the avatar (additive; mirrors avatarUrl). */
@@ -469,8 +465,6 @@ export type CommunityDiscoverItem = {
     name: string;
   };
   memberCount: number;
-  /** Static platform-wide max members per community (currently a fixed cap). */
-  memberLimit: number;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   /** Nested media object for the avatar (additive; mirrors avatarUrl). */
@@ -782,6 +776,8 @@ export type InviteLinkPreviewData = {
   appDeepLink: string;
   expiresAt: number | null;
   creatorId: string;
+  /** AIMESS-268: closed community — clients show a disabled "Closed Community". */
+  closed: boolean;
 };
 
 /**
@@ -871,8 +867,6 @@ export type MyJoinRequestData = CommunityJoinRequestData & {
     handle: string;
     type: CommunityType;
     memberCount: number;
-    /** Static platform-wide max members per community (currently a fixed cap). */
-    memberLimit: number;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
     /** Nested media object for the avatar (additive; mirrors avatarUrl). */
@@ -941,8 +935,6 @@ export type MyInviteData = CommunityInviteData & {
     handle: string;
     type: CommunityType;
     memberCount: number;
-    /** Static platform-wide max members per community (currently a fixed cap). */
-    memberLimit: number;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
     /** Nested media object for the avatar (additive; mirrors avatarUrl). */
@@ -1021,8 +1013,6 @@ export type MyReportData = CommunityReportData & {
     handle: string;
     type: CommunityType;
     memberCount: number;
-    /** Static platform-wide max members per community (currently a fixed cap). */
-    memberLimit: number;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
     /** Nested media object for the avatar (additive; mirrors avatarUrl). */

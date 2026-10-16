@@ -22,3 +22,4 @@ export * from "./chat/socket-events.js";
 export * from "./user/deleted-account.js";
 export * from "./chat/group-limits.js";
 export * from "./validation/text-length.js";
+export * from "./validation/visible-text.js";

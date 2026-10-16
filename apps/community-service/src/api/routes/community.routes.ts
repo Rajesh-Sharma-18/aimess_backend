@@ -21,6 +21,7 @@ import {
   cancelMyCommunityJoinRequest,
   checkHandleAvailable,
   checkNameAvailable,
+  canCreateCommunity,
   clearMuteSetting,
   createCommunity,
   createCommunityInvite,
@@ -207,6 +208,8 @@ communityRoutes.get(
   validateQuery(nameAvailableQuerySchema),
   checkNameAvailable
 );
+
+communityRoutes.get("/can-create", canCreateCommunity);
 
 communityRoutes.get(
   "/handle-available",

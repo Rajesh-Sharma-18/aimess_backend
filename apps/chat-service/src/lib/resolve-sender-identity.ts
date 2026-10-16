@@ -1,6 +1,7 @@
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
 import { resolveDisplayName } from "../services/user-snapshot.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
+import { hasVisibleText } from "@aimess/constants";
 
 /**
  * Resolve a sender's display name + avatar from the user snapshot when the
@@ -19,8 +20,10 @@ export async function resolveSenderIdentity(
 ): Promise<{ senderName: string; senderAvatar: string }> {
   // A BLANK name must not short-circuit the lookup — socket callers routinely pass "" for
   // their own identity, and returning it verbatim renders the push as "Someone".
-  if (senderName && senderAvatar) {
-    return { senderName, senderAvatar };
+  // An invisible-only name (U+3164, U+2800 ...) counts as blank too, or it is stored and renders as an empty name row.
+  const suppliedName = hasVisibleText(senderName) ? senderName : undefined;
+  if (suppliedName && senderAvatar) {
+    return { senderName: suppliedName, senderAvatar };
   }
   const snaps = await userSnapshotService.getUserSnapshotsMap(
     [senderId],
@@ -32,7 +35,7 @@ export async function resolveSenderIdentity(
     // "Unknown User" stays empty on the wire so each client renders its own localized
     // fallback instead of a hardcoded English string.
     senderName:
-      senderName || (resolvedName === "Unknown User" ? "" : resolvedName),
+      suppliedName || (resolvedName === "Unknown User" ? "" : resolvedName),
     senderAvatar: senderAvatar || (snap?.avatar as string) || "",
   };
 }

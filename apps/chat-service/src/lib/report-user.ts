@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { normalizeVisibleText } from "@aimess/constants";
+
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 
 /**
@@ -13,7 +15,7 @@ import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js"
  */
 export const reportUserReasonSchema = z
   .string()
-  .trim()
+  .overwrite(normalizeVisibleText)
   .min(3, "Reason must be at least 3 characters")
   .max(1000, "Reason must be at most 1000 characters");
 

@@ -1195,6 +1195,29 @@ export const openApiSchemas = {
       },
     },
   },
+  AdminUpdateCommunityRequest: {
+    type: "object",
+    additionalProperties: false,
+    minProperties: 1,
+    properties: {
+      name: { type: "string", minLength: 3, description: "3–30 characters" },
+      description: { type: "string", maxLength: 500, nullable: true },
+      categoryId: { type: "string", pattern: "^[a-fA-F0-9]{24}$" },
+      type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      avatarObjectKey: { type: "string", maxLength: 512 },
+    },
+  },
+  AdminUpdateGroupRequest: {
+    type: "object",
+    additionalProperties: false,
+    minProperties: 1,
+    properties: {
+      name: { type: "string", minLength: 1, description: "1–30 characters" },
+      description: { type: "string", maxLength: 1000 },
+      joinApproval: { type: "boolean", description: "true = private group" },
+      avatarObjectKey: { type: "string", maxLength: 512 },
+    },
+  },
   AdminUserAvatarUploadUrlRequest: {
     type: "object",
     additionalProperties: false,
@@ -1831,6 +1854,10 @@ export const openApiSchemas = {
       memberCount: { type: "integer", example: 1250 },
       createdAt: { type: "string", format: "date-time" },
       admin: { $ref: "#/components/schemas/AdminGroupAdmin" },
+      joinApproval: {
+        type: "boolean",
+        description: "true = private (joins need the leader's approval)",
+      },
     },
     required: ["id", "name", "memberCount", "createdAt", "admin"],
   },
@@ -2806,7 +2833,7 @@ export const openApiSchemas = {
         type: "string",
         example: "Priya Sharma",
         description:
-          "Creator display name, username fallback, `\"\"` when unresolved.",
+          'Creator display name, username fallback, `""` when unresolved.',
       },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
@@ -3592,12 +3619,23 @@ export const openApiSchemas = {
     properties: {
       id: { type: "string", format: "uuid" },
       name: { type: "string", example: "GIPHY_API_KEY" },
-      platform: { type: "string", enum: ["ALL", "ANDROID", "IOS", "WEB"], example: "WEB" },
+      platform: {
+        type: "string",
+        enum: ["ALL", "ANDROID", "IOS", "WEB"],
+        example: "WEB",
+      },
       maskedValue: { type: "string", example: "••••a1b2" },
       createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
       updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
-    required: ["id", "name", "platform", "maskedValue", "createdAt", "updatedAt"],
+    required: [
+      "id",
+      "name",
+      "platform",
+      "maskedValue",
+      "createdAt",
+      "updatedAt",
+    ],
   },
   AdminCustomCredentialList: {
     type: "array",
@@ -3629,7 +3667,12 @@ export const openApiSchemas = {
     description: "At least one of `name`, `platform`, `value`.",
     additionalProperties: false,
     properties: {
-      name: { type: "string", minLength: 2, maxLength: 64, pattern: "^[A-Z][A-Z0-9_]*$" },
+      name: {
+        type: "string",
+        minLength: 2,
+        maxLength: 64,
+        pattern: "^[A-Z][A-Z0-9_]*$",
+      },
       platform: { type: "string", enum: ["ALL", "ANDROID", "IOS", "WEB"] },
       value: { type: "string", minLength: 8, maxLength: 512 },
     },
@@ -3639,7 +3682,9 @@ export const openApiSchemas = {
       { $ref: "#/components/schemas/AdminCustomCredential" },
       {
         type: "object",
-        properties: { value: { type: "string", description: "The decrypted value." } },
+        properties: {
+          value: { type: "string", description: "The decrypted value." },
+        },
         required: ["value"],
       },
     ],
@@ -5595,7 +5640,8 @@ export const openApiSchemas = {
       fullyRolledOut: { type: "boolean" },
       enforceOnServer: {
         type: "boolean",
-        description: "When true, a FORCE client is refused with 426 APP_UPDATE_REQUIRED.",
+        description:
+          "When true, a FORCE client is refused with 426 APP_UPDATE_REQUIRED.",
       },
       store: {
         type: "object",
@@ -6344,12 +6390,6 @@ export const openApiSchemas = {
       creatorId: { type: "string", format: "uuid" },
       adminId: { type: "string", format: "uuid" },
       memberCount: { type: "integer", example: 1 },
-      memberLimit: {
-        type: "integer",
-        example: 256,
-        description:
-          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
-      },
       avatarUrl: {
         type: "string",
         format: "uri",
@@ -6465,7 +6505,6 @@ export const openApiSchemas = {
       "creatorId",
       "adminId",
       "memberCount",
-      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
       "coverUrl",
@@ -6742,12 +6781,6 @@ export const openApiSchemas = {
       handle: { type: "string" },
       type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
       memberCount: { type: "integer" },
-      memberLimit: {
-        type: "integer",
-        example: 256,
-        description:
-          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
-      },
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
@@ -6851,7 +6884,6 @@ export const openApiSchemas = {
       "handle",
       "type",
       "memberCount",
-      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
       "role",
@@ -6968,12 +7000,6 @@ export const openApiSchemas = {
         required: ["id", "name"],
       },
       memberCount: { type: "integer" },
-      memberLimit: {
-        type: "integer",
-        example: 256,
-        description:
-          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
-      },
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
@@ -7047,7 +7073,6 @@ export const openApiSchemas = {
       "type",
       "category",
       "memberCount",
-      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
       "isJoined",
@@ -7555,12 +7580,6 @@ export const openApiSchemas = {
       handle: { type: "string" },
       type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
       memberCount: { type: "integer" },
-      memberLimit: {
-        type: "integer",
-        example: 256,
-        description:
-          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
-      },
       avatarUrl: { type: "string", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
@@ -7571,7 +7590,6 @@ export const openApiSchemas = {
       "handle",
       "type",
       "memberCount",
-      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
     ],
@@ -9910,7 +9928,11 @@ export const openApiSchemas = {
       name: { type: "string", minLength: 1, maxLength: 100 },
       description: { type: "string", maxLength: 1000 },
       avatar: { type: "string" },
-      memberLimit: { type: "integer", minimum: 1, maximum: 256, default: 256 },
+      memberLimit: {
+        type: "integer",
+        deprecated: true,
+        description: "Ignored — every group holds 256 members (AIMESS-237).",
+      },
     },
     required: ["name"],
   },
@@ -12484,7 +12506,7 @@ export const openApiSchemas = {
   ChatPresence: {
     type: "object",
     description:
-      "Peer presence as THIS caller is allowed to see it. A peer whose whoCanSeeOnlineStatus excludes the caller returns isOnline:false, lastSeen:null and isHidden:true — render NO presence for it (no dot, no \"Offline\", no \"Last seen\").",
+      'Peer presence as THIS caller is allowed to see it. A peer whose whoCanSeeOnlineStatus excludes the caller returns isOnline:false, lastSeen:null and isHidden:true — render NO presence for it (no dot, no "Offline", no "Last seen").',
     properties: {
       userId: { type: "string" },
       isOnline: { type: "boolean" },

@@ -88,3 +88,51 @@ export function withinMessageTextLimit(
   if (!value || value.length <= max) return true;
   return value.length <= max * 4 && countCharacters(value) <= max;
 }
+
+// Control/format chars (zero-width spaces, joiners, bidi marks, BOM) plus blank-rendering letters (Hangul fillers, braille blank).
+const INVISIBLE_CHARS = /[\p{Cc}\p{Cf}ᅟᅠㅤﾠ⠀]/gu;
+// A ZWJ is only visible as part of an emoji sequence (👩‍💻), so it survives only between emoji.
+const STRAY_ZWJ =
+  /(?<![\p{Extended_Pictographic}\p{Emoji_Modifier}️])‍|‍(?![\p{Extended_Pictographic}])/gu;
+// A ZWNJ shapes Persian/Indic words (می‌خواهم), so it survives only between letters.
+const STRAY_ZWNJ = /(?<![\p{L}\p{M}])‌|‌(?!\p{L})/gu;
+
+// AIMESS-273: real scripts (Indic, Thai, Vietnamese, Hebrew) need ≤3 combining marks per letter; more is Zalgo.
+const EXCESS_COMBINING_MARKS = /(\p{M}{3})\p{M}+/gu;
+
+export function hasExcessCombiningMarks(value: string): boolean {
+  return /\p{M}{4}/u.test(value.normalize("NFC"));
+}
+
+export function capCombiningMarks(value: string): string {
+  return value.normalize("NFC").replace(EXCESS_COMBINING_MARKS, "$1");
+}
+
+/** First/last name as stored: NFC, Zalgo capped, invisible chars removed, whitespace runs collapsed, trimmed. */
+export function normalizePersonName(value: string): string {
+  return capCombiningMarks(stripInvisible(value))
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function stripInvisible(value: string): string {
+  return value
+    .replace(STRAY_ZWJ, "")
+    .replace(STRAY_ZWNJ, "")
+    .replace(INVISIBLE_CHARS, (c) => (c === "‍" || c === "‌" ? c : ""));
+}
+
+export type PersonNameError = "REQUIRED" | "INVALID" | "MAX_LENGTH";
+
+/** AIMESS-258/273: one name rule for every platform. REQUIRED = blank, INVALID = only invisible chars or stacked marks. */
+export function validatePersonName(raw: string): {
+  value: string;
+  error: PersonNameError | null;
+} {
+  if (raw.trim() === "") return { value: "", error: "REQUIRED" };
+  if (raw.length > TEXT_NAME_MAX_RAW_LENGTH) return { value: raw, error: "MAX_LENGTH" };
+  const value = normalizePersonName(raw);
+  if (value === "" || hasExcessCombiningMarks(stripInvisible(raw))) return { value, error: "INVALID" };
+  if (countCharacters(value) > TEXT_NAME_MAX_LENGTH) return { value, error: "MAX_LENGTH" };
+  return { value, error: null };
+}

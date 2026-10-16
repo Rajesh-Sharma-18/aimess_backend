@@ -64,6 +64,15 @@ import type {
   WarningsQuery,
 } from "../validators/community.validator.js";
 
+export const canCreateCommunity = asyncHandler(
+  async (req: Request, res: Response) => {
+    await communityService.assertCanCreate(req.auth.userId);
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse({ allowed: true }, t("COMMUNITY_CREATE_ALLOWED", req.locale)));
+  }
+);
+
 export const createCommunity = asyncHandler(
   async (req: Request, res: Response) => {
     const body = req.body as CreateCommunityInput;

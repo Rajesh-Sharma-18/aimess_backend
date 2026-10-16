@@ -330,7 +330,7 @@ describe("pins never carry pre-join content", () => {
         findActiveByRoomAndUser: jest.fn().mockResolvedValue(member),
       } as never,
       {} as never,
-      {} as never,
+      { getUserSnapshotsMap: jest.fn().mockResolvedValue(new Map()) } as never,
       {} as never
     );
 

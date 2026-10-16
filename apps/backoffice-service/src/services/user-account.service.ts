@@ -14,7 +14,10 @@ import type {
 } from "../api/validators/user-account.validator.js";
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import { authClient } from "../grpc/auth.client.js";
-import { getMediaConfirmClient } from "../grpc/media.client.js";
+import {
+  getMediaConfirmClient,
+  type MediaAvatarCategory,
+} from "../grpc/media.client.js";
 import { userClient, type AdminEditableProfile } from "../grpc/user.client.js";
 import { publishAdminUserNotifySafe } from "../messaging/publish-admin-user-notify.js";
 import type { RequestAdmin } from "../types/index.js";
@@ -117,11 +120,15 @@ const AVATAR_SCAN_POLL_MS = 1_000;
  * persists it (user-service refuses anything not CLEAN/SKIPPED). Skips confirm
  * when a previous attempt already cleared the object.
  */
-async function assertAvatarVerified(
+export async function assertAvatarVerified(
   userId: string,
-  objectKey: string
+  objectKey: string,
+  // Community / group avatars reuse this with their own prefix + category,
+  // `userId` then being the community / group id the key was minted under.
+  keyPrefix = "avatars",
+  category: MediaAvatarCategory = "USER_AVATAR"
 ): Promise<void> {
-  if (!assertObjectKeyOwnedBy(objectKey, "avatars", userId)) {
+  if (!assertObjectKeyOwnedBy(objectKey, keyPrefix, userId)) {
     throw new BadRequestError("INVALID_AVATAR_OBJECT_KEY");
   }
 
@@ -129,7 +136,7 @@ async function assertAvatarVerified(
   let verdict;
   try {
     if (await media.isDownloadable(objectKey)) return;
-    verdict = await media.confirmUpload(objectKey, userId, "USER_AVATAR");
+    verdict = await media.confirmUpload(objectKey, userId, category);
     for (
       let poll = 0;
       !verdict.downloadable &&

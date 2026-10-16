@@ -7,8 +7,10 @@ import {
   CommunityMemberRole,
   CommunityMemberStatus,
   CommunityModerationStatus,
+  CommunityStatus,
   CommunityType,
 } from "../generated/prisma/index.js";
+import { CLOSE_REASON_OWNER_CLOSED } from "../constants/index.js";
 import { communityRepository } from "../repositories/community.repository.js";
 import { communityService } from "../services/community.service.js";
 import { communityImageService } from "../services/community-image.service.js";
@@ -19,6 +21,19 @@ import {
   type CommunityNotificationPrefField,
 } from "../lib/community-notification-pref.js";
 import { getChatClient } from "./chat.client.js";
+
+/**
+ * Owner-axis close reason for the Super Admin RPCs. A plain owner close
+ * (app/web "Close community") writes no reason code, so report
+ * OWNER_CLOSED — otherwise the panel sees "" and lists it as Active.
+ */
+function adminClosedReasonCode(c: {
+  status: CommunityStatus | null;
+  statusClosedReasonCode: string | null;
+}): string {
+  if (c.statusClosedReasonCode) return c.statusClosedReasonCode;
+  return c.status === CommunityStatus.CLOSED ? CLOSE_REASON_OWNER_CLOSED : "";
+}
 
 /** Resolve the admin moderation "status" string of a community row, treating an
  * unset moderationStatus (legacy rows) as ACTIVE. SUSPENDED → "CLOSED". */
@@ -932,6 +947,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 communityType: "",
                 joinRequestPending: false,
                 membershipViaCode: false,
+                closed: false,
+                joinBlocked: false,
               };
             }
 
@@ -947,6 +964,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 communityType: "",
                 joinRequestPending: false,
                 membershipViaCode: false,
+                closed: false,
+                joinBlocked: false,
               };
             }
 
@@ -1032,6 +1051,9 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
               communityType: community.type,
               joinRequestPending,
               membershipViaCode,
+              closed: community.status === "CLOSED",
+              // A kick (LEFT + removedAt) may rejoin; only a ban locks the door.
+              joinBlocked: membership?.status === CommunityMemberStatus.BANNED,
             };
           })
         );
@@ -1302,7 +1324,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
               // Why it closed, on the OWNER status axis. `status` above is the
               // separate platform-moderation axis, so this is the only signal
               // that distinguishes a ban-close from an owner close.
-              statusClosedReasonCode: r.statusClosedReasonCode ?? "",
+              statusClosedReasonCode: adminClosedReasonCode(r),
             };
           })
         );
@@ -1498,7 +1520,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
             livestreamCount: 0, // STUB until stream-service is wired
             createdAt: c.createdAt instanceof Date ? c.createdAt.getTime() : 0,
             communityAvatarUrl: communityAvatarView?.url ?? "",
-            statusClosedReasonCode: c.statusClosedReasonCode ?? "",
+            statusClosedReasonCode: adminClosedReasonCode(c),
           },
           description: c.description ?? "",
           coverUrl: coverView?.url ?? "",
@@ -1801,6 +1823,72 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "adminSetModerationStatus failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Admin edit of community metadata. Business failures come back in `errorCode`.
+  adminUpdateCommunity: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          actorAdminId?: string;
+          name?: string;
+          hasName?: boolean;
+          description?: string;
+          hasDescription?: boolean;
+          avatarObjectKey?: string;
+          hasAvatar?: boolean;
+          categoryId?: string;
+          hasCategory?: boolean;
+          type?: string;
+          hasType?: boolean;
+        };
+        const communityId = (req.communityId || "").trim();
+        if (!communityId) {
+          callback(null, {
+            ok: false,
+            changedFields: [],
+            errorCode: "COMMUNITY_NOT_FOUND",
+          });
+          return;
+        }
+        const changedFields = await communityService.adminUpdate(
+          communityId,
+          req.actorAdminId?.trim() || "system",
+          {
+            ...(req.hasName ? { name: req.name ?? "" } : {}),
+            ...(req.hasDescription
+              ? { description: req.description?.trim() || null }
+              : {}),
+            ...(req.hasAvatar
+              ? { avatarObjectKey: req.avatarObjectKey ?? "" }
+              : {}),
+            ...(req.hasCategory ? { categoryId: req.categoryId ?? "" } : {}),
+            ...(req.hasType
+              ? { type: req.type === "PRIVATE" ? "PRIVATE" : "PUBLIC" }
+              : {}),
+          }
+        );
+        callback(null, { ok: true, changedFields, errorCode: "" });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            changedFields: [],
+            errorCode: err.messageKey,
+          });
+          return;
+        }
+        logger.error("adminUpdateCommunity gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminUpdateCommunity failed",
         } as grpc.ServiceError);
       }
     })();

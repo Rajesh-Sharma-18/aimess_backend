@@ -79,6 +79,7 @@ describe("group invite DM — message contract", () => {
       deepLink: `aimess://join-group?token=${TOKEN}`,
       alreadyJoined: false,
       status: "ACTIVE",
+      requiresApproval: false,
       canOpen: true,
     });
     // Nothing presentational is duplicated out of content.invitation.
@@ -115,6 +116,25 @@ describe("group invite DM — message contract", () => {
     );
   });
 
+  // AIMESS-265: the live card used to omit this, so clients drew "Join Group" until a reload.
+  it("marks a private group's live card requiresApproval, stored and broadcast alike", async () => {
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      name: "Greenary",
+      avatar: "",
+      memberCount: 3,
+      settings: { joinApproval: true },
+    });
+    await bulkSend();
+
+    const arg = mocks.privateMessageRepo.createMessage.mock.calls[0][0];
+    expect(arg.content.invitation.requiresApproval).toBe(true);
+    const publish = mocks.redis.publish.mock.calls.find(
+      (c: unknown[]) => c[0] === `conv:${PRIVATE_ROOM}`
+    );
+    expect(JSON.parse(publish![1] as string).data.content.invitation.requiresApproval).toBe(true);
+  });
+
   it("still delivers the DM to a recipient who is already a member", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
@@ -126,6 +146,28 @@ describe("group invite DM — message contract", () => {
       { userId: RECIPIENT, status: "SENT" },
     ]);
     expect(mocks.privateMessageRepo.createMessage).toHaveBeenCalled();
+  });
+
+  it("AIMESS-268: the caller can share the invite to their own self chat", async () => {
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue({
+      roomId: PRIVATE_ROOM,
+      participants: [TEST_USER_ID, TEST_USER_ID],
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/invite-links/room/${ROOM}/bulk-send`)
+      .set(bearer(makeAccessToken()))
+      .send({ userIds: [TEST_USER_ID], token: TOKEN });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.results).toEqual([{ userId: TEST_USER_ID, status: "SENT" }]);
+    expect(mocks.privateRoomRepo.findByParticipantsKey).toHaveBeenCalledWith(
+      `${TEST_USER_ID}:${TEST_USER_ID}`
+    );
+    expect(mocks.privateMessageRepo.createMessage.mock.calls[0][0]).toMatchObject({
+      senderId: TEST_USER_ID,
+      receiverId: TEST_USER_ID,
+    });
   });
 
   it("NEGATIVE: 404 for a token that does not belong to the room", async () => {

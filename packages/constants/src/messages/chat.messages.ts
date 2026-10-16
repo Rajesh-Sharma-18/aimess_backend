@@ -542,6 +542,11 @@ export const CHAT_MESSAGES = {
     en: "Group member limit reached",
     th: "กลุ่มมีสมาชิกครบจำนวนสูงสุดแล้ว",
   },
+  CHAT_GROUP_CREATE_ALLOWED: {
+    vi: "Bạn có thể tạo nhóm",
+    en: "You can create a group",
+    th: "คุณสามารถสร้างกลุ่มได้",
+  },
   CHAT_GROUP_CREATE_LIMIT_REACHED: {
     vi: "Bạn đã tạo tối đa số nhóm cho phép hôm nay. Vui lòng thử lại vào ngày mai.",
     en: "You've reached today's limit for creating groups. Please try again tomorrow.",

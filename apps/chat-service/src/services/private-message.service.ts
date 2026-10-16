@@ -21,6 +21,7 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import { assertAttachmentsVerified } from "../lib/attachment-guard.js";
+import { isObjectId } from "../lib/object-id.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import {
   buildMessagePreview,
@@ -45,6 +46,7 @@ import {
   toWireMessage,
   isCommunityInvitationMessage,
   buildCommunityInvitationAction,
+  type InviteCta,
   isGroupInvitationMessage,
   buildGroupInvitationAction,
   readInvitationContent,
@@ -125,7 +127,10 @@ import type { PrivateRoomRepository } from "../repositories/private-room.reposit
 import { isBlockedRoom } from "../lib/blocked-room.js";
 import type { PrivateMessageReportRepository } from "../repositories/private-message-report.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
-import type { CommunityReconcileClient } from "../grpc/community.client.js";
+import type {
+  CommunityInviteContext,
+  CommunityReconcileClient,
+} from "../grpc/community.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
@@ -140,7 +145,6 @@ import { resolveSystemActorName } from "../lib/localize-system-preview.js";
 import {
   isDeadLinkState,
   isGroupGoneState,
-  groupMembershipAppliesToInvitation,
   loadGroupInviteState,
 } from "../lib/group-invite-state.js";
 import {
@@ -149,6 +153,7 @@ import {
   inviteContentType,
   isPersonalizableSystemContentType,
   personalizePrivateSystemMessageForViewer,
+  hasVisibleText,
   withinMessageTextLimit,
 } from "@aimess/constants";
 import { chatOpenRoomKey, filterBannedUserIds } from "@aimess/redis";
@@ -242,6 +247,13 @@ export class PrivateMessageService {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
     if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS)) {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
+    }
+    if (
+      !params.forwardData &&
+      params.messageType?.toUpperCase() === "TEXT" &&
+      !hasVisibleText(params.content?.text)
+    ) {
+      throw new BadRequestError("CHAT_TEXT_REQUIRED");
     }
     assertAttachmentsValid(params.messageType, params.content?.files);
     // Every uploaded object referenced by the message must be verified, owned by
@@ -1097,7 +1109,17 @@ export class PrivateMessageService {
     // Bind the target to the room before anything is written. `findById`
     // already returns null for a non-ObjectId, which covers optimistic "tmp-…"
     // client ids as well as outright malformed input.
-    const target = await this.messageRepo.findById(params.lastMessageId);
+    // A client UUID (mobile sends uppercase) resolves within this room instead of silently no-oping.
+    const id = params.lastMessageId;
+    const target =
+      (await this.messageRepo.findById(id)) ??
+      (id && !isObjectId(id)
+        ? ((await this.messageRepo.findInRoomByClientMessageId(params.roomId, id)) ??
+          (await this.messageRepo.findInRoomByClientMessageId(
+            params.roomId,
+            id.toUpperCase()
+          )))
+        : null);
     if (!target || target.roomId !== params.roomId) return null;
     const acceptedSeq =
       typeof (target as { sequenceNumber?: number }).sequenceNumber === "number"
@@ -1107,7 +1129,7 @@ export class PrivateMessageService {
     const room = await this.roomRepo.markReadUpTo({
       roomId: params.roomId,
       userId: params.userId,
-      upToMessageId: params.lastMessageId,
+      upToMessageId: target.id,
       // Settings → Chat → Read Receipt at the instant of the READ. Off, the
       // read still happens (unread, badges, arming) but the exposable pointer
       // freezes, so nothing about it can be published now or later.
@@ -1586,7 +1608,8 @@ export class PrivateMessageService {
       }) &&
       message.receiverId
     ) {
-      this.roomRepo
+      // Awaited: the delete recalc reads the post-delete count right after this.
+      await this.roomRepo
         .decrementUnreadForMessage({
           roomId: message.roomId,
           recipientId: message.receiverId,
@@ -1642,7 +1665,7 @@ export class PrivateMessageService {
       throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
     if (message.messageType !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
-if (!params.content?.text?.trim())
+if (!hasVisibleText(params.content?.text))
       throw new BadRequestError("CHAT_TEXT_REQUIRED");
     if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS))
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
@@ -2832,17 +2855,18 @@ if (!params.content?.text?.trim())
         const code = String(sd.linkCode ?? "");
         queriesByKey.set(`${communityId}::${code}`, { communityId, code });
       }
+      const queryKeys = [...queriesByKey.keys()];
       const contexts = this.communityClient
         ? await this.communityClient.getCommunityInviteContexts(
             viewerId ?? "",
             [...queriesByKey.values()]
           )
         : [];
-      // Re-matched by communityId alone: `getCommunityInviteContexts` doesn't
-      // echo `code` back, and in practice every invite card for the same
-      // community on one page (one room/conversation) shares the same code.
-      const contextByCommunityId = new Map(
-        contexts.map((c) => [c.communityId, c])
+      // One context per query, in query order. Keyed by communityId+code: after
+      // a link reset the same page holds an old (revoked) and a new card for one
+      // community, and each must read its own link (AIMESS-268).
+      const contextByKey = new Map(
+        contexts.map((c, i) => [queryKeys[i], c])
       );
 
       for (const m of inviteMessages) {
@@ -2874,7 +2898,7 @@ if (!params.content?.text?.trim())
           stored?.deepLink ?? sd.inviteDeepLink ?? sd.inviteUrl ?? ""
         );
         const ctx = communityId
-          ? contextByCommunityId.get(communityId)
+          ? contextByKey.get(`${communityId}::${String(sd.linkCode ?? "")}`)
           : undefined;
         // What the row itself recorded about the link when the card was written.
         // Rows from before invitations carried structured content have none —
@@ -2895,15 +2919,9 @@ if (!params.content?.text?.trim())
                 ...base,
                 communityName: ctx.found ? ctx.communityName : communityName,
                 communityHandle: ctx.found ? ctx.communityHandle : null,
-                // Membership flips this card only when the membership belongs to
-                // THIS invitation — the code they were admitted with, or one
-                // that is still the community's live link. A card for a code
-                // that has since been reset keeps offering to join, so one join
-                // cannot rewrite every invitation ever sent for the community.
-                alreadyJoined: ctx.isMember && ctx.membershipViaCode !== false,
-                // Resolved per read alongside membership, so the card's button
-                // is right after a join, a cancel, an approval OR an admin
-                // "Add Member" — including on a cold reload.
+                // AIMESS-268: live view, same verdict as the landing — any active
+                // member sees View, a reset link reads Link Expired, a ban Can't join.
+                alreadyJoined: ctx.isMember,
                 communityType:
                   ctx.found && ctx.communityType === "PRIVATE"
                     ? "PRIVATE"
@@ -2913,16 +2931,8 @@ if (!params.content?.text?.trim())
                 joinRequestPending: ctx.found
                   ? Boolean(ctx.joinRequestPending)
                   : false,
-                // The LINK verdict is the card's OWN, frozen when it was sent —
-                // an admin resetting the community's link must not rewrite every
-                // invitation already sitting in every conversation. Membership
-                // and the pending request above stay live, because those are
-                // what the reader can still act on. A tap still tells the truth:
-                // redeeming a revoked code answers
-                // COMMUNITY_INVITE_LINK_REVOKED_ERROR and the client raises the
-                // "this invite link was reset" dialog. A community that is GONE
-                // is not a link state, so it still overrides.
-                status: ctx.found ? storedStatus : "DELETED",
+                status: !ctx.found || ctx.closed ? "DELETED" : ctx.linkStatus,
+                cta: communityInviteCta(ctx),
               })
             : // gRPC unresolved/unavailable — fail open using the message's own
               // stored data rather than telling every past invite it's dead.
@@ -2969,49 +2979,19 @@ if (!params.content?.text?.trim())
         // explicitly: a card whose token was revoked still knows which group it
         // points at, which is what keeps "View Group" working for a member.
         //
-        // A card is a record of ONE share, not a live view of the link it names.
-        // Read as such (see `GroupInviteStateInput.card`): the reset that killed
-        // this token must not rewrite an invitation already delivered, and the
-        // rejoin block belongs in the dialog the join raises, not on the button.
-        // The group itself, its capacity and its roster count stay live.
-        //
-        // `membershipApplies` is what keeps one join from rewriting every card:
-        // "View Group" is offered only by the invitation this membership
-        // actually came through, or by one that is still the group's live link.
+        // AIMESS-268: a card is a LIVE view, same verdict as the landing — a reset link reads
+        // Link Expired, a removed member Can't join, and any active member View.
         const deps = {
           inviteLinkRepo: this.groupInviteLinkRepo ?? null,
           roomRepo: this.groupRoomRepo,
           memberRepo: this.groupMemberRepo,
           joinRequestRepo: this.groupJoinRequestRepo ?? null,
         };
-        const [linkRow, memberRow] = await Promise.all([
-          token
-            ? ((await this.groupInviteLinkRepo?.findByToken(token)) ?? null)
-            : null,
-          groupId && viewerId
-            ? await this.groupMemberRepo.findByRoomAndUser(groupId, viewerId)
-            : null,
-        ]);
         const { state, room, requiresApproval } = await loadGroupInviteState<
           { roomId: string; name: string; avatar: string; memberCount: number },
           { roomId: string },
           { status?: string | null }
-        >(deps, {
-          token,
-          roomId: groupId,
-          viewerId,
-          card: {
-            membershipApplies: groupMembershipAppliesToInvitation({
-              cardToken: token,
-              joinedViaToken: (
-                memberRow as { joinedViaToken?: string | null } | null
-              )?.joinedViaToken,
-              link: linkRow as {
-                status?: string | null;
-              } | null,
-            }),
-          },
-        });
+        >(deps, { token, roomId: groupId, viewerId });
         const alreadyJoined = state === "ALREADY_MEMBER";
         // Legacy LINK-only status, kept for clients that predate `state`. It
         // cannot express the group/capacity/block cases at all — that is exactly
@@ -3191,4 +3171,14 @@ if (!params.content?.text?.trim())
       };
     });
   }
+}
+
+/** AIMESS-268 card order: closed → member → pending (outlives a reset) → expired → banned → join. */
+function communityInviteCta(ctx: CommunityInviteContext): InviteCta {
+  if (!ctx.found || ctx.closed) return "closed";
+  if (ctx.isMember) return "view";
+  if (ctx.joinRequestPending) return "cancel_request";
+  if (ctx.linkStatus !== "ACTIVE") return "expired";
+  if (ctx.joinBlocked) return "cant_join";
+  return ctx.communityType === "PRIVATE" ? "request" : "join";
 }

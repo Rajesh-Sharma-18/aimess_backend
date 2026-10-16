@@ -4,8 +4,8 @@ import {
   countCharacters,
   TEXT_CUSTOM_STATUS_MAX_LENGTH,
   TEXT_CUSTOM_STATUS_MAX_RAW_LENGTH,
-  TEXT_NAME_MAX_LENGTH,
-  TEXT_NAME_MAX_RAW_LENGTH,
+  validatePersonName,
+  normalizeVisibleText,
 } from "@aimess/constants";
 
 import {
@@ -14,22 +14,16 @@ import {
 } from "../../lib/profile-fields.util.js";
 import { usernameSchema } from "./username.validator.js";
 
-/**
- * First/last name: at most 30 CHARACTERS as the person sees them.
- *
- * `.max()` alone counts UTF-16 code units, which would hand a Thai or emoji
- * name half the field — so the cheap raw cap only keeps a pathological string
- * away from the segmenter, and the real limit is the grapheme count. Validated
- * AFTER `.trim()`, matching how the value is stored. Both messages are message
- * KEYS: `validateBody` renders them in the caller's locale.
- */
-const personNameSchema = (requiredMessage: string, maxMessage: string) =>
-  z
-    .string()
-    .trim()
-    .min(1, requiredMessage)
-    .max(TEXT_NAME_MAX_RAW_LENGTH, maxMessage)
-    .refine((v) => countCharacters(v) <= TEXT_NAME_MAX_LENGTH, maxMessage);
+// AIMESS-258: stored value is the normalized name (invisible chars stripped, spaces collapsed, trimmed).
+const personNameSchema = (field: "FIRST" | "LAST") =>
+  z.string().transform((raw, ctx) => {
+    const { value, error } = validatePersonName(raw);
+    if (error) {
+      ctx.addIssue({ code: "custom", message: `VALIDATION_${field}_NAME_${error}` });
+      return z.NEVER;
+    }
+    return value;
+  });
 
 const dateOfBirthSchema = z
   .string()
@@ -76,18 +70,12 @@ export type PublicProfileQuery = z.infer<typeof publicProfileQuerySchema>;
 
 export const updateProfileSchema = z
   .object({
-    firstName: personNameSchema(
-      "First name is required",
-      "VALIDATION_FIRST_NAME_MAX_LENGTH"
-    ).optional(),
-    lastName: personNameSchema(
-      "Last name is required",
-      "VALIDATION_LAST_NAME_MAX_LENGTH"
-    ).optional(),
+    firstName: personNameSchema("FIRST").optional(),
+    lastName: personNameSchema("LAST").optional(),
     username: usernameSchema.optional(),
     bio: z
       .string()
-      .trim()
+      .overwrite(normalizeVisibleText)
       .max(280, "Bio must be at most 280 characters")
       .nullable()
       .optional(),
@@ -132,7 +120,7 @@ export const setCustomStatusSchema = z
       .transform(emptyToNull),
     text: z
       .string({ error: "USER_CUSTOM_STATUS_TEXT_INVALID" })
-      .trim()
+      .overwrite(normalizeVisibleText)
       .max(TEXT_CUSTOM_STATUS_MAX_RAW_LENGTH, "USER_CUSTOM_STATUS_TEXT_TOO_LONG")
       .refine((v) => !CONTROL_CHARS.test(v), "USER_CUSTOM_STATUS_TEXT_INVALID")
       .refine(

@@ -64,19 +64,22 @@ async function fetchLiveStreamCount(communityId: string): Promise<number> {
 
 /**
  * Super Admin status for a community row. `status` from community-service is
- * the platform-moderation axis; a community that closed because its last
- * member (the admin) left is closed on the owner axis only, so without this it
- * would list as ACTIVE with 0 members. It is shown CLOSED, and since nobody is
- * left in it, there is nothing to close or reopen from here.
+ * the platform-moderation axis; a community closed on the OWNER axis (owner
+ * closed it, owner banned, or its last member left — any non-empty
+ * statusClosedReasonCode, OWNER_CLOSED for a plain close) keeps moderation
+ * ACTIVE, so without this it would list as ACTIVE with a Close button. It is
+ * shown CLOSED. Reopen stays a platform action: only offered when the
+ * platform itself closed it, and never for LAST_MEMBER_LEFT (nobody is left).
  */
 function adminRowStatus(r: {
   status: string;
   statusClosedReasonCode?: string;
-}): { status: CommunityModerationStatus; closedByLastMember: boolean } {
-  const closedByLastMember = r.statusClosedReasonCode === "LAST_MEMBER_LEFT";
+}): { status: CommunityModerationStatus; canReopen: boolean } {
+  const platformClosed = r.status === "CLOSED";
   return {
-    status: (closedByLastMember ? "CLOSED" : r.status) as CommunityModerationStatus,
-    closedByLastMember,
+    status: (r.statusClosedReasonCode ? "CLOSED" : r.status) as CommunityModerationStatus,
+    canReopen:
+      platformClosed && r.statusClosedReasonCode !== "LAST_MEMBER_LEFT",
   };
 }
 
@@ -123,7 +126,7 @@ async function rowToListItem(
   /** LIVE stream count from stream-service; the gRPC row's own field is a stub. */
   liveStreamCount: number
 ): Promise<CommunityListItem> {
-  const { status, closedByLastMember } = adminRowStatus(r);
+  const { status, canReopen } = adminRowStatus(r);
   const [adminAvatar, avatar] = await Promise.all([
     resolveAvatarOrNull(r.adminAvatarUrl),
     resolveCommunityImageOrNull(r.communityAvatarUrl),
@@ -154,7 +157,7 @@ async function rowToListItem(
     actions: {
       canView: true,
       canClose: status === "ACTIVE",
-      canReopen: status === "CLOSED" && !closedByLastMember,
+      canReopen,
     },
   };
 }

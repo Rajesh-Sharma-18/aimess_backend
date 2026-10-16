@@ -1,9 +1,22 @@
 import { z } from "zod";
 
+import { validatePersonName } from "@aimess/constants";
+
+// AIMESS-258: same name rule as the user's own profile edit (user-service personNameSchema).
+const personNameSchema = (field: "FIRST" | "LAST") =>
+  z.string().transform((raw, ctx) => {
+    const { value, error } = validatePersonName(raw);
+    if (error) {
+      ctx.addIssue({ code: "custom", message: `VALIDATION_${field}_NAME_${error}` });
+      return z.NEVER;
+    }
+    return value;
+  });
+
 export const updateUserAccountSchema = z
   .object({
-    firstName: z.string().max(200).optional(),
-    lastName: z.string().max(200).optional(),
+    firstName: personNameSchema("FIRST").optional(),
+    lastName: personNameSchema("LAST").optional(),
     username: z.string().max(64).optional(),
     bio: z.string().max(1000).nullable().optional(),
     dateOfBirth: z.string().max(10).optional(),

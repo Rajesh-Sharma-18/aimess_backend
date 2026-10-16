@@ -2699,6 +2699,51 @@ export function createMessagingImpl(
       })();
     },
 
+    // Admin Group Management: edit name / description / avatar / privacy.
+    adminUpdateGroup: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            groupId?: string;
+            actorAdminId?: string;
+            name?: string;
+            hasName?: boolean;
+            description?: string;
+            hasDescription?: boolean;
+            avatar?: string;
+            hasAvatar?: boolean;
+            joinApproval?: boolean;
+            hasJoinApproval?: boolean;
+          };
+          const result = await deps.adminGroupService.updateGroup(
+            req.groupId ?? "",
+            req.actorAdminId ?? "",
+            {
+              ...(req.hasName ? { name: req.name ?? "" } : {}),
+              ...(req.hasDescription
+                ? { description: req.description ?? "" }
+                : {}),
+              ...(req.hasAvatar ? { avatar: req.avatar ?? "" } : {}),
+              ...(req.hasJoinApproval
+                ? { joinApproval: req.joinApproval === true }
+                : {}),
+            }
+          );
+          callback(null, result);
+        } catch (err) {
+          if (isAppError(err)) {
+            callback(null, { ok: false, found: true, errorCode: err.messageKey });
+            return;
+          }
+          logger.error(`gRPC adminUpdateGroup error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     // Admin Group Moderation: group-side cascade of a permanent system ban —
     // owned groups CLOSED, every other membership ended. Never throws to the
     // caller: backoffice treats this leg as best-effort, so a partial failure
@@ -4757,7 +4802,7 @@ export function createCommunityImpl(
               await deps.communityMessageService.recalculateLastMessageAfterDelete(
                 result.roomId,
                 req.messageId,
-                { reactionRetired }
+                { reactionRetired, repaint: true }
               );
             if (forEveryoneRecalc !== null) {
               // Persist the ROLLED-BACK activity — the previous visible

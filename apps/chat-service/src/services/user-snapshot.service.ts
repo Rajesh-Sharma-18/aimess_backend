@@ -1,4 +1,4 @@
-import { DELETED_ACCOUNT_DISPLAY_NAME } from "@aimess/constants";
+import { DELETED_ACCOUNT_DISPLAY_NAME, hasVisibleText } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
 import { isUserId } from "../lib/room-id.js";
@@ -72,7 +72,7 @@ export function resolveDisplayName(
     snapshot.memberId,
   ];
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
+    if (typeof candidate === "string" && hasVisibleText(candidate)) {
       return candidate;
     }
   }
@@ -100,7 +100,7 @@ export function resolveRealDisplayName(
     snapshot.username,
     snapshot.memberId,
   ]) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
+    if (typeof candidate === "string" && hasVisibleText(candidate)) {
       return candidate;
     }
   }

@@ -16,6 +16,7 @@
     "lint": "eslint .",
     "backfill:profile-completion": "tsx scripts/backfill-profile-completion.ts",
     "db:backfill:normalized-search": "tsx scripts/backfill-normalized-search-fields.ts",
+    "db:cleanup:stacked-name-marks": "tsx scripts/cleanup-stacked-name-marks.ts",
     "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs"
   },
   "keywords": [],

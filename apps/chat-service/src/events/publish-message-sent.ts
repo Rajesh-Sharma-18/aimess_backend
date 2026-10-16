@@ -7,6 +7,8 @@ import { filterBannedUserIds } from "@aimess/redis";
 import { prisma } from "../config/prisma.js";
 import { redis } from "../config/redis.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
+import { fetchAccountsBatch, fetchUsersBatch } from "../lib/user-service-client.js";
+import { normalizePersonName } from "@aimess/constants";
 
 /**
  * V2 §4: durable queue carrying "a message was sent" to notifications-service,
@@ -178,6 +180,11 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
       // carry a full, usable avatar URL, never a raw object key. Best-effort and
       // not persisted (notifications-service forwards this into the FCM payload).
       const senderAvatar = await resolveMediaUrl(p.senderAvatar);
+      // Several producers pass "" for the sender; the tray then reads "Someone".
+      // Blank = blank by the AIMESS-258 name rule (invisible-only names included).
+      const senderName =
+        normalizePersonName(p.senderName ?? "") ||
+        (await senderNameFallback(p.senderId));
       const previewImageUrl = p.previewImageKey
         ? await resolveMediaUrl(p.previewImageKey).catch(() => "")
         : "";
@@ -217,7 +224,7 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
         messageId: p.messageId,
         clientMessageId: p.clientMessageId,
         senderId: p.senderId,
-        senderName: p.senderName,
+        senderName,
         senderAvatar,
         // Group/community identity: resolved fresh from the room row above on
         // every send. These were declared on the payload but never copied onto
@@ -318,3 +325,17 @@ export {
   buildPushPreview,
   convertMessageToPreview,
 } from "../services/message-preview.service.js";
+
+/** Display name, else handle, else account name — never "" for a real sender. */
+async function senderNameFallback(senderId: string | undefined): Promise<string> {
+  if (!senderId) return "";
+  try {
+    const user = (await fetchUsersBatch([senderId]))?.[0];
+    const name =
+      normalizePersonName(user?.displayName ?? "") || user?.username?.trim();
+    if (name) return name;
+    return (await fetchAccountsBatch([senderId]))?.[0]?.account?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}

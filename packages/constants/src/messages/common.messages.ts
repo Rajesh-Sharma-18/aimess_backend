@@ -192,6 +192,27 @@ export const COMMON_MESSAGES = {
     en: "Maximum surname length is 30 characters",
     th: "นามสกุลต้องมีความยาวไม่เกิน 30 ตัวอักษร",
   },
+  VALIDATION_FIRST_NAME_REQUIRED: {
+    vi: "Vui lòng nhập tên.",
+    en: "First name is required.",
+    th: "กรุณากรอกชื่อ",
+  },
+  VALIDATION_LAST_NAME_REQUIRED: {
+    vi: "Vui lòng nhập họ.",
+    en: "Last name is required.",
+    th: "กรุณากรอกนามสกุล",
+  },
+  /** AIMESS-258: the name is made only of invisible characters (zero-width space, Hangul filler…). */
+  VALIDATION_FIRST_NAME_INVALID: {
+    vi: "Vui lòng nhập tên hợp lệ.",
+    en: "Please enter a valid first name.",
+    th: "กรุณากรอกชื่อที่ถูกต้อง",
+  },
+  VALIDATION_LAST_NAME_INVALID: {
+    vi: "Vui lòng nhập họ hợp lệ.",
+    en: "Please enter a valid last name.",
+    th: "กรุณากรอกนามสกุลที่ถูกต้อง",
+  },
   VALIDATION_ACCOUNT_MAX_LENGTH: {
     vi: "Độ dài tối đa của tên tài khoản là 30 ký tự",
     en: "Maximum account name length is 30 characters",

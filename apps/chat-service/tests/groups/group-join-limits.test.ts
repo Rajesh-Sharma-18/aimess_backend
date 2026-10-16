@@ -11,7 +11,6 @@ import request from "supertest";
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 import {
-  groupMembershipAppliesToInvitation,
   resolveGroupInviteState,
   type GroupInviteStateInput,
 } from "../../src/lib/group-invite-state.js";
@@ -126,155 +125,40 @@ describe("resolveGroupInviteState — priority table", () => {
     }
   });
 
-  // `card` is the in-chat invitation CARD: a record of ONE share, not a live
-  // view of the link. Both the LINK verdict and the viewer's own rejoin block
-  // are suppressed, and membership counts only for the invitation it came from.
-  describe("card — the historical invitation card", () => {
+  // AIMESS-268: the in-chat card reads the SAME live verdict as the landing.
+  describe("AIMESS-268 — the card is a live view", () => {
     const dead = {
       status: "REVOKED",
       expiresAt: null,
       maxUses: null,
       usedCount: 0,
     };
-    const mine = { membershipApplies: true };
 
-    it("reads a revoked link as still joinable", () => {
-      expect(
-        resolveGroupInviteState({ ...base, link: dead, card: mine })
-      ).toBe("CAN_JOIN");
+    it("a reset link reads Link Expired on every old card", () => {
+      expect(resolveGroupInviteState({ ...base, link: dead })).toBe(
+        "LINK_REVOKED"
+      );
     });
 
-    it("still reports capacity and a dead group", () => {
-      expect(
-        resolveGroupInviteState({
-          ...base,
-          link: dead,
-          room: { status: "ACTIVE", memberCount: 256, memberLimit: 256 },
-          card: mine,
-        })
-      ).toBe("GROUP_FULL");
-      expect(
-        resolveGroupInviteState({
-          ...base,
-          link: dead,
-          room: { status: "DISBANDED", memberCount: 3 },
-          card: mine,
-        })
-      ).toBe("GROUP_DISBANDED");
-    });
-
-    // The card keeps the ordinary button for a removed user: the server still
-    // refuses the join (addMember / assertJoinableState), and the refusal is
-    // delivered by that refusal, in a dialog.
-    it("does NOT pre-announce the rejoin block — the join reports it", () => {
+    it("a removed or banned user reads Can't join", () => {
       for (const status of ["KICKED", "BANNED"]) {
-        expect(
-          resolveGroupInviteState({
-            ...base,
-            membership: { status },
-            card: mine,
-          })
-        ).toBe("CAN_JOIN");
-        // Every other surface still answers it up front.
         expect(
           resolveGroupInviteState({ ...base, membership: { status } })
         ).toBe("JOIN_BLOCKED");
       }
     });
 
-    it("still reports membership for the invitation it came from", () => {
+    it("any active member reads View, whichever link they joined with", () => {
       expect(
         resolveGroupInviteState({
           ...base,
           link: dead,
           membership: { status: "ACTIVE" },
-          card: mine,
         })
       ).toBe("ALREADY_MEMBER");
     });
-
-    // The regression this exists for: joining through a NEW link must not turn
-    // the cards for older, reset links into "View Group".
-    it("offers to join when the membership came from a DIFFERENT invitation", () => {
-      expect(
-        resolveGroupInviteState({
-          ...base,
-          link: dead,
-          membership: { status: "ACTIVE" },
-          card: { membershipApplies: false },
-        })
-      ).toBe("CAN_JOIN");
-    });
-
-    it("a card with no token has nothing to offer, historical or not", () => {
-      expect(
-        resolveGroupInviteState({
-          ...base,
-          link: null,
-          hasToken: false,
-          card: mine,
-        })
-      ).toBe("LINK_NOT_FOUND");
-    });
   });
 
-  // Which invitation does a membership belong to? (Scenarios C and D.)
-  describe("groupMembershipAppliesToInvitation", () => {
-    const live = { status: "ACTIVE" };
-    const revoked = { status: "REVOKED" };
-
-    it("yes for the token they actually joined with, reset or not", () => {
-      expect(
-        groupMembershipAppliesToInvitation({
-          cardToken: "ABV",
-          joinedViaToken: "ABV",
-          link: revoked,
-        })
-      ).toBe(true);
-    });
-
-    it("no for an older, reset invitation once they joined through a newer one", () => {
-      expect(
-        groupMembershipAppliesToInvitation({
-          cardToken: "ABC",
-          joinedViaToken: "ABV",
-          link: revoked,
-        })
-      ).toBe(false);
-    });
-
-    // Covers every membership no link produced: an admin add, the creator, and
-    // rows written before the field existed.
-    it("yes for a card whose link is still the group's live one", () => {
-      expect(
-        groupMembershipAppliesToInvitation({
-          cardToken: "ABV",
-          joinedViaToken: null,
-          link: live,
-        })
-      ).toBe(true);
-    });
-
-    it("no for a reset link when nothing says they used it", () => {
-      expect(
-        groupMembershipAppliesToInvitation({
-          cardToken: "ABC",
-          joinedViaToken: null,
-          link: revoked,
-        })
-      ).toBe(false);
-    });
-
-    it("a tokenless legacy card keeps the old behaviour", () => {
-      expect(
-        groupMembershipAppliesToInvitation({
-          cardToken: null,
-          joinedViaToken: null,
-          link: null,
-        })
-      ).toBe(true);
-    });
-  });
 
   it("the GROUP outranks the link — a dead group is not a link problem", () => {
     const dead = {
@@ -350,7 +234,7 @@ describe("resolveGroupInviteState — priority table", () => {
     ).toBe("CAN_JOIN");
   });
 
-  it("a room's own memberLimit can only LOWER the cap, never raise it", () => {
+  it("every group is capped at exactly 256, whatever legacy memberLimit it stores", () => {
     // Legacy row from when the schema allowed 5000.
     expect(
       resolveGroupInviteState({
@@ -362,13 +246,13 @@ describe("resolveGroupInviteState — priority table", () => {
         },
       })
     ).toBe("GROUP_FULL");
-    // A deliberately smaller group is still honoured.
+    // A legacy smaller limit (Android's old 50) no longer blocks below 256.
     expect(
       resolveGroupInviteState({
         ...base,
-        room: { status: "ACTIVE", memberCount: 10, memberLimit: 10 },
+        room: { status: "ACTIVE", memberCount: 50, memberLimit: 50 },
       })
-    ).toBe("GROUP_FULL");
+    ).toBe("CAN_JOIN");
   });
 });
 

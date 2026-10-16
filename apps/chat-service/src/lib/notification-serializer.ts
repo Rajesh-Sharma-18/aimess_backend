@@ -10,6 +10,7 @@ import {
   t,
   type SupportedLocale,
 } from "@aimess/constants";
+import { legacyCopyTickets } from "./legacy-notification-copy.js";
 
 import type { Notification } from "../generated/prisma/index.js";
 
@@ -244,7 +245,7 @@ export interface AvatarRefreshMaps {
     string,
     { displayName: string; avatarUrl: string; isDeleted?: boolean }
   >;
-  communityById: Map<string, { name: string; avatarUrl: string }>;
+  communityById: Map<string, { name: string; avatarUrl?: string }>;
 }
 
 const EMPTY_REFRESH: AvatarRefreshMaps = {
@@ -369,6 +370,30 @@ function localizeRow(
   };
 }
 
+/** Replay tickets rebuilt for a pre-ticket row (AIMESS-72), from the names known right now. */
+function legacyTicketsFor(
+  row: Notification,
+  data: Record<string, string>,
+  viewerId: string,
+  refresh: AvatarRefreshMaps
+): Record<string, string> {
+  const snap = parseJson(data.actorSnapshot) as { displayName?: string } | undefined;
+  const fresh = row.actorId ? refresh.actorById.get(row.actorId) : undefined;
+  const tickets = legacyCopyTickets(row.type, data, {
+    viewerId,
+    actorId: row.actorId,
+    actorName:
+      (fresh && !fresh.isDeleted ? fresh.displayName : undefined) ||
+      snap?.displayName ||
+      data.requesterDisplayName ||
+      data.actorDisplayName,
+    communityName: data.communityId
+      ? refresh.communityById.get(data.communityId)?.name
+      : undefined,
+  });
+  return Object.fromEntries(Object.entries(tickets).filter(([, v]) => v)) as Record<string, string>;
+}
+
 /** The same actor-name keys the deleted-actor scrub blanks, set to the CURRENT name instead. */
 function withActorName(
   data: Record<string, string>,
@@ -429,7 +454,10 @@ export async function serializeNotification(
           ),
         }
       : rawPayload;
-  const storedData = storedPayload.data ?? {};
+  const rowData = storedPayload.data ?? {};
+  const storedData = rowData[COPY_REF_KEY]
+    ? rowData
+    : { ...rowData, ...legacyTicketsFor(row, rowData, viewerId, refresh) };
   const localized = localizeRow(storedData, locale, viewerId);
   // The re-rendered sentence replaces the stored one for every downstream step
   // — the deleted-actor scrub and the stale-name refresh both rewrite prose, and

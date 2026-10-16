@@ -35,6 +35,8 @@ interface RateLimitOptions {
   subKey?: (req: Request) => string | undefined;
   /** Refusal code; defaults to the generic RATE_LIMITED. */
   messageKey?: string;
+  /** Only report whether one more request would pass; consumes nothing (pre-flight checks). */
+  peek?: boolean;
 }
 
 /** Log once per fail-open so a silent Redis outage is visible in the logs. */
@@ -203,6 +205,37 @@ export async function consumeRateLimit({
   }
 }
 
+/** Would one more token fit in the window? Reads only; on a Redis problem it answers from the write fallback counter. */
+export async function peekRateLimit({
+  keyPrefix,
+  identifier,
+  windowMs,
+  maxRequests,
+}: ConsumeRateLimitParams): Promise<{ allowed: boolean; retryAfterSec: number }> {
+  const key = `rl:${keyPrefix}:${identifier}`;
+  const now = Date.now();
+  try {
+    await redis.zremrangebyscore(key, 0, now - windowMs);
+    if ((await redis.zcard(key)) < maxRequests) return { allowed: true, retryAfterSec: 0 };
+    const oldest = await redis.zrange(key, 0, 0, "WITHSCORES");
+    const oldestTs = oldest.length >= 2 ? Number(oldest[1]) : now;
+    return {
+      allowed: false,
+      retryAfterSec: Math.max(1, Math.ceil((oldestTs + windowMs - now) / 1000)),
+    };
+  } catch (err) {
+    logFailOpen(keyPrefix, "peek_failed", err);
+    const fallback = fallbackCounters.get(key);
+    if (fallback && fallback.resetAt > now && fallback.count >= maxRequests) {
+      return {
+        allowed: false,
+        retryAfterSec: Math.max(1, Math.ceil((fallback.resetAt - now) / 1000)),
+      };
+    }
+    return { allowed: true, retryAfterSec: 0 };
+  }
+}
+
 /**
  * Sliding-window rate limiter backed by a Redis sorted set.
  * Returns Express middleware that enforces the given limits.
@@ -221,6 +254,7 @@ export function createRateLimit({
   onCacheError = "open",
   subKey,
   messageKey = "RATE_LIMITED",
+  peek = false,
 }: RateLimitOptions) {
   return async (
     req: Request,
@@ -235,7 +269,7 @@ export function createRateLimit({
     const identifier = sub ? `${caller}:${sub}` : caller;
     const tokens = Math.max(1, cost ? cost(req) : 1);
 
-    const { allowed, retryAfterSec } = await consumeRateLimit({
+    const { allowed, retryAfterSec } = await (peek ? peekRateLimit : consumeRateLimit)({
       keyPrefix,
       identifier,
       windowMs,

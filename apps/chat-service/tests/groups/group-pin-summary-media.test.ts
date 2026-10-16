@@ -35,7 +35,7 @@ function makeService(pin: unknown, live: unknown) {
     {} as never,
     {} as never,
     {} as never,
-    {} as never,
+    { getUserSnapshotsMap: jest.fn().mockResolvedValue(new Map()) } as never,
     {} as never
   );
 }

@@ -86,7 +86,6 @@ import {
 import {
   CLOSE_REASON_ADMIN_BANNED,
   CLOSE_REASON_LAST_MEMBER_LEFT,
-  COMMUNITY_MEMBER_LIMIT,
 } from "../constants/index.js";
 import { isCommunityMuted } from "../lib/community-notification-pref.js";
 import { touchAdminActivity } from "../lib/admin-activity.js";
@@ -727,6 +726,16 @@ export function chatLastMessageToActivity(chat: {
       };
 }
 
+/** Swap a sender-prefixed activity's frozen name for the live one; sender-less lines and unknown senders pass through. */
+export function withLiveSenderName(
+  activity: CommunityLastActivity,
+  liveNames: Map<string, string>
+): CommunityLastActivity {
+  if (activity.username === null || !activity.userId) return activity;
+  const live = liveNames.get(activity.userId);
+  return live ? { ...activity, username: live } : activity;
+}
+
 /** The empty per-viewer state: the viewer has hidden every visible message. A
  *  sender-less, timestamp-zero system line so any real personal line (e.g. "You
  *  joined the community") still wins the subsequent personal overlay. */
@@ -1134,7 +1143,6 @@ async function toCommunityData(
     creatorId: community.creatorId,
     adminId: community.adminId,
     memberCount: community.memberCount,
-    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     avatar,
@@ -1324,7 +1332,6 @@ async function toDiscoverItem(
       name: localizeCategoryName(community.category.name),
     },
     memberCount: community.memberCount,
-    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     avatar,
@@ -1557,7 +1564,6 @@ async function toEmbeddedCommunitySummary(community: {
     handle: community.handle,
     type: community.type,
     memberCount: community.memberCount,
-    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     avatar,
@@ -2061,6 +2067,16 @@ async function enrichMineCommunities(
     fetchLiveStreamCounts(communityIds),
     getStreamClient().checkCreatorHasActiveStream(userId),
   ]);
+  // chat-service's per-viewer last message carries the name frozen on the
+  // message row, so its sender needs the same live lookup.
+  const chatSenderIds = [...chatMap.values()]
+    .map((c) => c.lastMessage?.userId)
+    .filter((id): id is string => Boolean(id) && !senderNameMap.has(id!));
+  if (chatSenderIds.length > 0) {
+    const more =
+      await communityRepository.getDisplayNamesByUserIds(chatSenderIds);
+    for (const [id, name] of more) senderNameMap.set(id, name);
+  }
 
   return Promise.all(
     pageRows.map(async (row) => {
@@ -2098,12 +2114,6 @@ async function enrichMineCommunities(
         lastActivityAt: row.lastActivityAt.getTime(),
         lastActivity: buildLastActivity({
           ...row,
-          // Prefer the live member-snapshot name; fall back to the stored
-          // value when the sender has since left every community.
-          lastActivityUsername:
-            (row.lastActivityUserId
-              ? senderNameMap.get(row.lastActivityUserId)
-              : null) ?? row.lastActivityUsername,
           // Self-referential SYSTEM line (role change / join): the viewer who
           // IS the subject sees the first-person "You …" preview; everyone
           // else keeps the third-person text.
@@ -2153,7 +2163,6 @@ async function enrichMineCommunities(
         handle: row.handle,
         type: row.type,
         memberCount: row.memberCount,
-        memberLimit: COMMUNITY_MEMBER_LIMIT,
         avatarUrl: avatarView?.url ?? null,
         avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
         avatar,
@@ -2161,7 +2170,7 @@ async function enrichMineCommunities(
         lastActivityAt,
         unreadMessageCount: chat.unreadMessageCount,
         firstUnreadMessageId: chat.firstUnreadMessageId,
-        lastActivity,
+        lastActivity: withLiveSenderName(lastActivity, senderNameMap),
         ...muteFields(muteMap.get(row.id) ?? null),
         // A banned member no longer has realtime standing in the community —
         // livestream state (inherently "right now", not historical) is hidden
@@ -2533,16 +2542,20 @@ export const communityService = {
     };
   },
 
-  async create(
-    creatorId: string,
-    input: CreateCommunityInput
-  ): Promise<CommunityData> {
+  async assertCanCreate(creatorId: string): Promise<void> {
     if (
       (await communityRepository.countOwnedCommunities(creatorId)) >=
       MAX_OWNED_COMMUNITIES
     ) {
       throw new BadRequestError("COMMUNITY_CREATE_LIMIT_REACHED");
     }
+  },
+
+  async create(
+    creatorId: string,
+    input: CreateCommunityInput
+  ): Promise<CommunityData> {
+    await this.assertCanCreate(creatorId);
 
     const name = normalizeName(input.name);
     const handle = normalizeHandle(input.handle);
@@ -2955,17 +2968,65 @@ export const communityService = {
     community: CommunityData;
     changedFields: string[];
   }> {
+    const changedFields = await this.applyCommunityUpdate(
+      communityId,
+      callerId,
+      input,
+      false
+    );
+    // Same caller view as GET /communities/:id. Building it from `updated` alone
+    // defaulted every field this method doesn't own — liveStreams to [] (so
+    // isLive:false mid-stream), the caller's mute + notification switches to
+    // their defaults — and a client that cached the response dropped Live /
+    // Watch Now and flipped the toggles on every edit.
+    return {
+      community: await this.getById(communityId, callerId),
+      changedFields,
+    };
+  },
+
+  /**
+   * Admin panel edit — trusted platform-admin variant of {@link updateWithChanges}.
+   * No membership gate (the caller is backoffice-service); system lines read
+   * "AI Mess Administrator"; backoffice writes the canonical admin audit row,
+   * so the admin_db mirror is skipped. Avatar keys are minted under the
+   * community id (`community/avatar/{communityId}/…`), not a user id.
+   */
+  async adminUpdate(
+    communityId: string,
+    actorAdminId: string,
+    input: Pick<
+      UpdateCommunityInput,
+      "name" | "description" | "avatarObjectKey" | "categoryId" | "type"
+    >
+  ): Promise<string[]> {
+    return this.applyCommunityUpdate(communityId, actorAdminId, input, true);
+  },
+
+  /** Shared write + side effects of updateWithChanges / adminUpdate; returns changed fields. */
+  async applyCommunityUpdate(
+    communityId: string,
+    callerId: string,
+    input: UpdateCommunityInput,
+    asPlatformAdmin: boolean
+  ): Promise<string[]> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    const membership = await communityRepository.findMembership(
-      communityId,
-      callerId
-    );
-    assertCommunityRole(membership, CommunityMemberRole.ADMIN);
+    if (!asPlatformAdmin) {
+      const membership = await communityRepository.findMembership(
+        communityId,
+        callerId
+      );
+      assertCommunityRole(membership, CommunityMemberRole.ADMIN);
+    }
     communityAccessPolicy.assertWritable(community);
+    const actorRole = asPlatformAdmin
+      ? PLATFORM_ACTOR_ROLE
+      : CommunityMemberRole.ADMIN;
+    const actorExtra = asPlatformAdmin ? { source: "BO" } : {};
 
     const data: Prisma.CommunityUpdateInput = {};
     let nextName: string | undefined;
@@ -3022,7 +3083,7 @@ export const communityService = {
         input.avatarObjectKey === null
           ? null
           : await communityImageService.resolveObjectKeyForCommunity(
-              callerId,
+              asPlatformAdmin ? communityId : callerId,
               input.avatarObjectKey
             );
     }
@@ -3107,7 +3168,8 @@ export const communityService = {
         metadata: {
           actorUserId: callerId,
           actorName: "",
-          actorRole: CommunityMemberRole.ADMIN,
+          actorRole,
+          ...actorExtra,
           oldVisibility: community.type,
           newVisibility: updated.type,
         },
@@ -3125,7 +3187,8 @@ export const communityService = {
         metadata: {
           actorUserId: callerId,
           actorName: "",
-          actorRole: CommunityMemberRole.ADMIN,
+          actorRole,
+          ...actorExtra,
           changedFields: otherChangedFields,
           ...(systemMessageType === "COMMUNITY_NAME_UPDATED"
             ? { newName: nextName }
@@ -3215,7 +3278,7 @@ export const communityService = {
       await this.autoResolveJoinRequestsOnPublic(updated, callerId);
     }
 
-    if (changedFields.length > 0) {
+    if (changedFields.length > 0 && !asPlatformAdmin) {
       publishAdminActivitySafe({
         actorId: callerId,
         action: USER_AUDIT_ACTIONS.COMMUNITY_UPDATED,
@@ -3226,15 +3289,7 @@ export const communityService = {
       });
     }
 
-    // Same caller view as GET /communities/:id. Building it from `updated` alone
-    // defaulted every field this method doesn't own — liveStreams to [] (so
-    // isLive:false mid-stream), the caller's mute + notification switches to
-    // their defaults — and a client that cached the response dropped Live /
-    // Watch Now and flipped the toggles on every edit.
-    return {
-      community: await this.getById(communityId, callerId),
-      changedFields,
-    };
+    return changedFields;
   },
 
   /**
@@ -3780,23 +3835,13 @@ export const communityService = {
       role
     );
 
-    // Staff can't be muted: promoting a muted member lifts the mute in the same flow.
     if (role !== CommunityMemberRole.MEMBER) {
-      const mute = await communityRepository.findMemberMute(
+      await this._liftMuteOnPromotion(
         communityId,
+        callerId,
+        callerMembership?.role,
         targetUserId
       );
-      if (
-        mute &&
-        (!mute.mutedUntil || mute.mutedUntil.getTime() > Date.now())
-      ) {
-        await this._liftMemberMute(
-          communityId,
-          callerId,
-          callerMembership?.role,
-          targetUserId
-        );
-      }
     }
 
     await this.recordAudit({
@@ -6649,11 +6694,28 @@ export const communityService = {
   },
 
   /** Clears an active mute and fans the unmute out (chat gate, sockets, streams, audit). */
-  async _liftMemberMute(
+  // Staff can't be muted: promoting a muted member (role change or admin handover) lifts the mute.
+  async _liftMuteOnPromotion(
     communityId: string,
     actorId: string,
     actorRole: CommunityMemberRole | undefined,
     targetUserId: string
+  ): Promise<void> {
+    const mute = await communityRepository.findMemberMute(
+      communityId,
+      targetUserId
+    );
+    if (mute && (!mute.mutedUntil || mute.mutedUntil.getTime() > Date.now())) {
+      await this._liftMemberMute(communityId, actorId, actorRole, targetUserId, true);
+    }
+  },
+
+  async _liftMemberMute(
+    communityId: string,
+    actorId: string,
+    actorRole: CommunityMemberRole | undefined,
+    targetUserId: string,
+    targetIsStaff = false
   ): Promise<void> {
     await communityRepository.deleteMemberMute(communityId, targetUserId);
 
@@ -6706,7 +6768,8 @@ export const communityService = {
     // MODERATION line (Admin + Moderators) plus the member's PERSONAL
     // "You can chat in X again" copy.
     const eventAt = new Date().toISOString();
-    for (const visibleToUserId of [undefined, targetUserId]) {
+    // A promoted target already sees the moderation line; a personal copy would duplicate it.
+    for (const visibleToUserId of targetIsStaff ? [undefined] : [undefined, targetUserId]) {
       this.emitMemberSystemMessage({
         communityId,
         systemMessageType: "MEMBER_UNMUTED",
@@ -7445,6 +7508,13 @@ export const communityService = {
       targetUserId: newAdminId,
       metadata: { reason, formerAdminId },
     });
+
+    await this._liftMuteOnPromotion(
+      communityId,
+      auto ? "system" : formerAdminId,
+      auto ? undefined : CommunityMemberRole.ADMIN,
+      newAdminId
+    );
 
     // notifications-service: new admin "You're now the admin of X", former admin
     // "You're now a moderator in X".
@@ -11448,12 +11518,15 @@ export const communityService = {
     // never hides the valid ones (non-atomic, partial-success contract).
     const requestedIds = [...new Set(input.userIds)];
 
-    // A user never receives their own invite — counted as skipped, not failed.
-    const candidateIds = requestedIds.filter((id) => id !== callerId);
-    const selfSkipped = requestedIds.length - candidateIds.length;
+    // The caller may target themselves: "Message yourself" is a DM like any other (AIMESS-268/215).
+    const candidateIds = requestedIds;
+    const selfSkipped = 0;
 
     const [ineligible, memberRows] = await Promise.all([
-      fetchInviteIneligibility(callerId, candidateIds),
+      fetchInviteIneligibility(
+        callerId,
+        candidateIds.filter((id) => id !== callerId)
+      ),
       candidateIds.length
         ? communityRepository.findMembersByUserIds(communityId, candidateIds)
         : Promise.resolve(
@@ -11885,10 +11958,9 @@ export const communityService = {
         // Legacy permanent code: no expiry, same as every link minted today.
         expiresAt: null,
         creatorId: communityByCode.adminId,
+        closed: communityByCode.status === "CLOSED",
       };
     }
-
-    assertInviteLinkActive(link);
 
     const community = await communityRepository.findById(link.communityId);
     if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
@@ -11919,6 +11991,8 @@ export const communityService = {
     const pendingRow = isLiveJoinRequest(community.type, pendingRequest?.status)
       ? pendingRequest
       : null;
+    // AIMESS-268: a member and a pending request outlive a link reset (View / Cancel Request).
+    if (!isJoined && !pendingRow) assertInviteLinkActive(link);
 
     const avatarView = await communityImageService.resolveViewUrlForClient(
       community.avatarUrl
@@ -11945,6 +12019,7 @@ export const communityService = {
       // LEGACY field: links no longer expire, so this is always null.
       expiresAt: null,
       creatorId: link.createdBy,
+      closed: community.status === "CLOSED",
     };
   },
 };

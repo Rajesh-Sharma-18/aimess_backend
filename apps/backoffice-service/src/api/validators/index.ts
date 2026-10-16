@@ -276,3 +276,11 @@ export {
   type UserAvatarUploadUrlInput,
   type UserSocialProviderParam,
 } from "./user-account.validator.js";
+export {
+  avatarUploadUrlSchema,
+  type AvatarUploadUrlInput,
+  updateCommunitySchema,
+  updateGroupSchema,
+  type UpdateCommunityInput,
+  type UpdateGroupInput,
+} from "./space-edit.validator.js";

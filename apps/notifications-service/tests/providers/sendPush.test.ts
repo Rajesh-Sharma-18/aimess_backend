@@ -143,6 +143,25 @@ describe("sendPush — platform collapse/grouping headers", () => {
     expect(arg.android.notification).toBeUndefined();
   });
 
+  it("omits apns-collapse-id for chat MESSAGE pushes so iOS cards stack, keeping data.tag-based dismissal", async () => {
+    await sendPush({
+      token: "tok1",
+      title: "Alice",
+      body: "hi",
+      collapseKey: "conv:prv_room1",
+      apnsThreadId: "chat_prv_room1",
+      data: { type: "MESSAGE", conversationId: "prv_room1", tag: "conv:prv_room1" },
+    });
+
+    const arg = sendMock.mock.calls[0][0];
+    expect(arg.apns.headers["apns-collapse-id"]).toBeUndefined();
+    expect(arg.apns.headers["apns-thread-id"]).toBe("chat_prv_room1");
+    expect(arg.data.tag).toBe("conv:prv_room1");
+    // Other platforms keep their own collapse behaviour.
+    expect(arg.android.collapseKey).toBe("conv:prv_room1");
+    expect(arg.webpush.headers.Topic).toBe("conv:prv_room1");
+  });
+
   it("keeps a key exactly at the 64-byte boundary", async () => {
     const exact = "y".repeat(64);
 

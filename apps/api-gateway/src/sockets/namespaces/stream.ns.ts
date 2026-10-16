@@ -2,6 +2,7 @@ import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
 import { status as grpcStatus } from "@grpc/grpc-js";
+import { hasVisibleText } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 import { env } from "../../config/env.js";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
@@ -55,9 +56,9 @@ const sessionJoinedKey = (streamId: string): string =>
 // ─── Inbound payload schemas ────────────────────────────────────────────────
 const StreamJoinSchema = z.object({ streamId: z.string().min(1) });
 const StreamLeaveSchema = z.object({ streamId: z.string().min(1) });
-const StreamCommentSchema = z.object({
+export const StreamCommentSchema = z.object({
   streamId: z.string().min(1),
-  message: z.string().min(1).max(MAX_MESSAGE_LEN),
+  message: z.string().max(MAX_MESSAGE_LEN).refine(hasVisibleText),
   clientCommentId: z.string().max(200).optional(),
 });
 const StreamReactSchema = z.object({

@@ -145,6 +145,8 @@ interface PublishConvUpdatedParams {
    * a recalc must never raise a badge.
    */
   deleteRecalc?: boolean;
+  /** The REMOVED message's id on a delete recalc — lets a client drop it before applying the count. */
+  deleteRecalcId?: string;
   /**
    * Monotonic version of the ROOM PROJECTION this payload describes — the
    * room's `lastRevision` at the mutation that produced it.
@@ -277,6 +279,7 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       selfPreview: p.selfPreview,
       unreadCountByRecipient,
       deleteRecalc: p.deleteRecalc,
+      deleteRecalcId: p.deleteRecalcId,
       projectionRevision: p.projectionRevision,
       activityOnly: p.activityOnly,
     });
@@ -438,6 +441,9 @@ export async function publishConvUpdated(
               ? { unreadCount: Math.max(0, absoluteUnread) }
               : {}),
             ...(p.deleteRecalc ? { deleteRecalc: true } : {}),
+            ...(p.deleteRecalc && p.deleteRecalcId
+              ? { deleteRecalcId: p.deleteRecalcId }
+              : {}),
             ...(p.activityOnly ? { activityOnly: true } : {}),
             ...(isOffline !== undefined ? { isOffline } : {}),
           },

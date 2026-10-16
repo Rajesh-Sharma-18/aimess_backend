@@ -691,7 +691,7 @@ describe("REST DELETE forEveryone — community:updated socket carries recalcula
     );
   });
 
-  it("deleting a middle message (not the last) is a no-op: no updateMessageActivity, no socket", async () => {
+  it("deleting a middle message (not the last) keeps the row but repaints it with the unread deltas", async () => {
     mocks.generalRoomMessageRepo.findById.mockResolvedValue({
       id: MSG,
       roomId: ROOM,
@@ -729,7 +729,10 @@ describe("REST DELETE forEveryone — community:updated socket carries recalcula
 
     expect(res.status).toBe(200);
     expect(updateMessageActivity).not.toHaveBeenCalled();
-    expect(pubCommunityUpdated).not.toHaveBeenCalled();
+    // Unchanged row repainted so it can carry each member's unread delta.
+    expect(pubCommunityUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ deleteRecalc: true, deleteRecalcId: "msg-c1" })
+    );
   });
 
   it("deleting a middle message a reaction line pointed at: repaints the unchanged last message, persists no rollback", async () => {

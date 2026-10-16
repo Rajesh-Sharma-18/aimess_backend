@@ -27,7 +27,14 @@ const member = (role: string) => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
-  repo.findById.mockResolvedValue({ id: CID, status: "ACTIVE", adminId: CALLER });
+  repo.findById.mockResolvedValue({
+    id: CID,
+    status: "ACTIVE",
+    adminId: CALLER,
+    category: { id: "c", name: "General" },
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
   repo.findMembership.mockResolvedValue({ status: "ACTIVE", role: "ADMIN" });
   repo.findMemberByUserId.mockResolvedValue(member("MEMBER"));
   repo.updateMemberRole.mockResolvedValue(member("MODERATOR"));
@@ -77,5 +84,47 @@ describe("updateMemberRole lifts an active mute on promotion", () => {
 
     expect(repo.findMemberMute).not.toHaveBeenCalled();
     expect(repo.deleteMemberMute).not.toHaveBeenCalled();
+  });
+});
+
+describe("transferAdmin lifts the new admin's active mute", () => {
+  beforeEach(() => {
+    repo.handOverAdmin.mockResolvedValue(true);
+  });
+
+  it("unmutes a muted member made admin and syncs every channel", async () => {
+    repo.findMemberMute.mockResolvedValue({ mutedUntil: new Date(Date.now() + 60_000) });
+
+    await communityService.transferAdmin(CID, CALLER, TARGET);
+
+    expect(repo.deleteMemberMute).toHaveBeenCalledWith(CID, TARGET);
+    expect(unmutedTo()).toEqual([TARGET]);
+    expect(chatMirror).toHaveBeenCalledWith(
+      expect.objectContaining({ communityId: CID, userId: TARGET, isMuted: false })
+    );
+  });
+
+  it("an unmuted member's transfer leaves mute state alone", async () => {
+    repo.findMemberMute.mockResolvedValue(null);
+
+    await communityService.transferAdmin(CID, CALLER, TARGET);
+
+    expect(repo.deleteMemberMute).not.toHaveBeenCalled();
+    expect(unmutedTo()).toEqual([]);
+  });
+});
+
+describe("a promoted target gets the moderation unmute line only", () => {
+  it("emits one MEMBER_UNMUTED line, not a duplicate personal copy", async () => {
+    repo.handOverAdmin.mockResolvedValue(true);
+    repo.findMemberMute.mockResolvedValue({ mutedUntil: null });
+    const emit = jest.spyOn(communityService, "emitMemberSystemMessage");
+
+    await communityService.transferAdmin(CID, CALLER, TARGET);
+
+    const unmutedLines = emit.mock.calls.filter((c) => c[0].systemMessageType === "MEMBER_UNMUTED");
+    expect(unmutedLines).toHaveLength(1);
+    expect(unmutedLines[0][0].visibleToUserId).toBeUndefined();
+    emit.mockRestore();
   });
 });
