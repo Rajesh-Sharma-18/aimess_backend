@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   countCharacters,
   TEXT_NAME_MAX_LENGTH,
+  capCombiningMarks,
   TEXT_NAME_MAX_RAW_LENGTH,
 } from "@aimess/constants";
 
@@ -25,7 +26,8 @@ const nameSchema = z
   .refine(
     (v) => countCharacters(v) <= TEXT_NAME_MAX_LENGTH,
     "VALIDATION_COMMUNITY_NAME_MAX_LENGTH"
-  );
+  )
+  .transform(capCombiningMarks);
 
 /**
  * The handle as it is STORED — no leading "@"; the clients render that. Charset

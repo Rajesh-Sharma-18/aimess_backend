@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   countCharacters,
   TEXT_NAME_MAX_LENGTH,
+  capCombiningMarks,
   TEXT_NAME_MAX_RAW_LENGTH,
 } from "@aimess/constants";
 
@@ -27,7 +28,8 @@ const groupNameSchema = z
   .refine(
     (v) => countCharacters(v) <= TEXT_NAME_MAX_LENGTH,
     "VALIDATION_GROUP_NAME_MAX_LENGTH"
-  );
+  )
+  .transform(capCombiningMarks);
 
 export const createGroupSchema = z.object({
   name: groupNameSchema,

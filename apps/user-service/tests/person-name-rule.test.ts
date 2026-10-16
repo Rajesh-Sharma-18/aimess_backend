@@ -22,6 +22,15 @@ const cases: Array<[string, string, string | null]> = [
   ["a".repeat(30), "a".repeat(30), null],
   ["a".repeat(31), "a".repeat(31), "MAX_LENGTH"],
   ["😊".repeat(30), "😊".repeat(30), null],
+  // AIMESS-273: real scripts keep their marks; stacked marks (Zalgo) are rejected.
+  ["ખિલન વિઠ્ઠાણી", "ખિલન વિઠ્ઠાણી", null],
+  ["हर्षिल क्षत्रिय", "हर्षिल क्षत्रिय", null],
+  ["สมศักดิ์", "สมศักดิ์", null],
+  ["Nguyễn Thị Phượng", "Nguyễn Thị Phượng", null],
+  ["Nguyễn", "Nguyễn", null],
+  ["ખ" + "િ".repeat(20) + "લન", "ખિિિલન", "INVALID"],
+  ["T̍̎̏̐̑̒̓̔͐͑", "T̍̎̏", "INVALID"],
+  ["a̶̶​̶̶", "a̶̶̶", "INVALID"],
 ];
 
 describe("validatePersonName", () => {
