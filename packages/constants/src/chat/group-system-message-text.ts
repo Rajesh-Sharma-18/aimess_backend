@@ -63,7 +63,8 @@ export const CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   boolean
 > = {
   GROUP_CREATED: true,
-  MEMBER_JOINED: false,
+  // AIMESS-274: a join is the row's latest line for the joiner ("You joined") and everyone else.
+  MEMBER_JOINED: true,
   MEMBER_LEFT: false,
   MEMBER_REMOVED: false,
   MEMBER_ADDED: true,
@@ -840,6 +841,8 @@ export function resolveGroupSystemSubjectUserId(
       return targetId || null;
     case "MESSAGE_DELETED":
       return String(data.senderId ?? "").trim() || null;
+    case "MEMBER_JOINED":
+      return targetId || String(data.actorId ?? "").trim() || null;
     default:
       return null;
   }

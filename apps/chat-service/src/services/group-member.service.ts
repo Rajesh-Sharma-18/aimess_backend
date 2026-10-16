@@ -30,6 +30,7 @@ import { ChatEvents } from "@aimess/shared-types";
 import {
   BACKOFFICE_SOURCE,
   MAX_GROUP_MEMBERS,
+  buildGroupSystemFallbackText,
   effectiveGroupMemberLimit,
 } from "@aimess/constants";
 import { collectDeletedUserIds } from "../lib/deleted-identity.js";
@@ -415,7 +416,7 @@ export class GroupMemberService {
         roomId: room.roomId,
         lastMessageAt: room.lastMessageAt,
         lastMessageId: room.lastMessageId,
-        lastMessage: room.lastMessagePreview ?? null,
+        lastMessage: personalizeSystemPreview(room.lastMessagePreview, addedUserId),
         unreadCount: 0,
         isMuted: false,
         pinnedCount: room.pinnedCount,
@@ -1130,4 +1131,18 @@ export class GroupMemberService {
   async countMembers(roomId: string): Promise<number> {
     return this.memberRepo.countActiveMembers(roomId);
   }
+}
+
+// The added member's row reads their own line ("You joined the group"), not the shared third-person text.
+function personalizeSystemPreview(preview: unknown, viewerId: string): unknown {
+  const p = preview as {
+    systemEvent?: string;
+    systemData?: Record<string, unknown>;
+    content?: Record<string, unknown>;
+  } | null;
+  if (!p?.systemEvent || !p.systemData) return preview ?? null;
+  return {
+    ...p,
+    content: { ...p.content, text: buildGroupSystemFallbackText(p.systemEvent, p.systemData, viewerId) },
+  };
 }

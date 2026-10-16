@@ -463,10 +463,18 @@ export class GroupRoomService {
   ): T[] {
     return rooms.map((room) => {
       const member = membershipByRoom.get(room.roomId);
-      const cutoff = getGroupVisibilityCutoff(member);
       const preview = room.lastMessagePreview as {
         createdAt?: Date | string;
+        systemEvent?: string;
+        systemData?: { targetUserId?: string };
       } | null;
+      // The viewer's own join line can share joinedAt's millisecond; only a later clear may hide it.
+      const ownJoinLine =
+        preview?.systemEvent === "MEMBER_JOINED" &&
+        preview.systemData?.targetUserId === userId;
+      const cutoff = getGroupVisibilityCutoff(
+        ownJoinLine ? { ...member, joinedAt: null, historyFrom: null } : member
+      );
       const previewAt = preview?.createdAt ?? room.lastMessageAt;
       if (!isHiddenByCutoff(previewAt, cutoff)) return room;
       const event = groupHistoryLineEvent(member);
