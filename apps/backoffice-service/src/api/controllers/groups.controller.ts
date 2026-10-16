@@ -18,6 +18,8 @@ import type {
   ListGroupMembersQueryInput,
   ListGroupsQueryInput,
   RemoveGroupMemberInput,
+  AvatarUploadUrlInput,
+  UpdateGroupInput,
 } from "../validators/index.js";
 
 /** GET /v1/groups — paginated, filtered list. */
@@ -60,6 +62,40 @@ export const getGroupDetails: RequestHandler = (req, res, next) => {
       res
         .status(HTTP_STATUS.OK)
         .json(new ApiResponse(group, t("ADMIN_GROUP_FETCHED", req.locale)));
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** POST /v1/groups/:groupId/avatar/upload-url. */
+export const createGroupAvatarUploadUrl: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const result = await groupService.createAvatarUploadUrl(
+        req.params.groupId as string,
+        req.body as AvatarUploadUrlInput
+      );
+      res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** PATCH /v1/groups/:groupId — admin edit; returns the fresh detail. */
+export const updateGroup: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const group = await groupService.updateGroup(
+        req.params.groupId as string,
+        req.body as UpdateGroupInput,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(group, t("ADMIN_GROUP_UPDATED", req.locale)));
     } catch (error) {
       next(error);
     }

@@ -94,12 +94,16 @@ const INVISIBLE_CHARS = /[\p{Cc}\p{Cf}ᅟᅠㅤﾠ⠀]/gu;
 // A ZWJ is only visible as part of an emoji sequence (👩‍💻), so it survives only between emoji.
 const STRAY_ZWJ =
   /(?<![\p{Extended_Pictographic}\p{Emoji_Modifier}️])‍|‍(?![\p{Extended_Pictographic}])/gu;
+// A ZWNJ shapes Persian/Indic words (می‌خواهم), so it survives only between letters.
+const STRAY_ZWNJ = /(?<![\p{L}\p{M}])‌|‌(?!\p{L})/gu;
 
-/** First/last name as stored: invisible chars removed, whitespace runs collapsed, trimmed. */
+/** First/last name as stored: NFC-composed, invisible chars removed, whitespace runs collapsed, trimmed. */
 export function normalizePersonName(value: string): string {
   return value
+    .normalize("NFC")
     .replace(STRAY_ZWJ, "")
-    .replace(INVISIBLE_CHARS, (c) => (c === "‍" ? c : ""))
+    .replace(STRAY_ZWNJ, "")
+    .replace(INVISIBLE_CHARS, (c) => (c === "‍" || c === "‌" ? c : ""))
     .replace(/\s+/gu, " ")
     .trim();
 }

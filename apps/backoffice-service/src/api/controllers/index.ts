@@ -61,6 +61,8 @@ export {
   listCommunityMutedMembers,
   closeCommunity,
   reopenCommunity,
+  updateCommunity,
+  createCommunityAvatarUploadUrl,
   bulkCloseCommunities,
   bulkReopenCommunities,
   getCommunityConversationMessages,
@@ -77,6 +79,8 @@ export {
   getGroupMessageReactions,
   disbandGroup,
   removeGroupMember,
+  updateGroup,
+  createGroupAvatarUploadUrl,
 } from "./groups.controller.js";
 export {
   createAnnouncement,

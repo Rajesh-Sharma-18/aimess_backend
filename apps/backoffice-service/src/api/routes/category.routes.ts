@@ -30,7 +30,8 @@ categoryRoutes.use(adminAuth);
 
 categoryRoutes.get(
   "/categories",
-  requirePermission(PERMISSIONS.CATEGORIES_READ),
+  // The community editor's Category picker reads this list too.
+  requirePermission(PERMISSIONS.CATEGORIES_READ, PERMISSIONS.COMMUNITIES_EDIT),
   validateQuery(listCategoriesQuerySchema),
   listCategories
 );

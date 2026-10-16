@@ -43,6 +43,10 @@ describe("resolveSocialProfileName", () => {
     ["explicit nulls", { givenName: null, familyName: null, fullName: null }],
     ["blank strings", { givenName: "  ", familyName: "", fullName: "   " }],
     ["wrong types", { givenName: 42, familyName: {}, fullName: [] }],
+    [
+      "invisible-only parts",
+      { givenName: "\u200B\u2800", familyName: "\u3164\uFEFF", fullName: " \u200D\t" },
+    ],
   ])("yields nulls, never empty strings: %s", (_label, input) => {
     expect(resolveSocialProfileName(input)).toEqual({
       firstName: null,
@@ -55,5 +59,15 @@ describe("resolveSocialProfileName", () => {
     const long = "a".repeat(80);
     const { firstName } = resolveSocialProfileName({ givenName: long });
     expect(firstName).toHaveLength(50);
+  });
+
+  it("strips invisible padding but keeps international names", () => {
+    expect(
+      resolveSocialProfileName({ givenName: "\u200B\u2800สมชาย\u3164", familyName: " Nguyễn\u200B" })
+    ).toEqual({
+      firstName: "สมชาย",
+      lastName: "Nguyễn",
+      displayName: "สมชาย Nguyễn",
+    });
   });
 });

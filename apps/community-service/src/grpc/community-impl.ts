@@ -1813,6 +1813,72 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  // Admin edit of community metadata. Business failures come back in `errorCode`.
+  adminUpdateCommunity: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          actorAdminId?: string;
+          name?: string;
+          hasName?: boolean;
+          description?: string;
+          hasDescription?: boolean;
+          avatarObjectKey?: string;
+          hasAvatar?: boolean;
+          categoryId?: string;
+          hasCategory?: boolean;
+          type?: string;
+          hasType?: boolean;
+        };
+        const communityId = (req.communityId || "").trim();
+        if (!communityId) {
+          callback(null, {
+            ok: false,
+            changedFields: [],
+            errorCode: "COMMUNITY_NOT_FOUND",
+          });
+          return;
+        }
+        const changedFields = await communityService.adminUpdate(
+          communityId,
+          req.actorAdminId?.trim() || "system",
+          {
+            ...(req.hasName ? { name: req.name ?? "" } : {}),
+            ...(req.hasDescription
+              ? { description: req.description?.trim() || null }
+              : {}),
+            ...(req.hasAvatar
+              ? { avatarObjectKey: req.avatarObjectKey ?? "" }
+              : {}),
+            ...(req.hasCategory ? { categoryId: req.categoryId ?? "" } : {}),
+            ...(req.hasType
+              ? { type: req.type === "PRIVATE" ? "PRIVATE" : "PUBLIC" }
+              : {}),
+          }
+        );
+        callback(null, { ok: true, changedFields, errorCode: "" });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            changedFields: [],
+            errorCode: err.messageKey,
+          });
+          return;
+        }
+        logger.error("adminUpdateCommunity gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminUpdateCommunity failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
   // Admin Community Conversation viewer — member-level moderation. Business
   // failures (not-found / target-is-admin) are returned via `errorCode` (NOT
   // thrown), matching adminSetModerationStatus above.

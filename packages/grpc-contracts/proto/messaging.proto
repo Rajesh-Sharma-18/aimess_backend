@@ -89,6 +89,9 @@ service MessagingService {
   // chat-service's own write paths (invite-link revoke, group:removed eviction,
   // roster fan-out) — never a bare repository write.
   rpc AdminDisbandGroup       (AdminDisbandGroupRequest)       returns (AdminGroupMutationResult);
+  // Admin edit of name / description / avatar / privacy (joinApproval). Same
+  // write path, system lines and group:meta:updated fan-out as the owner's edit.
+  rpc AdminUpdateGroup        (AdminUpdateGroupRequest)        returns (AdminGroupMutationResult);
   rpc AdminRemoveGroupMember  (AdminRemoveGroupMemberRequest)  returns (AdminGroupMutationResult);
   // Admin Group Ban: permanent, indefinite ban of ONE member from ONE group.
   // Reuses chat-service's own ban()/unban() write paths (group:removed BAN
@@ -259,6 +262,8 @@ message AdminGroupRow {
   int64           disbanded_at = 9;
   // Owner's ACCOUNT status from auth ("ACTIVE" | "SUSPENDED" | "BANNED" | "").
   string          owner_account_status = 11;
+  // settings.joinApproval — true means the group is private (join requests).
+  bool            join_approval = 12;
 }
 message AdminListGroupsRequest {
   string q          = 1;
@@ -339,6 +344,19 @@ message AdminDisbandGroupRequest {
   string group_id       = 1;
   // backoffice AdminUser.id — stored as GroupRoom.disbandedBy (DB-only).
   string actor_admin_id = 2;
+}
+// Each field applies only when its has_* flag is true.
+message AdminUpdateGroupRequest {
+  string group_id         = 1;
+  string actor_admin_id   = 2;
+  string name             = 3;
+  bool   has_name         = 4;
+  string description      = 5;
+  bool   has_description  = 6;
+  string avatar           = 7; // group-avatars/{group_id}/… object key, verified by backoffice
+  bool   has_avatar       = 8;
+  bool   join_approval    = 9;
+  bool   has_join_approval = 10;
 }
 message AdminApplySystemBanRequest {
   string user_id        = 1;

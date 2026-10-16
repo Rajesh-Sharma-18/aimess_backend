@@ -26,6 +26,7 @@ import {
   currentLocale,
   isCallContentType,
   personalizeGroupSystemMessageForViewer,
+  hasVisibleText,
   withinMessageTextLimit,
 } from "@aimess/constants";
 import {
@@ -232,6 +233,13 @@ export class GroupMessageService {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
     if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS)) {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
+    }
+    if (
+      !params.forwardData &&
+      params.messageType?.toUpperCase() === "TEXT" &&
+      !hasVisibleText(params.content?.text)
+    ) {
+      throw new BadRequestError("CHAT_TEXT_REQUIRED");
     }
     assertAttachmentsValid(
       params.messageType,
@@ -1844,7 +1852,7 @@ export class GroupMessageService {
       throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
     if (message.messageType !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
-if (!params.content?.text?.trim())
+if (!hasVisibleText(params.content?.text))
       throw new BadRequestError("CHAT_TEXT_REQUIRED");
     if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS))
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");

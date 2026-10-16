@@ -1100,7 +1100,9 @@ export const adminPaths = {
         "403": errRes("Missing users.edit"),
         "404": errRes("User not found"),
         "409": errRes("AUTH_EMAIL_EXISTS | USER_USERNAME_TAKEN"),
-        "503": errRes("MEDIA_REGISTRY_UNAVAILABLE (avatar could not be verified)"),
+        "503": errRes(
+          "MEDIA_REGISTRY_UNAVAILABLE (avatar could not be verified)"
+        ),
       },
       "x-implementation-status": "implemented",
     },
@@ -1405,6 +1407,57 @@ export const adminPaths = {
       },
       "x-implementation-status": "implemented",
     },
+    patch: {
+      tags: [adminTags.communities],
+      operationId: "adminUpdateCommunity",
+      summary:
+        "Edit a community's name, description, photo, category or privacy",
+      description:
+        'Same rules and effects as the owner\'s in-app edit: the system line in the community chat ("AI Mess Administrator …"), `community:meta:updated` to every member, and PRIVATE→PUBLIC auto-approves pending join requests. Refused with 409 on a closed community. Writes AuditLog `community.updated_by_admin` with before/after per changed field. Requires communities.edit.',
+      security: adminSecurity,
+      parameters: [{ ...idPathParam, name: "communityId" }],
+      requestBody: jsonBody("#/components/schemas/AdminUpdateCommunityRequest"),
+      responses: {
+        "200": okRes(
+          "Updated community detail",
+          "#/components/schemas/AdminCommunityDetailResponse"
+        ),
+        "400": errRes(
+          "Validation / COMMUNITY_CATEGORY_INVALID / avatar errors"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing communities.edit"),
+        "404": errRes("Community not found"),
+        "409": errRes("COMMUNITY_NAME_TAKEN / COMMUNITY_IS_CLOSED"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/communities/{communityId}/avatar/upload-url": {
+    post: {
+      tags: [adminTags.communities],
+      operationId: "adminCreateCommunityAvatarUploadUrl",
+      summary: "Presigned PUT for replacing a community's photo",
+      description:
+        "Filed under the community (community/avatar/{communityId}/…). PUT the file to `uploadUrl` with `headers`, then send `objectKey` as `avatarObjectKey` on PATCH /admin/v1/communities/{communityId}. Requires communities.edit.",
+      security: adminSecurity,
+      parameters: [{ ...idPathParam, name: "communityId" }],
+      requestBody: jsonBody(
+        "#/components/schemas/AdminUserAvatarUploadUrlRequest"
+      ),
+      responses: {
+        "200": okRes(
+          "Upload URL",
+          "#/components/schemas/AdminUserAvatarUploadUrl"
+        ),
+        "400": errRes("Unsupported type or file over 5 MB"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing communities.edit"),
+        "404": errRes("Community not found"),
+        "503": errRes("MEDIA_REGISTRY_UNAVAILABLE"),
+      },
+      "x-implementation-status": "implemented",
+    },
   },
   "/admin/v1/communities/{communityId}/members": {
     get: {
@@ -1644,6 +1697,28 @@ export const adminPaths = {
       },
       "x-implementation-status": "implemented",
     },
+    patch: {
+      tags: [adminTags.groups],
+      operationId: "adminUpdateGroup",
+      summary: "Edit a group's name, description, photo or privacy",
+      description:
+        'Same rules and effects as the owner\'s in-app edit: one system line per changed name / photo / description ("AI Mess Administrator …") and `group:meta:updated` to every member. `joinApproval: true` makes the group private. Refused with 409 on a closed or disbanded group. Writes AuditLog `group.updated_by_admin`. Requires groups.edit.',
+      security: adminSecurity,
+      parameters: [idPathParam],
+      requestBody: jsonBody("#/components/schemas/AdminUpdateGroupRequest"),
+      responses: {
+        "200": groupOkRes(
+          "Updated group detail",
+          "#/components/schemas/AdminGroup"
+        ),
+        "400": errRes("Validation / avatar errors"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing groups.edit"),
+        "404": errRes("Group not found"),
+        "409": errRes("CHAT_GROUP_CLOSED_ADMIN_BANNED / CHAT_GROUP_DISBANDED"),
+      },
+      "x-implementation-status": "implemented",
+    },
     delete: {
       tags: [adminTags.groups],
       operationId: "adminDisbandGroup",
@@ -1663,6 +1738,32 @@ export const adminPaths = {
         "404": errRes("Group not found"),
       },
       "x-implementation-status": "planned",
+    },
+  },
+  "/admin/v1/groups/{id}/avatar/upload-url": {
+    post: {
+      tags: [adminTags.groups],
+      operationId: "adminCreateGroupAvatarUploadUrl",
+      summary: "Presigned PUT for replacing a group's photo",
+      description:
+        "Filed under the group (group-avatars/{groupId}/…). PUT the file to `uploadUrl` with `headers`, then send `objectKey` as `avatarObjectKey` on PATCH /admin/v1/groups/{id}. Requires groups.edit.",
+      security: adminSecurity,
+      parameters: [idPathParam],
+      requestBody: jsonBody(
+        "#/components/schemas/AdminUserAvatarUploadUrlRequest"
+      ),
+      responses: {
+        "200": okRes(
+          "Upload URL",
+          "#/components/schemas/AdminUserAvatarUploadUrl"
+        ),
+        "400": errRes("Unsupported type or file over 5 MB"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing groups.edit"),
+        "404": errRes("Group not found"),
+        "503": errRes("MEDIA_REGISTRY_UNAVAILABLE"),
+      },
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/groups/{id}/members": {
@@ -3495,7 +3596,15 @@ export const adminPaths = {
           required: true,
           schema: {
             type: "string",
-            enum: ["auth", "user", "community", "chat", "media", "notification", "stream"],
+            enum: [
+              "auth",
+              "user",
+              "community",
+              "chat",
+              "media",
+              "notification",
+              "stream",
+            ],
           },
         },
       ],
@@ -3504,7 +3613,9 @@ export const adminPaths = {
         "400": errRes("serviceKey is not allowlisted"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing systemhealth.read or settings.manage"),
-        "409": errRes("Already restarting, or a restart would not fix the current failure"),
+        "409": errRes(
+          "Already restarting, or a restart would not fix the current failure"
+        ),
         "429": errRes("Restart cooldown (Retry-After)"),
         "503": errRes("No restart agent in this environment"),
       },

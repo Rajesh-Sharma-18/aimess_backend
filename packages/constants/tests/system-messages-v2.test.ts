@@ -273,3 +273,29 @@ describe("deleted account name follows the reader's language", () => {
     expect(copy("th").body).toBe("บัญชีที่ถูกลบขอเข้าร่วม X");
   });
 });
+
+describe("group meta lines from the admin panel", () => {
+  it.each([
+    ["ROOM_RENAMED", { newName: "Hikers" }],
+    ["AVATAR_CHANGED", {}],
+    ["DESCRIPTION_CHANGED", {}],
+  ])("names the Administrator on a BO %s line", (event, data) => {
+    const text = buildGroupSystemFallbackText(event, {
+      ...data,
+      source: "BO",
+      actorName: "Real Admin Name",
+    });
+    expect(text).toContain("AI Mess Administrator");
+    expect(text).not.toContain("Real Admin Name");
+  });
+
+  it("keeps naming the member on an in-app rename", () => {
+    expect(
+      buildGroupSystemFallbackText("ROOM_RENAMED", {
+        actorId: "u1",
+        actorName: "Minh",
+        newName: "Hikers",
+      })
+    ).toContain("Minh");
+  });
+});

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   countCharacters,
+  normalizeVisibleText,
   TEXT_NAME_MAX_LENGTH,
   TEXT_NAME_MAX_RAW_LENGTH,
 } from "@aimess/constants";
@@ -21,7 +22,7 @@ const GROUP_MEMBER_MAX = 256;
  */
 const groupNameSchema = z
   .string()
-  .trim()
+  .overwrite(normalizeVisibleText)
   .min(1)
   .max(TEXT_NAME_MAX_RAW_LENGTH, "VALIDATION_GROUP_NAME_MAX_LENGTH")
   .refine(
@@ -31,7 +32,7 @@ const groupNameSchema = z
 
 export const createGroupSchema = z.object({
   name: groupNameSchema,
-  description: z.string().max(1000).default(""),
+  description: z.string().overwrite(normalizeVisibleText).max(1000).default(""),
   avatar: z.string().default(""),
   memberLimit: z
     .number()
@@ -44,7 +45,7 @@ export const createGroupSchema = z.object({
 
 export const updateGroupSchema = z.object({
   name: groupNameSchema.optional(),
-  description: z.string().max(1000).optional(),
+  description: z.string().overwrite(normalizeVisibleText).max(1000).optional(),
   avatar: z.string().optional(),
   memberLimit: z
     .number()

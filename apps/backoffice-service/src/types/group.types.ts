@@ -37,6 +37,8 @@ export interface GroupItem {
   // Epoch ms; null when the group was never disbanded / has no messages yet.
   disbandedAt: number | null;
   lastMessageAt: number | null;
+  // settings.joinApproval — true = private (joins need admin approval).
+  joinApproval: boolean;
 }
 
 /** A row in the group members list. */

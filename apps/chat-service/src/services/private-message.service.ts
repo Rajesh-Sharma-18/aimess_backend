@@ -152,6 +152,7 @@ import {
   inviteContentType,
   isPersonalizableSystemContentType,
   personalizePrivateSystemMessageForViewer,
+  hasVisibleText,
   withinMessageTextLimit,
 } from "@aimess/constants";
 import { chatOpenRoomKey, filterBannedUserIds } from "@aimess/redis";
@@ -245,6 +246,13 @@ export class PrivateMessageService {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
     if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS)) {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
+    }
+    if (
+      !params.forwardData &&
+      params.messageType?.toUpperCase() === "TEXT" &&
+      !hasVisibleText(params.content?.text)
+    ) {
+      throw new BadRequestError("CHAT_TEXT_REQUIRED");
     }
     assertAttachmentsValid(params.messageType, params.content?.files);
     // Every uploaded object referenced by the message must be verified, owned by
@@ -1646,7 +1654,7 @@ export class PrivateMessageService {
       throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
     if (message.messageType !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
-if (!params.content?.text?.trim())
+if (!hasVisibleText(params.content?.text))
       throw new BadRequestError("CHAT_TEXT_REQUIRED");
     if (!withinMessageTextLimit(params.content?.text, CHAT_TEXT_MAX_CHARS))
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");

@@ -654,6 +654,16 @@ export const ADMIN_MESSAGES = {
     en: "User updated",
     th: "อัปเดตผู้ใช้แล้ว",
   },
+  ADMIN_COMMUNITY_UPDATED: {
+    vi: "Đã cập nhật cộng đồng",
+    en: "Community updated",
+    th: "อัปเดตชุมชนแล้ว",
+  },
+  ADMIN_GROUP_UPDATED: {
+    vi: "Đã cập nhật nhóm",
+    en: "Group updated",
+    th: "อัปเดตกลุ่มแล้ว",
+  },
   ADMIN_USER_SOCIAL_UNLINKED: {
     vi: "Đã hủy liên kết tài khoản",
     en: "Account unlinked",

@@ -5,6 +5,7 @@ import {
   TEXT_CUSTOM_STATUS_MAX_LENGTH,
   TEXT_CUSTOM_STATUS_MAX_RAW_LENGTH,
   validatePersonName,
+  normalizeVisibleText,
 } from "@aimess/constants";
 
 import {
@@ -74,7 +75,7 @@ export const updateProfileSchema = z
     username: usernameSchema.optional(),
     bio: z
       .string()
-      .trim()
+      .overwrite(normalizeVisibleText)
       .max(280, "Bio must be at most 280 characters")
       .nullable()
       .optional(),
@@ -119,7 +120,7 @@ export const setCustomStatusSchema = z
       .transform(emptyToNull),
     text: z
       .string({ error: "USER_CUSTOM_STATUS_TEXT_INVALID" })
-      .trim()
+      .overwrite(normalizeVisibleText)
       .max(TEXT_CUSTOM_STATUS_MAX_RAW_LENGTH, "USER_CUSTOM_STATUS_TEXT_TOO_LONG")
       .refine((v) => !CONTROL_CHARS.test(v), "USER_CUSTOM_STATUS_TEXT_INVALID")
       .refine(
