@@ -2685,6 +2685,9 @@ export const communityRepository = {
       where.AND = [
         NOT_DELETED,
         { moderationStatus: { not: CommunityModerationStatus.SUSPENDED } },
+        // Owner-closed (status axis) — every owner close sets this, with or
+        // without a reason code.
+        { status: { not: CommunityStatus.CLOSED } },
         {
           OR: [
             { statusClosedReasonCode: { isSet: false } },
@@ -2708,6 +2711,7 @@ export const communityRepository = {
         {
           OR: [
             { moderationStatus: CommunityModerationStatus.SUSPENDED },
+            { status: CommunityStatus.CLOSED },
             {
               statusClosedReasonCode: {
                 in: [CLOSE_REASON_ADMIN_BANNED, CLOSE_REASON_LAST_MEMBER_LEFT],
@@ -2804,6 +2808,7 @@ export const communityRepository = {
           createdAt: true,
           adminId: true,
           moderationStatus: true,
+          status: true,
           // Owner-close axis. The admin list reports `status` from
           // moderationStatus, so this is the only field that can tell the panel
           // a community went read-only because its owner was system-banned.

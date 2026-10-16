@@ -9,6 +9,7 @@ import {
 } from "../lib/media-resolve.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
+import { refreshPinSenders } from "../lib/deleted-identity.js";
 import { SystemEvent } from "../types/enums.js";
 import type { PrivateMessagePinRepository } from "../repositories/private-message-pin.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
@@ -372,7 +373,9 @@ export class PrivatePinService {
     }
 
     const pins = await this.pinRepo.findPinsByRoom(roomId, params);
-    const resolved = await resolvePinsMedia(pins);
+    const resolved = await resolvePinsMedia(
+      await refreshPinSenders(pins, this.userSnapshotService, this.cacheRepo)
+    );
     const messageIds = resolved.map((p) => p.messageId);
     const [liveIds, hiddenIds] = await Promise.all([
       this.messageRepo.findLiveIds(roomId, messageIds),
@@ -404,8 +407,13 @@ export class PrivatePinService {
     roomId: string,
     userId?: string
   ): Promise<PinnedMessageSummary | null> {
-    const pin = await this.pinRepo.findActivePinByRoom(roomId);
-    if (!pin) return null;
+    const stored = await this.pinRepo.findActivePinByRoom(roomId);
+    if (!stored) return null;
+    const [pin] = await refreshPinSenders(
+      [stored],
+      this.userSnapshotService,
+      this.cacheRepo
+    );
 
     if (userId) {
       const room = await this.roomRepo.findByRoomId(roomId);

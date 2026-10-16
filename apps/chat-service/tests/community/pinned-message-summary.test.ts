@@ -100,7 +100,11 @@ describe("getActivePinSummary — pinned message", () => {
     });
     const getUserSnapshotsMap = jest
       .fn()
-      .mockResolvedValue(new Map([[USER_ID, { memberId: "alice_handle" }]]));
+      .mockResolvedValue(
+        new Map([
+          [USER_ID, { memberId: "alice_handle", fullName: "Renamed Sender" }],
+        ])
+      );
 
     const svc = makeService({
       findActivePinByRoom,
@@ -114,7 +118,8 @@ describe("getActivePinSummary — pinned message", () => {
       roomId: ROOM_ID,
       communityId: ROOM_ID,
       senderId: USER_ID,
-      senderName: "Live Sender Name",
+      // Live profile beats the name frozen on the message row at send time.
+      senderName: "Renamed Sender",
       senderHandle: "alice_handle",
       senderAvatar: "",
       messageType: "TEXT",

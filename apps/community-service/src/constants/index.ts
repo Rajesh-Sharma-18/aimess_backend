@@ -13,6 +13,11 @@ export const CLOSE_REASON_ADMIN_BANNED = "ADMIN_BANNED" as const;
 // reopenCommunity refuses it and Super Admin lists it as closed.
 export const CLOSE_REASON_LAST_MEMBER_LEFT = "LAST_MEMBER_LEFT" as const;
 
+// Wire-only reason for the admin RPCs: a plain owner close stores no
+// statusClosedReasonCode, so Super Admin gets this instead of "" to tell it
+// apart from an open community. Never written to the DB.
+export const CLOSE_REASON_OWNER_CLOSED = "OWNER_CLOSED" as const;
+
 // CommunityMember.removedReason written for a membership revoked by that
 // system ban — keeps the forensic trail distinguishable from a kick/leave.
 export const REMOVED_REASON_SYSTEM_BANNED = "system_banned" as const;
