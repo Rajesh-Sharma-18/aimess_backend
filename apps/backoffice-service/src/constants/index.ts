@@ -34,9 +34,11 @@ export const PERMISSIONS = {
   COMMUNITIES_READ: "communities.read",
   COMMUNITIES_VIEW: "communities.view",
   COMMUNITIES_MODERATE: "communities.moderate",
+  COMMUNITIES_EDIT: "communities.edit",
   GROUPS_READ: "groups.read",
   GROUPS_VIEW: "groups.view",
   GROUPS_MODERATE: "groups.moderate",
+  GROUPS_EDIT: "groups.edit",
   LIVESTREAMS_READ: "livestreams.read",
   LIVESTREAMS_VIEW: "livestreams.view",
   LIVESTREAMS_MODERATE: "livestreams.moderate",
@@ -87,6 +89,7 @@ export const AUDIT_ACTIONS = {
   COMMUNITY_REOPENED: "community.reopen",
   COMMUNITY_BULK_CLOSED: "community.bulk_close",
   COMMUNITY_BULK_REOPENED: "community.bulk_reopen",
+  COMMUNITY_UPDATED_BY_ADMIN: "community.updated_by_admin",
   // Same string values as @aimess/messaging USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_REMOVED/
   // BANNED/UNBANNED — mandatory USER_MANAGEMENT category, so these actions land in
   // the same audit bucket whether triggered here or mirrored from community-service.
@@ -102,6 +105,7 @@ export const AUDIT_ACTIONS = {
   GROUP_VIEWED: "group.viewed",
   GROUP_MEMBERS_VIEWED: "group.members_viewed",
   GROUP_DISBANDED: "group.disbanded",
+  GROUP_UPDATED_BY_ADMIN: "group.updated_by_admin",
   GROUP_MEMBER_REMOVED: "group.member_removed",
   // Permanent, indefinite GROUP-scoped ban/unban of a single member (mandatory
   // USER_MANAGEMENT category, mirrors COMMUNITY_MEMBER_BANNED/UNBANNED).

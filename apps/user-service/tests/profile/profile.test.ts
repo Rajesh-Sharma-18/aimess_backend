@@ -487,6 +487,12 @@ describe("PATCH /api/v1/users/profiles/me", () => {
     ["empty body (no fields)", {}],
     ["firstName too long", { firstName: "a".repeat(51) }],
     ["empty firstName", { firstName: "   " }],
+    ["tab/newline-only firstName", { firstName: "\t\n\r" }],
+    ["zero-width-space firstName", { firstName: "\u200B\u200B" }],
+    ["braille-blank lastName", { lastName: "\u2800" }],
+    ["hangul-filler lastName", { lastName: "\u3164\uFFA0" }],
+    ["bom and joiners firstName", { firstName: "\uFEFF\u200C\u200D" }],
+    ["mixed invisible and whitespace lastName", { lastName: " \u200B\t\u2800\u3000 " }],
     ["bio too long", { bio: "a".repeat(281) }],
     ["bad date format", { dateOfBirth: "06-15-1995" }],
     ["underage dob", { dateOfBirth: "2020-01-01" }],
@@ -501,6 +507,29 @@ describe("PATCH /api/v1/users/profiles/me", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
+  });
+
+  it("stores names with invisible padding stripped and NFC-composed", async () => {
+    const res = await request(app)
+      .patch("/api/v1/users/profiles/me")
+      .set(auth())
+      .send({ firstName: "\u200B\u2800สมชาย\u3164 ", lastName: "\uFEFFNguyễn\u200B" });
+
+    expect(res.status).toBe(200);
+    expect(repo.updateProfile.mock.calls[0][1]).toMatchObject({
+      firstName: "สมชาย",
+      lastName: "Nguyễn",
+    });
+  });
+
+  it("keeps a joiner that is part of the name", async () => {
+    const res = await request(app)
+      .patch("/api/v1/users/profiles/me")
+      .set(auth())
+      .send({ firstName: "می\u200Cخواهم" });
+
+    expect(res.status).toBe(200);
+    expect(repo.updateProfile.mock.calls[0][1]).toMatchObject({ firstName: "می\u200Cخواهم" });
   });
 
   it("accepts an emoji-containing bio at the boundary", async () => {

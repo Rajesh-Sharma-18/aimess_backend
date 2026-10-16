@@ -1,3 +1,5 @@
+import { normalizeVisibleText } from "@aimess/constants";
+
 /**
  * Normalizes the name a social provider hands us into the (firstName, lastName)
  * pair the AIMess user profile stores.
@@ -23,7 +25,9 @@ const NAME_MAX_LENGTH = 50;
 
 function clean(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const trimmed = value.trim().slice(0, NAME_MAX_LENGTH).trim();
+  const trimmed = normalizeVisibleText(
+    normalizeVisibleText(value).slice(0, NAME_MAX_LENGTH)
+  );
   return trimmed.length > 0 ? trimmed : null;
 }
 

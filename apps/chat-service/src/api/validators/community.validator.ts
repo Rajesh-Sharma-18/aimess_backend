@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { isCommunityContentType, withinMessageTextLimit } from "@aimess/constants";
+import {
+  isCommunityContentType,
+  normalizeVisibleText,
+  withinMessageTextLimit,
+} from "@aimess/constants";
 
 import {
   locationSchema,
@@ -170,8 +174,8 @@ export const reactCommunityMessageBodySchema = z.object({
 export const reportMessageSchema = z.object({
   roomId: z.string().min(10).max(300),
   messageId: z.string().min(10).max(300),
-  reportReason: z.string().min(1).max(200).trim(),
-  reportDescription: z.string().max(300).trim().default(""),
+  reportReason: z.string().overwrite(normalizeVisibleText).min(1).max(200),
+  reportDescription: z.string().overwrite(normalizeVisibleText).max(300).default(""),
 });
 
 /**

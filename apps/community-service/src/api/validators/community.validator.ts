@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   countCharacters,
+  normalizeVisibleText,
   TEXT_NAME_MAX_LENGTH,
   capCombiningMarks,
   TEXT_NAME_MAX_RAW_LENGTH,
@@ -20,7 +21,7 @@ const OBJECT_ID_REGEX = /^[a-f0-9]{24}$/i;
  */
 const nameSchema = z
   .string()
-  .trim()
+  .overwrite(normalizeVisibleText)
   .min(3, "Community name must be at least 3 characters")
   .max(TEXT_NAME_MAX_RAW_LENGTH, "VALIDATION_COMMUNITY_NAME_MAX_LENGTH")
   .refine(
@@ -73,7 +74,7 @@ const existingHandleSchema = z
 
 const descriptionSchema = z
   .string()
-  .trim()
+  .overwrite(normalizeVisibleText)
   .max(500, "Description must be at most 500 characters");
 
 const categoryIdSchema = z
@@ -533,7 +534,7 @@ export const createReportSchema = z
     targetUserId: z.string().trim().uuid("User ID is invalid").optional(),
     reason: z
       .string()
-      .trim()
+      .overwrite(normalizeVisibleText)
       .min(3, "Reason must be at least 3 characters")
       .max(1000, "Reason must be at most 1000 characters"),
     /**
@@ -542,7 +543,7 @@ export const createReportSchema = z
      */
     otherReason: z
       .string()
-      .trim()
+      .overwrite(normalizeVisibleText)
       .min(1, "Description is required when reason is OTHER")
       .max(1000, "Description must be at most 1000 characters")
       .optional(),
@@ -770,7 +771,7 @@ const leaveReasonFields = {
   reason: z.enum(leaveReasonEnum).optional(),
   reasonText: z
     .string()
-    .trim()
+    .overwrite(normalizeVisibleText)
     .max(500, "Reason must be at most 500 characters")
     .optional(),
 };

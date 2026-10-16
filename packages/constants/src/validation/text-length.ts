@@ -94,6 +94,8 @@ const INVISIBLE_CHARS = /[\p{Cc}\p{Cf}ᅟᅠㅤﾠ⠀]/gu;
 // A ZWJ is only visible as part of an emoji sequence (👩‍💻), so it survives only between emoji.
 const STRAY_ZWJ =
   /(?<![\p{Extended_Pictographic}\p{Emoji_Modifier}️])‍|‍(?![\p{Extended_Pictographic}])/gu;
+// A ZWNJ shapes Persian/Indic words (می‌خواهم), so it survives only between letters.
+const STRAY_ZWNJ = /(?<![\p{L}\p{M}])‌|‌(?!\p{L})/gu;
 
 // AIMESS-273: real scripts (Indic, Thai, Vietnamese, Hebrew) need ≤3 combining marks per letter; more is Zalgo.
 const EXCESS_COMBINING_MARKS = /(\p{M}{3})\p{M}+/gu;
@@ -116,7 +118,8 @@ export function normalizePersonName(value: string): string {
 function stripInvisible(value: string): string {
   return value
     .replace(STRAY_ZWJ, "")
-    .replace(INVISIBLE_CHARS, (c) => (c === "‍" ? c : ""));
+    .replace(STRAY_ZWNJ, "")
+    .replace(INVISIBLE_CHARS, (c) => (c === "‍" || c === "‌" ? c : ""));
 }
 
 export type PersonNameError = "REQUIRED" | "INVALID" | "MAX_LENGTH";

@@ -24,6 +24,8 @@ import type {
   ListMutedMembersQueryInput,
   MemberModerationBodyInput,
   ReopenCommunityInput,
+  AvatarUploadUrlInput,
+  UpdateCommunityInput,
 } from "../validators/index.js";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
@@ -162,6 +164,49 @@ export const listCommunityMutedMembers: RequestHandler = (req, res, next) => {
   })();
 };
 
+/** POST /v1/communities/:communityId/avatar/upload-url. */
+export const createCommunityAvatarUploadUrl: RequestHandler = (
+  req,
+  res,
+  next
+) => {
+  void (async () => {
+    try {
+      const result = await communityService.createAvatarUploadUrl(
+        req.params.communityId as string,
+        req.body as AvatarUploadUrlInput
+      );
+      res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** PATCH /v1/communities/:communityId — admin edit; returns the fresh detail. */
+export const updateCommunity: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const community = await communityService.updateCommunity(
+        req.params.communityId as string,
+        req.body as UpdateCommunityInput,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            toCommunityDetailResponse(community),
+            t("ADMIN_COMMUNITY_UPDATED", req.locale)
+          )
+        );
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
 /** POST /v1/communities/:communityId/close. */
 export const closeCommunity: RequestHandler = (req, res, next) => {
   void (async () => {
@@ -239,7 +284,11 @@ export const bulkCloseCommunities: RequestHandler = (req, res, next) => {
  * the reactor list for the read-only Reaction Details popup. Inspection only;
  * no admin reaction write endpoint exists.
  */
-export const getCommunityMessageReactions: RequestHandler = (req, res, next) => {
+export const getCommunityMessageReactions: RequestHandler = (
+  req,
+  res,
+  next
+) => {
   void (async () => {
     try {
       // Narrowed by communityMessageParamSchema + messageReactionsQuerySchema.

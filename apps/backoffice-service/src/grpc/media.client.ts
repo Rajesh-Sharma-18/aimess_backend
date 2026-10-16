@@ -55,7 +55,11 @@ export interface MediaUploadUrlResult {
   maxBytes: number;
 }
 
-export type MediaConfirmCategory = "LIVESTREAM_THUMBNAIL" | "USER_AVATAR";
+export type MediaAvatarCategory =
+  | "USER_AVATAR"
+  | "COMMUNITY_AVATAR"
+  | "GROUP_AVATAR";
+export type MediaConfirmCategory = "LIVESTREAM_THUMBNAIL" | MediaAvatarCategory;
 
 export interface MediaConfirmClient {
   confirmUpload(
@@ -64,13 +68,15 @@ export interface MediaConfirmClient {
     category?: MediaConfirmCategory
   ): Promise<MediaConfirmResult>;
   /**
-   * Presigned PUT for a USER_AVATAR filed under `ownerId` — the target user, not
-   * the admin, so user-service's `avatars/{userId}/…` ownership check passes.
+   * Presigned PUT for an avatar filed under `ownerId` — the target user /
+   * community / group, not the admin, so the owning service's
+   * `{prefix}/{ownerId}/…` ownership check passes.
    */
   generateUserAvatarUploadUrl(
     ownerId: string,
     contentType: string,
-    contentLength: number
+    contentLength: number,
+    category?: MediaAvatarCategory
   ): Promise<MediaUploadUrlResult>;
   /** Read-only verdict lookup; `downloadable` is the only safe gate. */
   isDownloadable(objectKey: string): Promise<boolean>;
@@ -110,7 +116,12 @@ export function createMediaConfirmClient(): MediaConfirmClient {
         fileSize: Number(res.fileSize ?? 0),
       };
     },
-    async generateUserAvatarUploadUrl(ownerId, contentType, contentLength) {
+    async generateUserAvatarUploadUrl(
+      ownerId,
+      contentType,
+      contentLength,
+      category = "USER_AVATAR"
+    ) {
       const res = await makeGrpcCallWithDeadline<
         {
           category: string;
@@ -122,7 +133,7 @@ export function createMediaConfirmClient(): MediaConfirmClient {
       >(
         client,
         "generateUploadUrl",
-        { category: "USER_AVATAR", contentType, contentLength, ownerId },
+        { category, contentType, contentLength, ownerId },
         Date.now() + STATUS_DEADLINE_MS
       );
       return {
