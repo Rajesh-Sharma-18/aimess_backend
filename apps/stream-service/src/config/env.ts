@@ -178,7 +178,13 @@ const envSchema = z.object({
    * NEVER point this at localhost: the website treats a local playback URL as
    * a misconfiguration and rebuilds it against the SRS base (utils/srs.ts).
    */
-  CDN_PLAYBACK_BASE: z.string().default(""),
+  // https only: viewers on the https website block an http manifest as mixed content (AIMESS-367).
+  CDN_PLAYBACK_BASE: z
+    .string()
+    .default("")
+    .refine((v) => v === "" || /^https:\/\//i.test(v), {
+      message: "CDN_PLAYBACK_BASE must be an https:// origin",
+    }),
   /** Application name configured on both CDN domains — the `/live/` path segment. */
   CDN_APP: z.string().default("live"),
   /**
