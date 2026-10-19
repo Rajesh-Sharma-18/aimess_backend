@@ -507,7 +507,7 @@ export class LivestreamService {
         // one setup and start another, which is two, and anything beyond that
         // is not a person configuring a stream.
         if (pendingByCreator >= env.STREAM_MAX_PENDING_PER_CREATOR) {
-          throw new ConflictError("STREAM_ALREADY_ACTIVE");
+          throw new ConflictError("STREAM_PENDING_LIMIT");
         }
 
         // Two DIFFERENT values. `streamKey` authorises publishing and is only
@@ -1902,6 +1902,12 @@ export class LivestreamService {
    * Fail-open on a community-service error, matching `checkAccess`. The live
    * Redis viewer count is merged in when present.
    */
+  /** The caller's own LIVE stream in any community, so a client can resume it instead of creating another. */
+  async getMyLiveStream(userId: string): Promise<StreamView | null> {
+    const stream = await this.streamRepo.findLiveByCreator(userId);
+    return stream ? this.getStream(stream.id, userId) : null;
+  }
+
   async getStream(id: string, userId?: string): Promise<StreamView> {
     const stream = await this.streamRepo.findById(id);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");

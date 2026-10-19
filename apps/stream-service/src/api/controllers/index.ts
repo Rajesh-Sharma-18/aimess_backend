@@ -117,6 +117,15 @@ export class StreamController {
       .json(new ApiResponse(result, t("STREAM_LIST_FETCHED", req.locale)));
   });
 
+  getMyLiveStream = asyncHandler(async (req: Request, res: Response) => {
+    const stream = await this.livestreamService.getMyLiveStream(
+      req.auth.userId
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse({ stream }, t("STREAM_FETCHED", req.locale)));
+  });
+
   getStream = asyncHandler(async (req: Request, res: Response) => {
     const id = typeof req.params.id === "string" ? req.params.id : "";
     if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");

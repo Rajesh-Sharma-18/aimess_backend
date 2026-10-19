@@ -20,6 +20,11 @@ export function createServiceRoutes(controller: StreamController): IRouter {
     controller.resolveSource
   );
   router.get("/streams", authenticateAccessToken, controller.listStreams);
+  router.get(
+    "/streams/me/live",
+    authenticateAccessToken,
+    controller.getMyLiveStream
+  );
   router.get("/streams/:id", authenticateAccessToken, controller.getStream);
   router.patch(
     "/streams/:id",

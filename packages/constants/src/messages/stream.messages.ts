@@ -213,9 +213,14 @@ export const STREAM_MESSAGES = {
     th: "คอมมูนิตี้นี้มีสตรีมที่กำลังถ่ายทอดอยู่แล้ว",
   },
   STREAM_ALREADY_ACTIVE: {
-    en: "You already have an active stream in this community.",
-    vi: "Bạn đã có một buổi phát trực tiếp đang hoạt động trong cộng đồng này.",
-    th: "คุณมีสตรีมที่กำลังถ่ายทอดอยู่ในคอมมูนิตี้นี้แล้ว",
+    en: "You already have an active livestream. End it before starting a new one.",
+    vi: "Bạn đang có một buổi phát trực tiếp. Hãy kết thúc nó trước khi bắt đầu buổi mới.",
+    th: "คุณมีไลฟ์สตรีมที่กำลังถ่ายทอดอยู่แล้ว โปรดจบไลฟ์นั้นก่อนเริ่มไลฟ์ใหม่",
+  },
+  STREAM_PENDING_LIMIT: {
+    en: "You have too many streams waiting to start. Cancel one before creating another.",
+    vi: "Bạn có quá nhiều buổi phát đang chờ bắt đầu. Hãy hủy một buổi trước khi tạo buổi mới.",
+    th: "คุณมีสตรีมที่รอเริ่มอยู่มากเกินไป โปรดยกเลิกหนึ่งรายการก่อนสร้างใหม่",
   },
   STREAM_IS_LIVE: {
     en: "This stream is already live.",
