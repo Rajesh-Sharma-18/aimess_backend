@@ -2020,6 +2020,27 @@ async function fetchCommunityLiveStreams(
   return getStreamClient().getLiveStreamsByCommunity(communityId);
 }
 
+/**
+ * A page is CUT by the stored column but each item carries the per-viewer
+ * `lastActivityAt`, which drifts from it (e.g. a closed community whose newest
+ * line is hidden from this viewer). Order what the client sees by the value it
+ * sees (AIMESS-340); cursors still come from the raw page rows.
+ */
+export function orderByWireActivity<T extends { lastActivityAt: number }>(
+  items: T[],
+  dir: "asc" | "desc"
+): T[] {
+  const sign = dir === "desc" ? -1 : 1;
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort(
+      (a, b) =>
+        sign * (a.item.lastActivityAt - b.item.lastActivityAt) ||
+        a.index - b.index
+    )
+    .map(({ item }) => item);
+}
+
 /** One `/mine` page row — the shared `mineActivitySelect` shape. */
 type MineActivityRow = Awaited<
   ReturnType<typeof communityRepository.listMineByActivity>
@@ -3458,7 +3479,10 @@ export const communityService = {
         .join(",")}`
     );
 
-    const communities = await enrichMineCommunities(userId, pageRows);
+    const communities = orderByWireActivity(
+      await enrichMineCommunities(userId, pageRows),
+      params.direction === "before" ? "desc" : "asc"
+    );
 
     // Inclusive boundary (as specified) → consecutive pages can share the
     // boundary community; clients de-duplicate by id. nextCursor is epoch-ms to
@@ -3517,7 +3541,10 @@ export const communityService = {
     const hasMore = rows.length > params.limit;
     const pageRows = rows.slice(0, params.limit);
 
-    const communities = await enrichMineCommunities(userId, pageRows);
+    const communities = orderByWireActivity(
+      await enrichMineCommunities(userId, pageRows),
+      "desc"
+    );
 
     // Compound exclusive cursor: the id tiebreaker keeps same-ms communities
     // reachable exactly once (the V1 bare-ms leak this endpoint fixes).

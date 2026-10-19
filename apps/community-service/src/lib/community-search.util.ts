@@ -19,6 +19,11 @@ export { normalizeForSearch } from "@aimess/utils";
 
 import { rankByHandle } from "@aimess/utils";
 
+import {
+  type CommunityLifecycleState,
+  isEffectivelyClosed,
+} from "./community-access-policy.js";
+
 /**
  * Handle-first reorder of ONE page of communities: exact `@handle` → handle
  * prefix → handle substring → name-only. The page order underneath is `id desc`
@@ -32,11 +37,13 @@ import { rankByHandle } from "@aimess/utils";
  * substring matches the way a short username can be. Add the head lookup if a
  * short-handle collision ever proves otherwise.
  */
-export function rankCommunitiesByHandle<T extends { handle: string }>(
-  rows: T[],
-  q: string | undefined
-): T[] {
-  return rankByHandle(rows, q, (row) => row.handle);
+export function rankCommunitiesByHandle<
+  T extends { handle: string } & CommunityLifecycleState,
+>(rows: T[], q: string | undefined): T[] {
+  // Open before closed within each handle tier (AIMESS-340); rankByHandle is stable.
+  const open = rows.filter((row) => !isEffectivelyClosed(row));
+  const closed = rows.filter((row) => isEffectivelyClosed(row));
+  return rankByHandle([...open, ...closed], q, (row) => row.handle);
 }
 
 /** Only "@"s (and spaces): a handle search that has not named anyone yet. */
