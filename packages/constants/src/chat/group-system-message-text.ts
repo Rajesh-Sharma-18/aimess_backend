@@ -66,7 +66,8 @@ export const CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   // AIMESS-274: a join is the row's latest line for the joiner ("You joined") and everyone else.
   MEMBER_JOINED: true,
   MEMBER_LEFT: false,
-  MEMBER_REMOVED: false,
+  // The leader's row reads "You removed X" just like "You added X".
+  MEMBER_REMOVED: true,
   MEMBER_ADDED: true,
   MEMBER_BANNED: false,
   MEMBER_UNBANNED: false,
