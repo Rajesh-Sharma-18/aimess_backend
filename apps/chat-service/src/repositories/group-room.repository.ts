@@ -42,6 +42,7 @@ const NO_REACTION_ACTIVITY = {
   reactionActivityActorPreview: null,
   reactionActivityTargetId: null,
   reactionActivityTargetPreview: null,
+  reactionActivityTargetMessagePreview: null,
 };
 
 /** Identity frozen onto a GroupClosureMember row. */
@@ -492,6 +493,7 @@ export class GroupRoomRepository {
       actorPreview: string;
       targetId: string | null;
       targetPreview: string | null;
+      targetMessagePreview: string;
       reactedAt: Date;
     }
   ): Promise<void> {
@@ -505,6 +507,7 @@ export class GroupRoomRepository {
         reactionActivityActorPreview: data.actorPreview,
         reactionActivityTargetId: data.targetId,
         reactionActivityTargetPreview: data.targetPreview,
+        reactionActivityTargetMessagePreview: data.targetMessagePreview,
       },
     });
   }

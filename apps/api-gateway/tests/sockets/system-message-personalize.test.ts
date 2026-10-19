@@ -93,3 +93,58 @@ describe("personalizeConvUpdatedPreview — call rows (contract §9)", () => {
     expect(text("b", "th")).toBe("คุณปฏิเสธสายสนทนา");
   });
 });
+
+describe("personalizeConvUpdatedPreview — reaction overlay (AIMESS-369)", () => {
+  // The actor's own `conv:updated` bump: no override, baked English `text` —
+  // must be IGNORED once the raw ingredients are present, proving the rebuild
+  // ran instead of the legacy pass-through.
+  const actorBump = {
+    type: "PRIVATE",
+    lastMessage: {
+      contentType: "SYSTEM",
+      text: "stale baked sentence, must not show",
+      reactionEmoji: "🔥",
+      reactionActorId: "actor-1",
+      reactionActorName: "Alice",
+      reactionTargetMessagePreview: '"How are you?"',
+    },
+  };
+  // The target's per-recipient override carries the SAME ingredients — only
+  // the viewing socket's own userId decides which perspective comes out.
+  const targetBump = {
+    type: "PRIVATE",
+    lastMessage: {
+      contentType: "SYSTEM",
+      text: "stale baked sentence, must not show",
+      reactionEmoji: "🔥",
+      reactionActorId: "actor-1",
+      reactionActorName: "Alice",
+      reactionTargetMessagePreview: '"How are you?"',
+    },
+  };
+  const text = (
+    bump: typeof actorBump,
+    viewer: string,
+    locale: "en" | "vi" | "th"
+  ) =>
+    (personalizeConvUpdatedPreview(bump, viewer, locale) as typeof bump)
+      .lastMessage.text;
+
+  it("rebuilds the actor's own line in the actor's own locale", () => {
+    expect(text(actorBump, "actor-1", "en")).toBe(
+      'You reacted 🔥 to "How are you?"'
+    );
+    expect(text(actorBump, "actor-1", "vi")).toBe(
+      'Bạn đã thả 🔥 cho "How are you?"'
+    );
+  });
+
+  it("rebuilds the target's third-person line in the TARGET's own locale, independent of the actor's", () => {
+    expect(text(targetBump, "target-1", "en")).toBe(
+      'Alice reacted 🔥 to "How are you?"'
+    );
+    expect(text(targetBump, "target-1", "vi")).toBe(
+      'Alice đã thả 🔥 cho "How are you?"'
+    );
+  });
+});
