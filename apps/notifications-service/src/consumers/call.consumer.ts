@@ -556,7 +556,7 @@ async function handleCallHandled(data: CallHandledPayload): Promise<void> {
 }
 
 /**
- * Settled 1:1 call → ONE Notification-Center row per participant.
+ * Settled 1:1 call → ONE Notification-Center row for the callee (never the caller).
  *
  * This is the call history behind Notifications → Friends. It writes the inbox
  * row ONLY (`skipPush`): the live ring and the missed-call alert are already
@@ -597,7 +597,8 @@ export async function handleCallActivity(
       ? undefined
       : Math.max(0, Math.floor(Number(data.ringDurationSec) || 0));
 
-  // Direction comes from the call record's own participants — never from text.
+  // AIMESS-334 / AIMESS-43: only the callee gets a row — the caller placed the
+  // call, and a self-generated notification never goes back to the actor.
   const sides: {
     userId: string;
     peerId: string;
@@ -605,13 +606,6 @@ export async function handleCallActivity(
     peerAvatar: string;
     direction: CallActivityDirection;
   }[] = [
-    {
-      userId: data.callerId,
-      peerId: data.calleeId,
-      peerName: data.calleeName ?? "",
-      peerAvatar: data.calleeAvatar ?? "",
-      direction: "OUTGOING",
-    },
     {
       userId: data.calleeId,
       peerId: data.callerId,
