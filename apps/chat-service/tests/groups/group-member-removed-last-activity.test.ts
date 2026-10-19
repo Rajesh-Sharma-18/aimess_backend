@@ -19,8 +19,8 @@ describe("group member removal bumps last activity", () => {
     );
   });
 
-  it("AIMESS-326: a leave and a leader's delete are the row's latest line too", () => {
+  it("AIMESS-326: a leave is the row's latest line; the leader's delete line waits on AIMESS-269", () => {
     expect(chatSystemMessageBumpsActivity("MEMBER_LEFT")).toBe(true);
-    expect(chatSystemMessageBumpsActivity("MESSAGE_DELETED")).toBe(true);
+    expect(chatSystemMessageBumpsActivity("MESSAGE_DELETED")).toBe(false);
   });
 });

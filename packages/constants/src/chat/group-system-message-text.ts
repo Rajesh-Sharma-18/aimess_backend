@@ -99,8 +99,8 @@ export const CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   CONVERSATION_CLEARED: false,
   CONVERSATION_DELETED: false,
   LEADER_CHANGED: true,
-  // The leader's "An deleted a message" line (group only).
-  MESSAGE_DELETED: true,
+  // The leader's "An deleted a message" line stays out of the preview until the client answers AIMESS-269.
+  MESSAGE_DELETED: false,
 };
 
 /**
