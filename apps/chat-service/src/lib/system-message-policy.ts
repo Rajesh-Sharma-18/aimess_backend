@@ -18,3 +18,10 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY =
 export function systemMessageBumpsActivity(event: SystemEvent): boolean {
   return chatSystemMessageBumpsActivity(event);
 }
+
+// A line that never bumps the room must not become its preview after a delete either.
+export const NON_BUMPING_SYSTEM_EVENTS: string[] = Object.entries(
+  SYSTEM_MESSAGE_BUMPS_ACTIVITY
+)
+  .filter(([, bumps]) => !bumps)
+  .map(([event]) => event);

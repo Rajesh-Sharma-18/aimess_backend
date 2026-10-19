@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
+import { NON_BUMPING_SYSTEM_EVENTS } from "../lib/system-message-policy.js";
 import { logger } from "@aimess/logger";
 import { LINK_TEXT_REGEX } from "../lib/media-list-filter.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
@@ -1551,7 +1552,15 @@ export class PrivateMessageRepository {
    */
   async findPreviousVisible(roomId: string): Promise<PrivateMessage | null> {
     return this.prisma.privateMessage.findFirst({
-      where: { roomId, isDeleted: false },
+      where: {
+        roomId,
+        isDeleted: false,
+        OR: [
+          { systemEvent: { isSet: false } },
+          { systemEvent: null },
+          { systemEvent: { notIn: NON_BUMPING_SYSTEM_EVENTS } },
+        ],
+      },
       // Ordered by `sequenceNumber`, NOT `createdAt`: the sequence is allocated by
       // an atomic per-room `$inc` while `createdAt` is stamped a round trip later,
       // so two concurrent sends can swap between the two orderings. The clients
@@ -1582,6 +1591,7 @@ export class PrivateMessageRepository {
           $match: {
             roomId,
             isDeleted: false,
+            systemEvent: { $nin: NON_BUMPING_SYSTEM_EVENTS },
             [`deletedFor.${userId}`]: { $exists: false },
             ...(cutoff
               ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }

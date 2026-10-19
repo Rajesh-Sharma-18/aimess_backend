@@ -26,6 +26,7 @@ import {
   parseSearchCursor,
   readTextSearchPage,
 } from "./message-search.js";
+import { NON_BUMPING_SYSTEM_EVENTS } from "../lib/system-message-policy.js";
 import { logger } from "@aimess/logger";
 import {
   shouldCountInUnread,
@@ -1550,7 +1551,15 @@ export class GroupMessageRepository {
    */
   async findPreviousVisible(roomId: string): Promise<GroupMessage | null> {
     return this.prisma.groupMessage.findFirst({
-      where: { roomId, isDeleted: false },
+      where: {
+        roomId,
+        isDeleted: false,
+        OR: [
+          { systemEvent: { isSet: false } },
+          { systemEvent: null },
+          { systemEvent: { notIn: NON_BUMPING_SYSTEM_EVENTS } },
+        ],
+      },
       // Ordered by `sequenceNumber`, NOT `createdAt`: the sequence is allocated by
       // an atomic per-room `$inc` while `createdAt` is stamped a round trip later,
       // so two concurrent sends can swap between the two orderings. The clients
@@ -1618,6 +1627,7 @@ export class GroupMessageRepository {
           $match: {
             roomId,
             isDeleted: false,
+            systemEvent: { $nin: NON_BUMPING_SYSTEM_EVENTS },
             deletedForUserIds: { $ne: userId },
             ...(cutoff
               ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
