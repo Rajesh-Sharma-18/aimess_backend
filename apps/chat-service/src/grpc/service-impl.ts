@@ -4685,8 +4685,9 @@ export function createCommunityImpl(
             lastMessageId: result.id,
             senderUserId: req.userId,
             senderUsername: "",
-            messagePreview:
-              req.text.length > 80 ? req.text.slice(0, 80) : req.text,
+            messagePreview: convertMessageToPreview(result.messageType, {
+              text: req.text,
+            }),
             type: "edited",
           });
         } catch (err) {
