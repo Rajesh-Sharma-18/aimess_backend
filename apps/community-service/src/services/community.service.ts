@@ -17,6 +17,7 @@ import {
   isHiddenSystemMessage,
   localizeMessagePreview,
   localizeCategoryName,
+  localizeReactionActivityText,
   buildCommunitySystemFallbackText,
   PLATFORM_ACTOR_NAME,
   PLATFORM_ACTOR_ROLE,
@@ -820,8 +821,11 @@ export function applyReactionOverlay(
     lastActivityReactionActorPreview?: string | null;
     lastActivityReactionTargetId?: string | null;
     lastActivityReactionTargetPreview?: string | null;
+    lastActivityReactionEmoji?: string | null;
+    lastActivityReactionMessageId?: string | null;
   },
-  viewerId: string
+  viewerId: string,
+  locale: SupportedLocale = currentLocale()
 ): { lastActivity: CommunityLastActivity; lastActivityAt: number } {
   if (!row.lastActivityReactionAt) return base;
   const reactionAt = row.lastActivityReactionAt.getTime();
@@ -834,13 +838,20 @@ export function applyReactionOverlay(
         ? row.lastActivityReactionTargetPreview
         : null;
   if (!preview) return base;
+  const emoji = row.lastActivityReactionEmoji ?? "";
 
   return {
     lastActivity: {
       type: "reaction",
       userId: null,
       username: null,
-      preview,
+      preview: localizeReactionActivityText(preview, emoji, locale),
+      activityKind: "reaction",
+      reaction: {
+        emoji,
+        actorId: row.lastActivityReactionActorId ?? "",
+        targetMessageId: row.lastActivityReactionMessageId ?? "",
+      },
       // Timestamps deliberately keep the base (canonical) value: the overlay
       // replaces the row's PREVIEW TEXT and nothing else — the same rule
       // chat-service's GroupRoomService.applyReactionOverlay already states.

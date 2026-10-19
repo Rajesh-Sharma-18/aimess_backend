@@ -1,3 +1,4 @@
+import type { ReactionActivityInfo } from "@aimess/constants";
 import type { MediaObject } from "@aimess/shared-types";
 
 import type {
@@ -327,6 +328,9 @@ export type CommunityLastActivity =
       senderId: string | null;
       /** UPPER-CASE canonical content type (TEXT/IMAGE/…/SYSTEM); "" when unknown. */
       contentType: string;
+      /** Present only on the reaction overlay (same shape as the chat-service list rows). */
+      activityKind?: "reaction";
+      reaction?: ReactionActivityInfo;
     };
 export type AdminCategoryData = {
   id: string;

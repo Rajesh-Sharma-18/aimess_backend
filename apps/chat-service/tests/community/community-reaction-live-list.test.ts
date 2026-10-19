@@ -147,6 +147,8 @@ describe("REST POST /messages/:messageId/react — add: self-reaction", () => {
     const call = pubUpdated.mock.calls[0][0];
     expect(call.subjectUserId).toBe(TEST_USER_ID);
     expect(call.selfPreview).toBe('You reacted 👍 to "Hello"');
+    // AIMESS-369: the bump carries the typed reaction so the gateway can translate it per socket.
+    expect(call.preview.reaction).toEqual({ emoji: "👍", actorId: TEST_USER_ID, targetMessageId: MSG });
     const { recipients } = await resolveBump(call);
     // ONLY the actor — never the full membership.
     expect(recipients).toEqual([TEST_USER_ID]);

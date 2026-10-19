@@ -630,4 +630,58 @@ export function buildReactionActivityText(params: {
   };
 }
 
+/** Structured reaction overlay sent beside the localized `lastActivity.preview`. */
+export interface ReactionActivityInfo {
+  emoji: string;
+  actorId: string;
+  targetMessageId: string;
+}
+
+const SENTINEL_ACTOR = "\u0000A\u0000";
+const SENTINEL_PREVIEW = "\u0000P\u0000";
+
+/**
+ * Re-renders a reaction activity line that {@link buildReactionActivityText}
+ * stored in STORED_TEXT_LOCALE, in the reader's [locale]. The actor and the
+ * quoted target are recovered with the same stored-locale template, so no
+ * schema field is needed; a line that matches neither template is returned
+ * as stored.
+ */
+export function localizeReactionActivityText(
+  stored: string,
+  emoji: string,
+  locale: SupportedLocale
+): string {
+  if (!stored || !emoji || locale === STORED_TEXT_LOCALE) return stored;
+  const self = t("SYS_REACTION_SELF", STORED_TEXT_LOCALE, {
+    emoji,
+    preview: SENTINEL_PREVIEW,
+  });
+  const selfPrefix = self.slice(0, self.indexOf(SENTINEL_PREVIEW));
+  if (self.endsWith(SENTINEL_PREVIEW) && stored.startsWith(selfPrefix)) {
+    return t("SYS_REACTION_SELF", locale, {
+      emoji,
+      preview: stored.slice(selfPrefix.length),
+    });
+  }
+  const third = t("SYS_REACTION_THIRD_PERSON", STORED_TEXT_LOCALE, {
+    actor: SENTINEL_ACTOR,
+    emoji,
+    preview: SENTINEL_PREVIEW,
+  });
+  const middle = third.slice(
+    third.indexOf(SENTINEL_ACTOR) + SENTINEL_ACTOR.length,
+    third.indexOf(SENTINEL_PREVIEW)
+  );
+  const at = stored.indexOf(middle);
+  if (!third.startsWith(SENTINEL_ACTOR) || !third.endsWith(SENTINEL_PREVIEW) || at <= 0) {
+    return stored;
+  }
+  return t("SYS_REACTION_THIRD_PERSON", locale, {
+    actor: stored.slice(0, at),
+    emoji,
+    preview: stored.slice(at + middle.length),
+  });
+}
+
 export { CommunitySystemMessageType };

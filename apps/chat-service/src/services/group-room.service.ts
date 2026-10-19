@@ -1,7 +1,9 @@
 import {
   BACKOFFICE_SOURCE,
   currentLocale,
+  localizeReactionActivityText,
   MAX_GROUP_MEMBERS,
+  type ReactionActivityInfo,
 } from "@aimess/constants";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
@@ -136,6 +138,9 @@ export interface GroupConversationLastActivity {
   revision: number;
   /** UPPER-CASE canonical content type (TEXT/IMAGE/…/SYSTEM); "" when empty. */
   contentType: string;
+  /** Present only on the reaction overlay; `preview` is then an activity line, not a message. */
+  activityKind?: "reaction";
+  reaction?: ReactionActivityInfo;
 }
 
 const EMPTY_GROUP_LAST_ACTIVITY: GroupConversationLastActivity = {
@@ -190,6 +195,9 @@ export function buildGroupLastActivity(
     seq: (lp.seq as number) ?? 0,
     revision: (lp.revision as number) ?? 0,
     contentType,
+    ...(lp.reaction
+      ? { activityKind: "reaction" as const, reaction: lp.reaction as ReactionActivityInfo }
+      : {}),
   };
 }
 
@@ -675,12 +683,22 @@ export class GroupRoomService {
       const prev = room.lastMessagePreview as {
         createdAt?: string | Date;
       } | null;
+      const emoji = room.reactionActivityEmoji ?? "";
       return {
         ...room,
         lastMessagePreview: {
-          text: isActor
-            ? (room.reactionActivityActorPreview ?? "")
-            : (room.reactionActivityTargetPreview ?? ""),
+          text: localizeReactionActivityText(
+            isActor
+              ? (room.reactionActivityActorPreview ?? "")
+              : (room.reactionActivityTargetPreview ?? ""),
+            emoji,
+            currentLocale()
+          ),
+          reaction: {
+            emoji,
+            actorId: room.reactionActivityActorId ?? "",
+            targetMessageId: room.reactionActivityMessageId ?? "",
+          },
           senderId: "",
           senderName: "",
           messageType: "SYSTEM",

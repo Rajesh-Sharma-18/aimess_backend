@@ -158,3 +158,27 @@ describe("applyReactionOverlay — requirement 4a: same-message multiple reactor
     ).toBe("You reacted ❤️ to Hello");
   });
 });
+
+describe("applyReactionOverlay — AIMESS-369: typed and localized", () => {
+  const row = {
+    lastActivityReactionAt: new Date(CANONICAL_AT + 60_000),
+    lastActivityReactionActorId: ACTOR,
+    lastActivityReactionActorPreview: 'You reacted 👍 to "Hello"',
+    lastActivityReactionTargetId: TARGET,
+    lastActivityReactionTargetPreview: 'Alex reacted 👍 to "Hello"',
+    lastActivityReactionEmoji: "👍",
+    lastActivityReactionMessageId: "msg-1",
+  };
+
+  it("carries activityKind + reaction and renders the line in the reader's language", () => {
+    const actor = applyReactionOverlay(canonicalBase, row, ACTOR, "vi").lastActivity;
+    expect(actor).toMatchObject({
+      type: "reaction",
+      activityKind: "reaction",
+      reaction: { emoji: "👍", actorId: ACTOR, targetMessageId: "msg-1" },
+      preview: 'Bạn đã thả 👍 cho "Hello"',
+    });
+    const target = applyReactionOverlay(canonicalBase, row, TARGET, "vi").lastActivity;
+    expect(target.preview).toBe('Alex đã thả 👍 cho "Hello"');
+  });
+});

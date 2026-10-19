@@ -1,4 +1,8 @@
-import { currentLocale } from "@aimess/constants";
+import {
+  currentLocale,
+  localizeReactionActivityText,
+  type ReactionActivityInfo,
+} from "@aimess/constants";
 import {
   BadRequestError,
   ForbiddenError,
@@ -340,6 +344,9 @@ export interface PrivateConversationLastActivity {
   revision: number;
   /** UPPER-CASE canonical content type (TEXT/IMAGE/…/SYSTEM). */
   contentType: string;
+  /** Present only on the reaction overlay; `preview` is then an activity line, not a message. */
+  activityKind?: "reaction";
+  reaction?: ReactionActivityInfo;
 }
 
 export type EnrichedPrivateRoom = PrivateRoom & {
@@ -1392,9 +1399,20 @@ export class PrivateRoomService {
           lastActivity.type = "message";
           lastActivity.userId = room.reactionActivityActorId;
           lastActivity.username = "";
-          lastActivity.preview = isActor
-            ? (room.reactionActivityActorPreview ?? "")
-            : (room.reactionActivityTargetPreview ?? "");
+          const emoji = room.reactionActivityEmoji ?? "";
+          lastActivity.preview = localizeReactionActivityText(
+            isActor
+              ? (room.reactionActivityActorPreview ?? "")
+              : (room.reactionActivityTargetPreview ?? ""),
+            emoji,
+            currentLocale()
+          );
+          lastActivity.activityKind = "reaction";
+          lastActivity.reaction = {
+            emoji,
+            actorId: room.reactionActivityActorId ?? "",
+            targetMessageId: room.reactionActivityMessageId ?? "",
+          };
           // `dateTime` deliberately keeps the canonical value: the overlay
           // replaces the row's PREVIEW TEXT and nothing else (the same rule
           // GroupRoomService.applyReactionOverlay already states). The inbox is

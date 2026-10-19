@@ -1,3 +1,4 @@
+import type { ReactionActivityInfo } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
 import type { Redis, Cluster } from "ioredis";
@@ -57,6 +58,8 @@ interface BumpPreview {
   systemData?: Record<string, unknown>;
   systemMessageType?: string;
   systemMetadata?: Record<string, unknown>;
+  /** Reaction overlay only: lets the gateway re-render `text` per socket locale and clients key off it. */
+  reaction?: ReactionActivityInfo;
 }
 
 /**

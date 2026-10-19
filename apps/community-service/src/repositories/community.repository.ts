@@ -337,6 +337,8 @@ function mineActivitySelect(userId: string) {
     lastActivityReactionActorPreview: true,
     lastActivityReactionTargetId: true,
     lastActivityReactionTargetPreview: true,
+    lastActivityReactionEmoji: true,
+    lastActivityReactionMessageId: true,
     createdAt: true,
     moderationStatus: true,
     status: true,

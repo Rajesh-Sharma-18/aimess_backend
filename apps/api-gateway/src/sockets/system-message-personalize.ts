@@ -2,6 +2,7 @@ import {
   formatStreamDuration,
   formatTtlDuration,
   localizeMessagePreview,
+  localizeReactionActivityText,
   renderMessageKey,
   personalizeCommunitySystemMessageForViewer,
   personalizeGroupSystemMessageForViewer,
@@ -10,6 +11,7 @@ import {
   isPersonalizableSystemContentType,
   STORED_TEXT_LOCALE,
   type CommunitySystemMessageType,
+  type ReactionActivityInfo,
   type SupportedLocale,
 } from "@aimess/constants";
 
@@ -36,6 +38,8 @@ interface BumpedPreview {
   systemData?: Record<string, unknown>;
   systemMessageType?: CommunitySystemMessageType;
   systemMetadata?: Record<string, unknown>;
+  /** Reaction overlay: `text` is an activity line rebuilt from its stored-locale template. */
+  reaction?: ReactionActivityInfo;
 }
 
 /**
@@ -185,7 +189,9 @@ function withRebuiltPreviewText(
       : { ...d, lastMessage: { ...preview, text: label } };
   }
 
-  const rebuilt = rebuild(preview, storedText);
+  const rebuilt = preview.reaction
+    ? localizeReactionActivityText(storedText, preview.reaction.emoji, locale)
+    : rebuild(preview, storedText);
   if (rebuilt === storedText) return d;
   return { ...d, lastMessage: { ...preview, text: rebuilt } };
 }

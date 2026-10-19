@@ -1,4 +1,5 @@
 import {
+  personalizeCommunityUpdatedPreview,
   personalizeConvUpdatedPreview,
   personalizeGroupSocketMessage,
 } from "../../src/sockets/system-message-personalize.js";
@@ -91,5 +92,27 @@ describe("personalizeConvUpdatedPreview — call rows (contract §9)", () => {
     expect(text("a", "en")).toBe("Call declined");
     expect(text("b", "en")).toBe("You declined a voice call");
     expect(text("b", "th")).toBe("คุณปฏิเสธสายสนทนา");
+  });
+});
+
+describe("reaction overlay bump (AIMESS-369)", () => {
+  const reaction = { emoji: "👍", actorId: "actor-1", targetMessageId: "m3" };
+
+  it("re-renders the conv:updated reaction line in the socket's language", () => {
+    const bump = {
+      type: "PRIVATE",
+      lastMessage: { contentType: "SYSTEM", text: 'You reacted 👍 to "Hi"', reaction },
+    };
+    const out = personalizeConvUpdatedPreview(bump, "actor-1", "vi") as typeof bump;
+    expect(out.lastMessage.text).toBe('Bạn đã thả 👍 cho "Hi"');
+    expect(out.lastMessage.reaction).toEqual(reaction);
+  });
+
+  it("re-renders the community:updated reaction line in the socket's language", () => {
+    const bump = {
+      lastMessage: { contentType: "SYSTEM", text: 'Alex reacted 👍 to "Hi"', reaction },
+    };
+    const out = personalizeCommunityUpdatedPreview(bump, "target-1", "vi") as typeof bump;
+    expect(out.lastMessage.text).toBe('Alex đã thả 👍 cho "Hi"');
   });
 });

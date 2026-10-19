@@ -1965,6 +1965,11 @@ export class ChatMessageOrchestrator {
         emoji: params.emoji,
         isSelfReaction,
       });
+      const reaction = {
+        emoji: params.emoji,
+        actorId: params.actorId,
+        targetMessageId: params.messageId,
+      };
 
       await service.setReactionActivity(params.roomId, {
         messageId: params.messageId,
@@ -1985,7 +1990,7 @@ export class ChatMessageOrchestrator {
         senderName: actorName,
         lastMessageId: params.messageId,
         lastMessageAt: reactedAt.getTime(),
-        preview: { contentType: "SYSTEM", text: selfPreview },
+        preview: { contentType: "SYSTEM", text: selfPreview, reaction },
         countInUnread: false,
         // Preview-only: the reaction overlay never moves the row (see
         // `activityOnly`). The canonical lastMessageAt this list sorts on was
@@ -2004,7 +2009,7 @@ export class ChatMessageOrchestrator {
                       lastMessageAt: reactedAt.getTime(),
                       senderId: params.actorId,
                       senderName: actorName,
-                      preview: { contentType: "SYSTEM", text: targetPreview },
+                      preview: { contentType: "SYSTEM", text: targetPreview, reaction },
                     },
                   ],
                 ])
