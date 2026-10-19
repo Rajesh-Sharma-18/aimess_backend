@@ -2,7 +2,7 @@ import cors from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
 import { AUDIT_SOURCES, createAuditContextMiddleware } from "@aimess/constants";
-import { localeMiddleware } from "@aimess/utils";
+import { localeMiddleware, trustProxyHops } from "@aimess/utils";
 
 import { serviceRoutes } from "./api/routes/index.js";
 import { env } from "./config/env.js";
@@ -30,7 +30,7 @@ export function createApp(): Express {
   // Unconditional — 0 means "trust no proxy". See the note in api-gateway's
   // app.ts: leaving this unset is what pushed call sites into hand-parsing the
   // leftmost X-Forwarded-For entry, which the client controls.
-  app.set("trust proxy", env.TRUST_PROXY_HOPS);
+  app.set("trust proxy", trustProxyHops(env.TRUST_PROXY_HOPS));
 
   app.use(helmet());
 

@@ -1,5 +1,6 @@
 import type { Socket } from "socket.io";
 import { resolveAuditSource, runWithAuditContext } from "@aimess/constants";
+import { resolveForwardedIp } from "@aimess/utils";
 
 import { env } from "../config/env.js";
 
@@ -67,22 +68,8 @@ export function bindSocketAuditContext(socket: Socket): void {
  */
 function resolveHandshakeIp(socket: Socket): string | null {
   const { headers, address } = readHandshake(socket);
-  const hops = env.TRUST_PROXY_HOPS;
-  if (hops <= 0) return address || null;
-
   const raw = headers["x-forwarded-for"];
   const value = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof value !== "string" || value.length === 0) return address || null;
-
-  const entries = value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  if (entries.length === 0) return address || null;
-
-  // Clamp: a chain shorter than the configured hop count means the request did
-  // not traverse the proxies we expect, so fall back to the leftmost entry we
-  // actually have rather than reading past the start of the list.
-  const index = Math.max(0, entries.length - hops);
-  return entries[index] ?? address ?? null;
+  // Same walk as Express's `trust proxy` (shared helper), so a Cloudflare edge is skipped here too.
+  return resolveForwardedIp(address ?? "", value, env.TRUST_PROXY_HOPS) || null;
 }
