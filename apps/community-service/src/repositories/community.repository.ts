@@ -1064,9 +1064,21 @@ export const communityRepository = {
   },
 
   /** Non-deleted communities the user currently owns (closed/suspended still count). */
-  countOwnedCommunities(userId: string) {
-    return prisma.community.count({
+  // Only communities still in the owner's list hold a slot: a sole-admin leave
+  // (closes it, membership LEFT) or dismissing a closed one frees it.
+  async countOwnedCommunities(userId: string) {
+    const owned = await prisma.community.findMany({
       where: { adminId: userId, AND: [NOT_DELETED] },
+      select: { id: true },
+    });
+    if (owned.length === 0) return 0;
+    return prisma.communityMember.count({
+      where: {
+        userId,
+        communityId: { in: owned.map((c) => c.id) },
+        status: CommunityMemberStatus.ACTIVE,
+        OR: [{ dismissedAt: { isSet: false } }, { dismissedAt: null }],
+      },
     });
   },
 
