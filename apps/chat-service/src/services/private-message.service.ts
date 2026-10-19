@@ -2105,6 +2105,7 @@ if (!hasVisibleText(params.content?.text))
       actorPreview: string;
       targetId: string | null;
       targetPreview: string | null;
+      targetMessagePreview: string;
       reactedAt: Date;
     }
   ): Promise<void> {

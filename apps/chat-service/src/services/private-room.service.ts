@@ -1,4 +1,4 @@
-import { currentLocale } from "@aimess/constants";
+import { buildReactionActivityText, currentLocale } from "@aimess/constants";
 import {
   BadRequestError,
   ForbiddenError,
@@ -321,7 +321,7 @@ export interface PrivateRoomPeer {
  * `dateTime`) so both list items render identically on the client.
  */
 export interface PrivateConversationLastActivity {
-  type: "message";
+  type: "message" | "reaction";
   userId: string | null;
   username: string;
   preview: string;
@@ -1389,12 +1389,35 @@ export class PrivateRoomService {
         const isActor = room.reactionActivityActorId === userId;
         const isTarget = room.reactionActivityTargetId === userId;
         if (isActor || isTarget) {
-          lastActivity.type = "message";
-          lastActivity.userId = room.reactionActivityActorId;
+          // Rebuild the line in the VIEWER's own language (AIMESS-369) from the
+          // raw ingredients when they're on the row; rows written before that
+          // field existed fall back to the baked STORED_TEXT_LOCALE sentence —
+          // same no-migration philosophy as every other overlay field here.
+          const actorId = room.reactionActivityActorId ?? "";
+          const rebuilt = room.reactionActivityTargetMessagePreview
+            ? buildReactionActivityText({
+                actorName:
+                  actorId === userId
+                    ? myDisplayName
+                    : resolveDisplayName(snapshots.get(actorId)),
+                targetMessagePreview: room.reactionActivityTargetMessagePreview,
+                emoji: room.reactionActivityEmoji ?? "",
+                isSelfReaction: !room.reactionActivityTargetId,
+                locale: currentLocale(),
+              })
+            : null;
+          // Distinct from "message" so a client never adds its own "You:"/
+          // "<name>:" sender prefix on top of this already-personalized line.
+          lastActivity.type = "reaction";
+          lastActivity.userId = actorId || null;
           lastActivity.username = "";
-          lastActivity.preview = isActor
-            ? (room.reactionActivityActorPreview ?? "")
-            : (room.reactionActivityTargetPreview ?? "");
+          lastActivity.preview = rebuilt
+            ? isActor
+              ? rebuilt.selfPreview
+              : rebuilt.targetPreview
+            : isActor
+              ? (room.reactionActivityActorPreview ?? "")
+              : (room.reactionActivityTargetPreview ?? "");
           // `dateTime` deliberately keeps the canonical value: the overlay
           // replaces the row's PREVIEW TEXT and nothing else (the same rule
           // GroupRoomService.applyReactionOverlay already states). The inbox is

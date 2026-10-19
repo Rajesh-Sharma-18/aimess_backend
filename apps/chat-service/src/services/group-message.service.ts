@@ -790,6 +790,7 @@ export class GroupMessageService {
       actorPreview: string;
       targetId: string | null;
       targetPreview: string | null;
+      targetMessagePreview: string;
       reactedAt: Date;
     }
   ): Promise<void> {
