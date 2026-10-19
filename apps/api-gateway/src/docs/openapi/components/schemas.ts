@@ -4428,6 +4428,38 @@ export const openApiSchemas = {
     },
     required: ["account"],
   },
+  LoginAccountPreview: {
+    type: "object",
+    description:
+      "`error.details.account` on the `purpose: \"login\"` 409 `AUTH_ACCOUNT_TAKEN` " +
+      "for an active account with a password — the identity for the password step. " +
+      "Absent for every other answer and whenever user-service could not be reached.",
+    properties: {
+      displayName: { type: "string", example: "Tom Hardy" },
+      firstName: { type: "string", example: "Tom" },
+      lastName: { type: "string", example: "Hardy" },
+      username: { type: "string", example: "tom" },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description: "Presigned GET URL (expires; never persist). Null when no avatar.",
+      },
+      avatarObjectKey: {
+        type: "string",
+        nullable: true,
+        description: "Stable avatar object key (cache key). Null when no avatar.",
+        example: "avatars/2026/10/abc.jpg",
+      },
+    },
+    required: [
+      "displayName",
+      "firstName",
+      "lastName",
+      "username",
+      "avatarUrl",
+      "avatarObjectKey",
+    ],
+  },
   ValidateAccountResponseData: {
     type: "object",
     properties: {

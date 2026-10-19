@@ -254,6 +254,9 @@ const envSchema = z.object({
 
   /** backoffice-service gRPC address — used to reject emails already used by an admin account. */
   BACKOFFICE_GRPC_URL: z.string().min(1).default("localhost:4010"),
+
+  /** user-service gRPC address — name + avatar for the login password step. */
+  USER_GRPC_URL: z.string().min(1).default("localhost:4002"),
   // Refresh-token cookie (AIM-02). The browser gets the refresh token as an
   // httpOnly cookie IN ADDITION to the JSON body; native clients ignore it.
   // Unset means "secure in production, plain in dev" - never derive it from
