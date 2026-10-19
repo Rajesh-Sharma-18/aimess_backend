@@ -63,8 +63,13 @@ export function createBannedUserGuard(
   return async (userId: string) => {
     try {
       const redis = getRedis();
-      if (await isUserBanned(redis, userId)) return "ACCOUNT_BANNED";
-      return (await isUserSuspended(redis, userId)) ? "ACCOUNT_SUSPENDED" : false;
+      // Concurrent, not chained: every authenticated request pays this, so one round trip, not two.
+      const [banned, suspended] = await Promise.all([
+        isUserBanned(redis, userId),
+        isUserSuspended(redis, userId),
+      ]);
+      if (banned) return "ACCOUNT_BANNED";
+      return suspended ? "ACCOUNT_SUSPENDED" : false;
     } catch {
       return false;
     }

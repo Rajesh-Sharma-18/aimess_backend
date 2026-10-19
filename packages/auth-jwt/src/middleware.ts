@@ -96,23 +96,22 @@ export function createAuthenticateAccessToken(
       try {
         const auth = verifyAccessToken(token, verifyConfig);
 
-        if (options.assertSessionActive) {
-          const active = await options.assertSessionActive(auth.sessionId);
-          if (!active) {
-            throw new UnauthorizedError("AUTH_SESSION_ENDED");
-          }
+        // Both are independent Redis reads: one round trip instead of two on every request.
+        const [active, blocked] = await Promise.all([
+          options.assertSessionActive?.(auth.sessionId) ?? true,
+          options.assertUserBanned?.(auth.userId) ?? false,
+        ]);
+        if (!active) {
+          throw new UnauthorizedError("AUTH_SESSION_ENDED");
         }
 
         // 403, not 401: the token is valid and refreshing it will not help.
         // A distinct code lets every client tell "sign in again" apart from
         // "this account is permanently banned" and stop retrying.
-        if (options.assertUserBanned) {
-          const blocked = await options.assertUserBanned(auth.userId);
-          if (blocked) {
-            throw new ForbiddenError(
-              blocked === true ? "ACCOUNT_BANNED" : blocked
-            );
-          }
+        if (blocked) {
+          throw new ForbiddenError(
+            blocked === true ? "ACCOUNT_BANNED" : blocked
+          );
         }
 
         req.auth = auth;
