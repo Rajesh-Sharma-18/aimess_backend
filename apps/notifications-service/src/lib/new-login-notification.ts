@@ -85,7 +85,7 @@ export function buildNewLoginNotification(
     type: eventType,
     // Security alert — exempt from settings/quiet hours via
     // NON_SUPPRESSIBLE_TYPES in push.service.ts, not a flag here.
-    copy: authCopy.newLogin(p.browser, location),
+    copy: authCopy.newLogin(p.deviceName || p.browser, location),
     data,
   };
 }

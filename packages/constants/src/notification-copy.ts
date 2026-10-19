@@ -1428,12 +1428,11 @@ export const accountCopy = register("account", {
 });
 
 export const authCopy = register("auth", {
+  // `browser` is the device label ("Chrome on Windows", else the browser), shown as sent.
   newLogin:
     (browser?: string | null, location?: string | null): LocalizedCopy =>
     (locale) => {
-      const device = browser
-        ? t("NOTIF_AUTH_ON_BROWSER", locale, { browser: browser.toLowerCase() })
-        : t("NOTIF_AUTH_NEW_DEVICE", locale);
+      const device = browser?.trim() || t("NOTIF_AUTH_NEW_DEVICE", locale);
       return {
         title: t("NOTIF_AUTH_LOGIN_DETECTED_TITLE", locale),
         body: location

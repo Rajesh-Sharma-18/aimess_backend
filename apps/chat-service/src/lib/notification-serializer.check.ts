@@ -93,6 +93,7 @@ async function run() {
       data: {
         sessionId: "s1",
         browser: "Chrome",
+        deviceName: "Chrome on Windows",
         location: "San Francisco",
         actionTaken: "TRUSTED",
       },
@@ -101,7 +102,7 @@ async function run() {
   const repaired = await serializeNotification(clobberedLogin, "viewer1");
   assert.equal(
     repaired.body,
-    "New login detected on a chrome from San Francisco."
+    "New login detected on Chrome on Windows from San Francisco."
   );
   assert.equal(repaired.actionTaken, "TRUSTED");
 

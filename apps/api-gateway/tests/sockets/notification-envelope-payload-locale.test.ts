@@ -92,7 +92,7 @@ describe("the reported repro", () => {
         "u1",
         locale
       ) as Rendered;
-      expect(out.body).toContain("chrome");
+      expect(out.body).toContain("Chrome");
       expect(out.body).toContain("India");
       expect(out.payload.body).toBe(out.body);
     }

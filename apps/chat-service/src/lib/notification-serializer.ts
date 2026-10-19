@@ -196,9 +196,8 @@ const CLOBBERED_LOGIN_BODIES = new Set([
  * if a localized repair ever matters.
  */
 function repairLoginBody(data: Record<string, string>): string {
-  const device = data.browser
-    ? t("NOTIF_AUTH_ON_BROWSER", "en", { browser: data.browser.toLowerCase() })
-    : t("NOTIF_AUTH_NEW_DEVICE", "en");
+  const device =
+    data.deviceName || data.browser || t("NOTIF_AUTH_NEW_DEVICE", "en");
   return data.location
     ? t("NOTIF_AUTH_NEW_LOGIN_LOCATION", "en", {
         device,

@@ -91,7 +91,7 @@ describe("the reported repro, served over REST", () => {
       const dto = await runWithLocale(locale, () =>
         serializeNotification(stored, "viewer-1")
       );
-      expect(dto.body).toContain("chrome");
+      expect(dto.body).toContain("Chrome");
       expect(dto.body).toContain("India");
     }
   });
