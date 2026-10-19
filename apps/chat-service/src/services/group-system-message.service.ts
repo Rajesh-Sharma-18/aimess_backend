@@ -260,7 +260,7 @@ export class GroupSystemMessageService {
       const selfOnly = Boolean(params.selfOnlyAfter && actorId);
 
       // Bump inbox order/preview (no unread increment) — gated per-subtype so
-      // a member leaving can't reorder the list, matching
+      // low-signal events (unpin, …) can't reorder the list, matching
       // Community's SYSTEM_MESSAGE_BUMPS_ACTIVITY.
       if (!selfOnly && systemMessageBumpsActivity(systemEvent)) {
         await this.roomRepo.updateLastMessage(roomId, {
@@ -311,7 +311,7 @@ export class GroupSystemMessageService {
       // already joined to `conv:<roomId>`, which excludes anyone sitting on the
       // chats list. Community's system service does the same (§community-system
       // -message.service.ts publishCommunityUpdatedSafe). Gated the same as the
-      // DB write above — a non-bumping event (member left, unpin, …)
+      // DB write above — a non-bumping event (unpin, …)
       // must not reorder the recipient's inbox either.
       if (!selfOnly && systemMessageBumpsActivity(systemEvent)) {
         // The subject member's own list row should read "You were added" /

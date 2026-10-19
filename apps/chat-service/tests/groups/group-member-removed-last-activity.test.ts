@@ -19,7 +19,8 @@ describe("group member removal bumps last activity", () => {
     );
   });
 
-  it("a member leaving still does not reorder the list", () => {
-    expect(chatSystemMessageBumpsActivity("MEMBER_LEFT")).toBe(false);
+  it("AIMESS-326: a leave and a leader's delete are the row's latest line too", () => {
+    expect(chatSystemMessageBumpsActivity("MEMBER_LEFT")).toBe(true);
+    expect(chatSystemMessageBumpsActivity("MESSAGE_DELETED")).toBe(true);
   });
 });

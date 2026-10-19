@@ -65,7 +65,8 @@ export const CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   GROUP_CREATED: true,
   // AIMESS-274: a join is the row's latest line for the joiner ("You joined") and everyone else.
   MEMBER_JOINED: true,
-  MEMBER_LEFT: false,
+  // AIMESS-326: every group line members see in the chat is also the row's preview.
+  MEMBER_LEFT: true,
   // The leader's row reads "You removed X" just like "You added X".
   MEMBER_REMOVED: true,
   MEMBER_ADDED: true,
@@ -98,7 +99,8 @@ export const CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   CONVERSATION_CLEARED: false,
   CONVERSATION_DELETED: false,
   LEADER_CHANGED: true,
-  MESSAGE_DELETED: false,
+  // The leader's "An deleted a message" line (group only).
+  MESSAGE_DELETED: true,
 };
 
 /**

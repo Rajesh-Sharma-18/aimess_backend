@@ -9,8 +9,8 @@ import {
  * therefore its position + preview in the inbox). Shared by Group and Private
  * — both use the same `SystemEvent` enum. Mirrors Community's
  * `SYSTEM_MESSAGE_BUMPS_ACTIVITY` (packages/constants/src/community/system-message.ts):
- * a member leaving and low-signal actions (unpin, invite
- * link created) don't reorder the list; content-relevant changes do.
+ * low-signal actions (unpin, invite link created) don't reorder the list;
+ * every line members see in a group (join/leave/remove/delete) does.
  */
 export const SYSTEM_MESSAGE_BUMPS_ACTIVITY =
   CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY as Record<SystemEvent, boolean>;
