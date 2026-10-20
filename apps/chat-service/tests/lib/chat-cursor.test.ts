@@ -18,6 +18,7 @@
 import { buildRoomKeysetWhere } from "../../src/lib/pagination.js";
 import { InboxController } from "../../src/api/controllers/inbox.controller.js";
 import { PrivateMessageController } from "../../src/api/controllers/private-message.controller.js";
+import { GroupMessageController } from "../../src/api/controllers/group-message.controller.js";
 import {
   inboxQuerySchema,
   messageTimelineQuerySchema,
@@ -410,5 +411,70 @@ describe("PrivateMessageController.getMessages", () => {
       messageTimelineQuerySchema.safeParse({ before_seq: "1", after_seq: "2" })
         .success
     ).toBe(false);
+  });
+});
+
+describe("PrivateMessageController.getMessages — receipts and pin beside the page", () => {
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("starts the timeline without waiting for the receipt cursors or the pin", async () => {
+    const { controller, messageService } = makePrivateController();
+    let releaseRead!: (seq: number) => void;
+    messageService.getPeerReadSeq.mockReturnValue(
+      new Promise<number>((resolve) => (releaseRead = resolve))
+    );
+    const res = await invoke(controller.getMessages, { limit: "30" });
+
+    expect(messageService.getMessagesTimeline).toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
+
+    releaseRead(42);
+    await flush();
+    expect(res.json.mock.calls[0]![0].data).toMatchObject({
+      peerReadSeq: 42,
+      pinnedMessage: PIN_SUMMARY,
+    });
+  });
+
+  it("a failed page still reaches next() and a failed receipt read is not left unhandled", async () => {
+    const { controller, messageService } = makePrivateController();
+    const pageError = new Error("page failed");
+    messageService.getMessagesTimeline.mockRejectedValue(pageError);
+    messageService.getPeerReadSeq.mockRejectedValue(new Error("receipts failed"));
+    const unhandled = jest.fn();
+    process.on("unhandledRejection", unhandled);
+    const next = jest.fn();
+    await (
+      controller.getMessages as unknown as (
+        req: unknown,
+        res: unknown,
+        next: unknown
+      ) => void
+    )(makeReq({ limit: "30" }), makeRes(), next);
+    await flush();
+    await flush();
+    process.off("unhandledRejection", unhandled);
+
+    expect(next).toHaveBeenCalledWith(pageError);
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+});
+
+describe("GroupMessageController.getMessages — receipts and pin beside the page", () => {
+  it("starts the timeline without waiting for the member cursors", async () => {
+    const messageService = {
+      getMessagesTimeline: jest.fn().mockResolvedValue(TIMELINE_RESULT),
+      enrichForWire: jest.fn().mockResolvedValue([]),
+      getMemberReadCursors: jest.fn(() => new Promise(() => {})),
+      getMemberDeliveredCursors: jest.fn().mockResolvedValue({}),
+    };
+    const controller = new GroupMessageController(
+      messageService as never,
+      { getActivePinSummary: jest.fn().mockResolvedValue(null) } as never,
+      {} as never,
+      {} as never
+    );
+    await invoke(controller.getMessages, { limit: "30" });
+    expect(messageService.getMessagesTimeline).toHaveBeenCalled();
   });
 });
