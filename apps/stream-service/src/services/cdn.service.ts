@@ -5,6 +5,7 @@ import { logger } from "@aimess/logger";
 import { env } from "../config/env.js";
 import { streamKeyRef } from "../lib/stream-key-ref.js";
 import type { IngestEndpoints, PlaybackUrls } from "./srs.service.js";
+import { withLowLatencyHls } from "./srs.service.js";
 
 /**
  * Impossible to miss in a scrolling terminal — same purpose as the SRS hook's
@@ -229,7 +230,7 @@ export class CdnService {
     const token = this.tokenParams(this.streamPath(name));
     const query = token ? `?${token}` : "";
     return {
-      hlsUrl: `${base}/${env.CDN_APP}/${name}.m3u8${query}`,
+      hlsUrl: withLowLatencyHls(`${base}/${env.CDN_APP}/${name}.m3u8${query}`),
       flvUrl: `${base}/${env.CDN_APP}/${name}.flv${query}`,
       dashUrl: null,
     };

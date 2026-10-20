@@ -28,6 +28,16 @@ export interface PlaybackUrls {
  * actually push to I-03; missing rungs 404 in the player.
  */
 export const HLS_QUALITY_LADDER = ["1080p", "720p", "480p", "360p"] as const;
+
+/**
+ * Append `lhls=1` (low-latency HLS) to a playback `.m3u8` URL. Goes last, after
+ * any token params, using `?` or `&` as needed. Idempotent: a URL that already
+ * carries it is returned unchanged.
+ */
+export function withLowLatencyHls(url: string): string {
+  if (/[?&]lhls=1(&|$)/.test(url)) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}lhls=1`;
+}
 export type HlsQuality = (typeof HLS_QUALITY_LADDER)[number];
 
 /**
@@ -116,7 +126,9 @@ export class SrsService {
   buildPlaybackUrls(srsName: string): PlaybackUrls {
     return {
       flvUrl: `${env.SRS_HLS_BASE}/live/${srsName}.flv`,
-      hlsUrl: `${env.SRS_HLS_BASE}/live/${srsName}${env.SRS_HLS_ABR_MASTER ? "_master" : ""}.m3u8`,
+      hlsUrl: withLowLatencyHls(
+        `${env.SRS_HLS_BASE}/live/${srsName}${env.SRS_HLS_ABR_MASTER ? "_master" : ""}.m3u8`
+      ),
       dashUrl: `${env.SRS_HLS_BASE}/live/${srsName}.mpd`,
     };
   }
@@ -381,10 +393,12 @@ export function buildHlsQualityUrls(
   hlsUrl: string | null
 ): Record<string, string> {
   if (!hlsUrl || !env.SRS_HLS_ABR_MASTER) return {};
-  if (!hlsUrl.endsWith("_master.m3u8")) return {};
+  // Stored URL may carry a query (`?lhls=1`) — match on the path only.
+  const path = hlsUrl.split("?")[0];
+  if (!path.endsWith("_master.m3u8")) return {};
   const map: Record<string, string> = {};
   for (const q of HLS_QUALITY_LADDER) {
-    map[q] = hlsUrl.replace(/_master\.m3u8$/, `_${q}.m3u8`);
+    map[q] = withLowLatencyHls(path.replace(/_master\.m3u8$/, `_${q}.m3u8`));
   }
   return map;
 }

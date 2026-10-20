@@ -2791,7 +2791,7 @@ export const openApiSchemas = {
       hlsUrl: {
         type: "string",
         nullable: true,
-        example: "http://srs.example.com:8080/live/abc123.m3u8",
+        example: "http://srs.example.com:8080/live/abc123.m3u8?lhls=1",
       },
       flvUrl: {
         type: "string",
