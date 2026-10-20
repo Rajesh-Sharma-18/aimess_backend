@@ -1,4 +1,8 @@
-import { sanitizeFileName, type UploadTypeDef } from "@aimess/storage";
+import {
+  assertExtensionMatchesMime,
+  sanitizeFileName,
+  type UploadTypeDef,
+} from "@aimess/storage";
 
 import { env } from "./env.js";
 
@@ -269,4 +273,23 @@ export function dispositionForKey(
     (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
   );
   return `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`;
+}
+
+/**
+ * The client's original filename as display metadata, or undefined when it is
+ * empty or its extension contradicts the MIME — a wrong name is dropped, never
+ * a reason to fail the upload.
+ */
+export function displayFileName(
+  fileName: string | undefined,
+  ext: string | undefined
+): string | undefined {
+  const name = sanitizeFileName(fileName);
+  if (!name || !ext) return undefined;
+  try {
+    assertExtensionMatchesMime(name, ext);
+    return name;
+  } catch {
+    return undefined;
+  }
 }

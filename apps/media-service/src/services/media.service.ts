@@ -28,6 +28,7 @@ import {
 import {
   UPLOAD_CATEGORIES,
   dispositionForKey,
+  displayFileName,
   resolveCategoryFromObjectKey,
   type MediaCategoryKey,
 } from "../config/uploads.js";
@@ -236,7 +237,10 @@ export const mediaService = {
         contentType: params.contentType,
         contentLength: params.contentLength,
         ownerId: params.ownerId,
-        fileName: params.fileName,
+        fileName: displayFileName(
+          params.fileName,
+          def.allowedMime[params.contentType]
+        ),
         expiresIn: env.MINIO_PRESIGN_EXPIRES_IN,
       });
 

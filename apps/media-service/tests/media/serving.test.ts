@@ -4,7 +4,7 @@
  * text, data, unknown) is forced to download so an uploaded HTML/SVG/XML payload
  * can never execute inline from our origin.
  */
-import { dispositionForKey } from "../../src/config/uploads.js";
+import { dispositionForKey, displayFileName } from "../../src/config/uploads.js";
 
 describe("dispositionForKey", () => {
   it("returns undefined (inline) for image/video/audio keys", () => {
@@ -62,5 +62,19 @@ describe("dispositionForKey", () => {
     );
     expect(dispositionForKey("chat-uploads/u/abc.txt", "  ")).toBe("attachment");
     expect(dispositionForKey("chat-uploads/u/abc.mp4", "clip.mp4")).toBeUndefined();
+  });
+});
+
+describe("displayFileName", () => {
+  it("keeps a sanitized name that matches the MIME's extension or an alias", () => {
+    expect(displayFileName("dir/Q3 report.pdf", "pdf")).toBe("Q3 report.pdf");
+    expect(displayFileName("photo.JPEG", "jpg")).toBe("photo.JPEG");
+    expect(displayFileName("no-extension", "pdf")).toBe("no-extension");
+  });
+
+  it("drops an empty or contradicting name instead of failing the upload", () => {
+    expect(displayFileName(undefined, "pdf")).toBeUndefined();
+    expect(displayFileName("   ", "pdf")).toBeUndefined();
+    expect(displayFileName("invoice.html", "png")).toBeUndefined();
   });
 });
