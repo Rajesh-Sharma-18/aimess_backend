@@ -1978,6 +1978,10 @@ export class ChatMessageOrchestrator {
         actorPreview: selfPreview,
         targetId: isSelfReaction ? null : params.targetUserId,
         targetPreview: isSelfReaction ? null : targetPreview,
+        // Raw ingredient, kept alongside the baked English sentences above so
+        // the inbox read path can rebuild this line in the VIEWER's own
+        // language (AIMESS-369) instead of serving the STORED_TEXT_LOCALE one.
+        targetMessagePreview: params.targetMessagePreview,
         reactedAt,
       });
 
@@ -1990,7 +1994,19 @@ export class ChatMessageOrchestrator {
         senderName: actorName,
         lastMessageId: params.messageId,
         lastMessageAt: reactedAt.getTime(),
-        preview: { contentType: "SYSTEM", text: selfPreview, reaction },
+        preview: {
+          contentType: "SYSTEM",
+          text: selfPreview,
+          reaction,
+          // Raw ingredients alongside the baked sentence — see
+          // `BumpPreview.reactionEmoji` (AIMESS-369). The gateway rebuilds this
+          // recipient's OWN perspective (actor === viewer, here) in their own
+          // socket locale instead of fanning out the STORED_TEXT_LOCALE text.
+          reactionEmoji: params.emoji,
+          reactionActorId: params.actorId,
+          reactionActorName: actorName,
+          reactionTargetMessagePreview: params.targetMessagePreview,
+        },
         countInUnread: false,
         // Preview-only: the reaction overlay never moves the row (see
         // `activityOnly`). The canonical lastMessageAt this list sorts on was
@@ -2009,7 +2025,20 @@ export class ChatMessageOrchestrator {
                       lastMessageAt: reactedAt.getTime(),
                       senderId: params.actorId,
                       senderName: actorName,
-                      preview: { contentType: "SYSTEM", text: targetPreview, reaction },
+                      preview: {
+                        contentType: "SYSTEM",
+                        text: targetPreview,
+                        reaction,
+                        // Same raw ingredients — the gateway tells self vs
+                        // third-person apart by comparing THIS socket's own
+                        // userId against `reactionActorId`, same as the REST
+                        // inbox read path does.
+                        reactionEmoji: params.emoji,
+                        reactionActorId: params.actorId,
+                        reactionActorName: actorName,
+                        reactionTargetMessagePreview:
+                          params.targetMessagePreview,
+                      },
                     },
                   ],
                 ])

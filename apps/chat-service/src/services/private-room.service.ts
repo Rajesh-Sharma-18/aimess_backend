@@ -1,4 +1,5 @@
 import {
+  buildReactionActivityText,
   currentLocale,
   localizeReactionActivityText,
   type ReactionActivityInfo,
@@ -325,7 +326,7 @@ export interface PrivateRoomPeer {
  * `dateTime`) so both list items render identically on the client.
  */
 export interface PrivateConversationLastActivity {
-  type: "message";
+  type: "message" | "reaction";
   userId: string | null;
   username: string;
   preview: string;
@@ -1396,21 +1397,45 @@ export class PrivateRoomService {
         const isActor = room.reactionActivityActorId === userId;
         const isTarget = room.reactionActivityTargetId === userId;
         if (isActor || isTarget) {
-          lastActivity.type = "message";
-          lastActivity.userId = room.reactionActivityActorId;
+          // Rebuild the line in the VIEWER's own language (AIMESS-369) from the
+          // raw ingredients when they're on the row; rows written before that
+          // field existed fall back to the baked STORED_TEXT_LOCALE sentence —
+          // same no-migration philosophy as every other overlay field here.
+          const actorId = room.reactionActivityActorId ?? "";
+          const rebuilt = room.reactionActivityTargetMessagePreview
+            ? buildReactionActivityText({
+                actorName:
+                  actorId === userId
+                    ? myDisplayName
+                    : resolveDisplayName(snapshots.get(actorId)),
+                targetMessagePreview: room.reactionActivityTargetMessagePreview,
+                emoji: room.reactionActivityEmoji ?? "",
+                isSelfReaction: !room.reactionActivityTargetId,
+                locale: currentLocale(),
+              })
+            : null;
+          // Distinct from "message" so a client never adds its own "You:"/
+          // "<name>:" sender prefix on top of this already-personalized line.
+          lastActivity.type = "reaction";
+          lastActivity.userId = actorId || null;
           lastActivity.username = "";
           const emoji = room.reactionActivityEmoji ?? "";
-          lastActivity.preview = localizeReactionActivityText(
-            isActor
-              ? (room.reactionActivityActorPreview ?? "")
-              : (room.reactionActivityTargetPreview ?? ""),
-            emoji,
-            currentLocale()
-          );
+          // Rows written before the raw ingredient existed re-render the baked line by template (AIMESS-369).
+          lastActivity.preview = rebuilt
+            ? isActor
+              ? rebuilt.selfPreview
+              : rebuilt.targetPreview
+            : localizeReactionActivityText(
+                isActor
+                  ? (room.reactionActivityActorPreview ?? "")
+                  : (room.reactionActivityTargetPreview ?? ""),
+                emoji,
+                currentLocale()
+              );
           lastActivity.activityKind = "reaction";
           lastActivity.reaction = {
             emoji,
-            actorId: room.reactionActivityActorId ?? "",
+            actorId,
             targetMessageId: room.reactionActivityMessageId ?? "",
           };
           // `dateTime` deliberately keeps the canonical value: the overlay

@@ -212,6 +212,38 @@ describe("PRIVATE conversation list — effective lastActivity", () => {
     expect(reactedAt.getTime()).toBeGreaterThan(0);
   });
 
+  it("AIMESS-369: a row carrying the raw targetMessagePreview rebuilds the line via buildReactionActivityText, type 'reaction'", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      privateRoom({
+        reactionActivityAt: new Date("2026-08-10T10:11:00.000Z"),
+        reactionActivityMessageId: "m3",
+        reactionActivityEmoji: "🔥",
+        reactionActivityActorId: TEST_USER_ID,
+        // Legacy baked sentence — must be IGNORED once the raw ingredient below
+        // is present, proving the rebuild path (not the fallback) ran.
+        reactionActivityActorPreview: "stale baked sentence, must not show",
+        reactionActivityTargetId: PEER,
+        reactionActivityTargetPreview: "stale baked sentence, must not show",
+        reactionActivityTargetMessagePreview: '"How are you?"',
+      }),
+    ]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(1);
+    mocks.privateMessageRepo.filterHiddenFromUser.mockResolvedValue(new Set());
+    // Own-last-message tick resolution path: unmocked repo methods resolve
+    // `undefined`, not `[]` (see repoMock's doc comment), so this needs a value.
+    mocks.privateMessageRepo.findManyByIds.mockResolvedValue([]);
+
+    const row = (await listPrivate()).body.data.data[0];
+    // Rebuilt fresh from {emoji, targetMessagePreview}, not the stale literal
+    // above — same text SYS_REACTION_SELF produces by default locale, which is
+    // the whole point: the rebuild is byte-identical to the legacy path here.
+    expect(row.lastActivity.preview).toBe('You reacted 🔥 to "How are you?"');
+    // Distinct from "message" so a client never adds its own sender prefix on
+    // top of this already-personalized line (AIMESS-369/AIMESS-364).
+    expect(row.lastActivity.type).toBe("reaction");
+    expect(row.lastActivity.userId).toBe(TEST_USER_ID);
+  });
+
   it("viewer hid EVERY message: lastActivityAt 0, empty preview", async () => {
     mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
       privateRoom(),
@@ -362,6 +394,34 @@ describe("GROUP inbox rows — effective lastActivity", () => {
     const row = (await inbox()).body.data.data[0];
     expect(row.lastActivity.preview).toBe("Message 2");
     expect(row.lastActivity.dateTime).toBe(T_10_05.getTime());
+  });
+
+  it("AIMESS-369: a row carrying the raw targetMessagePreview rebuilds the line via buildReactionActivityText, type 'reaction'", async () => {
+    mockGroupSide(
+      [
+        groupRoom({
+          reactionActivityAt: new Date("2026-08-10T10:11:00.000Z"),
+          reactionActivityMessageId: "g3",
+          reactionActivityEmoji: "🔥",
+          reactionActivityActorId: TEST_USER_ID,
+          // Legacy baked sentence — must be IGNORED once the raw ingredient
+          // below is present, proving the rebuild path (not the fallback) ran.
+          reactionActivityActorPreview: "stale baked sentence, must not show",
+          reactionActivityTargetId: "member-c",
+          reactionActivityTargetPreview: "stale baked sentence, must not show",
+          reactionActivityTargetMessagePreview: '"Message 3"',
+        }),
+      ],
+      { unreadCount: 0, notificationSettings: {} }
+    );
+    mocks.groupMessageRepo.filterHiddenFromUser.mockResolvedValue(new Set());
+
+    const row = (await inbox()).body.data.data[0];
+    expect(row.lastActivity.preview).toBe('You reacted 🔥 to "Message 3"');
+    // Distinct from "message" so a client never adds its own sender prefix on
+    // top of this already-personalized line (AIMESS-369/AIMESS-364).
+    expect(row.lastActivity.type).toBe("reaction");
+    expect(row.lastActivity.userId).toBe(TEST_USER_ID);
   });
 
   it("clear-chat: previews the clear line AND keeps the effective timestamp", async () => {

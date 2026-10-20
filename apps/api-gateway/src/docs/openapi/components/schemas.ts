@@ -2791,7 +2791,7 @@ export const openApiSchemas = {
       hlsUrl: {
         type: "string",
         nullable: true,
-        example: "http://srs.example.com:8080/live/abc123.m3u8",
+        example: "http://srs.example.com:8080/live/abc123.m3u8?lhls=1",
       },
       flvUrl: {
         type: "string",
@@ -9027,9 +9027,9 @@ export const openApiSchemas = {
   ChatPrivateConversationLastActivity: {
     type: "object",
     description:
-      "Normalized last-activity DTO — same {type,userId,username,preview,dateTime} shape as CommunityLastActivity's USER-MESSAGE case.",
+      "Normalized last-activity DTO — same {type,userId,username,preview,dateTime} shape as CommunityLastActivity's USER-MESSAGE case. `type: \"reaction\"` (AIMESS-369) is a self-contained, already-personalized/localized line (e.g. \"You reacted 🔥 to …\") — a client must NOT prepend its own sender prefix on top of it, unlike \"message\".",
     properties: {
-      type: { type: "string", enum: ["message"] },
+      type: { type: "string", enum: ["message", "reaction"] },
       userId: { type: "string", nullable: true },
       username: { type: "string" },
       preview: { type: "string" },

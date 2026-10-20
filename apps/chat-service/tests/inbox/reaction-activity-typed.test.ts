@@ -67,7 +67,7 @@ describe("reaction overlay on list rows (AIMESS-369)", () => {
       .set("x-lang", "vi");
 
     const last = res.body.data.data[0].lastActivity;
-    expect(last.type).toBe("message");
+    expect(last.type).toBe("reaction");
     expect(last.contentType).toBe("SYSTEM");
     expect(last.activityKind).toBe("reaction");
     expect(last.reaction).toEqual({ emoji: "👍", actorId: TEST_USER_ID, targetMessageId: "m3" });

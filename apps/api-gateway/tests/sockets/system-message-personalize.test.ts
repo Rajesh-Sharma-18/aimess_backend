@@ -115,4 +115,77 @@ describe("reaction overlay bump (AIMESS-369)", () => {
     const out = personalizeCommunityUpdatedPreview(bump, "target-1", "vi") as typeof bump;
     expect(out.lastMessage.text).toBe('Alex đã thả 👍 cho "Hi"');
   });
+
+  it("prefers the raw ingredients over the template parse when both ride the bump", () => {
+    const bump = {
+      type: "PRIVATE",
+      lastMessage: {
+        contentType: "SYSTEM",
+        text: 'Old reacted 👍 to "Hi"',
+        reaction,
+        reactionEmoji: "👍",
+        reactionActorId: "actor-1",
+        reactionActorName: "Alex",
+        reactionTargetMessagePreview: '"Hi"',
+      },
+    };
+    const out = personalizeConvUpdatedPreview(bump, "target-1", "vi") as typeof bump;
+    expect(out.lastMessage.text).toBe('Alex đã thả 👍 cho "Hi"');
+    expect(out.lastMessage.reaction).toEqual(reaction);
+  });
+});
+
+describe("personalizeConvUpdatedPreview — reaction overlay (AIMESS-369)", () => {
+  // The actor's own `conv:updated` bump: no override, baked English `text` —
+  // must be IGNORED once the raw ingredients are present, proving the rebuild
+  // ran instead of the legacy pass-through.
+  const actorBump = {
+    type: "PRIVATE",
+    lastMessage: {
+      contentType: "SYSTEM",
+      text: "stale baked sentence, must not show",
+      reactionEmoji: "🔥",
+      reactionActorId: "actor-1",
+      reactionActorName: "Alice",
+      reactionTargetMessagePreview: '"How are you?"',
+    },
+  };
+  // The target's per-recipient override carries the SAME ingredients — only
+  // the viewing socket's own userId decides which perspective comes out.
+  const targetBump = {
+    type: "PRIVATE",
+    lastMessage: {
+      contentType: "SYSTEM",
+      text: "stale baked sentence, must not show",
+      reactionEmoji: "🔥",
+      reactionActorId: "actor-1",
+      reactionActorName: "Alice",
+      reactionTargetMessagePreview: '"How are you?"',
+    },
+  };
+  const text = (
+    bump: typeof actorBump,
+    viewer: string,
+    locale: "en" | "vi" | "th"
+  ) =>
+    (personalizeConvUpdatedPreview(bump, viewer, locale) as typeof bump)
+      .lastMessage.text;
+
+  it("rebuilds the actor's own line in the actor's own locale", () => {
+    expect(text(actorBump, "actor-1", "en")).toBe(
+      'You reacted 🔥 to "How are you?"'
+    );
+    expect(text(actorBump, "actor-1", "vi")).toBe(
+      'Bạn đã thả 🔥 cho "How are you?"'
+    );
+  });
+
+  it("rebuilds the target's third-person line in the TARGET's own locale, independent of the actor's", () => {
+    expect(text(targetBump, "target-1", "en")).toBe(
+      'Alice reacted 🔥 to "How are you?"'
+    );
+    expect(text(targetBump, "target-1", "vi")).toBe(
+      'Alice đã thả 🔥 cho "How are you?"'
+    );
+  });
 });
