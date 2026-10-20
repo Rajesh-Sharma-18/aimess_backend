@@ -343,8 +343,9 @@ export class InboxService {
       pinnedCount: room.pinnedCount,
       peer: room.peer,
       isSelf: room.isSelf,
+      // A reaction slot is already localized and does not describe lastMessage (AIMESS-246).
       lastActivity:
-        room.lastActivity && room.lastMessage
+        room.lastActivity && room.lastMessage && room.lastActivity.activityKind !== "reaction"
           ? {
               ...room.lastActivity,
               preview: localizedActivityPreview(
@@ -420,7 +421,7 @@ export class InboxService {
       // The normalized activity line previews the SAME message as `lastMessage`
       // above, so it has to follow the same language or one row shows two.
       lastActivity:
-        room.lastActivity && groupPreview
+        room.lastActivity && groupPreview && room.lastActivity.activityKind !== "reaction"
           ? {
               ...room.lastActivity,
               preview: localizedActivityPreview(

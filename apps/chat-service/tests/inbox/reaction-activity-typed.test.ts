@@ -126,3 +126,47 @@ describe("reaction overlay on list rows (AIMESS-369)", () => {
     expect(last.dateTime).toBe(T_10_10.getTime());
   });
 });
+
+describe("reaction overlay over a call last message (AIMESS-246)", () => {
+  it("GET /inbox keeps the reaction sentence instead of re-rendering the call text", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      {
+        roomId: "prv_1",
+        participants: [TEST_USER_ID, PEER],
+        lastMessageAt: T_10_10,
+        lastMessageId: "m3",
+        lastMessage: {
+          content: { text: "Video call" },
+          senderId: PEER,
+          messageType: "VIDEO_CALL",
+          systemEvent: "CALL_ENDED",
+          systemData: { callType: "VIDEO", status: "BUSY", callerId: PEER, endReason: "busy" },
+          createdAt: T_10_10.toISOString(),
+          messageId: "m3",
+          clientMessageId: null,
+          seq: 3,
+          revision: 3,
+        },
+        unreadCountByUser: {},
+        mutedBy: {},
+        pinnedCount: 0,
+        ...overlay,
+        reactionActivityEmoji: "😂",
+        reactionActivityActorId: PEER,
+        reactionActivityTargetId: TEST_USER_ID,
+        reactionActivityTargetPreview: 'Himanshu Yadav reacted 😂 to "See you"',
+      },
+    ]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(1);
+    mocks.privateMessageRepo.filterHiddenFromUser.mockResolvedValue(new Set());
+    mockGroupMemberships(mocks, []);
+    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue([]);
+    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(0);
+
+    const res = await request(app).get("/api/chat/inbox").set(bearer(makeAccessToken()));
+
+    const last = res.body.data.data[0].lastActivity;
+    expect(last.activityKind).toBe("reaction");
+    expect(last.preview).toBe('Himanshu Yadav reacted 😂 to "See you"');
+  });
+});
