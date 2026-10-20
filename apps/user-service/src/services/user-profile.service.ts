@@ -492,8 +492,10 @@ export const userProfileService = {
   },
 
   async getMyProfile(userId: string): Promise<UserProfileData> {
-    const profile = await loadProfileRecord(userId);
-    const authSummary = await resolveProfileAuthSummary(userId);
+    const [profile, authSummary] = await Promise.all([
+      loadProfileRecord(userId),
+      resolveProfileAuthSummary(userId),
+    ]);
     return toProfileData(profile, authSummary);
   },
 
