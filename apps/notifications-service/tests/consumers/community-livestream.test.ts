@@ -260,7 +260,9 @@ describe("LIVESTREAM_ENDED branch", () => {
     expect(input.copy("en").body).toBe(
       "System ended the livestream in Cool Community after 36m"
     );
-    expect(input.copy("vi").body).toContain("Hệ thống");
+    expect(input.copy("vi").body).toBe(
+      "Hệ thống đã kết thúc buổi phát trực tiếp trong Cool Community sau 36 phút"
+    );
     expect(input.copy("th").body).toContain("ระบบ");
     for (const locale of ["en", "vi", "th"]) {
       expect(input.copy(locale).body).not.toContain("Jane Doe");
@@ -285,7 +287,38 @@ describe("LIVESTREAM_ENDED branch", () => {
     const body = build(U2).copy("en").body;
     expect(body).toBe("Admin Person ended Jane Doe’s livestream in Cool Community after 2m");
     expect(build(U2).copy("vi").body).toBe(
-      "Admin Person đã kết thúc buổi phát trực tiếp của Jane Doe trong Cool Community sau 2m"
+      "Admin Person đã kết thúc buổi phát trực tiếp của Jane Doe trong Cool Community sau 2 phút"
+    );
+  });
+
+  it("the runtime is localized per reader, not the English-baked '2m' (AIMESS-457)", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      duration: "15h 45m",
+      durationSeconds: 15 * 3600 + 45 * 60,
+      endedReason: "USER",
+    });
+    const input = endedFor(U1);
+    expect(input.copy("vi").body).toBe(
+      "Jane Doe đã kết thúc buổi phát trực tiếp trong Cool Community sau 15 giờ 45 phút"
+    );
+    expect(input.copy("en").body).toBe(
+      "Jane Doe ended the livestream in Cool Community after 15h 45m"
+    );
+    expect(input.copy("th").body).toContain("15 ชม. 45 นาที");
+    // The replay ticket stores the seconds, so the inbox re-renders in whatever language the reader uses later.
+    expect(input.copy.descriptor.args[2]).toBe(56700);
+  });
+
+  it("a publisher that sends no durationSeconds still shows its runtime string", async () => {
+    await deliver(CommunityEvents.LIVESTREAM_ENDED, {
+      ...startedPayload,
+      duration: "2m",
+      durationSeconds: undefined,
+      endedReason: "USER",
+    });
+    expect(endedFor(U1).copy("en").body).toBe(
+      "Jane Doe ended the livestream in Cool Community after 2m"
     );
   });
 
@@ -371,10 +404,10 @@ describe("LIVESTREAM_ENDED branch", () => {
       "AI Mess Administrator ended Jane Doe’s livestream in Cool Community after 4m"
     );
     expect(input.copy("vi").body).toBe(
-      "AI Mess Administrator đã kết thúc buổi phát trực tiếp của Jane Doe trong Cool Community sau 4m"
+      "AI Mess Administrator đã kết thúc buổi phát trực tiếp của Jane Doe trong Cool Community sau 4 phút"
     );
     expect(input.copy("th").body).toBe(
-      "AI Mess Administrator จบไลฟ์สตรีมของ Jane Doe ใน Cool Community หลังจาก 4m"
+      "AI Mess Administrator จบไลฟ์สตรีมของ Jane Doe ใน Cool Community หลังจาก 4 นาที"
     );
     for (const locale of ["en", "vi", "th"]) {
       expect(input.copy(locale).body).not.toMatch(/System|Hệ thống|An administrator/);
