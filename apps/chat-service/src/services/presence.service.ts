@@ -307,19 +307,19 @@ export class PresenceService {
     );
     if (peerIds.length === 0 || !this.visibilityGate) return views;
 
-    const visible = await this.visibilityGate.filterVisiblePresence(
-      viewerId,
-      peerIds
-    );
+    // Read beside the privacy check, not after it; only visible peers are copied out.
+    const [visible, snapshots] = await Promise.all([
+      this.visibilityGate.filterVisiblePresence(viewerId, peerIds),
+      this.cacheRepo.getPresenceSnapshots(peerIds),
+    ]);
     if (visible.size === 0) return views;
 
     for (const id of visible) {
       const view = views.get(id);
       if (view) view.isHidden = false;
     }
-    const snapshots = await this.cacheRepo.getPresenceSnapshots([...visible]);
     for (const [id, snapshot] of snapshots)
-      views.set(id, { ...snapshot, isHidden: false });
+      if (visible.has(id)) views.set(id, { ...snapshot, isHidden: false });
     return views;
   }
 

@@ -309,6 +309,38 @@ describe("PresenceService — viewer-scoped reads", () => {
     expect(views.get("ghost")?.isHidden).toBe(false);
   });
 
+  it("PRIVACY: reads presence beside the privacy check, but a hidden peer stays hidden", async () => {
+    const cacheRepo = makeCacheRepo({
+      sessionsByUser: { peer: [live()], hidden: [live()] },
+    });
+    const { redis } = makeFakeRedis();
+    let releaseGate!: (ids: Set<string>) => void;
+    const gate = {
+      filterVisiblePresence: () =>
+        new Promise<Set<string>>((resolve) => (releaseGate = resolve)),
+      filterPresenceViewers: async (_s: string, ids: string[]) => new Set(ids),
+    };
+    const snapshots = jest.spyOn(cacheRepo, "getPresenceSnapshots");
+    const svc = new PresenceService(cacheRepo as any, redis, {}, gate);
+
+    await svc.recompute("peer");
+    await svc.recompute("hidden");
+    const pending = svc.getPresenceViewsFor("viewer", ["peer", "hidden"]);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(snapshots).toHaveBeenCalledWith(["peer", "hidden"]);
+
+    releaseGate(new Set(["peer"]));
+    const views = await pending;
+    expect(views.get("peer")).toMatchObject({ isOnline: true, isHidden: false });
+    expect(views.get("hidden")).toEqual({
+      userId: "hidden",
+      isOnline: false,
+      lastSeen: null,
+      version: 0,
+      isHidden: true,
+    });
+  });
+
   it("PRIVACY: with no visibility gate wired at all, everything reads offline", async () => {
     const cacheRepo = makeCacheRepo({ sessionsByUser: { peer: [live()] } });
     const { redis } = makeFakeRedis();
