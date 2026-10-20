@@ -276,6 +276,7 @@ function scrubDeletedActor(
   payload: Record<string, unknown>;
   title: string | undefined;
   body: string | undefined;
+  resolution: string | undefined;
 } {
   const names = [...new Set(staleNames.map((n) => n.trim()).filter(Boolean))]
     // Longest first: replacing "Alice" before "Alice Smith" would leave
@@ -312,7 +313,7 @@ function scrubDeletedActor(
       avatarUrl: "",
     });
   }
-  for (const key of ["inboxTitle", "preview", "messagePreview"]) {
+  for (const key of ["inboxTitle", "preview", "messagePreview", "resolution"]) {
     const value = scrubbedData[key];
     if (value) scrubbedData[key] = replaceNames(value) ?? value;
   }
@@ -326,6 +327,7 @@ function scrubDeletedActor(
     },
     title: replaceNames(payloadObj.title),
     body: replaceNames(payloadObj.body),
+    resolution: scrubbedData.resolution,
   };
 }
 
@@ -630,7 +632,9 @@ export async function serializeNotification(
       ? null
       : rawTitle;
 
-  const resolution = nonEmpty(refreshName(data.resolution));
+  const resolution = nonEmpty(
+    scrubbed ? scrubbed.resolution : refreshName(data.resolution)
+  );
 
   // Language-neutral half of the row, read back out of the same replay ticket
   // the localized title/body above were rendered from.
