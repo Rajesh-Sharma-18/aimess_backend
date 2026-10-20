@@ -195,4 +195,13 @@ describe("sendPush — missed-call web grouping (§9.1)", () => {
     await sendPush({ token: "t", title: "Ann", body: "hi", collapseKey: "conv:r1" });
     expect(sendMock.mock.calls[0][0].webpush.notification.renotify).toBeUndefined();
   });
+
+  it("caps stacked combining marks in the title and body (AIMESS-273)", async () => {
+    const zalgo = "T̍̎̏̐̑̒";
+    await sendPush({ token: "tok1", title: `${zalgo}om`, body: `ખિલન ${zalgo}` });
+
+    const arg = sendMock.mock.calls[0][0];
+    expect(arg.notification.title).toBe("T̍̎̏om");
+    expect(arg.notification.body).toBe("ખિલન T̍̎̏");
+  });
 });
