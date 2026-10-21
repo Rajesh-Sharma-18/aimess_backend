@@ -6,7 +6,7 @@
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import { NON_BUMPING_SYSTEM_EVENTS } from "../lib/system-message-policy.js";
 import { logger } from "@aimess/logger";
-import { LINK_TEXT_REGEX } from "../lib/media-list-filter.js";
+import { LINK_TEXT_REGEX, MEDIA_LIST_LINK } from "../lib/media-list-filter.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import { HISTORY_LINE_EVENTS } from "../lib/deletion-cutoff.js";
@@ -1428,30 +1428,17 @@ export class PrivateMessageRepository {
     const notDeletedFor = (msg: PrivateMessage) =>
       !(params.userId in ((msg.deletedFor ?? {}) as Record<string, unknown>));
 
-    // "link" = TEXT messages that carry at least one URL — filtered in-memory.
-    // Fetch 5× limit since only a fraction of TEXT messages contain links.
-    if (params.type === "link") {
+    // "link" = TEXT messages carrying a URL, matched in Mongo so an older link is never lost behind a window of newer text.
+    if (params.type === MEDIA_LIST_LINK) {
+      const ids = await this.findLinkMessageIds(params);
+      if (ids.length === 0) return [];
+      const rank = new Map(ids.map((id, i) => [id, i]));
       const msgs = await this.prisma.privateMessage.findMany({
-        where: {
-          roomId: params.roomId,
-          isDeleted: false,
-          messageType: "TEXT",
-          ...createdAtFilter,
-        },
-        orderBy: { createdAt: "desc" },
-        take: params.limit * 5,
+        where: { id: { in: ids } },
       });
-      const URL_RE = /https?:\/\/\S+|www\.\S+/i;
       return msgs
         .filter(notDeletedFor)
-        .filter((m) => {
-          const content = (m.content as Record<string, unknown>) ?? {};
-          const urls = (content.urls as unknown[]) ?? [];
-          if (urls.length > 0) return true;
-          const text = (content.text as string) ?? "";
-          return URL_RE.test(text);
-        })
-        .slice(0, params.limit);
+        .sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
     }
 
     // Resolve composite aliases → real messageType values stored in MongoDB.
@@ -1500,7 +1487,10 @@ export class PrivateMessageRepository {
             isDeleted: false,
             messageType: "TEXT",
             [`deletedFor.${params.userId}`]: { $exists: false },
-            "content.text": { $regex: LINK_TEXT_REGEX, $options: "i" },
+            $or: [
+              { "content.text": { $regex: LINK_TEXT_REGEX, $options: "i" } },
+              { "content.urls.0": { $exists: true } },
+            ],
             ...(Object.keys(createdAt).length ? { createdAt } : {}),
           },
         },

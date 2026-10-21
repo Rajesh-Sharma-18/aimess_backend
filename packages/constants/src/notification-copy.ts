@@ -153,6 +153,13 @@ function register<
   return wrapped as T;
 }
 
+/** Position of the runtime argument in each livestream-ended ticket. */
+const LIVE_DURATION_ARG: Record<string, number> = {
+  "community.livestreamEnded": 2,
+  "community.livestreamEndedByAdmin": 1,
+  "community.livestreamEndedBySystem": 1,
+};
+
 /**
  * `JSON.stringify` turns a trailing `undefined` argument into `null`; the
  * builders all expect `string | undefined` and treat an empty value as "fall
@@ -173,6 +180,17 @@ function patchLegacyArgs(
   args: unknown[],
   data?: Record<string, unknown>
 ): unknown[] {
+  // Livestream-ended tickets baked the runtime as English ("2m"); the row's own data.durationSeconds re-renders it per reader.
+  const at = LIVE_DURATION_ARG[ref];
+  if (at !== undefined) {
+    const seconds = Number(data?.durationSeconds);
+    const baked = args[at];
+    if (typeof baked !== "string" || !baked.trim() || !(seconds > 0))
+      return args;
+    const next = [...args];
+    next[at] = seconds;
+    return next;
+  }
   if (ref !== "chat.mentionInbox" || data?.mentionType !== "ALL") return args;
   const params = args[0];
   if (!params || typeof params !== "object" || "all" in params) return args;

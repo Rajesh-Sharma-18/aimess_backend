@@ -9,6 +9,11 @@ import {
   mapCommunityMediaType,
 } from "../constants/media-limits.js";
 import {
+  COMMUNITY_TEXT_TYPES,
+  LINK_TEXT_REGEX,
+  MEDIA_LIST_LINK,
+} from "../lib/media-list-filter.js";
+import {
   PERSONAL_JOIN_SESSION_TYPES,
   HIDDEN_SYSTEM_MESSAGE_TYPES,
   MODERATION_ONLY_SYSTEM_MESSAGE_TYPES,
@@ -1830,6 +1835,23 @@ export class GeneralRoomMessageRepository {
     /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
     readCutoff?: Date | null;
   }): Promise<GeneralRoomMessage[]> {
+    // "link" = TEXT messages carrying a URL; the alias map had no entry for it, so the tab queried messageType "__none__" and was always empty.
+    if (params.type === MEDIA_LIST_LINK) {
+      const ids = await this.findLinkMessageIds(params);
+      if (ids.length === 0) return [];
+      const rank = new Map(ids.map((id, i) => [id, i]));
+      const rows = await this.prisma.generalRoomMessage.findMany({
+        where: { id: { in: ids } },
+      });
+      return rows
+        .filter(
+          (msg) =>
+            !isHiddenForUser(msg, params.userId) &&
+            isVisibleToUser(msg, params.userId)
+        )
+        .sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+    }
+
     // Every filter here lists BOTH spellings. The community send path stores the
     // canonical UPPER-CASE kind ("IMAGE"/"VIDEO") — only a handful of
     // pre-expansion rows are lower-case — and Mongo string equality is
@@ -1882,6 +1904,42 @@ export class GeneralRoomMessageRepository {
         );
       })
       .slice(0, params.limit);
+  }
+
+  /** Ids of the viewer's visible link-bearing TEXT messages, newest first; the `message` regex runs in an aggregation, the same rule as private/group. */
+  private async findLinkMessageIds(params: {
+    roomId: string;
+    userId: string;
+    cursor?: string | null;
+    limit: number;
+    readCutoff?: Date | null;
+  }): Promise<string[]> {
+    const createdAt: Record<string, unknown> = {};
+    if (params.cursor)
+      createdAt.$lt = { $date: new Date(params.cursor).toISOString() };
+    if (params.readCutoff)
+      createdAt.$lte = { $date: params.readCutoff.toISOString() };
+    const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: { $oid: params.roomId },
+            deletedForAll: false,
+            messageType: { $in: [...COMMUNITY_TEXT_TYPES] },
+            deletedBy: { $ne: params.userId },
+            visibleToUserId: { $in: [null, params.userId] },
+            message: { $regex: LINK_TEXT_REGEX, $options: "i" },
+            ...(Object.keys(createdAt).length ? { createdAt } : {}),
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: params.limit },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    return raw
+      .map((d) => (typeof d._id === "string" ? d._id : (d._id?.$oid ?? "")))
+      .filter(Boolean);
   }
 
   /**
