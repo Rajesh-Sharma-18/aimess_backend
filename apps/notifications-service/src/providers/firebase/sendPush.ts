@@ -1,4 +1,5 @@
 import { messaging } from "./firebase.js";
+import { capCombiningMarks } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
 interface SendPushParams {
@@ -139,8 +140,8 @@ export interface SendPushResult {
 
 export async function sendPush({
   token,
-  title,
-  body,
+  title: rawTitle,
+  body: rawBody,
   data,
   deepLink,
   webLink,
@@ -155,6 +156,9 @@ export async function sendPush({
   actions,
   renotify,
 }: SendPushParams): Promise<SendPushResult> {
+  // AIMESS-273: the OS draws push text as-is, so a Zalgo name or message would spill out of the card.
+  const title = capCombiningMarks(rawTitle);
+  const body = capCombiningMarks(rawBody);
   // Merge deepLink into the data map so native clients can read it.
   const enrichedData: Record<string, string> = {
     ...(data ?? {}),

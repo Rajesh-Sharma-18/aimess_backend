@@ -13,7 +13,10 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
 import request from "supertest";
 
 import app from "../../src/app.js";
+import { getLoginAccountPreview } from "../../src/grpc/user.client.js";
 import { authRepository } from "../../src/repositories/auth.repository.js";
+
+const preview = getLoginAccountPreview as jest.Mock;
 
 const repo = authRepository as unknown as {
   findByAccount: jest.Mock;
@@ -263,6 +266,85 @@ describe("POST /api/auth/accounts/validate — purpose: login", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual({ account: "ghostuser", available: true });
+  });
+
+  describe("password-step account preview", () => {
+    const account = {
+      displayName: "Tom Hardy",
+      firstName: "Tom",
+      lastName: "Hardy",
+      username: "tom",
+      avatarUrl: "https://minio.local/avatars/u1.jpg?X-Amz-Signature=x",
+      avatarObjectKey: "avatars/u1.jpg",
+    };
+
+    beforeEach(() => {
+      preview.mockReset().mockResolvedValue(account);
+    });
+
+    it("a normal password account -> 409 AUTH_ACCOUNT_TAKEN with details.account", async () => {
+      repo.findByAccountForLogin.mockResolvedValue(loginUser());
+
+      const res = await probe({ account: "tom", purpose: "login" });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("AUTH_ACCOUNT_TAKEN");
+      expect(res.body.code).toBe("AUTH_ACCOUNT_TAKEN");
+      expect(res.body.error.details).toEqual({ account });
+      expect(preview).toHaveBeenCalledWith("u1");
+      expect(JSON.stringify(res.body)).not.toMatch(/passwordHash|"u1"/);
+    });
+
+    it("lookup failure -> plain 409, no details", async () => {
+      preview.mockResolvedValue(null);
+      repo.findByAccountForLogin.mockResolvedValue(loginUser());
+
+      const res = await probe({ account: "tom", purpose: "login" });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("AUTH_ACCOUNT_TAKEN");
+      expect(res.body.error.details).toBeUndefined();
+    });
+
+    it.each([
+      ["banned", { status: "BANNED" }],
+      ["suspended", { status: "SUSPENDED" }],
+      ["locked", { lockedUntil: new Date(Date.now() + 60_000) }],
+      ["deleted", { deletedAt: new Date() }],
+      ["Google-only", { passwordHash: null, linkedAccounts: [{ provider: "GOOGLE" }] }],
+      ["no password, nothing linked", { passwordHash: null }],
+    ])("%s -> no details, no lookup", async (_label, overrides) => {
+      repo.findByAccountForLogin.mockResolvedValue(loginUser(overrides));
+
+      const res = await probe({ account: "tom", purpose: "login" });
+
+      expect(res.body.error.details).toBeUndefined();
+      expect(preview).not.toHaveBeenCalled();
+    });
+
+    it("no purpose (register / old clients) -> no details, no lookup", async () => {
+      const res = await probe({ account: "tom" });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.details).toBeUndefined();
+      expect(preview).not.toHaveBeenCalled();
+    });
+
+    it("purpose register is not a login probe -> 400, no lookup", async () => {
+      const res = await probe({ account: "tom", purpose: "register" });
+
+      expect(res.status).toBe(400);
+      expect(preview).not.toHaveBeenCalled();
+    });
+
+    it("unknown account -> 200, no lookup", async () => {
+      repo.findByAccount.mockResolvedValue(null);
+
+      const res = await probe({ account: "ghostuser", purpose: "login" });
+
+      expect(res.status).toBe(200);
+      expect(preview).not.toHaveBeenCalled();
+    });
   });
 
   it("rejects an unknown purpose value", async () => {

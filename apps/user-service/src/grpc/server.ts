@@ -430,6 +430,8 @@ export function startUserGrpcServer(): grpc.Server {
                 displayName: isDeleted
                   ? DELETED_ACCOUNT_DISPLAY_NAME
                   : buildDisplayName(p.firstName, p.lastName),
+                firstName: isDeleted ? "" : p.firstName,
+                lastName: isDeleted ? "" : p.lastName,
                 avatarObjectKey: isDeleted ? "" : (p.avatarUrl ?? ""),
                 avatarUrl: isDeleted ? "" : (avatarViews[i]?.url ?? ""),
                 isDeleted,

@@ -1,10 +1,9 @@
 /**
  * call.consumer.ts — the `call.activity` projection.
  *
- * One settled call must produce ONE inbox row per participant, and the two
- * rows must be independent: a failure writing the caller's history is not a
- * reason for the callee to lose theirs. A failure must also surface (throw)
- * so the message is redelivered rather than silently dropped.
+ * One settled call produces ONE inbox row, for the callee only: the caller placed
+ * the call and never gets a self-generated notification (AIMESS-43/334). A failed
+ * write must surface (throw) so the message is redelivered, not silently dropped.
  *
  * The projection ALSO owns the missed-call push now: whenever the callee's row
  * badges as missed (`isUnreadCallActivity`), it fires the same "Missed call
@@ -69,24 +68,19 @@ beforeEach(() => {
 });
 
 describe("handleCallActivity", () => {
-  it("writes one row for each participant, with per-side direction", async () => {
+  it("writes one row for the callee only — never for the caller (AIMESS-334)", async () => {
     await handleCallActivity(payload);
 
     const rows = inboxRows();
-    expect(rows).toHaveLength(2);
-    const caller = rows.find((c) => c.userId === CALLER)!;
-    const callee = rows.find((c) => c.userId === CALLEE)!;
-
-    expect(caller.data.callDirection).toBe("OUTGOING");
+    expect(rows).toHaveLength(1);
+    const callee = rows[0]!;
+    expect(callee.userId).toBe(CALLEE);
+    expect(rows.some((r) => r.userId === CALLER)).toBe(false);
     expect(callee.data.callDirection).toBe("INCOMING");
-    // Same call → same idempotency key on both sides.
-    expect(caller.data.groupKey).toBe("call:call-1");
     expect(callee.data.groupKey).toBe("call:call-1");
-    // Only the side that missed the call is badged.
-    expect(caller.data.markRead).toBe("true");
+    // A missed call is badged.
     expect(callee.data.markRead).toBeUndefined();
-    // The rows are history only — the push is the separate CALL_MISSED below.
-    expect(caller.skipPush).toBe(true);
+    // The row is history only — the push is the separate CALL_MISSED below.
     expect(callee.skipPush).toBe(true);
   });
 
@@ -96,7 +90,6 @@ describe("handleCallActivity", () => {
     const missed = missedPushes();
     expect(missed).toHaveLength(1);
     const push = missed[0]!;
-    // Only the callee (INCOMING) is ever badged missed — never the caller.
     expect(push.userId).toBe(CALLEE);
     expect(push.skipInbox).toBe(true);
     // Per caller; reading the chat or answering closes it (§9.1).
@@ -128,26 +121,15 @@ describe("handleCallActivity", () => {
       durationSec: 120,
     });
 
-    expect(inboxRows()).toHaveLength(2);
+    expect(inboxRows()).toHaveLength(1);
+    expect(inboxRows()[0]!.data.markRead).toBe("true");
     expect(missedPushes()).toHaveLength(0);
   });
 
-  it("gives each side a navigation target instead of making the client infer one", async () => {
+  it("navigates the callee to the caller's conversation", async () => {
     await handleCallActivity(payload);
 
-    const rows = inboxRows();
-    const caller = rows.find((c) => c.userId === CALLER)!;
-    const callee = rows.find((c) => c.userId === CALLEE)!;
-
-    // The PEER's conversation on each side — the same destination the
-    // missed-call push already deep-links to, and where the call card and the
-    // call-back button live.
-    expect(JSON.parse(caller.data.navigation)).toEqual({
-      type: "conversation",
-      id: CALLEE,
-      roomId: "prv_1",
-    });
-    expect(JSON.parse(callee.data.navigation)).toEqual({
+    expect(JSON.parse(inboxRows()[0]!.data.navigation)).toEqual({
       type: "conversation",
       id: CALLER,
       roomId: "prv_1",
@@ -180,10 +162,6 @@ describe("handleCallActivity", () => {
     await handleCallActivity(payload);
     const second = inboxRows();
 
-    // Dedupe is STRUCTURAL, not a guard here: the same groupKey plus
-    // `resurface: "false"` makes the downstream write transition the same row
-    // rather than stack a second one, and keeps a settled row from flipping
-    // back to unread.
     for (const side of [...first, ...second]) {
       expect(side.data.groupKey).toBe("call:call-1");
       expect(side.data.resurface).toBe("false");
@@ -191,17 +169,13 @@ describe("handleCallActivity", () => {
     expect(second.map((s) => s.userId)).toEqual(first.map((s) => s.userId));
   });
 
-  it("still writes the callee's row when the caller's write fails", async () => {
-    pushToUser.mockImplementation(async (input: { userId: string }) => {
-      if (input.userId === CALLER) throw new Error("boom");
+  it("throws when the callee's row cannot be written, so the message is redelivered", async () => {
+    pushToUser.mockImplementation(async (input: { userId: string; type: string }) => {
+      if (input.type === "call.activity") throw new Error("boom");
     });
 
     await expect(handleCallActivity(payload)).rejects.toThrow(/callId=call-1/);
-
-    // Both inbox rows were attempted — the caller's failure did not abort the
-    // callee's — and the callee's missed push still fired.
-    expect(inboxRows()).toHaveLength(2);
-    expect(inputs().some((input) => input.userId === CALLEE)).toBe(true);
+    // The missed push still fired.
     expect(missedPushes()).toHaveLength(1);
   });
 });
@@ -210,54 +184,41 @@ describe("handleCallActivity — contract §9 outcomes", () => {
   type Row = PushInput & {
     copy: (locale: "en" | "vi" | "th") => { body: string };
   };
-  const bodies = () => {
-    const rows = inboxRows() as Row[];
-    return {
-      caller: rows.find((r) => r.userId === CALLER)!,
-      callee: rows.find((r) => r.userId === CALLEE)!,
-    };
-  };
+  const callee = () =>
+    (inboxRows() as Row[]).find((r) => r.userId === CALLEE)!;
 
   it("BUSY is unanswered: missed row + missed push for the callee", async () => {
     await handleCallActivity({ ...payload, status: "BUSY", endReason: "busy", ringDurationSec: 0 });
-    const { caller, callee } = bodies();
-    expect(caller.copy("en").body).toBe("No answer");
-    expect(callee.copy("en").body).toBe("Missed voice call");
-    expect(callee.data.markRead).toBeUndefined();
+    expect(callee().copy("en").body).toBe("Missed voice call");
+    expect(callee().data.markRead).toBeUndefined();
     expect(missedPushes()).toHaveLength(1);
   });
 
   it("DECLINED sends no push; the callee's row lands read", async () => {
     await handleCallActivity({ ...payload, status: "DECLINED", endReason: "declined" });
-    const { caller, callee } = bodies();
-    expect(caller.copy("en").body).toBe("Call declined");
-    expect(callee.copy("en").body).toBe("You declined a voice call");
-    expect(callee.copy("th").body).toBe("คุณปฏิเสธสายสนทนา");
-    expect(callee.data.markRead).toBe("true");
+    expect(callee().copy("en").body).toBe("You declined a voice call");
+    expect(callee().copy("th").body).toBe("คุณปฏิเสธสายสนทนา");
+    expect(callee().data.markRead).toBe("true");
     expect(missedPushes()).toHaveLength(0);
   });
 
   it("callee rejecting a ring (CANCELLED + endReason declined) reads declined, no push", async () => {
     await handleCallActivity({ ...payload, status: "CANCELLED", endReason: "declined", callType: "VIDEO" });
-    const { caller, callee } = bodies();
-    expect(caller.copy("en").body).toBe("Call declined");
-    expect(callee.copy("en").body).toBe("You declined a video call");
-    expect(callee.copy("vi").body).toBe("Bạn đã từ chối cuộc gọi video");
-    expect(callee.data.endReason).toBe("declined");
+    expect(callee().copy("en").body).toBe("You declined a video call");
+    expect(callee().copy("vi").body).toBe("Bạn đã từ chối cuộc gọi video");
+    expect(callee().data.endReason).toBe("declined");
     expect(missedPushes()).toHaveLength(0);
   });
 
   it("ENDED under 1s (failed) is unanswered: missed row + push, never 'Voice call'", async () => {
     await handleCallActivity({ ...payload, status: "ENDED", durationSec: 0, endReason: "failed" });
-    const { caller, callee } = bodies();
-    expect(caller.copy("en").body).toBe("No answer");
-    expect(callee.copy("en").body).toBe("Missed voice call");
+    expect(callee().copy("en").body).toBe("Missed voice call");
     expect(missedPushes()).toHaveLength(1);
   });
 
   it("caller-cancelled ring still pushes missed", async () => {
     await handleCallActivity({ ...payload, status: "CANCELLED", endReason: "canceled" });
-    expect(bodies().callee.copy("en").body).toBe("Missed voice call");
+    expect(callee().copy("en").body).toBe("Missed voice call");
     expect(missedPushes()).toHaveLength(1);
   });
 });

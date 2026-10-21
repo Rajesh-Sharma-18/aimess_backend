@@ -28,6 +28,7 @@ import {
 import {
   UPLOAD_CATEGORIES,
   dispositionForKey,
+  displayFileName,
   resolveCategoryFromObjectKey,
   type MediaCategoryKey,
 } from "../config/uploads.js";
@@ -236,7 +237,10 @@ export const mediaService = {
         contentType: params.contentType,
         contentLength: params.contentLength,
         ownerId: params.ownerId,
-        fileName: params.fileName,
+        fileName: displayFileName(
+          params.fileName,
+          def.allowedMime[params.contentType]
+        ),
         expiresIn: env.MINIO_PRESIGN_EXPIRES_IN,
       });
 
@@ -681,13 +685,14 @@ export const mediaService = {
       prefixes: [def.keyPrefix],
       strategy: mediaUrlStrategy,
       mediaId: registered?.id ?? null,
+      fileName: registered?.fileName ?? null,
     });
 
     // Safe-serving: force a download (Content-Disposition: attachment) for
     // non-media object types so an uploaded HTML/SVG/XML payload can never
     // render inline from our origin. Media (image/video/audio) stay inline. Only
     // the small set of document/data downloads is re-signed.
-    const disposition = dispositionForKey(params.objectKey);
+    const disposition = dispositionForKey(params.objectKey, registered?.fileName);
     if (disposition && media.objectKey) {
       media.downloadUrl = await createPresignedViewUrl({
         client: presignClient,

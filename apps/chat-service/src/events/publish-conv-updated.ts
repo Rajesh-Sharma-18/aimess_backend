@@ -1,3 +1,4 @@
+import type { ReactionActivityInfo } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
 import type { Redis, Cluster } from "ioredis";
@@ -57,6 +58,22 @@ interface BumpPreview {
   systemData?: Record<string, unknown>;
   systemMessageType?: string;
   systemMetadata?: Record<string, unknown>;
+  /** Reaction overlay only: lets the gateway re-render `text` per socket locale and clients key off it. */
+  reaction?: ReactionActivityInfo;
+  /**
+   * Reaction overlay only (AIMESS-369) — the SAME raw ingredients
+   * `buildReactionActivityText` built the baked `text` sentence from, carried
+   * alongside it so the gateway can rebuild the line in EACH recipient's own
+   * language instead of fanning out the one sentence baked at write time
+   * (`STORED_TEXT_LOCALE`). Mirrors `systemEvent`/`systemData` above for the
+   * one SYSTEM list line that is not a `systemEvent` row. Optional: a bump
+   * published before this existed, or by a non-reaction caller, just keeps
+   * `text` verbatim. See `api-gateway/src/sockets/system-message-personalize.ts`.
+   */
+  reactionEmoji?: string;
+  reactionActorId?: string;
+  reactionActorName?: string;
+  reactionTargetMessagePreview?: string;
 }
 
 /**

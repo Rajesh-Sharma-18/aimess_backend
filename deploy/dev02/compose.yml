@@ -93,6 +93,7 @@ services:
       AUTH_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_auth?sslmode=${PG_SSLMODE:-disable}
       NOTIFICATIONS_SERVICE_URL: http://notifications-service:3006
       BACKOFFICE_GRPC_URL: backoffice-service:4010
+      USER_GRPC_URL: user-service:4002
       # Schema default is `localhost:4004`, which from inside this container is
       # auth-service itself — measured ECONNREFUSED. Every auth -> chat gRPC call
       # was failing silently on it.

@@ -40,6 +40,8 @@ export const uploadUrlSchema = z
     // against membership of that resource. Optional for public avatars/covers,
     // REQUIRED for the chat categories (see below).
     resourceId: z.string().min(1).max(200).optional(),
+    // Original filename, display metadata only (download naming, AIMESS-435).
+    fileName: z.string().max(1024).optional(),
   })
   .superRefine((v, ctx) => {
     // Chat attachments used to accept a missing resourceId and store null.

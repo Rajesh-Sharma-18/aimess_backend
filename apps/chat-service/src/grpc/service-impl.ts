@@ -4499,6 +4499,11 @@ export function createCommunityImpl(
 
             // Live bump — restricted to just the actor (+ target, if a
             // different person), same reasoning as the REST handler.
+            const reaction = {
+              emoji: req.emoji,
+              actorId: req.userId,
+              targetMessageId: req.messageId,
+            };
             publishCommunityUpdatedSafe({
               redis,
               communityId: req.communityId,
@@ -4513,7 +4518,7 @@ export function createCommunityImpl(
               senderName: "",
               lastMessageId: req.messageId,
               lastMessageAt: reactedAt,
-              preview: { contentType: "SYSTEM", text: selfPreview },
+              preview: { contentType: "SYSTEM", text: selfPreview, reaction },
               subjectUserId: req.userId,
               selfPreview,
               // Preview-only: a reaction never writes the canonical
@@ -4536,6 +4541,7 @@ export function createCommunityImpl(
                               preview: {
                                 contentType: "SYSTEM",
                                 text: targetPreview,
+                                reaction,
                               },
                             },
                           ],
@@ -4685,8 +4691,9 @@ export function createCommunityImpl(
             lastMessageId: result.id,
             senderUserId: req.userId,
             senderUsername: "",
-            messagePreview:
-              req.text.length > 80 ? req.text.slice(0, 80) : req.text,
+            messagePreview: convertMessageToPreview(result.messageType, {
+              text: req.text,
+            }),
             type: "edited",
           });
         } catch (err) {

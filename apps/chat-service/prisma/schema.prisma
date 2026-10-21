@@ -102,6 +102,13 @@ model PrivateRoom {
   reactionActivityActorPreview  String?
   reactionActivityTargetId      String?
   reactionActivityTargetPreview String?
+  // Raw (unlocalized) preview of the reacted-to message — e.g. `"Let's meet..."`
+  // or `📷 Photo` — kept alongside the baked `*Preview` sentences above so the
+  // read path can re-render the activity line in the VIEWER's own language via
+  // `buildReactionActivityText` (AIMESS-369). Null on rows written before this
+  // field existed; the read path falls back to the baked English sentence for
+  // those, same as every other no-migration overlay field here.
+  reactionActivityTargetMessagePreview String?
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 
@@ -318,6 +325,9 @@ model GroupRoom {
   reactionActivityActorPreview  String?
   reactionActivityTargetId      String?
   reactionActivityTargetPreview String?
+  // See PrivateRoom.reactionActivityTargetMessagePreview — same raw-preview
+  // field, same AIMESS-369 read-time localization, same no-migration fallback.
+  reactionActivityTargetMessagePreview String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 

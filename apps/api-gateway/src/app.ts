@@ -2,7 +2,7 @@
 import express, { type Express } from "express";
 import helmet from "helmet";
 import { auditContextMiddleware } from "@aimess/constants";
-import { localeMiddleware } from "@aimess/utils";
+import { localeMiddleware, trustProxyHops } from "@aimess/utils";
 import { NotFoundError } from "@aimess/errors";
 
 import {
@@ -61,7 +61,7 @@ export function createApp(
   // and hand-parsed `X-Forwarded-For` themselves and took the LEFTMOST entry,
   // the one the client controls. `req.ip` is now the single source of client
   // identity for rate limiting, the admin allowlist and audit rows.
-  app.set("trust proxy", env.TRUST_PROXY_HOPS);
+  app.set("trust proxy", trustProxyHops(env.TRUST_PROXY_HOPS));
 
   // CSP was disabled globally so that Swagger UI — a development tool — could
   // render its inline scripts, which left the whole API origin with no CSP at

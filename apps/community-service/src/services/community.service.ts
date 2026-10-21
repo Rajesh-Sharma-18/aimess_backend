@@ -17,6 +17,7 @@ import {
   isHiddenSystemMessage,
   localizeMessagePreview,
   localizeCategoryName,
+  localizeReactionActivityText,
   buildCommunitySystemFallbackText,
   PLATFORM_ACTOR_NAME,
   PLATFORM_ACTOR_ROLE,
@@ -820,8 +821,11 @@ export function applyReactionOverlay(
     lastActivityReactionActorPreview?: string | null;
     lastActivityReactionTargetId?: string | null;
     lastActivityReactionTargetPreview?: string | null;
+    lastActivityReactionEmoji?: string | null;
+    lastActivityReactionMessageId?: string | null;
   },
-  viewerId: string
+  viewerId: string,
+  locale: SupportedLocale = currentLocale()
 ): { lastActivity: CommunityLastActivity; lastActivityAt: number } {
   if (!row.lastActivityReactionAt) return base;
   const reactionAt = row.lastActivityReactionAt.getTime();
@@ -834,13 +838,20 @@ export function applyReactionOverlay(
         ? row.lastActivityReactionTargetPreview
         : null;
   if (!preview) return base;
+  const emoji = row.lastActivityReactionEmoji ?? "";
 
   return {
     lastActivity: {
       type: "reaction",
       userId: null,
       username: null,
-      preview,
+      preview: localizeReactionActivityText(preview, emoji, locale),
+      activityKind: "reaction",
+      reaction: {
+        emoji,
+        actorId: row.lastActivityReactionActorId ?? "",
+        targetMessageId: row.lastActivityReactionMessageId ?? "",
+      },
       // Timestamps deliberately keep the base (canonical) value: the overlay
       // replaces the row's PREVIEW TEXT and nothing else — the same rule
       // chat-service's GroupRoomService.applyReactionOverlay already states.
@@ -2018,6 +2029,27 @@ async function fetchCommunityLiveStreams(
   communityId: string
 ): Promise<LiveStreamSummary[]> {
   return getStreamClient().getLiveStreamsByCommunity(communityId);
+}
+
+/**
+ * A page is CUT by the stored column but each item carries the per-viewer
+ * `lastActivityAt`, which drifts from it (e.g. a closed community whose newest
+ * line is hidden from this viewer). Order what the client sees by the value it
+ * sees (AIMESS-340); cursors still come from the raw page rows.
+ */
+export function orderByWireActivity<T extends { lastActivityAt: number }>(
+  items: T[],
+  dir: "asc" | "desc"
+): T[] {
+  const sign = dir === "desc" ? -1 : 1;
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort(
+      (a, b) =>
+        sign * (a.item.lastActivityAt - b.item.lastActivityAt) ||
+        a.index - b.index
+    )
+    .map(({ item }) => item);
 }
 
 /** One `/mine` page row — the shared `mineActivitySelect` shape. */
@@ -3458,7 +3490,10 @@ export const communityService = {
         .join(",")}`
     );
 
-    const communities = await enrichMineCommunities(userId, pageRows);
+    const communities = orderByWireActivity(
+      await enrichMineCommunities(userId, pageRows),
+      params.direction === "before" ? "desc" : "asc"
+    );
 
     // Inclusive boundary (as specified) → consecutive pages can share the
     // boundary community; clients de-duplicate by id. nextCursor is epoch-ms to
@@ -3517,7 +3552,10 @@ export const communityService = {
     const hasMore = rows.length > params.limit;
     const pageRows = rows.slice(0, params.limit);
 
-    const communities = await enrichMineCommunities(userId, pageRows);
+    const communities = orderByWireActivity(
+      await enrichMineCommunities(userId, pageRows),
+      "desc"
+    );
 
     // Compound exclusive cursor: the id tiebreaker keeps same-ms communities
     // reachable exactly once (the V1 bare-ms leak this endpoint fixes).

@@ -61,7 +61,7 @@ describe("CdnService — URL minting", () => {
     const playback = new CdnService().buildPlaybackUrls("public-name");
 
     expect(playback.hlsUrl).toBe(
-      "https://playback.example.com/live/public-name.m3u8"
+      "https://playback.example.com/live/public-name.m3u8?lhls=1"
     );
     expect(playback.flvUrl).toBe(
       "https://playback.example.com/live/public-name.flv"

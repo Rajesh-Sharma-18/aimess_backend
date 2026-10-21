@@ -116,7 +116,8 @@ export const authPaths = {
         "- `AUTH_APPLE_LOGIN_REQUIRED` — no password, Apple linked: send the user to Apple sign-in.\n" +
         "- `AUTH_SOCIAL_LOGIN_REQUIRED` — no password, both linked: either works.\n" +
         "- `AUTH_PASSWORD_NOT_SET` — no password and no social link.\n\n" +
-        "Banned, inactive, locked or deleted accounts keep `AUTH_ACCOUNT_TAKEN`, so the password step and `POST /auth/login` keep their own precedence. Without `purpose` the response is unchanged. `POST /auth/login` answers the same codes (401) for a client that skips this.",
+        "Deleted, locked, banned and inactive accounts answer the same status + code `POST /auth/login` would (AIMESS-62). Without `purpose` the response is unchanged. `POST /auth/login` answers the same codes (401) for a client that skips this.\n\n" +
+        "**Password-step identity (`purpose: \"login\"` only):** when the 409 is `AUTH_ACCOUNT_TAKEN` for an active account that has a password, `error.details.account` carries `LoginAccountPreview` (name, username, avatar) so the password screen can show who is signing in. Never present for social-only / no-password codes, any blocked state, an unverified email identifier, no `purpose`, or when user-service did not answer within 1.5 s — treat it as optional and fall back to the typed handle. Name and photo are not viewer-scoped anywhere in AIMESS (no privacy setting hides them), so none is applied here.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
@@ -160,6 +161,77 @@ export const authPaths = {
                     success: true,
                     message: "Account taken",
                     data: { account: "johndoe", available: false },
+                  },
+                },
+              },
+            },
+          },
+        },
+        "409": {
+          description:
+            "Account exists. `error.code` is `AUTH_ACCOUNT_TAKEN`, or with `purpose: \"login\"` one of the no-password codes above.",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiErrorResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      error: {
+                        type: "object",
+                        properties: {
+                          details: {
+                            type: "object",
+                            properties: {
+                              account: {
+                                $ref: "#/components/schemas/LoginAccountPreview",
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+              examples: {
+                passwordStep: {
+                  summary: "purpose: login, password account",
+                  value: {
+                    success: false,
+                    message: "Account already taken",
+                    code: "AUTH_ACCOUNT_TAKEN",
+                    error: {
+                      statusCode: 409,
+                      code: "AUTH_ACCOUNT_TAKEN",
+                      message: "Account already taken",
+                      details: {
+                        account: {
+                          displayName: "Tom Hardy",
+                          firstName: "Tom",
+                          lastName: "Hardy",
+                          username: "tom",
+                          avatarUrl: "https://minio.example/avatars/abc.jpg?X-Amz-Signature=...",
+                          avatarObjectKey: "avatars/2026/10/abc.jpg",
+                        },
+                      },
+                      retryable: false,
+                    },
+                  },
+                },
+                taken: {
+                  summary: "No purpose (signup) — unchanged",
+                  value: {
+                    success: false,
+                    message: "Account already taken",
+                    code: "AUTH_ACCOUNT_TAKEN",
+                    error: {
+                      statusCode: 409,
+                      code: "AUTH_ACCOUNT_TAKEN",
+                      message: "Account already taken",
+                      retryable: false,
+                    },
                   },
                 },
               },

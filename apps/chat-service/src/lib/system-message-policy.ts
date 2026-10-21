@@ -9,8 +9,8 @@ import {
  * therefore its position + preview in the inbox). Shared by Group and Private
  * — both use the same `SystemEvent` enum. Mirrors Community's
  * `SYSTEM_MESSAGE_BUMPS_ACTIVITY` (packages/constants/src/community/system-message.ts):
- * membership churn (join/left/removed) and low-signal actions (unpin, invite
- * link created) don't reorder the list; content-relevant changes do.
+ * low-signal actions (unpin, invite link created) don't reorder the list;
+ * every line members see in a group (join/leave/remove/delete) does.
  */
 export const SYSTEM_MESSAGE_BUMPS_ACTIVITY =
   CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY as Record<SystemEvent, boolean>;
@@ -18,3 +18,10 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY =
 export function systemMessageBumpsActivity(event: SystemEvent): boolean {
   return chatSystemMessageBumpsActivity(event);
 }
+
+// A line that never bumps the room must not become its preview after a delete either.
+export const NON_BUMPING_SYSTEM_EVENTS: string[] = Object.entries(
+  SYSTEM_MESSAGE_BUMPS_ACTIVITY
+)
+  .filter(([, bumps]) => !bumps)
+  .map(([event]) => event);

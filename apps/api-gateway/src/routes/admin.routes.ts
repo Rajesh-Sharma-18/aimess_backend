@@ -15,6 +15,7 @@ import {
   adminReadRateLimiter,
   adminWriteRateLimiter,
 } from "../middleware/rate-limit.js";
+import { upstreamAgent } from "../proxy/upstream-agent.js";
 
 /**
  * Admin edge router, mounted at `/admin`. Order:
@@ -63,6 +64,7 @@ export function createAdminRouter(): IRouter {
   adminRouter.use(
     createProxyMiddleware({
       target,
+      agent: upstreamAgent(target),
       changeOrigin: true,
       // Express has already stripped the `/admin` mount, so `path` arrives as
       // `/v1/...` — exactly what backoffice serves. Forward it as-is (the

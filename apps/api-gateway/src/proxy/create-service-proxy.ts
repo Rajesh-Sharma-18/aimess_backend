@@ -2,6 +2,8 @@ import { logger } from "@aimess/logger";
 import type { RequestHandler } from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 
+import { upstreamAgent } from "./upstream-agent.js";
+
 export type ServiceProxyOptions = {
   target: string;
   /** Path prefix on the downstream service (e.g. `/api/auth`). */
@@ -22,6 +24,7 @@ export function createServiceProxy(
 
   return createProxyMiddleware({
     target: options.target,
+    agent: upstreamAgent(options.target),
     changeOrigin: true,
     // Without these, a hung upstream never fires `on.error`: the socket stays
     // pinned until the client gives up, so the 502 handler below never runs and

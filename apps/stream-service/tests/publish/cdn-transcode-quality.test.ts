@@ -36,8 +36,8 @@ describe("CdnService.buildQualityUrls", () => {
 
     // No Source rung — the base hlsUrl/flvUrl already is the source.
     expect(hls).toEqual({
-      "720p": "https://playback.example.com/live/abc123_720p.m3u8",
-      "480p": "https://playback.example.com/live/abc123_480p.m3u8",
+      "720p": "https://playback.example.com/live/abc123_720p.m3u8?lhls=1",
+      "480p": "https://playback.example.com/live/abc123_480p.m3u8?lhls=1",
     });
     expect(flv).toEqual({
       "720p": "https://playback.example.com/live/abc123_720p.flv",

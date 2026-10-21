@@ -1,7 +1,10 @@
 import {
   BACKOFFICE_SOURCE,
+  buildReactionActivityText,
   currentLocale,
+  localizeReactionActivityText,
   MAX_GROUP_MEMBERS,
+  type ReactionActivityInfo,
 } from "@aimess/constants";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
@@ -124,7 +127,7 @@ export type GroupRoomMembership = GroupRoom & {
  * field a list should sort on.
  */
 export interface GroupConversationLastActivity {
-  type: "message";
+  type: "message" | "reaction";
   userId: string | null;
   username: string;
   preview: string;
@@ -136,6 +139,9 @@ export interface GroupConversationLastActivity {
   revision: number;
   /** UPPER-CASE canonical content type (TEXT/IMAGE/…/SYSTEM); "" when empty. */
   contentType: string;
+  /** Present only on the reaction overlay; `preview` is then an activity line, not a message. */
+  activityKind?: "reaction";
+  reaction?: ReactionActivityInfo;
 }
 
 const EMPTY_GROUP_LAST_ACTIVITY: GroupConversationLastActivity = {
@@ -175,10 +181,14 @@ export function buildGroupLastActivity(
   const createdAt = lp.createdAt
     ? new Date(lp.createdAt as string | Date).getTime()
     : 0;
+  // `isReaction` is stamped by `applyReactionOverlay` below — distinct type so
+  // a client never adds its own "You:"/"<name>:" prefix on top of this
+  // already-personalized line (AIMESS-369/AIMESS-364).
+  const isReaction = lp.isReaction === true;
   return {
-    type: "message",
+    type: isReaction ? "reaction" : "message",
     userId: (lp.senderId as string) || null,
-    username: (lp.senderName as string) || "",
+    username: isReaction ? "" : (lp.senderName as string) || "",
     preview: convertMessageToPreview(
       contentType,
       { text: lp.text ?? "" },
@@ -190,6 +200,9 @@ export function buildGroupLastActivity(
     seq: (lp.seq as number) ?? 0,
     revision: (lp.revision as number) ?? 0,
     contentType,
+    ...(lp.reaction
+      ? { activityKind: "reaction" as const, reaction: lp.reaction as ReactionActivityInfo }
+      : {}),
   };
 }
 
@@ -655,35 +668,90 @@ export class GroupRoomService {
    * last message. Overwrites `lastMessagePreview` only — never lastMessageAt
    * (display-only, matches the delete-for-me overlay above).
    */
-  private applyReactionOverlay<T extends GroupRoom>(
+  private async applyReactionOverlay<T extends GroupRoom>(
     rooms: T[],
     userId: string,
     // Rooms whose shared last this viewer hid (delete-for-me): they preview the fallback, exactly as the live recalc bump did.
     hiddenSharedLast: ReadonlyMap<string, unknown>
-  ): T[] {
-    return rooms.map((room) => {
+  ): Promise<T[]> {
+    const visible = rooms.filter((room) => {
       const lastAt = room.lastMessageAt?.getTime() ?? 0;
       if (
         !room.reactionActivityAt ||
         room.reactionActivityAt.getTime() <= lastAt ||
         hiddenSharedLast.has(room.roomId)
       )
-        return room;
+        return false;
+      return (
+        room.reactionActivityActorId === userId ||
+        room.reactionActivityTargetId === userId
+      );
+    });
+    if (!visible.length) return rooms;
+
+    // One batched lookup for every actor name this page needs, so the line can
+    // be rebuilt in the VIEWER's own language (AIMESS-369) instead of serving
+    // the baked STORED_TEXT_LOCALE sentence. Rooms missing the raw ingredient
+    // (written before it existed) skip the rebuild below and keep that sentence.
+    const actorIds = [
+      ...new Set(
+        visible
+          .map((r) => r.reactionActivityActorId)
+          .filter((id): id is string => !!id)
+      ),
+    ];
+    const actorNames =
+      this.userSnapshotService && this.cacheRepo && actorIds.length
+        ? await this.userSnapshotService.getUserSnapshotsMap(
+            actorIds,
+            this.cacheRepo
+          )
+        : new Map();
+
+    const overlaid = new Map<string, T>();
+    for (const room of visible) {
       const isActor = room.reactionActivityActorId === userId;
-      const isTarget = room.reactionActivityTargetId === userId;
-      if (!isActor && !isTarget) return room;
+      const actorId = room.reactionActivityActorId ?? "";
+      const rebuilt = room.reactionActivityTargetMessagePreview
+        ? buildReactionActivityText({
+            actorName: resolveDisplayName(actorNames.get(actorId)),
+            targetMessagePreview: room.reactionActivityTargetMessagePreview,
+            emoji: room.reactionActivityEmoji ?? "",
+            isSelfReaction: !room.reactionActivityTargetId,
+            locale: currentLocale(),
+          })
+        : null;
+      const emoji = room.reactionActivityEmoji ?? "";
+      // Rows written before the raw ingredient existed re-render the baked line by template (AIMESS-369).
+      const text = rebuilt
+        ? isActor
+          ? rebuilt.selfPreview
+          : rebuilt.targetPreview
+        : localizeReactionActivityText(
+            isActor
+              ? (room.reactionActivityActorPreview ?? "")
+              : (room.reactionActivityTargetPreview ?? ""),
+            emoji,
+            currentLocale()
+          );
       const prev = room.lastMessagePreview as {
         createdAt?: string | Date;
       } | null;
-      return {
+      overlaid.set(room.roomId, {
         ...room,
         lastMessagePreview: {
-          text: isActor
-            ? (room.reactionActivityActorPreview ?? "")
-            : (room.reactionActivityTargetPreview ?? ""),
-          senderId: "",
+          text,
+          reaction: {
+            emoji,
+            actorId,
+            targetMessageId: room.reactionActivityMessageId ?? "",
+          },
+          senderId: actorId,
           senderName: "",
           messageType: "SYSTEM",
+          // Distinct from a real message so a client never adds its own
+          // "You:"/"<name>:" prefix on top of this already-personalized line.
+          isReaction: true,
           // The canonical time, NOT `reactionActivityAt`. `buildGroupLastActivity`
           // reads this into `lastActivity.dateTime`, which the inbox exposes as
           // `lastActivityAt` and both the server and the client sort the list on —
@@ -693,8 +761,9 @@ export class GroupRoomService {
           // the room's own.
           createdAt: prev?.createdAt ?? room.lastMessageAt,
         },
-      } as T;
-    });
+      } as T);
+    }
+    return rooms.map((room) => overlaid.get(room.roomId) ?? room);
   }
 
   async createGroup(params: {

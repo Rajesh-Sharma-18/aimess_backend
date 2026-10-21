@@ -2,13 +2,14 @@ import type { Request, Response } from "express";
 
 import { HTTP_STATUS, t } from "@aimess/constants";
 import { ConflictError } from "@aimess/errors";
-import { ApiResponse, asyncHandler } from "@aimess/utils";
+import { ApiResponse, asyncHandler, sendApiError } from "@aimess/utils";
 
 import type {
   LoginInput,
   RegisterInput,
   ValidateAccountInput,
 } from "../validators/auth.validator.js";
+import { getLoginAccountPreview } from "../../grpc/user.client.js";
 import { setLoginRefreshCookie } from "../../lib/auth-cookie.js";
 import { accountAvailabilityService } from "../../services/account-availability.service.js";
 import { authService } from "../../services/auth.service.js";
@@ -41,7 +42,17 @@ export const validateAccount = asyncHandler(
     );
 
     if (!result.available) {
-      throw new ConflictError(result.passwordUnavailableCode ?? "AUTH_ACCOUNT_TAKEN");
+      const preview = result.passwordStepUserId
+        ? await getLoginAccountPreview(result.passwordStepUserId)
+        : null;
+      if (!preview) {
+        throw new ConflictError(result.passwordUnavailableCode ?? "AUTH_ACCOUNT_TAKEN");
+      }
+      return sendApiError(req, res, {
+        statusCode: HTTP_STATUS.CONFLICT,
+        messageKey: "AUTH_ACCOUNT_TAKEN",
+        details: { account: preview },
+      });
     }
 
     return res

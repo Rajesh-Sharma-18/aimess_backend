@@ -47,7 +47,7 @@ describe("buildNewLoginNotification", () => {
     expect(out.bypassSettings).toBeUndefined();
     expect(out.copy("en").title).toBe("Login Detected");
     expect(out.copy("en").body).toBe(
-      "New login detected on a chrome from India."
+      "New login detected on Chrome · Windows from India."
     );
     expect(out.data).toMatchObject({
       actionType: "SESSION_CREATED",

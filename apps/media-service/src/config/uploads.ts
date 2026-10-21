@@ -1,4 +1,8 @@
-import type { UploadTypeDef } from "@aimess/storage";
+import {
+  assertExtensionMatchesMime,
+  sanitizeFileName,
+  type UploadTypeDef,
+} from "@aimess/storage";
 
 import { env } from "./env.js";
 
@@ -254,7 +258,38 @@ const INLINE_RENDER_EXTS = new Set<string>(
  * resolve-on-read render path and `X-Content-Type-Options: nosniff` are deferred
  * to the CDN/proxy phase (see docs/MEDIA_ARCHITECTURE_REVIEW.md §9).
  */
-export function dispositionForKey(objectKey: string): string | undefined {
+export function dispositionForKey(
+  objectKey: string,
+  fileName?: string | null
+): string | undefined {
   const ext = objectKey.split(".").pop()?.toLowerCase() ?? "";
-  return INLINE_RENDER_EXTS.has(ext) ? undefined : "attachment";
+  if (INLINE_RENDER_EXTS.has(ext)) return undefined;
+  const name = sanitizeFileName(fileName);
+  if (!name) return "attachment";
+  // RFC 6266: ASCII fallback for old agents, RFC 5987 UTF-8 name for the rest (AIMESS-435).
+  const ascii = name.replace(/[^\x20-\x7e]/g, "_");
+  const utf8 = encodeURIComponent(name).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`;
+}
+
+/**
+ * The client's original filename as display metadata, or undefined when it is
+ * empty or its extension contradicts the MIME — a wrong name is dropped, never
+ * a reason to fail the upload.
+ */
+export function displayFileName(
+  fileName: string | undefined,
+  ext: string | undefined
+): string | undefined {
+  const name = sanitizeFileName(fileName);
+  if (!name || !ext) return undefined;
+  try {
+    assertExtensionMatchesMime(name, ext);
+    return name;
+  } catch {
+    return undefined;
+  }
 }

@@ -42,6 +42,8 @@ export const accountAvailabilityService = {
     account: string;
     available: boolean;
     passwordUnavailableCode?: ReturnType<typeof passwordUnavailableCode>;
+    /** Set only for an active, password-capable login target. Never serialized. */
+    passwordStepUserId?: string;
   }> {
     const normalized = normalizeLoginIdentifier(account);
     const isEmail = isEmailLoginIdentifier(normalized);
@@ -80,7 +82,7 @@ export const accountAvailabilityService = {
       available: false,
       ...(!user.passwordHash
         ? { passwordUnavailableCode: passwordUnavailableCode(user) }
-        : {}),
+        : { passwordStepUserId: user.id }),
     };
   },
 };

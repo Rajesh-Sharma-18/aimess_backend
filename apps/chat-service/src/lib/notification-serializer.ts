@@ -196,9 +196,8 @@ const CLOBBERED_LOGIN_BODIES = new Set([
  * if a localized repair ever matters.
  */
 function repairLoginBody(data: Record<string, string>): string {
-  const device = data.browser
-    ? t("NOTIF_AUTH_ON_BROWSER", "en", { browser: data.browser.toLowerCase() })
-    : t("NOTIF_AUTH_NEW_DEVICE", "en");
+  const device =
+    data.deviceName || data.browser || t("NOTIF_AUTH_NEW_DEVICE", "en");
   return data.location
     ? t("NOTIF_AUTH_NEW_LOGIN_LOCATION", "en", {
         device,
@@ -276,6 +275,7 @@ function scrubDeletedActor(
   payload: Record<string, unknown>;
   title: string | undefined;
   body: string | undefined;
+  resolution: string | undefined;
 } {
   const names = [...new Set(staleNames.map((n) => n.trim()).filter(Boolean))]
     // Longest first: replacing "Alice" before "Alice Smith" would leave
@@ -312,7 +312,7 @@ function scrubDeletedActor(
       avatarUrl: "",
     });
   }
-  for (const key of ["inboxTitle", "preview", "messagePreview"]) {
+  for (const key of ["inboxTitle", "preview", "messagePreview", "resolution"]) {
     const value = scrubbedData[key];
     if (value) scrubbedData[key] = replaceNames(value) ?? value;
   }
@@ -326,6 +326,7 @@ function scrubDeletedActor(
     },
     title: replaceNames(payloadObj.title),
     body: replaceNames(payloadObj.body),
+    resolution: scrubbedData.resolution,
   };
 }
 
@@ -630,7 +631,9 @@ export async function serializeNotification(
       ? null
       : rawTitle;
 
-  const resolution = nonEmpty(refreshName(data.resolution));
+  const resolution = nonEmpty(
+    scrubbed ? scrubbed.resolution : refreshName(data.resolution)
+  );
 
   // Language-neutral half of the row, read back out of the same replay ticket
   // the localized title/body above were rendered from.

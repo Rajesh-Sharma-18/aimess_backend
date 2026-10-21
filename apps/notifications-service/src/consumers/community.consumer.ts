@@ -570,6 +570,9 @@ async function handleCommunityEvent(
           : Promise.resolve(""),
       ]);
       const hostName = resolvedHostName || "Someone";
+      // Seconds, not the English-baked "2m": the copy renders them in each reader's language.
+      const seconds = Number(p.durationSeconds);
+      const runtime = seconds > 0 ? seconds : p.duration;
       const actorSnapshot = p.endedByUserId
         ? { userId: p.endedByUserId, displayName: endedByName, avatarUrl: null }
         : {
@@ -591,20 +594,20 @@ async function handleCommunityEvent(
           p.endedReason === "CONNECTION_LOST"
             ? userId === p.hostUserId
               ? communityCopy.livestreamEndedForHost(identity.name, "CONNECTION_LOST")
-              : communityCopy.livestreamEnded(identity.name, resolvedHostName, p.duration)
+              : communityCopy.livestreamEnded(identity.name, resolvedHostName, runtime)
             : p.endedReason === "ADMIN"
             ? communityCopy.livestreamEndedByAdmin(
                 identity.name,
-                p.duration,
+                runtime,
                 // The host reads "Administrator ended the livestream …".
                 userId === p.hostUserId ? undefined : resolvedHostName
               )
             : p.endedReason === "SYSTEM"
-            ? communityCopy.livestreamEndedBySystem(identity.name, p.duration)
+            ? communityCopy.livestreamEndedBySystem(identity.name, runtime)
             : communityCopy.livestreamEnded(
                 identity.name,
                 endedByName || resolvedHostName,
-                p.duration,
+                runtime,
                 // "{admin} ended {host}'s livestream" when the admin ended it.
                 endedByName ? resolvedHostName : undefined,
                 // …named by their role: "Admin ended {host}'s livestream".

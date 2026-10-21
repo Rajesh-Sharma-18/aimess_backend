@@ -224,16 +224,17 @@ export class GroupMessageController {
     // it the sender's group bubbles collapsed to a single ✓ on every reload
     // while the inbox row (which folds `deliveredTo` server-side) still said
     // DELIVERED — the same message, two ticks.
-    const [memberReadSeq, memberDeliveredSeq, pinnedMessage] =
-      await Promise.all([
-        this.messageService
-          .getMemberReadCursors(roomId, userId)
-          .catch(() => ({}) as Record<string, number>),
-        this.messageService
-          .getMemberDeliveredCursors(roomId, userId)
-          .catch(() => ({}) as Record<string, number>),
-        this.pinService.getActivePinSummary(roomId, userId),
-      ]);
+    // Independent of the page: run beside it, not in front of it (a page error still wins).
+    const extras = Promise.all([
+      this.messageService
+        .getMemberReadCursors(roomId, userId)
+        .catch(() => ({}) as Record<string, number>),
+      this.messageService
+        .getMemberDeliveredCursors(roomId, userId)
+        .catch(() => ({}) as Record<string, number>),
+      this.pinService.getActivePinSummary(roomId, userId),
+    ]);
+    extras.catch(() => {});
 
     if (around) {
       const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
@@ -253,6 +254,7 @@ export class GroupMessageController {
         olderCursor,
         newerCursor,
       });
+      const [memberReadSeq, memberDeliveredSeq, pinnedMessage] = await extras;
       res
         .status(HTTP_STATUS.OK)
         .json(
@@ -294,6 +296,7 @@ export class GroupMessageController {
         ...result.cursors,
         roomRevision: result.roomRevision,
       };
+      const [memberReadSeq, memberDeliveredSeq, pinnedMessage] = await extras;
       res
         .status(HTTP_STATUS.OK)
         .json(
@@ -339,6 +342,7 @@ export class GroupMessageController {
       ...result.cursors,
       roomRevision: result.roomRevision,
     };
+    const [memberReadSeq, memberDeliveredSeq, pinnedMessage] = await extras;
     const msg = paginated.data.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);

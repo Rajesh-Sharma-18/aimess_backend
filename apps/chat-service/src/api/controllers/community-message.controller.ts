@@ -594,6 +594,7 @@ export class CommunityMessageController {
       // existing subjectUserId mechanism; the target (when different) gets
       // `targetPreview` via a per-recipient override — same delete-for-
       // everyone-style mechanism already used elsewhere, not a new one.
+      const reaction = { emoji, actorId: userId, targetMessageId: result.messageId };
       publishCommunityUpdatedSafe({
         redis: this.redis,
         communityId: result.roomId,
@@ -606,7 +607,7 @@ export class CommunityMessageController {
         senderName: "",
         lastMessageId: result.messageId,
         lastMessageAt: reactedAt,
-        preview: { contentType: "SYSTEM", text: selfPreview },
+        preview: { contentType: "SYSTEM", text: selfPreview, reaction },
         subjectUserId: userId,
         selfPreview,
         // Preview-only: the canonical `lastActivityAt` this list sorts on is
@@ -626,7 +627,7 @@ export class CommunityMessageController {
                         lastMessageAt: reactedAt,
                         senderId: userId,
                         senderName: result.actorName,
-                        preview: { contentType: "SYSTEM", text: targetPreview },
+                        preview: { contentType: "SYSTEM", text: targetPreview, reaction },
                       },
                     ],
                   ])

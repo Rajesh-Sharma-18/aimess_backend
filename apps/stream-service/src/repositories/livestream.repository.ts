@@ -398,6 +398,14 @@ export class LivestreamRepository {
     });
   }
 
+  /** The creator's current LIVE/RECONNECTING stream in any community (at most one by the create rule). */
+  async findLiveByCreator(creatorId: string): Promise<Livestream | null> {
+    return this.prisma.livestream.findFirst({
+      where: { creatorId, status: { in: [...LIVE_STATUSES] } },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
   /**
    * Count of PENDING (created but never published) streams for one creator.
    *

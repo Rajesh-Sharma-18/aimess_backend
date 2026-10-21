@@ -14,6 +14,7 @@ import {
   authCopy,
   communityCopy,
   friendCopy,
+  resolutionCopy,
   runWithLocale,
 } from "@aimess/constants";
 
@@ -91,7 +92,7 @@ describe("the reported repro, served over REST", () => {
       const dto = await runWithLocale(locale, () =>
         serializeNotification(stored, "viewer-1")
       );
-      expect(dto.body).toContain("chrome");
+      expect(dto.body).toContain("Chrome");
       expect(dto.body).toContain("India");
     }
   });
@@ -247,5 +248,40 @@ describe("a join-request approval stored with the \"Unknown\" placeholder", () =
 
     expect(dto.body).toContain("Deleted Account");
     expect(JSON.stringify(dto)).not.toContain("Old Name");
+  });
+});
+
+describe("deleted accepter on a friend resolution line (AIMESS-445)", () => {
+  const copy = friendCopy.acceptedForRequester("Hulk Mr.");
+  const res = resolutionCopy.friendAccepted("Hulk Mr.");
+  const stored = row({
+    type: "friend.accepted",
+    actorId: "friend-1",
+    payload: {
+      title: copy("en").title,
+      body: copy("en").body,
+      data: {
+        friendshipId: "f1",
+        resolution: res("en").resolution,
+        actorSnapshot: JSON.stringify({ userId: "friend-1", displayName: "Hulk Mr." }),
+        copyRef: JSON.stringify(copy.descriptor),
+        dataRef: JSON.stringify(res.descriptor),
+      },
+    },
+  });
+  const refresh = {
+    actorById: new Map([
+      ["friend-1", { displayName: "Deleted Account", avatarUrl: "", isDeleted: true }],
+    ]),
+    communityById: new Map(),
+  };
+
+  it.each(LOCALES)("never names the deleted user anywhere in %s", async (locale) => {
+    const dto = await runWithLocale(locale, () =>
+      serializeNotification(stored, "viewer-1", refresh as never)
+    );
+
+    expect(dto.resolution).toBeTruthy();
+    expect(JSON.stringify(dto)).not.toContain("Hulk Mr.");
   });
 });

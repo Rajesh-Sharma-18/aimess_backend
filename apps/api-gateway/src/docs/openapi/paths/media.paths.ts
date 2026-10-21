@@ -180,6 +180,13 @@ The declared \`contentType\` is only the *entry* check. After the PUT, **POST /m
                 description:
                   "The context where this file is used — roomId (private chat), groupId, or communityId for chat categories. **IMPORTANT: resourceId does NOT create the room. It is purely metadata for authorization.** Recorded in the media registry so downloads are authorized against membership of that resource. Example: User A uploads a file to Group 123 with resourceId=group-123-uuid. User B (a group member) can download because the registry shows the file belongs to Group 123 and B is a member. User C (not in the group) cannot download because they're not a member of the resource. Optional for public avatars/covers (user and group avatars are always public).",
               },
+              fileName: {
+                type: "string" as const,
+                maxLength: 1024,
+                example: "Q3 report.pdf",
+                description:
+                  "Optional original filename (display metadata). Stored sanitized and used to name the file on download (download-url `media.fileName` and the document Content-Disposition). A name whose extension contradicts contentType is ignored, never rejected.",
+              },
             },
           },
         },

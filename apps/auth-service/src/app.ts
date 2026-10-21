@@ -2,7 +2,7 @@ import cors from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
 import { auditContextMiddleware } from "@aimess/constants";
-import { localeMiddleware, notFoundHandler } from "@aimess/utils";
+import { localeMiddleware, notFoundHandler, trustProxyHops } from "@aimess/utils";
 
 import { accountDeletionRoutes } from "./api/routes/account-deletion.routes.js";
 import { authRoutes } from "./api/routes/auth.routes.js";
@@ -26,7 +26,7 @@ app.disable("x-powered-by");
 // sessions and audit rows — read `X-Forwarded-For` by hand instead, taking the
 // leftmost (client-supplied) entry. Applying it makes `req.ip` authoritative;
 // 0 correctly means "trust no proxy".
-app.set("trust proxy", env.TRUST_PROXY_HOPS);
+app.set("trust proxy", trustProxyHops(env.TRUST_PROXY_HOPS));
 
 app.use(helmet());
 app.use(

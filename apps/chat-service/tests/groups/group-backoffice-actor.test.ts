@@ -150,7 +150,7 @@ describe("GroupSystemMessageService — Backoffice actor", () => {
     expect(payload.excludeUserId).toBe("user-2");
   });
 
-  it("NEGATIVE: a removal still never bumps the conversation list", async () => {
+  it("a removal bumps the conversation list with the Administrator line", async () => {
     const { service, stubs } = buildService();
 
     await service.post({
@@ -161,7 +161,13 @@ describe("GroupSystemMessageService — Backoffice actor", () => {
       skipAdminActivity: true,
     });
 
-    expect(stubs.roomRepo.updateLastMessage).not.toHaveBeenCalled();
+    expect(stubs.roomRepo.updateLastMessage).toHaveBeenCalledWith(
+      "grp-1",
+      expect.objectContaining({
+        systemEvent: "MEMBER_REMOVED",
+        content: { text: "AI Mess Administrator removed Name user-2" },
+      })
+    );
   });
 });
 

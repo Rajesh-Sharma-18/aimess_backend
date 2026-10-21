@@ -27,8 +27,11 @@ const COMMUNITY_TAB_TYPES: Record<string, readonly string[]> = {
   file: ["DOCUMENT", "document"],
 };
 
-/** Matches a link-bearing message body (`content.text` / `message`). */
-export const LINK_TEXT_REGEX = "https?://";
+/** Matches a link-bearing message body (`content.text` / `message`) — the same "http(s)://" or "www." rule the clients use to pull the URLs out. */
+export const LINK_TEXT_REGEX = "https?://|www\\.";
+
+/** Community TEXT under both spellings, like COMMUNITY_TAB_TYPES. */
+export const COMMUNITY_TEXT_TYPES = ["TEXT", "text"] as const;
 
 export function mediaTypeFilter(type?: string): string | { in: string[] } {
   const tab = type ? TAB_TYPES[type] : undefined;

@@ -59,6 +59,7 @@ const NO_REACTION_ACTIVITY = {
   reactionActivityActorPreview: null,
   reactionActivityTargetId: null,
   reactionActivityTargetPreview: null,
+  reactionActivityTargetMessagePreview: null,
 };
 
 export class PrivateRoomRepository {
@@ -1274,6 +1275,7 @@ export class PrivateRoomRepository {
       actorPreview: string;
       targetId: string | null;
       targetPreview: string | null;
+      targetMessagePreview: string;
       reactedAt: Date;
     }
   ): Promise<void> {
@@ -1287,6 +1289,7 @@ export class PrivateRoomRepository {
         reactionActivityActorPreview: data.actorPreview,
         reactionActivityTargetId: data.targetId,
         reactionActivityTargetPreview: data.targetPreview,
+        reactionActivityTargetMessagePreview: data.targetMessagePreview,
       },
     });
   }

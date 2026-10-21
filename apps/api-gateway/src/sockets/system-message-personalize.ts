@@ -1,7 +1,9 @@
 import {
+  buildReactionActivityText,
   formatStreamDuration,
   formatTtlDuration,
   localizeMessagePreview,
+  localizeReactionActivityText,
   renderMessageKey,
   personalizeCommunitySystemMessageForViewer,
   personalizeGroupSystemMessageForViewer,
@@ -10,6 +12,7 @@ import {
   isPersonalizableSystemContentType,
   STORED_TEXT_LOCALE,
   type CommunitySystemMessageType,
+  type ReactionActivityInfo,
   type SupportedLocale,
 } from "@aimess/constants";
 
@@ -36,6 +39,14 @@ interface BumpedPreview {
   systemData?: Record<string, unknown>;
   systemMessageType?: CommunitySystemMessageType;
   systemMetadata?: Record<string, unknown>;
+  /** Reaction overlay: `text` is an activity line rebuilt from its stored-locale template. */
+  reaction?: ReactionActivityInfo;
+  /** Reaction overlay only — see `publish-conv-updated.ts`'s `BumpPreview` for
+   *  the full rationale. Present only on a `conv:updated` reaction bump. */
+  reactionEmoji?: string;
+  reactionActorId?: string;
+  reactionActorName?: string;
+  reactionTargetMessagePreview?: string;
 }
 
 /**
@@ -112,6 +123,27 @@ export function personalizeConvUpdatedPreview(
     return data;
   }
   return withRebuiltPreviewText(d, locale, (preview, storedText) => {
+    // Reaction overlay (AIMESS-369): no `systemEvent` row to rebuild from, but
+    // the raw ingredients ride alongside the baked sentence instead. Which of
+    // the two personalized lines THIS socket sees is decided the same way the
+    // REST inbox read path decides it: is this viewer the actor?
+    if (preview.reactionEmoji !== undefined) {
+      // `isSelfReaction` only decides what `targetPreview` ALIASES to below —
+      // irrelevant here since this reads `.selfPreview`/`.thirdPersonPreview`
+      // directly, never `.targetPreview`. Always `false`; a real value would
+      // need the EVENT's own self-reaction flag, which this payload never
+      // carries (and does not need to, for the same reason).
+      const rebuilt = buildReactionActivityText({
+        actorName: preview.reactionActorName ?? "",
+        targetMessagePreview: preview.reactionTargetMessagePreview ?? "",
+        emoji: preview.reactionEmoji,
+        isSelfReaction: false,
+        locale,
+      });
+      return viewerUserId === preview.reactionActorId
+        ? rebuilt.selfPreview
+        : rebuilt.thirdPersonPreview;
+    }
     if (!preview.systemEvent) return storedText;
     const systemData = preview.systemData ?? {};
     return conversationType === "PRIVATE"
@@ -185,7 +217,11 @@ function withRebuiltPreviewText(
       : { ...d, lastMessage: { ...preview, text: label } };
   }
 
-  const rebuilt = rebuild(preview, storedText);
+  // A bump carrying the raw ingredients is rebuilt by `rebuild`; the template parse covers community bumps.
+  const rebuilt =
+    preview.reaction && preview.reactionEmoji === undefined
+      ? localizeReactionActivityText(storedText, preview.reaction.emoji, locale)
+      : rebuild(preview, storedText);
   if (rebuilt === storedText) return d;
   return { ...d, lastMessage: { ...preview, text: rebuilt } };
 }

@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
+import { LINK_TEXT_REGEX, MEDIA_LIST_LINK } from "../lib/media-list-filter.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import { HISTORY_LINE_EVENTS } from "../lib/deletion-cutoff.js";
 import type { GroupRoomRepository } from "./group-room.repository.js";
@@ -26,6 +27,7 @@ import {
   parseSearchCursor,
   readTextSearchPage,
 } from "./message-search.js";
+import { NON_BUMPING_SYSTEM_EVENTS } from "../lib/system-message-policy.js";
 import { logger } from "@aimess/logger";
 import {
   shouldCountInUnread,
@@ -1444,6 +1446,19 @@ export class GroupMessageRepository {
     cutoff?: Date;
     readCutoffBefore?: Date;
   }): Promise<GroupMessage[]> {
+    // "link" = TEXT messages carrying a URL; there was no branch for it, so the tab matched the literal type "link" and was always empty.
+    if (params.type === MEDIA_LIST_LINK) {
+      const ids = await this.findLinkMessageIds(params);
+      if (ids.length === 0) return [];
+      const rank = new Map(ids.map((id, i) => [id, i]));
+      const rows = await this.prisma.groupMessage.findMany({
+        where: { id: { in: ids } },
+      });
+      return rows
+        .filter((msg) => !isHiddenForUser(msg, params.userId))
+        .sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+    }
+
     const mediaTypes = MEDIA_MESSAGE_TYPES;
     const createdAt: { lt?: Date; gt?: Date; lte?: Date } = {};
     if (params.cursor) createdAt.lt = new Date(params.cursor);
@@ -1476,6 +1491,46 @@ export class GroupMessageRepository {
         return !deletedFor.includes(params.userId);
       })
       .slice(0, params.limit);
+  }
+
+  /** Ids of the viewer's visible link-bearing TEXT messages, newest first: `content` is Json, which Mongo Prisma cannot path-filter, so the regex runs in an aggregation. */
+  private async findLinkMessageIds(params: {
+    roomId: string;
+    userId: string;
+    cursor?: string | null;
+    limit: number;
+    cutoff?: Date;
+    readCutoffBefore?: Date;
+  }): Promise<string[]> {
+    const createdAt: Record<string, unknown> = {};
+    if (params.cursor)
+      createdAt.$lt = { $date: new Date(params.cursor).toISOString() };
+    if (params.cutoff) createdAt.$gt = { $date: params.cutoff.toISOString() };
+    if (params.readCutoffBefore)
+      createdAt.$lte = { $date: params.readCutoffBefore.toISOString() };
+    const raw = (await this.prisma.groupMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: params.roomId,
+            isDeleted: false,
+            messageType: "TEXT",
+            deletedForUserIds: { $ne: params.userId },
+            $or: [
+              { "content.text": { $regex: LINK_TEXT_REGEX, $options: "i" } },
+              { "content.urls.0": { $exists: true } },
+            ],
+            ...(Object.keys(createdAt).length ? { createdAt } : {}),
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: params.limit },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    return raw
+      .map((d) => (typeof d._id === "string" ? d._id : (d._id?.$oid ?? "")))
+      .filter(Boolean);
   }
 
   /**
@@ -1550,7 +1605,15 @@ export class GroupMessageRepository {
    */
   async findPreviousVisible(roomId: string): Promise<GroupMessage | null> {
     return this.prisma.groupMessage.findFirst({
-      where: { roomId, isDeleted: false },
+      where: {
+        roomId,
+        isDeleted: false,
+        OR: [
+          { systemEvent: { isSet: false } },
+          { systemEvent: null },
+          { systemEvent: { notIn: NON_BUMPING_SYSTEM_EVENTS } },
+        ],
+      },
       // Ordered by `sequenceNumber`, NOT `createdAt`: the sequence is allocated by
       // an atomic per-room `$inc` while `createdAt` is stamped a round trip later,
       // so two concurrent sends can swap between the two orderings. The clients
@@ -1618,6 +1681,7 @@ export class GroupMessageRepository {
           $match: {
             roomId,
             isDeleted: false,
+            systemEvent: { $nin: NON_BUMPING_SYSTEM_EVENTS },
             deletedForUserIds: { $ne: userId },
             ...(cutoff
               ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }

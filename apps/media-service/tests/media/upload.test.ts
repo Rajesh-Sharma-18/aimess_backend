@@ -64,6 +64,22 @@ import {
 const auth = () => bearer(makeAccessToken());
 
 describe("POST /api/v1/media/upload-url", () => {
+  it("passes the original filename to the presign, dropping a contradicting one (AIMESS-435)", async () => {
+    const { createUploadUrl } = jest.requireMock("@aimess/storage");
+    const send = (fileName: string) =>
+      request(app).post("/api/v1/media/upload-url").set(auth()).send({
+        category: "USER_AVATAR",
+        contentType: "image/png",
+        contentLength: 1024,
+        fileName,
+      });
+
+    expect((await send("my photo.png")).status).toBe(200);
+    expect(createUploadUrl.mock.calls.at(-1)[0].fileName).toBe("my photo.png");
+    expect((await send("invoice.html")).status).toBe(200);
+    expect(createUploadUrl.mock.calls.at(-1)[0].fileName).toBeUndefined();
+  });
+
   it("200: valid USER_AVATAR upload returns upload envelope", async () => {
     const res = await request(app)
       .post("/api/v1/media/upload-url")

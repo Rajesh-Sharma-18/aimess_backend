@@ -538,22 +538,15 @@ export const NOTIFICATION_MESSAGES = {
     en: "a new device",
     th: "อุปกรณ์ใหม่",
   },
-  // The article lives in the translation, not in a JS template — "a chrome"
-  // has no equivalent in vi/th, which use a classifier or nothing at all.
-  NOTIF_AUTH_ON_BROWSER: {
-    vi: "một trình duyệt {{browser}}",
-    en: "a {{browser}}",
-    th: "เบราว์เซอร์{{browser}}",
-  },
   NOTIF_AUTH_NEW_LOGIN: {
     vi: "Phát hiện đăng nhập mới trên {{device}}.",
     en: "New login detected on {{device}}.",
-    th: "ตรวจพบการเข้าสู่ระบบใหม่จาก{{device}}",
+    th: "ตรวจพบการเข้าสู่ระบบใหม่จาก {{device}}",
   },
   NOTIF_AUTH_NEW_LOGIN_LOCATION: {
     vi: "Phát hiện đăng nhập mới trên {{device}} từ {{location}}.",
     en: "New login detected on {{device}} from {{location}}.",
-    th: "ตรวจพบการเข้าสู่ระบบใหม่จาก{{device}} ที่ {{location}}",
+    th: "ตรวจพบการเข้าสู่ระบบใหม่จาก {{device}} ที่ {{location}}",
   },
   // ── OTP emails ──────────────────────────────────────────────────────────
   // No recipient account exists yet in these flows (reset / verify), so these

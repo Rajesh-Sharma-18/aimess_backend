@@ -161,6 +161,9 @@ message UserSnapshotRecord {
   // gating an ACTION on the recipient (invite, group add, DM invite card) must
   // refuse: the account cannot log in to act on it.
   bool   is_suspended    = 7;
+  // Split name; "" when deleted (anonymized like the rest).
+  string first_name      = 8;
+  string last_name       = 9;
 }
 
 message BulkGetUserSnapshotsResponse {

@@ -64,6 +64,12 @@ jest.mock("../../src/grpc/backoffice.client.js", () => ({
   isAdminEmailTaken: jest.fn(async () => false),
 }));
 
+// --- user-service gRPC client: same import.meta problem. No preview by
+//     default, so the login probe answers the plain 409 unless a spec re-mocks.
+jest.mock("../../src/grpc/user.client.js", () => ({
+  getLoginAccountPreview: jest.fn(async () => null),
+}));
+
 // --- External identity verifiers (pull in ESM-only google-auth-library /
 //     jose). Empty module by default; social-login specs re-mock with fns.
 jest.mock("../../src/lib/google-id-token.js", () => ({
